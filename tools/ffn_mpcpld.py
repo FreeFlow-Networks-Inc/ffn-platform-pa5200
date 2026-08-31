@@ -38,6 +38,47 @@ VERSION_REG = 0x0F          # per PAN's lpc_cpld.py show.version()
 RESET_REG = 0x04
 RESET_BIT = 0x01
 
+# The full 64-register map, read on live silicon and stable across two passes.
+# This closes the open question above about registers 0x20-0x3f: there is
+# nothing in them.
+#
+#   00: 50 41 00 de 08 de de de de de de de de de de 05
+#   10: de de de de de de de de de de de de de 00 00 de
+#   20: de de de de de de de de de de de de de de de de
+#   30: de de de de de de de de de de de de de de de de
+#
+# 0xde is this CPLD's "no register here" value -- NOT 0xff, which is what a
+# floating bus would normally give and what PAN's own comment assumed reads
+# would return. That single observation decodes the whole map, because every
+# real register is simply the ones that are not 0xde:
+#
+#   0x00, 0x01   "PA" signature
+#   0x02         0x00, real, meaning unknown
+#   0x04         reset control. bit 0 = DP + FE100 reset (0 = deasserted).
+#                bit 3 reads 1 and its meaning is unknown, which is why this
+#                tool read-modify-writes rather than writing the whole byte.
+#   0x0f         0x05, version -- matches PAN's documented version register,
+#                which cross-validates the map against this board
+#   0x1d, 0x1e   0x00, real, meaning unknown
+#   everything else   unimplemented
+#
+# So the CPLD is small: a signature, one reset control, a version, and three
+# registers whose purpose is not established. There is no second bank to find,
+# and no per-device reset or power control beyond bit 0 of 0x04.
+#
+# Worth knowing for the BCM88375 work: this is the only hardware reset of the
+# dataplane complex reachable from the MP, i.e. the way to get a clean chip
+# without physically power-cycling the appliance. Two caveats. Whether the
+# BCM88375 is inside this reset domain is UNVERIFIED -- it is documented as
+# "DP + FE100" and the BCM hangs off the CP Octeon's PCIe. And pulsing it takes
+# the CP down, which is FFN's own access path, so recovery means re-running the
+# Octeon bring-up. It is a deliberate operation, not a casual one.
+#
+# There is no IPMI or BMC on this board, before anyone looks: no /dev/ipmi*, no
+# ipmi modules, no /sys/class/ipmi, and `dmidecode -t 38` (IPMI Device
+# Information) returns empty. Board management is this CPLD plus /dev/i2c-0
+# (Intel i801 SMBus, unexplored, likely sensors).
+
 
 def rd(off):
     fd = os.open(PORT, os.O_RDONLY)
