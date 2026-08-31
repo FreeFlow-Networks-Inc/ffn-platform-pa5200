@@ -129,8 +129,8 @@ static int dev_type = 2;
 module_param(dev_type, int, 0644);
 MODULE_PARM_DESC(dev_type,
 	"bus type reported by command 12. 2 is CORRECT and verified: it "
-	"makes the SDK attach the device and report "SPI unit 0: Dev 0x8375, "
-	"Rev 0x11, Chip BCM88375_B0". 1 and 4 both fail.");
+	"makes the SDK attach the device and report it as SPI unit 0, "
+	"Dev 0x8375, Rev 0x11, Chip BCM88375_B0. 1 and 4 both fail.");
 
 static int dev_state = 0;
 module_param(dev_state, int, 0644);
@@ -254,17 +254,28 @@ static void ffn_bde_dma_setup(void)
 static const char *ffn_bde_cmd_name(unsigned int nr)
 {
 	static const char * const n[] = {
-		"0/version?",       "1/num_devices?",   "2/get_device?",
+		/*
+		 * Corrected against the recovered contract. Only 0, 1, 2 and 12
+		 * have names confirmed by surviving assert strings; the rest are
+		 * named for the client function that issues them. Earlier guesses
+		 * of "intr_array" for 13/14/16 were wrong -- 13/14 are SPI and 16
+		 * is not implemented by the vendor module either.
+		 */
+		"0/version",        "1/get_num_devices", "2/get_device",
 		"3/pci_config_put32", "4/pci_config_get32", "5/get_dma_info",
-		"6/enable_interrupts", "7/disable_interrupts", "8/?",
-		"9/wait_for_interrupt", "10/?",         "11/?",
-		"12/get_device_type?", "13/intr_array_a", "14/intr_array_b",
-		"15/?",             "16/intr_array_c",  "17/bcm88x7x",
-		"18/?",             "19/?",             "20/?",
-		"21/bus_features",  "22/irq_mask_set",  "23/cpu_write",
-		"24/cpu_read",      "25/cpu_pci_register", "26/open_unk26",
-		"27/iproc_ihost_read", "28/iproc_ihost_write",
-		"29/instance_attach", "30/get_dev_state",
+		"6/enable_interrupts", "7/disable_interrupts",
+		"8/unknown-never-issued",
+		"9/wait_for_interrupt", "10/unknown-never-issued",
+		"11/unknown-never-issued",
+		"12/get_device_type", "13/spi_read",     "14/spi_write",
+		"15/unimpl-in-vendor", "16/unimpl-in-vendor",
+		"17/unimpl-in-vendor", "18/unimpl-in-vendor",
+		"19/eb_read",       "20/eb_write",
+		"21/get_bus_features", "22/irq_mask_set", "23/cpu_write",
+		"24/cpu_read",      "25/cpu_pci_register",
+		"26/get_device_resource",
+		"27/iproc_read",    "28/iproc_write",
+		"29/attach_instance", "30/get_dev_state",
 	};
 
 	return nr < ARRAY_SIZE(n) ? n[nr] : "out-of-range";
@@ -276,19 +287,36 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 	ffn_lubde_ioctl_t io;
 	unsigned int nr = _IOC_NR(cmd);
 	struct ffn_bde_dev *d = &ffn_bde_devs[0];
+	int bad_cmd = 0;
 	long ret = 0;
 
-	if (_IOC_TYPE(cmd) != FFN_BDE_IOC_MAGIC) {
-		pr_warn_ratelimited(DRV ": ioctl type 0x%x is not '%c'\n",
-				    _IOC_TYPE(cmd), FFN_BDE_IOC_MAGIC);
-		return -ENOTTY;
-	}
-	if (nr > FFN_BDE_IOC_NR_MAX) {
-		pr_warn_ratelimited(DRV ": ioctl nr %u out of range\n", nr);
-		return -ENOTTY;
+	/*
+	 * Even a bad type or out-of-range nr must not fail the syscall -- see the
+	 * note on the return path below. Report it in rc instead.
+	 */
+	if (_IOC_TYPE(cmd) != FFN_BDE_IOC_MAGIC || nr > FFN_BDE_IOC_NR_MAX) {
+		pr_warn_ratelimited(DRV ": ignoring ioctl type 0x%x nr %u\n",
+				    _IOC_TYPE(cmd), nr);
+		bad_cmd = 1;
 	}
 	if (copy_from_user(&io, (void __user *)arg, sizeof(io)))
 		return -EFAULT;
+
+	/*
+	 * Keep dev, discard everything else. The recovered contract requires all
+	 * 96 bytes to go back on every path with unfilled fields explicitly
+	 * zeroed -- otherwise the client reads its own stale input back, and for
+	 * command 26 that stale value is a BAR address it then mmaps.
+	 *
+	 * rc defaults to 0 because the vendor kernel sets it before dispatch and
+	 * handlers only write it on failure.
+	 */
+	{
+		u32 keep_dev = io.dev;
+
+		memset(&io, 0, sizeof(io));
+		io.dev = keep_dev;
+	}
 
 	if (verbose > 1)
 		pr_info(DRV ": cmd %-22s dev=%u d0=0x%x d1=0x%x d2=0x%x "
@@ -298,7 +326,7 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 
 	mutex_lock(&ffn_bde_lock);
 
-	switch (nr) {
+	switch (bad_cmd ? 0xffff : nr) {
 	case 0:		/* version */
 		/*
 		 * Which nr is LUBDE_VERSION is not yet confirmed; 0 is the
@@ -378,7 +406,7 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 */
 		if (!d->dma_cpu) {
 			io.rc = (u32)-1;
-			ret = -ENOMEM;
+			ret = -ENOMEM;	/* for the log only; rc is what matters */
 			break;
 		}
 		io.rc = 0;
@@ -402,6 +430,19 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 	case 30:	/* get device state */
 		io.rc = 0;
 		io.d0 = (u32)dev_state;
+		break;
+
+	case 26:	/* get_device_resource */
+		/*
+		 * The vendor kernel routes this to lkbde_get_dev_resource. Its
+		 * exact field layout is not established here, and the recovered
+		 * contract warns specifically that a stale value in this reply
+		 * becomes a BAR address the client mmaps. The entry path now
+		 * zeroes everything, so failing cleanly is safe: report failure
+		 * in rc rather than inventing a window.
+		 */
+		io.rc = (u32)-1;
+		ret = -EOPNOTSUPP;
 		break;
 
 	case 21:	/* bus features: byte order */
@@ -441,9 +482,17 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 			ffn_bde_cmd_name(nr), io.dev, io.d0, io.d1, io.d2,
 			io.d3, (unsigned long long)io.p0);
 
+	/*
+	 * ALWAYS return 0 from the syscall. The client asserts
+	 * ioctl(_devfd, command, pdevio) == 0 at linux-user-bde.c:517 and its
+	 * assert handler abort()s when it fires on a non-main thread, so a
+	 * non-zero return here kills the SDK outright rather than producing a
+	 * diagnosable error. Failure is communicated by io.rc, which is what
+	 * every caller actually tests.
+	 */
 	if (copy_to_user((void __user *)arg, &io, sizeof(io)))
 		return -EFAULT;
-	return ret;
+	return 0;
 }
 
 /*
