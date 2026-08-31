@@ -1,0 +1,13 @@
+[Unit]
+Description=FFN OCTEON CP bring-up (PCIe stage + NFS-root over pcnet)
+After=network-online.target nfs-server.service
+Wants=nfs-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/ffn-ngfw-v2/tools/ffn-octeon-up.sh
+TimeoutStartSec=400
+
+[Install]
+WantedBy=multi-user.target

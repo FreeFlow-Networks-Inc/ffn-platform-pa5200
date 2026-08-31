@@ -1,0 +1,26 @@
+#!/bin/sh
+# ffn-cpshd -- expose the CP shell to the MP over the PCIe link ONLY.
+#
+# SECURITY: binds 127.1.1.2 exclusively -- the CP pcnet (PCIe) address. The CP
+# has NO IP on eth0/eth1, so there is no physical-topology path to this port;
+# same isolation boundary the NFS server already relies on. Never bind 0.0.0.0.
+BIND=127.1.1.2
+PORT=2323
+BB=/bin/busybox
+
+# telnetd needs devpts to allocate PTYs (the chroot only has an empty /dev/pts)
+if ! grep -q " /dev/pts " /proc/mounts 2>/dev/null; then
+	mkdir -p /dev/pts
+	mount -t devpts devpts /dev/pts 2>/dev/null
+fi
+
+# already running?
+if $BB pidof telnetd >/dev/null 2>&1; then
+	echo "ffn-cpshd: already running"
+	exit 0
+fi
+# -l /bin/bash: hand out a root shell directly (no login/PAM in this userland)
+$BB telnetd -b ${BIND}:${PORT} -l /bin/bash
+rc=$?
+echo "ffn-cpshd: telnetd on ${BIND}:${PORT} rc=$rc"
+exit $rc

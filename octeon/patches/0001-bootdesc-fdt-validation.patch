@@ -1,0 +1,101 @@
+--- /tmp/pristine/OCTEON-SDK/linux/kernel/linux/arch/mips/cavium-octeon/setup.c	2017-11-13 03:37:15.000000000 +0000
++++ /mnt/clones/sdk51/OCTEON-SDK/linux/kernel/linux/arch/mips/cavium-octeon/setup.c	2026-08-26 17:42:38.514319296 +0000
+@@ -693,12 +693,30 @@
+ 
+ 	if ((octeon_bootinfo->major_version > 1) ||
+ 	    (octeon_bootinfo->major_version == 1 &&
+-	     octeon_bootinfo->minor_version >= 4))
++	     octeon_bootinfo->minor_version >= 4)) {
+ 		cvmx_coremask_copy(&sysinfo->core_mask,
+ 				   &octeon_bootinfo->ext_core_mask);
+-	else
++		/*
++		 * FFN: on the PCIe / L2-cache boot path the loader does not
++		 * initialise ext_core_mask, so it arrives as stale cache bytes.
++		 * A single-node part cannot have a core numbered at or above
++		 * CVMX_COREMASK_MAX_CORES_PER_NODE, so that is a reliable tell.
++		 * The 32-bit core_mask IS filled on this path (the bootloader
++		 * prints it as 0xf here), so prefer it when ext looks wrong.
++		 */
++		if (!OCTEON_IS_MODEL(OCTEON_CN78XX) &&
++		    cvmx_coremask_get_last_core(&sysinfo->core_mask) >=
++		    CVMX_COREMASK_MAX_CORES_PER_NODE) {
++			pr_info("FFN: ext_core_mask not credible, using core_mask 0x%x\n",
++				octeon_bootinfo->core_mask);
++			memset(&sysinfo->core_mask, 0, sizeof(sysinfo->core_mask));
++			cvmx_coremask_set64(&sysinfo->core_mask,
++					    octeon_bootinfo->core_mask);
++		}
++	} else {
+ 		cvmx_coremask_set64(&sysinfo->core_mask,
+ 				    octeon_bootinfo->core_mask);
++	}
+ 
+ 	/* Some broken u-boot pass garbage in upper bits, clear them out */
+ 	if (!OCTEON_IS_MODEL(OCTEON_CN78XX))
+@@ -1352,6 +1370,32 @@
+ 	const void *fdt;
+ 	bool do_prune;
+ 	bool fill_mac;
++	const char *cmd_fdt;
++	u64 ffn_fdt_addr = 0;
++
++	/*
++	 * FFN: accept a device-tree address on the kernel command line.
++	 * The SDK's built-in trees describe the legacy CIU; this part has
++	 * CIU3, so binding the built-in tree makes octeon_irq_init_ciu
++	 * fault. u-boot builds a correct tree for the board but cannot pass
++	 * its address here (fdt_addr is uninitialised on the PCIe boot
++	 * path), so let the operator name it. Validated exactly like a
++	 * passed tree, and ignored if it does not check out.
++	 */
++	cmd_fdt = strstr(arcs_cmdline, "ffn_fdt=");
++	if (cmd_fdt) {
++		ffn_fdt_addr = simple_strtoull(cmd_fdt + 8, NULL, 0);
++		if (!ffn_fdt_addr ||
++		    ffn_fdt_addr >= ((u64)octeon_bootinfo->dram_size << 20)) {
++			pr_warn("FFN: ffn_fdt=0x%llx out of range, ignoring\n",
++				ffn_fdt_addr);
++			ffn_fdt_addr = 0;
++		} else if (fdt_check_header(phys_to_virt(ffn_fdt_addr))) {
++			pr_warn("FFN: no valid FDT at 0x%llx, ignoring\n",
++				ffn_fdt_addr);
++			ffn_fdt_addr = 0;
++		}
++	}
+ 
+ #ifdef CONFIG_MIPS_ELF_APPENDED_DTB
+ 	if (!fdt_check_header(&__appended_dtb)) {
+@@ -1361,11 +1405,29 @@
+ 		pr_info("Using appended Device Tree.\n");
+ 	} else
+ #endif
+-	if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
++	if (ffn_fdt_addr) {
++		fdt = phys_to_virt(ffn_fdt_addr);
++		pr_info("FFN: using Device Tree from ffn_fdt=0x%llx\n",
++			ffn_fdt_addr);
++		do_prune = false;
++		fill_mac = false;
++	} else
++	/*
++	 * FFN: fdt_addr is uninitialised on the PCIe / L2-cache boot path --
++	 * observed as 0x830001756e6b6e6f, the tail of the string "unknown".
++	 * phys_to_virt() of that is unmapped, so the original
++	 * fdt_check_header() faulted before it could panic and the boot hung
++	 * silently. Require the address to land inside real DRAM before
++	 * dereferencing it, and treat a bad tree as "no tree passed": the
++	 * built-in octeon_3xxx tree below is then pruned to the hardware
++	 * actually present, which is what FFN wants anyway.
++	 */
++	if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr &&
++	    octeon_bootinfo->fdt_addr <
++		    ((u64)octeon_bootinfo->dram_size << 20) &&
++	    !fdt_check_header(phys_to_virt(octeon_bootinfo->fdt_addr))) {
+ 		fdt = phys_to_virt(octeon_bootinfo->fdt_addr);
+ 		pr_info("Using passed Device Tree <%p>.\n", fdt);
+-		if (fdt_check_header(fdt))
+-			panic("Corrupt Device Tree passed to kernel.");
+ 		do_prune = false;
+ 		fill_mac = false;
+ 		pr_info("Using passed Device Tree.\n");

@@ -1,0 +1,58 @@
+--- /tmp/pristine2/OCTEON-SDK/linux/kernel/linux/init/initramfs.c	2017-11-13 03:36:55.000000000 +0000
++++ /mnt/clones/sdk51/OCTEON-SDK/linux/kernel/linux/init/initramfs.c	2026-08-26 18:35:08.978419878 +0000
+@@ -8,6 +8,7 @@
+ #warning "Sparse checking disabled for this file"
+ #endif
+ 
++#include <linux/io.h>
+ #include <linux/init.h>
+ #include <linux/fs.h>
+ #include <linux/slab.h>
+@@ -653,6 +654,47 @@
+ 		 */
+ 		load_default_modules();
+ 	}
++
++	/*
++	 * FFN: unpack an additional cpio that the host staged in DRAM, named
++	 * by ffn_rootfs=<addr>[,<size>]. Used to overlay a userland that must
++	 * not be packaged into the kernel image itself. Deliberately after the
++	 * built-in archive, so FFN's own /init is already present and an
++	 * overlay cannot replace it.
++	 */
++	{
++		const char *p = strstr(saved_command_line, "ffn_rootfs=");
++
++		if (p) {
++			unsigned long long a, sz = 0;
++			char *q;
++
++			a = simple_strtoull(p + 11, &q, 0);
++			if (q && *q == ',')
++				sz = simple_strtoull(q + 1, NULL, 0);
++			if (!a || !sz) {
++				pr_warn("FFN: ffn_rootfs needs <addr>,<size>\n");
++			} else {
++				char *buf = phys_to_virt((phys_addr_t)a);
++
++				/* newc magic: a wrong address must be reported, not fed in */
++				if (memcmp(buf, "070701", 6)) {
++					pr_warn("FFN: no cpio at 0x%llx (magic %02x%02x%02x%02x), skipping\n",
++						a, buf[0], buf[1], buf[2], buf[3]);
++				} else {
++					char *err;
++
++					pr_info("FFN: unpacking overlay rootfs, 0x%llx bytes at 0x%llx\n",
++						sz, a);
++					err = unpack_to_rootfs(buf, (unsigned long)sz);
++					if (err)
++						pr_warn("FFN: overlay rootfs failed: %s\n", err);
++					else
++						pr_info("FFN: overlay rootfs unpacked\n");
++				}
++			}
++		}
++	}
+ 	return 0;
+ }
+ rootfs_initcall(populate_rootfs);
