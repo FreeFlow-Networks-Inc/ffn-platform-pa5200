@@ -177,3 +177,26 @@ binary. The two honest routes to it remain: run the vendor stack in place on the
 appliance and capture what it does to the hardware, or drive the device
 independently and implement from observed behaviour. Reading further `.soc` files
 will not produce it.
+
+---
+
+## Which CPU programs this switch
+
+The BCM88375 is on the **CP** Octeon's PCIe (`0001:01:00.0` and `.1`). Vendor ID
+`14e4` appears nowhere else in the system, so the DP Octeon cannot see it: there
+is no driver to load on the DP and nothing for one to bind to. The daemon that
+enables and programs the front-panel ports runs on the CP.
+
+One naming trap worth knowing before reading any of the bring-up scripts:
+`/opt/dpfs` on the x86 MP is **not** the DP's filesystem. It is NFS-exported to
+the PCIe-only `127.1.0.0/16` network and the **CP** roots from it, so the MP's
+`/opt/dpfs/usr/share/broadcom/` and the CP's `/usr/share/broadcom/` are the same
+files. The DP has a separate rootfs of its own.
+
+The CMIC control interface — the verified register map, the per-CMC S-channel
+layout, the FSCHAN direct-register path, and what is still needed to encode an
+S-channel operation — is documented in the interop repository rather than here,
+since it is reverse-engineering detail rather than platform wiring.
+
+The owner-supplied DNX files this switch needs in order to initialise are
+verified and loaded by `ffn_dnx.py` in FFN-NGFW; they are never shipped.
