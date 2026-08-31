@@ -16,6 +16,7 @@
 #   modinfo ffn_bcm.ko         -> vermagic 4.9.57 ... (must match the kernel)
 
 obj-m += ffn_bcm.o
+obj-m += ffn_bde.o
 
 SDK   ?= /mnt/clones/sdk51/OCTEON-SDK
 KDIR  ?= /mnt/clones/kbuild
@@ -26,9 +27,15 @@ CROSS ?= $(SDK)/tools/bin/mips64-octeon-linux-gnu-
 # needs; harmless here, required if kbuild rebuilds any host tool.
 KBUILD_ARGS = ARCH=mips CROSS_COMPILE=$(CROSS) HOSTCFLAGS="-fcommon -O2"
 
-all: ffn_bcm.ko ffn_bcmctl
+all: ffn_bcm.ko ffn_bde.ko ffn_bcmctl
 
 ffn_bcm.ko: ffn_bcm.c ffn_bcm_abi.h
+	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) modules
+
+# ffn_bde provides /dev/linux-user-bde so the vendor SDK shell can attach and
+# initialise the switch in place. Same kbuild invocation; kbuild builds every
+# obj-m in one pass, so this target exists for clarity rather than isolation.
+ffn_bde.ko: ffn_bde.c ffn_bde_abi.h
 	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) modules
 
 # ffn_bcmctl is FREESTANDING: it has its own _start and makes syscalls through
