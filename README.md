@@ -14,15 +14,21 @@ versioned per hardware rather than bundled into the product:
     platform/pa5200/    this repository  -- PA-5200-series appliances
     platform/vu9p/      FFN-NGFW-FPGA    -- the in-house VU9P card
 
-A clone only needs the platform matching the board in front of it:
+FFN-NGFW itself runs on ordinary Linux and needs nothing from here. A clone
+takes only the platform matching the board in front of it:
 
     git clone https://github.com/FreeFlow-Networks-Inc/FFN-NGFW
     cd FFN-NGFW
-    git submodule update --init platform/pa5200
+    git submodule update --init --checkout platform/pa5200
+
+`--checkout` is not optional. This submodule is registered `update = none` in
+FFN-NGFW's `.gitmodules`, which is what makes platforms opt-in: without it, git
+reports that it is skipping the submodule and leaves the directory empty. Even
+`git clone --recursive` skips it by design.
 
 Nothing in FFN-NGFW's own build depends on this repository being present. If it
-is absent, the platform-specific tooling is simply unavailable, and anything
-that needs a register offset says which platform submodule it came from.
+is absent the platform-specific tooling is simply unavailable, and anything that
+needs a register offset says which platform it came from.
 
 ## What is in here
 
