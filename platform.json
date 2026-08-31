@@ -1,0 +1,7 @@
+{
+  "platform": "pa5200",
+  "hardware": "Palo Alto Networks PA-5200-series appliances",
+  "datapath": "offload",
+  "cpu_isolation": "none",
+  "reason": "Forwarding runs on the board's own co-processors, not on host cores. The host carries only the control plane, so isolating its cores would remove them from the scheduler for no throughput gain and would make the management plane less responsive during a traffic event -- precisely when an operator needs it."
+}
