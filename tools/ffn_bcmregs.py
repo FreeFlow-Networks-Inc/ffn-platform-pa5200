@@ -47,21 +47,27 @@ MSG_DONE / ABORT and the four read-only error bits. `verify` re-checks those and
 fails loudly on a mismatch, because a silently wrong field map is worse than
 none.
 
-## Silicon revision: checked, and it does not matter
+## Silicon revision: it is B0, and that is now proven
 
 The object carries both BCM88375_A0 (14,314 field arrays) and BCM88375_B0
-(14,336). The appliance reports PCI revision 0x11, which by Broadcom's usual
-convention is B0 rather than A0, so this looked like it mattered.
+(14,336). The fitted part is **B0**, which is why that is the default here.
 
-It does not. Of 14,303 registers present in both revisions, **14,302 are
-identical** and the single difference is `IHP_RESERVED_SPARE_2` -- a reserved
-spare, where A0 declares one 32-bit field and B0 splits it into 1 + 31 bits.
-Every register FFN actually touches (SCHAN_CTRL, LEDUP0_CTRL, FSCHAN_OPCODE,
-FSCHAN_STATUS, MIIM_CTRL) is byte-identical between them. 33 registers exist
-only in B0 and 11 only in A0.
+The proof is not the PCI revision convention, it is the SDK's own statement: each
+per-chip driver struct records the revision it serves, and
 
-So the A0 default is safe. Use --chip to switch if a specific register ever
-turns out to be revision sensitive; do not re-derive this comparison.
+    soc_driver_bcm88375_a0    14e4:8375 rev 0x01
+    soc_driver_bcm88375_b0    14e4:8375 rev 0x11
+
+while the appliance reports `device 14e4:8375 rev 11`.
+
+It happens not to matter much. Of 14,303 registers present in both revisions,
+**14,302 are identical**; the single difference is `IHP_RESERVED_SPARE_2`, a
+reserved spare that A0 declares as one 32-bit field and B0 splits into 1 + 31
+bits. Every register FFN actually touches (SCHAN_CTRL, LEDUP0_CTRL,
+FSCHAN_OPCODE, FSCHAN_STATUS, MIIM_CTRL) is byte-identical. 33 registers exist
+only in B0 and 11 only in A0. So earlier work that defaulted to A0 is not
+invalidated -- but there is no reason to keep pointing at the wrong revision.
+Use --chip to compare; do not re-derive the comparison.
 
 ## What the field database cannot tell you
 
@@ -90,7 +96,7 @@ import re
 import struct
 import sys
 
-DEFAULT_CHIP = "BCM88375_A0"
+DEFAULT_CHIP = "BCM88375_B0"
 
 # Field arrays are named soc_<REGISTER>_<CHIP>r_fields in the symbol table.
 FIELDS_SUFFIX_RE = re.compile(r"^soc_(?P<reg>.+)_(?P<chip>BCM\w+?)r_fields$")
