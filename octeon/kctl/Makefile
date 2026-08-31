@@ -5,7 +5,9 @@
 # KDIR is the O= output directory of that build, not the source tree: it is the
 # only one that has .config and Module.symvers, which modpost needs.
 #
-#   make                       # build ffn_bcm.ko
+#   make                       # build ffn_bcm.ko AND ffn_bcmctl
+#   make ffn_bcm.ko            # the module only
+#   make ffn_bcmctl            # the userspace tool only
 #   make clean
 #   make KDIR=/path/to/kbuild  # override
 #
@@ -24,10 +26,30 @@ CROSS ?= $(SDK)/tools/bin/mips64-octeon-linux-gnu-
 # needs; harmless here, required if kbuild rebuilds any host tool.
 KBUILD_ARGS = ARCH=mips CROSS_COMPILE=$(CROSS) HOSTCFLAGS="-fcommon -O2"
 
-all: ffn_bcm.ko
+all: ffn_bcm.ko ffn_bcmctl
 
 ffn_bcm.ko: ffn_bcm.c ffn_bcm_abi.h
 	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) modules
+
+# ffn_bcmctl is FREESTANDING: it has its own _start and makes syscalls through
+# inline asm, so it links no libc. There MUST be an explicit rule for it --
+# without one, make falls through to its builtin %: %.c rule, which uses the
+# HOST compiler, and the MIPS register names in the syscall clobber lists come
+# out as "unknown register name '$13' in 'asm'". That error looks like a bug in
+# the source and is not; it just means the wrong compiler ran.
+#
+# The flag set matters and is the same one ffn_nfsmount needs:
+#   -mno-abicalls -fno-pic -G0   no GOT, no small-data area: there is no dynamic
+#                                loader and no runtime to set $gp up
+#   -nostdlib -static            no libc, no startup files
+#   -Wl,-e,_start                our entry point, since crt1.o is absent
+#   -EB -mabi=64                 big-endian n64, matching the Octeon userland
+BCMCTL_CFLAGS = -O2 -EB -mabi=64 -mno-abicalls -fno-pic -G0 -Wall
+BCMCTL_LDFLAGS = -nostdlib -static -Wl,-e,_start
+
+ffn_bcmctl: ffn_bcmctl.c ffn_bcm_abi.h
+	$(CROSS)gcc $(BCMCTL_CFLAGS) $(BCMCTL_LDFLAGS) -o $@ $<
+	@file $@ | grep -q 'MSB.*MIPS' || { 		echo "ffn_bcmctl: NOT a big-endian MIPS binary -- wrong compiler ran"; 		rm -f $@; exit 1; }
 
 # Warnings-as-errors pass over THIS file only.
 #
@@ -40,5 +62,6 @@ strict:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) clean
+	rm -f ffn_bcmctl
 
 .PHONY: all strict clean

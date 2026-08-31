@@ -104,12 +104,6 @@
 #define FFN_ST_TOOBIG		6
 
 /*
- * The FE100 (BCM88375) is at 0001:01:00.0. BAR2 holds the CMIC window. Its
- * registers are little-endian against the OCTEON's big-endian reads, so the
- * FE100_* ops byte-swap for you -- BAR0 reg0 reads 0x75830000 raw, which is the
- * device id 0x8375. Encoding that here means callers cannot forget it.
- */
-/*
  * TWO DIFFERENT CHIPS. An earlier version of this header called the BCM's BAR2
  * "FFN_FE100_BAR2", which was simply wrong and made every LEDUP read look like
  * an FE100 access:
@@ -122,6 +116,11 @@
  *
  * Both come out of reset with PCI memory decode OFF, so every BAR read returns
  * 0xffffffff until the enable node is written. The daemon does that at startup.
+ *
+ * Byte order, for the BCM specifically: its registers are little-endian against
+ * the OCTEON's big-endian reads, so the BCM_* ops byte-swap for you. The tell is
+ * that BAR0 register 0 reads 0x75830000 raw, which is device id 0x8375 with the
+ * halves swapped. Encoding the swap here means callers cannot forget it.
  */
 #define FFN_BCM_BAR2		0x11c0100800000ULL	/* CMIC window */
 #define FFN_BCM_BAR0		0x11c0101800000ULL
