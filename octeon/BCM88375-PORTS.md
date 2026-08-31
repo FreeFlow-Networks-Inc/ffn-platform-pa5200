@@ -100,3 +100,80 @@ The device tree here is the board's own, read from u-boot at runtime via
 Steps 2 and 3 are one operation per port in the vendor's model
 (`bcm_port_enable_set`). What that costs in S-channel terms is the open
 question, and the reason `ffn_bcm` exists.
+
+---
+
+# DNX init: where it actually lives
+
+## The dispatch chain, for BCM88375 specifically
+
+    rc.soc  --(BCM88375_A0/_B0)-->  jer.soc     [rc.soc's own 138 register
+                                                 writes are for other chip
+                                                 families and never execute here]
+    jer.soc sets QMX=1 for this part, so every QMX-gated branch runs:
+        rcload gryphon_dram_tune.soc     248 config properties
+        rcload bcm88375_board.soc        324 config properties
+        LED microcode: led 0/1/2 prog; led auto on; led 0/1/2 start
+        linkscan swportbitmap=0xffff...edfffe
+        setreg ILKN_SLE_{TX,RX}_{CFG,CAL_INBAND,BURST}
+        cint phy_tx_settings.c / gryphon_llfc.c / panEgrTcMap.c
+        config save -> runningConfig.soc
+
+## The finding that matters: the scripts are not the init
+
+`bcm88375_board.soc` is **324 `config` statements and nothing else** — no
+procedural commands, no register writes. It is a board *property* file, not an
+init sequence. Same for `gryphon_dram_tune.soc` (248 properties).
+
+Properties are **inputs** to the SDK's compiled init. SerDes bring-up, OCB/DRAM
+init, fabric setup and port creation all happen inside the SDK binary, not in
+these files. So DNX init cannot be obtained by reading the `.soc` set, however
+long it is.
+
+What the scripts genuinely contain, in text:
+
+  * three 82-byte LED microcode programs (8 x `02 <port> 67 35` per-port status
+    reads, then a 42-byte tail identical across all three units)
+  * the linkscan port bitmap
+  * six ILKN SerDes/link `setreg` values — likely inert here, since CN73XX has
+    no Interlaken
+  * pointers to three PAN-authored cint scripts, which carry no Broadcom header
+
+The LED microcode is the only real device programming available as text. It is
+not reproduced in this repository: it is Broadcom-authored content from a
+Broadcom-headered file, so it is read from the appliance in place like every
+other piece of vendor firmware, never packaged.
+
+## LEDUP register map, observed on live silicon
+
+Read through `ffn_bcm` + `ffn_bcmctl` — FFN's own driver and tool, no vendor
+software involved. Offsets are BAR2 (CMIC):
+
+| offset | register | value at rest |
+|---|---|---|
+| `0x20000` | `LEDUP0_CTRL` | `0x00000000` — processor **disabled** |
+| `0x20050` | `LEDUP0_CLK_PARAMS` | `0x005b8d80` (6,000,000) |
+| `0x2005c` | `LEDUP0_CLK_DIV` | `0x00000064` (100) |
+| `0x20400` | `LEDUP0_DATA_RAM` base | non-zero, unstructured |
+| `0x20800` | `LEDUP0_PROGRAM_RAM` base | non-zero, unstructured |
+
+`PROGRAM_RAM` holding non-zero bytes that do **not** match any of the three
+microcode programs, while `CTRL` reads 0, is what uninitialised SRAM looks like —
+not evidence that microcode was previously loaded.
+
+`CLK_PARAMS` and `CLK_DIV` reading round, sensible values is useful the other
+way: it is further confirmation the CMIC window is genuinely mapped rather than
+answering from a dead aperture.
+
+## Consequence for the plan
+
+Loading the LED microcode and enabling the processor would be the first genuine
+FFN **write** to this device, and it is visible on the front panel — a good
+proof of the write path, and low risk because the LED processor is independent of
+forwarding.
+
+It does **not** make traffic flow. That still needs DNX init, which is in the SDK
+binary. The two honest routes to it remain: run the vendor stack in place on the
+appliance and capture what it does to the hardware, or drive the device
+independently and implement from observed behaviour. Reading further `.soc` files
+will not produce it.
