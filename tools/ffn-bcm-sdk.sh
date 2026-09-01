@@ -31,10 +31,10 @@ if ! grep -q '^ffn_bde ' /proc/modules; then
 		echo "Re-boot the CP: systemctl restart ffn-octeon.service"
 		exit 1
 	fi
-	# Interim: the deployed build derives dma_hi_bits with the wrong polarity;
-	# force the value the vendor rule gives this board (PAXB_0 -> 1) until the
-	# corrected build lands. Both knobs stay valid in that build.
-	insmod "$KO" paxb_full=1 paxb_variant=1 || { echo "insmod $KO failed"; exit 1; }
+	# paxb_full=1 and the dma_hi_bits derivation are the build defaults now; the
+	# pool is the ffn_reserve= range on the CP boot line (ffn-octeon-up.sh), which
+	# is why it is named here rather than baked into the driver.
+	insmod "$KO" dma_phys=0x30000000 dma_mb=64 || { echo "insmod $KO failed"; exit 1; }
 fi
 
 # 2. device nodes. /dev is devtmpfs, so these do NOT survive a CP re-boot; the

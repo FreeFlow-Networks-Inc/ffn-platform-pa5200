@@ -52,6 +52,7 @@
 #include <linux/pci.h>
 #include <linux/uaccess.h>
 #include <linux/mm.h>
+#include <linux/pfn.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/dma-mapping.h>
@@ -98,6 +99,20 @@ MODULE_PARM_DESC(dma_mb,
 	"size of the coherent DMA region to offer the SDK, in MB (default 4). "
 	"The CP has only ~440 MB total, so this is deliberately modest; raise it "
 	"if the SDK complains that the region is too small.");
+
+/*
+ * A boot-reserved DMA pool. Zero (default) keeps the dma_alloc_coherent path,
+ * which is capped at 4 MB on this kernel. Non-zero names the physical base of
+ * an ffn_reserve= range on the CP boot line; dma_mb gives its size. The range
+ * is checked at load: below 4 GB, and NOT in the kernel's memory map.
+ */
+static unsigned long long dma_phys;
+module_param(dma_phys, ullong, 0444);
+MODULE_PARM_DESC(dma_phys,
+	"physical base of a boot-reserved range to use as the DMA pool (default "
+	"0 = allocate dma_mb MB coherently, max 4 MB on this kernel). Pair with "
+	"ffn_reserve=<base>,<size> on the CP boot line and the same size in "
+	"dma_mb. Refused if the range is above 4 GB or is live kernel RAM.");
 
 /*
  * Byte order reported for command 21. NOT a blind guess: ffn_bcm already reads
@@ -441,6 +456,7 @@ struct ffn_bde_dev {
 	void *dma_cpu;
 	dma_addr_t dma_handle;
 	size_t dma_size;
+	bool dma_reserved;	/* pool is a boot-reserved range, not an allocation */
 
 	/*
 	 * Interrupt delivery to userspace. The SDK runs a thread that blocks in
@@ -461,6 +477,15 @@ struct ffn_bde_dev {
 	atomic_t irq_seq;
 	atomic_t irq_masked;
 	u32 irq_seen;
+
+	/*
+	 * The CMIC register window (BAR2, 256K as the client maps it), kept
+	 * mapped for command 22: the SDK hands us CMIC interrupt-mask register
+	 * offsets to write, and the vendor implements that as a plain store into
+	 * this window. imask/imask2/fmask mirror the vendor's bookkeeping.
+	 */
+	void __iomem *bar2_regs;
+	u32 imask, imask2, fmask;
 };
 
 static DEFINE_MUTEX(ffn_bde_lock);
@@ -1129,6 +1154,9 @@ static int ffn_bde_scan(void)
 		d->bar_len[i] = pci_resource_len(pdev, i);
 	}
 	ffn_bde_ndev = 1;
+	if (d->bar_len[2])
+		d->bar2_regs = ioremap(d->bar_start[2],
+				min_t(u64, d->bar_len[2], 0x40000));
 
 	pr_info(DRV ": %04x:%02x:%02x.%d %04x:%04x rev %02x\n",
 		domain, bus, slot, func, pdev->vendor, pdev->device,
@@ -1177,6 +1205,49 @@ static void ffn_bde_dma_setup(void)
 	if (dma_mb <= 0)
 		return;
 
+	if (dma_phys) {
+		unsigned long first = PHYS_PFN(dma_phys);
+		unsigned long last  = PHYS_PFN(dma_phys + size - 1);
+
+		if (dma_phys & ~PAGE_MASK) {
+			pr_warn(DRV ": dma_phys 0x%llx is not page aligned -- "
+				"refused, falling back to coherent allocation\n",
+				dma_phys);
+		} else if (dma_phys + size > 0x100000000ull) {
+			pr_warn(DRV ": reserved pool 0x%llx+%zu ends above 4 GB; "
+				"SBUSDMA host addresses are 32-bit -- refused, "
+				"falling back to coherent allocation\n",
+				dma_phys, size);
+		} else if (page_is_ram(first) || page_is_ram(last)) {
+			/*
+			 * page_is_ram(), not pfn_valid(): under SPARSEMEM the latter is
+			 * section-granular (256 MB sections here), so it says yes for a
+			 * reserved range that merely shares a section with real RAM.
+			 * page_is_ram() walks the System RAM resources, which is exactly
+			 * what an ffn_reserve= range is kept out of.
+			 */
+			pr_warn(DRV ": 0x%llx+%zu is IN the kernel's memory map -- "
+				"no ffn_reserve= covers it, and a DMA window onto "
+				"live RAM would corrupt silently. Refused; falling "
+				"back to coherent allocation\n", dma_phys, size);
+		} else {
+			d->dma_cpu = phys_to_virt(dma_phys);
+			d->dma_handle = (dma_addr_t)dma_phys;
+			d->dma_size = size;
+			d->dma_reserved = true;
+			pr_info(DRV ": DMA pool is the boot-reserved range 0x%llx+%zu "
+				"(%d MB), kernel mapping %p, bus 0x%llx\n",
+				dma_phys, size, dma_mb, d->dma_cpu,
+				(unsigned long long)d->dma_handle);
+			return;
+		}
+	}
+
+	if (dma_phys && size > (4u << 20)) {
+		/* The reserved pool was refused; coherent allocation cannot exceed 4 MB here. */
+		pr_info(DRV ": capping the fallback coherent pool at 4 MB\n");
+		size = 4u << 20;
+	}
 	d->dma_cpu = dma_alloc_coherent(&d->pdev->dev, size, &d->dma_handle,
 					GFP_KERNEL);
 	if (!d->dma_cpu) {
@@ -1432,36 +1503,24 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		io.d0 = (u32)dev_state;
 		break;
 
-	case 26:	/* get_device_resource */
+	case 26:	/* get_device_resource: lkbde_get_dev_resource(dev, d0, &d2, &d3, &d1) */
 		/*
-		 * Resolved from the client's own _open (linux-user-bde.c around
-		 * line 941), which is worth stating exactly because getting this
-		 * wrong is silent:
-		 *
-		 *   in : d0 = resource index, sent as 1
-		 *   out: d3:d2 = 64-bit physical base of that resource
-		 *        rc    = 0
-		 *
-		 * The return value matters more than the payload. The client does
-		 *   if (_ioctl(...) != 0) goto done;
-		 * and the code it skips on failure contains the sal_mutex_create
-		 * at line 955. Failing this command therefore leaves a NULL mutex
-		 * that asserts later in sal_mutex_take -- a failure that surfaces
-		 * nowhere near its cause. Answer it, always.
-		 *
-		 * Resource 1 is BAR0: the client sizes this window at 0x8000 when
-		 * dev_type bit 29 is set, and BAR0 on this device is exactly
-		 * 0x8000. If BAR0 is absent, report zeros with rc = 0 -- the
-		 * client tests the base against zero and skips the mapping, which
-		 * is the honest answer and still creates the mutex.
+		 * rsrc 0 = iowin[0] = the CMIC register window = BAR2 on this chip;
+		 * rsrc 1 = iowin[1] = the iProc window = BAR0. d1 is the SIZE, which
+		 * the client uses as its mmap length. Anything else reports zeros
+		 * with rc 0, as the vendor does.
 		 */
 		io.rc = 0;
-		if (in.d0 == 1 && d->bar_len[0]) {
-			io.d2 = lower_32_bits(d->bar_start[0]);
-			io.d3 = upper_32_bits(d->bar_start[0]);
+		{
+			int bar = (in.d0 == 0) ? 2 : (in.d0 == 1) ? 0 : -1;
+			if (bar >= 0 && d->bar_len[bar]) {
+				io.d2 = lower_32_bits(d->bar_start[bar]);
+				io.d3 = upper_32_bits(d->bar_start[bar]);
+				io.d1 = (u32)d->bar_len[bar];
+			}
 		}
-		pr_info(DRV ": get_device_resource idx=%u -> 0x%08x%08x\n",
-			in.d0, io.d3, io.d2);
+		pr_info(DRV ": get_device_resource rsrc %u -> 0x%08x%08x len 0x%x\n",
+			in.d0, io.d3, io.d2, io.d1);
 		break;
 
 	case 21:	/* bus features: byte order */
@@ -1547,19 +1606,41 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		break;
 	}
 
-	case 22:	/* irq_mask_set */
+	case 22:	/* irq_mask_set: lkbde_irq_mask_set(dev, addr=d0, mask=d1, fmask=0) */
 		/*
-		 * The vendor uses this to push a chip interrupt mask down. We
-		 * deliberately do NOT write chip registers from here -- the SDK
-		 * owns them and masking is handled at the controller instead.
-		 * Log the value so its meaning can be established from real
-		 * traffic rather than guessed.
+		 * The SDK re-arms the chip's interrupt sources by writing a CMIC
+		 * mask register; the vendor kernel does exactly this store. Our ISR
+		 * masks at the interrupt controller rather than here, so this is
+		 * purely the SDK's own register write, done on its behalf. fmask is
+		 * always 0 from the client (it is the secondary-handler path).
 		 */
-		pr_info(DRV ": irq_mask_set dev=%u d0=0x%x d1=0x%x d2=0x%x "
-			"d3=0x%x (recorded, not applied to the chip)\n",
-			in.dev, in.d0, in.d1, in.d2, in.d3);
+		if (!d->bar2_regs || in.d0 >= 0x40000 || (in.d0 & 3)) {
+			pr_warn(DRV ": irq_mask_set offset 0x%x is outside the "
+				"CMIC window -- refused\n", in.d0);
+			io.rc = (u32)-1;
+			break;
+		}
+		d->imask = in.d1 & ~d->fmask;
+		__raw_writel(d->imask | d->imask2, d->bar2_regs + in.d0);
+		if (verbose > 1)
+			pr_info(DRV ": irq_mask_set BAR2+0x%05x <- 0x%08x\n",
+				in.d0, d->imask | d->imask2);
 		io.rc = 0;
 		break;
+
+	case 3: {	/* pci_config_put32: pci_conf_write(dev, d0, d1) */
+		int rc = pci_write_config_dword(d->pdev, in.d0, in.d1);
+		io.rc = rc ? (u32)-1 : 0;
+		break;
+	}
+
+	case 4: {	/* pci_config_get32: d1 = pci_conf_read(dev, d0) */
+		u32 v = 0;
+		int rc = pci_read_config_dword(d->pdev, in.d0, &v);
+		io.d1 = v;
+		io.rc = rc ? (u32)-1 : 0;
+		break;
+	}
 
 	default:
 		io.rc = (u32)-1;
@@ -1724,7 +1805,9 @@ static int __init ffn_bde_init(void)
 static void __exit ffn_bde_exit(void)
 {
 	ffn_bde_irq_teardown(&ffn_bde_devs[0]);
-	if (ffn_bde_devs[0].dma_cpu)
+	if (ffn_bde_devs[0].bar2_regs)
+		iounmap(ffn_bde_devs[0].bar2_regs);
+	if (ffn_bde_devs[0].dma_cpu && !ffn_bde_devs[0].dma_reserved)
 		dma_free_coherent(&ffn_bde_devs[0].pdev->dev,
 				  ffn_bde_devs[0].dma_size,
 				  ffn_bde_devs[0].dma_cpu,

@@ -442,7 +442,13 @@ a pool carved from memory the kernel does not manage. FFN's kernel has that faci
 (`ffn_reserve=`), so: `ffn_reserve=0x30000000,64M` on the CP boot line and
 `ffn_bde dma_phys=0x30000000 dma_mb=64`. The module maps it through the XKPHYS direct map and refuses
 any range that is System RAM (`page_is_ram()` -- `pfn_valid()` is section-granular under SPARSEMEM
-and wrongly says yes). In progress at the time of writing.
+and wrongly says yes -- the first attempt refused the reserve for exactly that reason).
+
+**Result: the whole init completes.** With the 64 MB pool, `rx` passes and `Init BCM` runs on through
+stat, l3, ipmc, field, policer, failover, mirror, time, ptp, tx, trunk to `Init BCM Done.` and
+`jer.soc: Done.` (1597-line run, exit 0, running config saved). The RX pool is
+`BCM_RX_POOL_COUNT_DEFAULT = 960` x `RX_PKT_SIZE_DFLT = 16 KB` on DNX builds -- 15 MB as one block,
+which is why 4 MB could never have worked.
 
 ### Tooling
 

@@ -77,7 +77,13 @@ python3 tools/ffn_octctl.py boot --dev 0 --force
 # descriptor offers, which is ~432 MB of the 8 GB this CP actually has
 # (device tree: 0x0+0x10000000 and 0x20000000+0x1F0000000). The suffix
 # matters -- memparse() reads a bare mem=2048 as 2048 BYTES.
-python3 tools/ffn_octboot.py --watch 150 --fdt "" --extra "ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M" &
+# ffn_reserve=0x30000000,64M is the BCM88375 BDE DMA pool (ffn_bde dma_phys=).
+# The vendor SDK needs far more than the 4 MB dma_alloc_coherent can give on
+# this kernel (MAX_ZONEORDER 11, no CMA): DNX init completes on 4 MB and then
+# bcm_petra_rx_init fails with Out of memory. 0x30000000 is inside the
+# 0x29400000-0x7fefffff System RAM range, below 4 GB (SBUSDMA host addresses
+# are 32-bit), clear of the rootfs (0x22000000) and transport (0x28/0x29000000).
+python3 tools/ffn_octboot.py --watch 150 --fdt "" --extra "ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."
