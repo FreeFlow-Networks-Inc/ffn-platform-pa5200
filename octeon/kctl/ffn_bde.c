@@ -55,6 +55,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
 
 #include "ffn_bde_abi.h"
 
@@ -116,8 +117,9 @@ MODULE_PARM_DESC(be_pio, "byte-swap PIO accesses (default 1, big-endian host)");
 static int dma_flag = 1;
 module_param(dma_flag, int, 0644);
 MODULE_PARM_DESC(dma_flag,
-	"value returned as d1 from command 5 (default 1). Believed to select "
-	"kernel-BDE mmap rather than /dev/mem.");
+	"UNUSED. d1 turned out to be the mmap LENGTH, not a flag, so command 5 "
+	"now returns the region size there. Kept only so existing insmod lines "
+	"do not fail.");
 
 /*
  * Command 12 (get_device_type) returns the bus type. Returning 0 made the SDK
@@ -125,12 +127,78 @@ MODULE_PARM_DESC(dma_flag,
  * conventionally a bit set with PCI as bit 0; parameterised so the value can be
  * probed without a rebuild rather than asserted.
  */
-static int dev_type = 2;
+/*
+ * Hardware byte-swap. The CMIC is little-endian and this CPU is big-endian, so
+ * something has to swap. Without this the SDK's S-channel operations time out
+ * with no other symptom, which is a long way from the cause. See
+ * ffn_bde_paxb_be_enable() for the mechanism and the evidence.
+ */
+static int paxb_be = 1;
+module_param(paxb_be, int, 0444);
+MODULE_PARM_DESC(paxb_be,
+	"enable PAXB big-endian PIO mode at probe (default 1). Set 0 only to "
+	"drive the chip with software byte-swapping instead, as ffn_bcm does; "
+	"the two conventions are mutually exclusive, so do not run ffn_bcm "
+	"against a device left in hardware-swap mode without accounting for "
+	"it.");
+
+static int dev_type = 0x22000001;
 module_param(dev_type, int, 0644);
 MODULE_PARM_DESC(dev_type,
-	"bus type reported by command 12. 2 is CORRECT and verified: it "
-	"makes the SDK attach the device and report it as SPI unit 0, "
-	"Dev 0x8375, Rev 0x11, Chip BCM88375_B0. 1 and 4 both fail.");
+	"bus type reported by command 12. Default 0x22000001, one bit at a "
+	"time: bit 0 PCI, bit 29 256K register space, bit 25 skip the PAXB "
+	"probe read. All three were read out of the client's own _open. "
+	"Bits 0 and 29: _open gates the whole register window on "
+	"(dev_type & 0x0001008d) and sizes it from bits 30/29/31 = "
+	"128K/256K/320K; the vendor kernel ORs bit 29 for this device, so "
+	"256K is not a guess. 2 is BDE_SPI_DEV_TYPE -- it attaches and even "
+	"prints a banner, but matches none of the mask bits, so the register "
+	"mmap AND a sal_mutex_create are both skipped and init later dies on "
+	"a NULL mutex nowhere near the cause. Bit 25: see skip_iproc_probe "
+	"below for why it defaults on.");
+
+/*
+ * Bit 25 of dev_type, and why it defaults to on.
+ *
+ * After the second window is mapped, _open reads BAR0 + 0x2C00 + i*4 in a loop
+ * (linux-user-bde.c line 965). Bit 25 makes it skip that loop. On this board
+ * that read took a data bus error:
+ *
+ *   Data bus error, epc == 00000000104f0148, ra == 00000000104f00f8
+ *
+ * and epc 0x104f0148 is exactly that load. The cost of the fault is the reason
+ * this defaults to skipping rather than to faithfulness: the abort did not stop
+ * at the process. Every subsequent MMIO access bus errored, including addresses
+ * that had just read correctly, and the following config-space read hung the CP
+ * hard enough to take the MP down with it. Recovering needed a power cycle.
+ *
+ * What is NOT established: whether BAR0 + 0x2C00 is genuinely absent on this
+ * chip or whether our /dev/mem access path is wrong for it. BAR0 + 0x0 and
+ * BAR0 + 0x2030 both read fine, and the vendor kernel reads 0x2C08 itself in
+ * shbde_iproc_paxb_init, which argues the address is real on the vendor's own
+ * access path. A clean isolated read of BAR0 + 0x2C00 in a healthy state was
+ * never obtained -- by the time it was attempted the bus was already wedged.
+ *
+ * So the first test after the next bring-up is that single read, on its own,
+ * before anything else touches the device. If it succeeds, clear bit 25 and let
+ * the client do what the vendor's client does. Until then a default that cannot
+ * take the appliance down is worth more than a default that is arguably more
+ * faithful.
+ */
+
+/*
+ * Command 5 also returns d2, and the recovered contract says mmap goes to
+ * /dev/linux-kernel-bde only when nr 5 reports d2 != 0. Leaving it zero is why
+ * our mmap handler was never entered in any run: with dma_flag(d1)=1 the SDK
+ * skipped mapping altogether, which is consistent with the shell reporting
+ *   CM: Base=(nil)
+ * i.e. no register window at all -- so init could never get anywhere.
+ */
+static int dma_d2 = 1;
+module_param(dma_d2, int, 0644);
+MODULE_PARM_DESC(dma_d2,
+	"value returned as d2 from command 5 (default 1). Non-zero selects mmap "
+	"through /dev/linux-kernel-bde, which is what gets a register window.");
 
 static int dev_state = 0;
 module_param(dev_state, int, 0644);
@@ -162,6 +230,79 @@ struct ffn_bde_dev {
 static DEFINE_MUTEX(ffn_bde_lock);
 static struct ffn_bde_dev ffn_bde_devs[1];
 static int ffn_bde_ndev;
+
+/*
+ * Put the PCIe-AXI bridge into big-endian PIO mode.
+ *
+ * The CMIC's registers are little-endian and this CPU is big-endian. Either the
+ * driver swaps every access in software -- which is what ffn_bcm does, and why
+ * it reads the device id register as 0x75831100 -- or the bridge swaps in
+ * hardware and everyone reads natural values. The SDK assumes the second: it
+ * never asks us about byte order (command 21 is never issued in a full run), so
+ * it cannot be told, and if the bridge is not swapping, every register write it
+ * makes lands byte-reversed. The visible symptom is an S-channel timeout with
+ * nothing else wrong, which is why this is worth a long comment.
+ *
+ * The mechanism, and the write pattern, follow the hardware's own protocol:
+ * write 0x01010101 to BAR0 + 0x2030 and read it back. 0x01010101 is chosen
+ * because it is byte-symmetric -- it sets bit 0 of whichever byte lane ends up
+ * at bit 0, so it works without knowing which convention is currently in
+ * effect, which is the only way to break the chicken-and-egg. A readback of
+ * exactly 1 means the register took the low bit and reads are now natural. Any
+ * other value means this is not that register on this device, and the write is
+ * undone rather than left in an unknown state.
+ *
+ * Verified on the live device, before any of this was in code:
+ *
+ *   BAR0+0x2030   0x00000000 -> write 0x01010101 -> reads 0x00000001
+ *   BAR2+0x10224  0x75831100 becomes 0x00118375   (device id, natural)
+ *   BAR2+0x10098  0x04444447 becomes 0x47444404   (ring map, ECI on ring 7)
+ *   BAR0+0x0      0x75830000 becomes 0x00008375   (device id, natural)
+ *
+ * and with it enabled the SDK's S-channel timeout disappeared and its init
+ * walked on into real work. __raw_ accessors are used deliberately: readl() and
+ * writel() would apply the kernel's own swapping, which on MIPS depends on
+ * CONFIG_SWAP_IO_SPACE, so the result would be right or wrong depending on how
+ * the kernel was configured rather than on what this chip needs.
+ */
+#define FFN_PAXB_ENDIAN_OFF	0x2030
+#define FFN_PAXB_BE_PATTERN	0x01010101
+
+static int ffn_bde_paxb_be_enable(struct ffn_bde_dev *d)
+{
+	void __iomem *paxb;
+	u32 back;
+
+	if (!paxb_be)
+		return 0;
+	if (!d->bar_len[0] || d->bar_len[0] < FFN_PAXB_ENDIAN_OFF + 4) {
+		pr_warn(DRV ": no BAR0 to configure byte order on\n");
+		return -ENODEV;
+	}
+
+	paxb = ioremap(d->bar_start[0] + FFN_PAXB_ENDIAN_OFF, 4);
+	if (!paxb) {
+		pr_warn(DRV ": cannot map the PAXB endianness register\n");
+		return -ENOMEM;
+	}
+
+	__raw_writel(FFN_PAXB_BE_PATTERN, paxb);
+	back = __raw_readl(paxb);
+
+	if (back != 1) {
+		/* Not the register we think it is. Leave nothing behind. */
+		__raw_writel(0, paxb);
+		iounmap(paxb);
+		pr_warn(DRV ": PAXB endianness readback 0x%08x, expected 1 -- "
+			"reverted, PIO byte order is NOT configured\n", back);
+		return -EIO;
+	}
+
+	iounmap(paxb);
+	pr_info(DRV ": PAXB big-endian PIO mode on (BAR0+0x%x reads 1); "
+		"registers now read natural values\n", FFN_PAXB_ENDIAN_OFF);
+	return 0;
+}
 
 /* ------------------------------------------------------------- discovery -- */
 
@@ -203,6 +344,15 @@ static int ffn_bde_scan(void)
 			pr_info(DRV ":   bar%u %pa len %llu\n",
 				i, &d->bar_start[i],
 				(unsigned long long)d->bar_len[i]);
+
+	/*
+	 * Do this here, before anything else can touch a register: the SDK
+	 * cannot be told about byte order, so the device has to be in the right
+	 * mode before it starts. A failure is reported and not fatal -- the
+	 * device is still enumerable and the log says byte order is unconfigured,
+	 * which is more useful than refusing to load.
+	 */
+	ffn_bde_paxb_be_enable(d);
 	return 1;
 }
 
@@ -284,7 +434,8 @@ static const char *ffn_bde_cmd_name(unsigned int nr)
 static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 			  unsigned long arg)
 {
-	ffn_lubde_ioctl_t io;
+	ffn_lubde_ioctl_t io;	/* the reply: zeroed, handlers fill it */
+	ffn_lubde_ioctl_t in;	/* what the client sent: read-only below */
 	unsigned int nr = _IOC_NR(cmd);
 	struct ffn_bde_dev *d = &ffn_bde_devs[0];
 	int bad_cmd = 0;
@@ -299,30 +450,34 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 				    _IOC_TYPE(cmd), nr);
 		bad_cmd = 1;
 	}
-	if (copy_from_user(&io, (void __user *)arg, sizeof(io)))
+	if (copy_from_user(&in, (void __user *)arg, sizeof(in)))
 		return -EFAULT;
 
 	/*
-	 * Keep dev, discard everything else. The recovered contract requires all
-	 * 96 bytes to go back on every path with unfilled fields explicitly
-	 * zeroed -- otherwise the client reads its own stale input back, and for
-	 * command 26 that stale value is a BAR address it then mmaps.
+	 * Two structs, on purpose. The recovered contract requires all 96 bytes
+	 * to go back on every path with unfilled fields explicitly zeroed, so
+	 * the client cannot read its own stale input back as a reply -- for
+	 * command 26 that stale value would be a BAR address it then mmaps.
+	 *
+	 * But several commands SEND arguments, and an earlier version of this
+	 * satisfied the zeroing rule by wiping the whole struct in place. That
+	 * silently destroyed those arguments: command 26 arrived with d0 = 1
+	 * (resource index) and was dispatched as d0 = 0, so it reported "no such
+	 * resource", the client left vbase1 NULL, and then dereferenced it.
+	 *
+	 * So: read inputs from "in", write outputs to "io", never mix them.
 	 *
 	 * rc defaults to 0 because the vendor kernel sets it before dispatch and
 	 * handlers only write it on failure.
 	 */
-	{
-		u32 keep_dev = io.dev;
-
-		memset(&io, 0, sizeof(io));
-		io.dev = keep_dev;
-	}
+	memset(&io, 0, sizeof(io));
+	io.dev = in.dev;
 
 	if (verbose > 1)
 		pr_info(DRV ": cmd %-22s dev=%u d0=0x%x d1=0x%x d2=0x%x "
 			"d3=0x%x p0=0x%llx\n",
-			ffn_bde_cmd_name(nr), io.dev, io.d0, io.d1, io.d2,
-			io.d3, (unsigned long long)io.p0);
+			ffn_bde_cmd_name(nr), in.dev, in.d0, in.d1, in.d2,
+			in.d3, (unsigned long long)in.p0);
 
 	mutex_lock(&ffn_bde_lock);
 
@@ -345,7 +500,7 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		break;
 
 	case 2:		/* get device: identity and BARs */
-		if (io.dev >= (u32)ffn_bde_ndev || !d->pdev) {
+		if (in.dev >= (u32)ffn_bde_ndev || !d->pdev) {
 			io.rc = (u32)-1;
 			ret = -ENODEV;
 			break;
@@ -369,11 +524,22 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 * d1. Corrected accordingly; vendor goes in d2 where it is
 		 * available but evidently not what it keys on.
 		 */
+		/*
+		 * d0/d1 are device id and revision -- established empirically.
+		 * d3:d2 are NOT spare: the client mmaps them as the REGISTER
+		 * WINDOW base (mapping "a" in the recovered contract, landing in
+		 * bde_dev_s +48 / ibde_dev_t.base_address). Returning the vendor
+		 * id in d2, as this did, is exactly why the SDK reported
+		 *     CM: Base=(nil)
+		 * and why init could never reach a register.
+		 *
+		 * BAR2 is the 8 MB CMIC window and is what the SDK wants.
+		 */
 		io.rc = 0;
 		io.d0 = d->pdev->device;
 		io.d1 = d->pdev->revision;
-		io.d2 = d->pdev->vendor;
-		io.d3 = 0;
+		io.d2 = lower_32_bits(d->bar_start[2]);
+		io.d3 = upper_32_bits(d->bar_start[2]);
 		io.p0 = d->bar_start[0];
 		io.dx.dw[0] = lower_32_bits(d->bar_start[0]);
 		io.dx.dw[1] = upper_32_bits(d->bar_start[0]);
@@ -399,10 +565,9 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 *   *a2 = d1
 		 *
 		 * So dx.dw[0..1] carry the region's physical address split low
-		 * then high, and d0/d1 are two further 32-bit values. d0 is
-		 * reported as the size; d1 is left zero because its meaning is
-		 * not established, and a wrong non-zero guess is worse than a
-		 * zero the client can complain about.
+		 * then high. Both d0 and d1 are the size: d1 is the length the
+		 * client hands to mmap. It was zero here at first, and the SDK
+		 * duly printed "DMA pool size: 1" and mmapped one byte.
 		 */
 		if (!d->dma_cpu) {
 			io.rc = (u32)-1;
@@ -412,8 +577,18 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		io.rc = 0;
 		io.dx.dw[0] = lower_32_bits(d->dma_handle);
 		io.dx.dw[1] = upper_32_bits(d->dma_handle);
+		/*
+		 * d1 is the LENGTH the client mmaps, not a flag. The recovered
+		 * contract is explicit: mapping "c" takes its address from
+		 * dx.dw[1]:dw[0] and its length from (uint32)d1.
+		 *
+		 * Putting a 0/1 flag here meant the SDK mmapped the DMA region
+		 * with length 1 -- and it said so, printing "DMA pool size: 1",
+		 * which was misread as a count rather than a size in bytes.
+		 */
 		io.d0 = (u32)d->dma_size;
-		io.d1 = (u32)dma_flag;
+		io.d1 = (u32)d->dma_size;
+		io.d2 = (u32)dma_d2;
 		break;
 
 	case 29:	/* instance attach -- inputs only */
@@ -423,7 +598,7 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 * instance identity the SDK is claiming, which is worth seeing.
 		 */
 		pr_info(DRV ": instance_attach dev=%u d0=0x%x d1=0x%x\n",
-			io.dev, io.d0, io.d1);
+			in.dev, in.d0, in.d1);
 		io.rc = 0;
 		break;
 
@@ -434,15 +609,34 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 
 	case 26:	/* get_device_resource */
 		/*
-		 * The vendor kernel routes this to lkbde_get_dev_resource. Its
-		 * exact field layout is not established here, and the recovered
-		 * contract warns specifically that a stale value in this reply
-		 * becomes a BAR address the client mmaps. The entry path now
-		 * zeroes everything, so failing cleanly is safe: report failure
-		 * in rc rather than inventing a window.
+		 * Resolved from the client's own _open (linux-user-bde.c around
+		 * line 941), which is worth stating exactly because getting this
+		 * wrong is silent:
+		 *
+		 *   in : d0 = resource index, sent as 1
+		 *   out: d3:d2 = 64-bit physical base of that resource
+		 *        rc    = 0
+		 *
+		 * The return value matters more than the payload. The client does
+		 *   if (_ioctl(...) != 0) goto done;
+		 * and the code it skips on failure contains the sal_mutex_create
+		 * at line 955. Failing this command therefore leaves a NULL mutex
+		 * that asserts later in sal_mutex_take -- a failure that surfaces
+		 * nowhere near its cause. Answer it, always.
+		 *
+		 * Resource 1 is BAR0: the client sizes this window at 0x8000 when
+		 * dev_type bit 29 is set, and BAR0 on this device is exactly
+		 * 0x8000. If BAR0 is absent, report zeros with rc = 0 -- the
+		 * client tests the base against zero and skips the mapping, which
+		 * is the honest answer and still creates the mutex.
 		 */
-		io.rc = (u32)-1;
-		ret = -EOPNOTSUPP;
+		io.rc = 0;
+		if (in.d0 == 1 && d->bar_len[0]) {
+			io.d2 = lower_32_bits(d->bar_start[0]);
+			io.d3 = upper_32_bits(d->bar_start[0]);
+		}
+		pr_info(DRV ": get_device_resource idx=%u -> 0x%08x%08x\n",
+			in.d0, io.d3, io.d2);
 		break;
 
 	case 21:	/* bus features: byte order */
@@ -479,8 +673,8 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 	if (ret && verbose)
 		pr_info(DRV ": UNIMPLEMENTED %-22s dev=%u d0=0x%x d1=0x%x "
 			"d2=0x%x d3=0x%x p0=0x%llx -- implement this next\n",
-			ffn_bde_cmd_name(nr), io.dev, io.d0, io.d1, io.d2,
-			io.d3, (unsigned long long)io.p0);
+			ffn_bde_cmd_name(nr), in.dev, in.d0, in.d1, in.d2,
+			in.d3, (unsigned long long)in.p0);
 
 	/*
 	 * ALWAYS return 0 from the syscall. The client asserts
@@ -520,17 +714,38 @@ static int ffn_bde_mmap(struct file *filp, struct vm_area_struct *vma)
 			break;
 	}
 	if (i == 6) {
-		pr_warn(DRV ": mmap of 0x%llx len %lu is not inside any "
-			"reported BAR -- refused\n", phys, len);
-		return -EINVAL;
+		/*
+		 * Not a BAR. The client also maps the coherent region reported by
+		 * command 5 (mapping "c" of the contract: address from
+		 * dx.dw[1]:dw[0], length from d1), so allow exactly that range.
+		 *
+		 * Everything outside a BAR or this region stays refused. A
+		 * permissive mmap here would let a misunderstanding map arbitrary
+		 * physical memory, which on a box with 8 GB of live RAM is not a
+		 * risk worth taking for convenience.
+		 */
+		u64 dstart = d->dma_cpu ? (u64)virt_to_phys(d->dma_cpu) : 0;
+
+		if (!d->dma_cpu || phys < dstart ||
+		    phys + len > dstart + d->dma_size) {
+			pr_warn(DRV ": mmap of 0x%llx len %lu is outside every "
+				"BAR and outside the DMA region "
+				"[0x%llx,0x%llx) -- refused\n",
+				phys, len, dstart, dstart + d->dma_size);
+			return -EINVAL;
+		}
+		pr_info(DRV ": mmap DMA region phys 0x%llx len %lu\n", phys, len);
 	}
 
+	pr_info(DRV ": mmap entered: phys 0x%llx len %lu (bar match %u)\n",
+		phys, len, i);
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, len,
 			    vma->vm_page_prot))
 		return -EAGAIN;
 
-	pr_info(DRV ": mmap bar%u phys 0x%llx len %lu\n", i, phys, len);
+	if (i < 6)
+		pr_info(DRV ": mmap bar%u phys 0x%llx len %lu\n", i, phys, len);
 	return 0;
 }
 

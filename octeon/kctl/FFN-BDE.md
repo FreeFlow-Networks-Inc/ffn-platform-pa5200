@@ -1,4 +1,4 @@
-# ffn_bde: the SDK attaches. Verified contract, and what is left.
+# ffn_bde: the SDK initialises through it. Contract, and what is left.
 
 FFN's own `linux-user-bde` replacement. The vendor SDK shell now attaches the
 BCM88375 through it and identifies the chip correctly:
@@ -249,3 +249,127 @@ answers queries — which makes it a live diagnostic tool this work had not been
 using. Run `init soc` by hand, then its sub-steps individually, and bisect which
 one asserts. That will localise it in a few commands, where cross-referencing
 hundreds of `sal_mutex_take` sites statically will not.
+
+---
+
+## RESOLVED: the mutex, and everything it was hiding
+
+The bisect worked, but not by stepping `init soc`. Asking the SDK shell `soc`
+produced the decisive line:
+
+    CM: Base=(nil)
+    SchanOps=0
+
+The SDK had **no register window at all**. Every failure above was downstream of
+that, and the NULL mutex was a symptom, not a bug of its own.
+
+The cause was a single wrong module parameter, and the client's own `_open`
+says so plainly. At `linux-user-bde.c:899`:
+
+```
+lw   v1,16(s8)        ; dev_type as reported by ioctl 12
+lui  v0,0x1
+ori  v0,v0,0x8d       ; mask = 0x0001008D
+and  v0,v1,v0
+beqz v0,104f025c      ; no bits match -> skip lines 903..961
+```
+
+`dev_type` was **2**. `2 & 0x0001008D == 0`, so the branch was taken and the
+client skipped, in one jump:
+
+* the register-window `_mmap` at line 935, hence `CM: Base=(nil)`;
+* the `sal_mutex_create` at line 955, hence `sal_mutex_take(NULL)` at
+  `sync.c:554` much later, nowhere near the cause.
+
+Bit 0 is PCI. The banner had been saying so all along -- **`SPI unit 0`**, not
+`PCI unit 0`; 2 is `BDE_SPI_DEV_TYPE`. The earlier note in this file claiming
+"2 is CORRECT and verified" was wrong: it verified that the device *attaches*,
+which it does either way, and mistook that for the device *working*.
+
+### The `_open` call sequence, from the listing
+
+Worth keeping, because the order is the contract:
+
+| line | call | note |
+|---|---|---|
+| 818, 831 | `_ioctl` | asserted at 821, 834 |
+| 850 | `_get_dev_state` | |
+| 873, 891 | `_ioctl` | asserted at 876, 894 |
+| 899 | *the gate* | `dev_type & 0x0001008D` |
+| 903-928 | window size | bits 30/29/31 = 128K/256K/320K, default 64K |
+| **935** | `_mmap` | the register window -> `CM: Base` |
+| **941** | `_ioctl` 26 | `bnez` on the return -> skips 944..961 |
+| **955** | `sal_mutex_create` | returns -1 at 956 if NULL |
+| 960 | `if (base == 0) goto done` | a zero base cleanly skips the rest |
+| **961** | `_mmap` | second window -> `vbase1` |
+| 962 | `if (dev_type & bit25) goto done` | |
+| 965 | `lw` through `vbase1` | BAR0+0x2C00; **bus errors on this board** |
+| 1070-1073 | `mpool_init`, `_mmap`, `mpool_create` | the DMA region |
+
+### Corrections to the contract recorded earlier in this file
+
+**Command 5 `d1` is the mmap length, not a flag.** With it zero the SDK printed
+`DMA pool size: 1` and mmapped exactly one byte. It is the size, same as `d0`.
+
+**Command 2 `d3:d2` is the register window physical address.** Reported as
+BAR2's base. It had been treated as spare, which is the direct reason
+`CM: Base` was nil even after the window branch was reachable.
+
+**Command 26 must return `rc = 0`.** The client does
+`if (_ioctl(...) != 0) goto done`, and the code it skips contains the
+`sal_mutex_create`. Failing this command is what produces the NULL mutex. In:
+`d0` = resource index, sent as 1. Out: `d3:d2` = that resource's 64-bit
+physical base. Resource 1 is **BAR0**: the client sizes that window at `0x8000`
+when `dev_type` bit 29 is set, and BAR0 on this device is exactly `0x8000`.
+
+**Never zero the input fields.** An earlier version satisfied the "reply with
+all 96 bytes, unfilled fields zeroed" rule by wiping the struct in place. That
+destroyed the arguments of every command that sends any: command 26 arrived with
+`d0 = 1` and was dispatched as `d0 = 0`, so it answered "no such resource", the
+client left `vbase1` NULL and then dereferenced it. The module now keeps the
+received copy in `in` and builds the reply in `io`, and never mixes them.
+
+**Command 21 is never called.** A full run issues only 5, 0, 1, 30, 12, 2, 26
+and then works entirely through the mmapped windows. So `be_pio`/`be_packet`/
+`be_other` are dead knobs -- changing `be_pio` between 0 and 1 produced
+byte-identical failures. Byte order is **not** negotiated through the BDE; see
+`paxb-byte-order.md` in the interop repo for how it actually works.
+
+**`dev_type` bit 29 is not a guess.** The vendor's own `_pci_probe` does
+`dev_type |= 0x20000000` for this device, giving the 256 KB register window.
+
+### Where it stops now
+
+With `dev_type = 0x22000001`, command 26 answered, inputs preserved, and PAXB
+big-endian mode enabled at probe, the unit reports
+
+    PCI unit 0: Dev 0x8375, Rev 0x11, Chip BCM88375_B0, Driver BCM88375_B0
+    Flags=0x203: attached initialized
+    CM: Base=0xfff0d27000
+
+and `init soc` runs the real `jer.soc` script through our BDE:
+
+```
++ 0: Read SOC property Configuration
++ 0: Device Reset and Access Enable
++ 0: Blocks OOR and PLL configuration
++ 0: Traffic Disable
++ 0: Blocks Initial configuration
+```
+
+The remaining failure at that point was the BAR0+0x2C00 read at line 965, which
+took a data bus error and, in doing so, wedged the whole PCIe path and then the
+appliance -- see `pcie-abort-hazard.md`. `dev_type` bit 25 makes the client skip
+that read, and is on by default for that reason. **This combination has not yet
+been run**: the appliance went down before it could be, and the module built
+clean but untested on hardware.
+
+### Next, in order
+
+1. Bring the MP back up (needs a power cycle).
+2. Read BAR0+0x2C00 once, on its own, before anything else touches the device --
+   that settles whether bit 25 is a workaround or the correct answer.
+3. Load `ffn_bde` (defaults are now right) and run `init soc` to the next stop.
+4. Implement commands as the SDK asks for them: 3/4 PCI config, 23/24 cpu
+   read/write, 27/28 iProc, 19/20 EB, 6/7/9/22 interrupts. None have been
+   requested yet.
