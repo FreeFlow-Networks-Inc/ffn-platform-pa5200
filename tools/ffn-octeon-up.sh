@@ -52,7 +52,16 @@ sleep 1
 MARK=$(console_mark)
 echo "resetting + staging FFN kernel over PCIe (sole oct-remote user)"
 python3 tools/ffn_octctl.py boot --dev 0 --force
-python3 tools/ffn_octboot.py --watch 150 &
+# mem= is REQUIRED. Without it the kernel takes whatever the OCTEON boot
+# descriptor offers, which is ~432 MB of the 8 GB this CP actually has
+# (device tree: 0x0+0x10000000 and 0x20000000+0x1F0000000). Measured with
+# mem=8G: MemTotal 8150556 kB, an 18x increase.
+#
+# The suffix matters -- memparse() reads a bare mem=2048 as 2048 BYTES.
+# And do not expect to see it in /proc/cmdline afterwards: OCTEON setup.c
+# consumes mem= as an early param and strips it, so confirm from the
+# console log instead.
+python3 tools/ffn_octboot.py --watch 150 --extra "mem=${FFN_MEM:-8G}" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."
