@@ -58,8 +58,36 @@ Resulting command line:
 
     bootoctlinux 0x21000000 numcores=4 console=ttyS0,115200n8 ffn_fdt=0x80000 rw
 
-Do **not** add `mem=`. Linux `memparse()` reads a bare `mem=2048` as 2048 *bytes*; the vendor's own
-`boot=` passes no `mem=` and the bootmem descriptor sizes DRAM correctly by itself.
+### CORRECTED: you DO want `mem=`
+
+This section previously said "do not add `mem=`, the bootmem descriptor sizes DRAM
+correctly by itself". **That is wrong, and it cost us real work.** It conflated a
+genuine trap with a false conclusion.
+
+The trap is real: `arch/mips/cavium-octeon/setup.c` parses this with
+`memparse()`, so a **bare** `mem=2048` means 2048 *bytes*, not megabytes, and
+boots into something unusable.
+
+The conclusion was wrong. Booting with no `mem=` at all leaves the kernel with
+whatever the boot descriptor happens to offer, which on this board is
+**~432 MB of the 8 GB the CP actually has**. Measured, not theorised:
+
+    /proc/device-tree/memory/reg    0x0        + 0x010000000   =  256 MB
+                                    0x20000000 + 0x1F0000000   = 7.75 GB
+    /proc/meminfo MemTotal          442400 kB
+    /proc/iomem System RAM          0xdff00000-0xffefffff plus 9 MB low
+
+So Linux took only the top ~512 MB below the 4 GB line and ignored the rest.
+
+**Use `mem=2G` or `mem=2048M`** -- with a suffix. That is what
+`ffn_octboot.py --extra 'mem=2G'` is for, and its own comment has said so all
+along; this file was the one that disagreed.
+
+Why it matters beyond tidiness: the vendor SDK sizes its `sw_state` region from
+`stable_size`, which `runningConfig.soc` shows PAN running at **250 MB**. That
+cannot fit alongside a 187 MB `bcm.user` in 432 MB, and the failure surfaces as an
+unrelated-looking SAL mutex assertion at `sync.c:554` rather than as an
+out-of-memory error. On 2 GB it is a non-issue.
 
 ---
 
