@@ -373,3 +373,84 @@ clean but untested on hardware.
 4. Implement commands as the SDK asks for them: 3/4 PCI config, 23/24 cpu
    read/write, 27/28 iProc, 19/20 EB, 6/7/9/22 interrupts. None have been
    requested yet.
+
+## RESOLVED 2026-09-01: the SDK runs DNX init to completion through this BDE
+
+Broadcom's OpenBCM release (`github.com/Broadcom-Network-Switching-Software/OpenBCM`,
+`sdk-6.5.26-DNX.1`) contains the source of the client this module serves --
+`systems/bde/linux/user/linux-user-bde.c` -- and of the kernel module it replaces,
+`systems/bde/linux/user/kernel/linux-user-bde.c`. The BDE is GPLv2 there. Everything below was
+inferred from disassembly first and then confirmed or corrected against that source.
+
+### Corrections to this file
+
+* **Command 5 `d0` is NOT the size.** `_get_dma_info(&_cpu_pbase, &_dma_pbase, &_dma_size)`:
+  `dx.dw[1]:dw[0]` = `_cpu_pbase` (what the client mmaps), **`d3:d0` = `_dma_pbase` (what the
+  DEVICE targets)**, `d1` = size. `_l2p()` computes every DMA address as
+  `_dma_pbase + (laddr - _dma_vbase)`. Reporting the size in `d0` sent the chip's first SBUSDMA to
+  host address `0x00400080` -- measured in `CMIC_CMC0_SBUSDMA_CH1_HOSTMEM_START_ADDRESS`.
+* **`dev_type` bit 25 is `BDE_NO_IPROC`** ("device uses two BARs, but is not iProc"), not "skip the
+  PAXB probe". Besides skipping the `_open` loop at line 965, it makes `_iproc_read` bypass
+  `_iproc_offset()` and index the 32 KB BAR0 mapping with a raw iProc address -- the SIGSEGV at
+  `linux-user-bde.c:1872`. The loop it skips is IMAP window *discovery*: `BAR0+0x2C00..0x2C1C` are
+  the `PAXB_IMAP0_n` registers, already programmed by firmware, and they read fine (probed with
+  `get_dbe()`, then read by the client itself). Default is now `0x20000001`.
+* **Command 26 `d1` is the resource size**, and rsrc 0 is the CMIC window (BAR2 here), rsrc 1 the
+  iProc window (BAR0): `lkbde_get_dev_resource(dev, d0, &d2, &d3, &d1)`.
+* **Command 22 writes a CMIC interrupt-mask register**: `lkbde_irq_mask_set(dev, addr=d0, mask=d1,
+  fmask=0)` is a plain 32-bit store into the register window at offset `d0`.
+
+### The five things that stood between "attached" and a completed init
+
+1. **Bit 25 cleared** (above).
+2. **`pci_set_master()`** -- never called, and nothing else does it: the CP boot line enables
+   memory space only (`PCI_COMMAND 0x0142`). Without it the first SBUSDMA never completes and its
+   status poll becomes a PCIe completion timeout: the `bcmINTR` / main-thread Data Bus Error on
+   `CMIC_CMC0_SBUSDMA_CH1_STATUS`, a register that reads fine.
+3. **Command 9 blocks.** `_interrupt_thread` loops `_ioctl(LUBDE_WAIT_FOR_INTERRUPT); _run_intr_handlers()`;
+   an immediate error return made that a spin on status registers. Now MSI + a wait queue, with the
+   ioctl mutex dropped across the sleep and the sequence counter sampled before re-arming.
+   Commands 6/7 arm and mask; 22 does the mask write above.
+4. **Command 5 `d0`** (above).
+5. **The PAXB outbound window.** `shbde_iproc_paxb_init` names what the "PAXB steps 2-5" were:
+   `PAXB_IMAP0_2` (0x2C08, bit 12 set = PAXB_1, `dma_hi_bits = pci_num ? 2 : 1`),
+   `PAXB_PCIE_EP_AXI_CONFIG` (0x2104) = 0, **`PAXB_OARR_2` (0x2D60) = 1, `PAXB_OARR_2_UPPER` (0x2D64)
+   = `dma_hi_bits`** -- the window through which the CMIC's DMA engines reach host memory -- plus
+   `OARR_FUNC0_MSI_PAGE` (0x2D34) |= 1 and `CMICD_TO_PCIE_INTR_EN` (0x2380) bit 0 clear for MSI.
+   This board reads `IMAP0_2 = 0x18012001`, so `dma_hi_bits = 1`. With it unprogrammed (or, from an
+   inverted derivation, 2) every SBUSDMA reports `DONE` with no error bits and nothing crosses the
+   bus: `dump raw IRR_MCDB 0 20` through the diag shell read all zero after the block-access check
+   had written `0xaaff5500+i` there. With it right the check passes.
+
+Also: the DMA region is mapped **cached** in userspace (only BARs uncached). PEM1 has
+`bar2_cax = 0`, so the chip's inbound writes go to L2; the kernel's coherent mapping is cached
+XKPHYS; the vendor maps the pool cached on every non-ARM arch. An uncached view reads around the
+data -- which is also why a `/dev/mem` pattern test gave the wrong answer here.
+
+### Where it stops now
+
+    0: Init SOC Done.          (DDR tuning on all 8 DRCs, ports, scheduler, ITM, PP)
+    0: Init BCM.  multicast qos stk l2 port stg mpls vswitch vlan cosq fabric linkscan
+    + 0: rx
+    bcm_petra_rx_init:1923 Out of memory
+
+Not heap (7 GB free) -- the **4 MB DMA pool**. `bcm_rx_pool_setup()` allocates
+`BCM_RX_POOL_COUNT_DEFAULT` packets of `RX_PKT_SIZE_DFLT` bytes as one DMA block, on top of what
+table DMA already took. `dma_alloc_coherent` cannot exceed 4 MB on this kernel
+(`CONFIG_FORCE_MAX_ZONEORDER=11`, no CMA). The vendor's `sbin/rc` loads its BDE with `himem=Y`:
+a pool carved from memory the kernel does not manage. FFN's kernel has that facility already
+(`ffn_reserve=`), so: `ffn_reserve=0x30000000,64M` on the CP boot line and
+`ffn_bde dma_phys=0x30000000 dma_mb=64`. The module maps it through the XKPHYS direct map and refuses
+any range that is System RAM (`page_is_ram()` -- `pfn_valid()` is section-granular under SPARSEMEM
+and wrongly says yes). In progress at the time of writing.
+
+### Tooling
+
+`get_dbe()` makes a probe of an uncertain offset a log line rather than a downed CP (MIPS
+`__dbe_table`; `arch/mips/kernel/module.c` registers a module's table). Parameters: `probe_paxb_win`,
+`probe_bar2` (with controls), `probe_bar2_off/_n`, `probe_bar0_off/_n`, `probe_pem`, and `dma_probe`
+(sysfs `fill`/`show` of the pool through the coherent mapping). The harness
+`tools/ffn-bcm-sdk.sh` is idempotent and refuses to insmod onto a PCIe path a Data Bus Error has
+degraded -- `systemctl restart ffn-octeon.service` is the (software) recovery. The diag shell keeps
+reading stdin after `jer.soc` fails, so `getreg` / `listmem` / `dump raw` can be driven from the
+command file.
