@@ -42,8 +42,29 @@ booted_since() {
 		| grep -qE 'it booted|NFS-root: /sbin/ffn-nfsroot'
 }
 
-# 1. console broker (single owner of /dev/ttyS1)
-python3 tools/ffn_octconsoled.py start 2>/dev/null || true
+# 1. console broker (single owner of /dev/ttyS1).
+#    NEVER call `ffn_octconsoled.py start` from here: it does NOT daemonize --
+#    serve() becomes the broker in the foreground. Doing that blocked this
+#    script on every cold boot (no broker was running yet), and systemd's
+#    TimeoutStartSec then TERMed the whole cgroup, killing the broker with it.
+#    The broker is ffn-octconsoled.service, which this unit Requires; the code
+#    below only covers a hand-run of this script outside systemd.
+broker_up() {
+	python3 tools/ffn_octconsoled.py status 2>/dev/null | grep -q 'running pid'
+}
+if ! broker_up; then
+	if ! systemctl start ffn-octconsoled.service 2>/dev/null; then
+		setsid python3 tools/ffn_octconsoled.py start >/dev/null 2>&1 &
+	fi
+	for i in 1 2 3 4 5; do
+		broker_up && break
+		sleep 1
+	done
+fi
+if ! broker_up; then
+	echo "console broker is not running and could not be started; aborting"
+	exit 1
+fi
 sleep 1
 
 # 2. boot the OCTEON. We do not probe cpdp first (that would spawn oct-remote);
@@ -54,14 +75,15 @@ echo "resetting + staging FFN kernel over PCIe (sole oct-remote user)"
 python3 tools/ffn_octctl.py boot --dev 0 --force
 # mem= is REQUIRED. Without it the kernel takes whatever the OCTEON boot
 # descriptor offers, which is ~432 MB of the 8 GB this CP actually has
-# (device tree: 0x0+0x10000000 and 0x20000000+0x1F0000000). Measured with
-# mem=8G: MemTotal 8150556 kB, an 18x increase.
-#
-# The suffix matters -- memparse() reads a bare mem=2048 as 2048 BYTES.
-# And do not expect to see it in /proc/cmdline afterwards: OCTEON setup.c
-# consumes mem= as an early param and strips it, so confirm from the
-# console log instead.
-python3 tools/ffn_octboot.py --watch 150 --extra "mem=${FFN_MEM:-8G}" &
+# (device tree: 0x0+0x10000000 and 0x20000000+0x1F0000000). The suffix
+# matters -- memparse() reads a bare mem=2048 as 2048 BYTES.
+# ffn_reserve=0x30000000,64M is the BCM88375 BDE DMA pool (ffn_bde dma_phys=).
+# The vendor SDK needs far more than the 4 MB dma_alloc_coherent can give on
+# this kernel (MAX_ZONEORDER 11, no CMA): DNX init completes on 4 MB and then
+# bcm_petra_rx_init fails with Out of memory. 0x30000000 is inside the
+# 0x29400000-0x7fefffff System RAM range, below 4 GB (SBUSDMA host addresses
+# are 32-bit), clear of the rootfs (0x22000000) and transport (0x28/0x29000000).
+python3 tools/ffn_octboot.py --watch 150 --fdt "" --extra "ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."

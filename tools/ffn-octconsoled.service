@@ -1,0 +1,22 @@
+[Unit]
+Description=FFN OCTEON console broker (sole owner of /dev/ttyS1)
+Documentation=file:///opt/ffn-ngfw-v2/tools/ffn_octconsoled.py
+ConditionPathExists=/dev/ttyS1
+# The broker must outlive the bring-up oneshot. It used to be started from
+# inside ffn-octeon-up.sh, but ffn_octconsoled.py "start" does NOT daemonize --
+# it becomes the broker in the foreground. That blocked the bring-up script
+# forever whenever no broker was already running (i.e. every cold boot), and
+# systemd TimeoutStartSec then TERMed the whole cgroup, taking the broker with
+# it. Owning the port from a unit of its own fixes both halves.
+Before=ffn-octeon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ffn-ngfw-v2/tools/ffn_octconsoled.py start
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
