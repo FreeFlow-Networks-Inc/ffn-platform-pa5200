@@ -64,7 +64,7 @@ PORTS = {
     4:  ("XE36",   0, 4,  "TM",  "TM",       CP,      "MEASURED: CP eth1 (20 frames sent -> 20 counted)"),
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
     6:  ("XE29",   0, 6,  "RAW", "RAW_DSA",  FRONT,   ""),
-    7:  ("XE64",   0, 7,  "RAW", "RAW_DSA",  FRONT,   "MEASURED: cabled to port 16"),
+    7:  ("XE64",   0, 7,  "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 16 (medium unknown)"),
     8:  ("XE38",   0, 8,  "TM",  "RAW",      UNKNOWN, "KR+autoneg, up, low background RX; NOT the CP"),
     9:  ("XE39",   0, 9,  "TM",  "RAW",      UNKNOWN, "KR+autoneg, up, low background RX; NOT the CP"),
     10: ("XE57",   0, 10, "RAW", "RAW_DSA",  FRONT,   ""),
@@ -73,7 +73,7 @@ PORTS = {
     13: ("XE33",   1, 13, "RAW", "RAW_DSA",  FRONT,   ""),
     14: ("XE34",   1, 14, "RAW", "RAW_DSA",  FRONT,   ""),
     15: ("XE35",   1, 15, "RAW", "RAW_DSA",  FRONT,   ""),
-    16: ("XE25",   0, 16, "RAW", "RAW_DSA",  FRONT,   "MEASURED: cabled to port 7"),
+    16: ("XE25",   0, 16, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 7 (medium unknown)"),
     17: ("RCY",    0, 17, "TM",  "RAW",      RECYCLE, "recycle port -- why there is no 'xe17' in ps"),
     18: ("XE26",   0, 18, "RAW", "RAW_DSA",  FRONT,   ""),
     19: ("XE27",   0, 19, "RAW", "RAW_DSA",  FRONT,   ""),
@@ -91,15 +91,18 @@ PORTS = {
     31: ("XE58",   0, 31, "RAW", "RAW_DSA",  FRONT,   ""),
     32: ("CGE3",   1, 32, "RAW", "RAW_DSA",  FRONT,   ""),
     33: ("CGE5",   1, 33, "RAW", "RAW_DSA",  FRONT,   ""),
-    34: ("CGE4",   1, 34, "RAW", "RAW_DSA",  FRONT,   "MEASURED: cabled to port 35"),
-    35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED: cabled to port 34"),
+    34: ("CGE4",   1, 34, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 35 (medium unknown)"),
+    35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 34 (medium unknown)"),
     36: ("XE66",   0, 36, "RAW", "RAW_DSA",  FRONT,   ""),
 }
 
-# Cables found by disabling one end and watching the other drop. Not faceplate
-# labels -- the operator's "1 to 3, 5 to 13, 23 to 24" do not correspond to
-# these logical numbers, which is exactly why this was measured rather than
-# assumed.
+# Connected pairs, found by disabling one end and watching the other drop.
+#
+# "Connected", not "cabled": these ports were enabled for the first time in the
+# same run that found them, so an internal trace and an operator's loopback
+# cable are indistinguishable from here. The operator's stated "1 to 3, 5 to 13,
+# 23 to 24" does not correspond to these logical numbers either way, which is
+# why the pairing was measured rather than assumed.
 LOOPBACKS = [(7, 16), (34, 35)]
 
 
@@ -154,6 +157,6 @@ if __name__ == "__main__":
             continue
         print(_fmt(p))
     if not want:
-        print("\nloopback cables (measured): " +
+        print("\nconnected pairs (measured): " +
               ", ".join("%d<->%d" % ab for ab in LOOPBACKS))
         print("front-panel data ports: %d" % len(ports_by_role(FRONT)))
