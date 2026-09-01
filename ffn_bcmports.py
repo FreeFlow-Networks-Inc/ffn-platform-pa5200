@@ -60,7 +60,7 @@ PORTS = {
     0:  ("CPU",    0, 0,  "RAW", "RAW",      CPU,     "chip CPU port"),
     1:  ("XE24",   0, 1,  "RAW", "RAW_DSA",  FRONT,   ""),
     2:  ("XLGE11", 0, 2,  "RAW", "RAW_DSA",  UNKNOWN, "40G, links up; second 40G, not yet identified"),
-    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  FRONT,   "100G QSFP28; the ONLY in=ETH port"),
+    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  UNKNOWN, "the ONLY in=ETH port, and NOT in the vendor front-panel list"),
     4:  ("XE36",   0, 4,  "TM",  "TM",       CP,      "MEASURED: CP eth1 (20 frames sent -> 20 counted)"),
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
     6:  ("XE29",   0, 6,  "RAW", "RAW_DSA",  FRONT,   ""),
@@ -69,7 +69,7 @@ PORTS = {
     9:  ("XE39",   0, 9,  "TM",  "RAW",      UNKNOWN, "KR+autoneg, up, low background RX; NOT the CP"),
     10: ("XE57",   0, 10, "RAW", "RAW_DSA",  FRONT,   ""),
     11: ("XE65",   0, 11, "RAW", "RAW_DSA",  FRONT,   ""),
-    12: ("CGE1",   0, 12, "TM",  "RAW",      UNKNOWN, "100G, TM header"),
+    12: ("CGE1",   0, 12, "TM",  "RAW",      FRONT,   "front panel per enable_fp_ports.c, labelled HSCI"),
     13: ("XE33",   1, 13, "RAW", "RAW_DSA",  FRONT,   ""),
     14: ("XE34",   1, 14, "RAW", "RAW_DSA",  FRONT,   ""),
     15: ("XE35",   1, 15, "RAW", "RAW_DSA",  FRONT,   ""),
@@ -95,6 +95,13 @@ PORTS = {
     35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 34 (medium unknown)"),
     36: ("XE66",   0, 36, "RAW", "RAW_DSA",  FRONT,   ""),
 }
+
+# The vendor's own front-panel list, from /usr/share/broadcom/enable_fp_ports.c,
+# whose comment also explains the !ena state: "The config.bcm file contains SOC
+# properties that disable all front panel ports on bcm.user startup." This list
+# is ground truth and overrides any role guessed from header type alone.
+VENDOR_FRONT_PANEL = [28, 13, 14, 15, 16, 1, 18, 19, 6, 21, 22, 23,
+                      7, 11, 36, 27, 10, 29, 30, 31, 32, 33, 34, 35, 12]
 
 # Connected pairs, found by disabling one end and watching the other drop.
 #
