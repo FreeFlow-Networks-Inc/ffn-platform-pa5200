@@ -163,3 +163,55 @@ early or partially while the rc script proceeds anyway.
 **Next step, bounded:** find which of attach's seven `sal_mutex_create` sites are
 actually reached, and which subsystem's mutex is taken first during `init soc`.
 Further config guessing is not the way; two rounds of it produced nothing.
+
+
+## Which mutex: a per-hardware-table one
+
+`soc_dpp_attach` has seven `sal_mutex_create` sites. Six are named singletons;
+the seventh is a loop, and the seventh is the answer.
+
+**The six singletons**, resolved by computing `gp` from the PIC prologue and
+reading the GOT slot each site indexes:
+
+    SchanWB   SOC_CONTROL   Counter   MIIM   SCHAN   FSCHAN
+
+Each is followed by a NULL check branching to the common error exit, so any of
+them failing would abort attach outright rather than let init proceed.
+
+**The seventh** takes its name from `GOT[-14344]`, which resolves to the symbol
+**`soc_mem_name`** — the SDK's array of *hardware table* names. Reading it
+confirms: `AGER_EVENT`, `AGER_FLAGS`, `AGING_CTR_MEM`, `AGM_MONITOR_TABLE`,
+`ALTERNATE_EMIRROR_BITMAP`, and so on.
+
+So it is a loop creating **one mutex per hardware memory**, doubly gated:
+
+    entry = soc_control[unit] + 0x1550698 -> +72 -> array[i]
+    if (entry == NULL)        skip        ; beqz at 1250b12c
+    if (!(entry->flags & 2))  skip        ; andi 0x2 / beqz at 1250b16c
+    mutex[i] = sal_mutex_create(soc_mem_name[i])
+    store into a per-index slot at +2528
+
+That matches the timing exactly: the assert lands immediately after
+`0: Init SOC.`, and `init soc` writes hardware tables — each access takes that
+table's mutex. With the per-memory state array unpopulated, the loop creates
+nothing and the first table access takes NULL.
+
+It also explains why two rounds of config-property guessing achieved nothing. The
+missing thing is not a size or a location, it is the per-memory state array that
+gates mutex creation.
+
+### Method note, because it generalises
+
+Resolving a PIC name argument needs no debugger. Recover `gp` from the prologue
+arithmetic — `gp = (lui_hi << 16) + entry + daddiu_lo`, giving `0x1a4d23b8` here —
+read the GOT slot the site loads, and base plus the site's displacement is the
+string. Same family as the `jal`-scan that located `sync.c:554`. Scripted as
+`tools/ffn_gotstr.py`.
+
+### Next step
+
+Find what allocates and populates that per-memory state array during attach, and
+why the flag bit is clear or the array empty. `soc_driver_t.mem_info` (+0x48) is
+the static side and is already extractable; the runtime side hangs off
+`soc_control` at the offset above. A bounded question about one array — not
+another property sweep.
