@@ -142,7 +142,21 @@ def main():
               % (len(blob) / (1 << 20), oaddr, "MATCH" if ok else "MISMATCH"))
         if not ok:
             return 1
-        rootfs_arg = " ffn_rootfs=0x%x,0x%x" % (oaddr, len(blob))
+        # Reserve the staging area from the SAME len(blob) that sizes
+        # ffn_rootfs=, emitted here beside it so the reserve cannot be stale
+        # relative to the payload it protects. A literal in ffn-octeon-up.sh
+        # would be a second derivation of one payload -- two files, two
+        # languages, no coupling.
+        #
+        # This is required, not belt-and-braces. The overlay is written before
+        # Linux starts but CONSUMED BY LINUX in do_populate_rootfs, i.e. after mm
+        # and the allocator are live, so the kernel can hand these pages out
+        # before the unpacker reads them. Observed on 2026-09-01 booting without
+        # it: "FFN: no cpio at 0x22000000 (magic ffffff80000000), skipping" --
+        # kernel data written over the staged cpio -- and the CP came up with no
+        # overlay, hence no /sbin/ffn-nfsroot and no NFS root at all.
+        rootfs_arg = (" ffn_rootfs=0x%x,0x%x ffn_reserve=0x%x,0x%x"
+                      % (oaddr, len(blob), oaddr, len(blob)))
     elif not a.no_overlay:
         print()
         print("=== no dev overlay at %s -- booting without a shell ===" % a.overlay)
@@ -152,9 +166,16 @@ def main():
     # board. keep_bootcon: a XR17V35X on the Octeon's own PCIe bus claims the
     # name ttyS0, so the console handover moves output to that chip -- keeping
     # the boot console means the internal UART keeps reporting.
-    boot = ("bootoctlinux 0x%x numcores=%d console=ttyS0,115200n8 "
-            "ffn_fdt=%s%s rw%s" % (addr, a.cores, a.fdt, rootfs_arg,
-                                   (" " + a.extra) if a.extra else ""))
+    # ffn_fdt= is now OPTIONAL. The patched kernel finds the tree by looking up
+    # the cvmx_bootmem named block "__fdt" through the descriptor, so passing an
+    # address is only needed to override that. Pass --fdt "" to exercise the
+    # lookup. Against a kernel WITHOUT that patch, omitting it falls through to
+    # the uninitialised octeon_bootinfo->fdt_addr and the boot dies in
+    # octeon_irq_init_ciu -- so the two must be deployed together.
+    fdt_arg = (" ffn_fdt=%s" % a.fdt) if a.fdt else ""
+    boot = ("bootoctlinux 0x%x numcores=%d console=ttyS0,115200n8"
+            "%s%s rw%s" % (addr, a.cores, fdt_arg, rootfs_arg,
+                           (" " + a.extra) if a.extra else ""))
     print()
     print("=== boot ===")
     print("  %s" % boot)

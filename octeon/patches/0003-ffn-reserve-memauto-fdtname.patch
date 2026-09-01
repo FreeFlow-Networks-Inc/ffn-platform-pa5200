@@ -1,0 +1,624 @@
+From: FFN <chris.spivey@itl.us>
+Subject: [PATCH] MIPS: OCTEON: ffn_reserve=, ffn_mem=auto, and find the FDT by name
+
+Three related changes to arch/mips/cavium-octeon/setup.c, all removing a
+per-board constant that this platform had no business needing.
+
+1. ffn_reserve=<base>,<size>[;<base>,<size>...]  (repeatable)
+
+FFN's CP<->MP transports live at fixed low physical addresses. Measured on a
+PA-5220 CN73XX at mem=8G: /proc/iomem shows one range, 20300000-7fefffff :
+System RAM, covering all of them, and /proc/kpageflags at each base reads 0x400
+(KPF_BUDDY) -- identical to an arbitrary free page, and different from kernel
+code, which reads 0x0. The pages are in the buddy allocator's free lists while
+ffn_cpdpd and ffn_pcnetd mmap them from /dev/mem and write them. This kernel has
+CONFIG_DEVMEM without CONFIG_STRICT_DEVMEM, so the mmap succeeds silently.
+
+They are not cvmx_bootmem named blocks and never were: the bases are bare
+physical addresses the MP picks, so plat_mem_setup() hands them to
+add_memory_region() like any other DRAM. This keeps them out of the memory map
+entirely, reusing the mechanism the 256MB PCIe-hole exclusion already uses.
+/dev/mem access is unaffected -- without CONFIG_STRICT_DEVMEM, mmap_mem() does
+not require the page to be managed RAM -- so the daemons keep working.
+
+The parameter is REPEATABLE, and that is the form to prefer. ';' is u-boot's
+command separator and this boot line is executed by u-boot: an unescaped ';'
+truncates the line and silently drops every argument after it, which on this
+platform means the later ranges plus mem= and the pktbuf=/wqe= FPA sizing whose
+absence kills the packet engine. u-boot runs the first half, boots, and reports
+nothing. Measured on a PA-5220 DP.
+
+Every diagnostic exists because the failure mode is a region that is quietly
+unprotected while the boot line still reads correctly: ranges are page-aligned
+outwards, sorted and coalesced (two overlapping ranges would otherwise each
+claim the shared bytes and the second would report a short hit, making the
+sanity check cry wolf about a region that WAS removed); a malformed entry costs
+only itself; rejected entries are counted and reported once at error level,
+because a rejected entry never reaches the table and so cannot be caught by the
+per-range hit check; and any range that does not fully land is named.
+
+2. ffn_mem=auto[,<reserve>]
+
+plat_mem_setup() already computes the right number and throws it away.
+cvmx_bootmem_available_mem(mem_alloc_size) sums the cvmx free blocks at least
+one allocation unit large -- precisely what the allocation loop can consume,
+since smaller blocks cannot satisfy a request and are skipped, which is why the
+memory map has the holes it has. It is then clamped to max_memory, whose
+compile-time default is 512 MB, so an 8 GiB CP and a 32 GiB DP both come up with
+~442 MB unless someone passes a per-board mem= constant.
+
+ffn_mem=auto is one token that is correct on every board. It does not take
+everything: what Linux claims comes out of the cvmx free list, and cvmx needs
+that list afterwards for the FPA packet buffers and WQE pools. Starving them
+gives "cvmx_fpa3_pool_populate: out of memory" and a dead packet engine, which
+presents exactly like a misprogrammed ring and is not one. So a reserve is held
+back, derived from the pool sizing already declared on the same command line
+(pktbuf=<count>,<size>, wqe=<count>,<size>), doubled for allocator overhead and
+the PKO tables, plus a 256 MB margin. A board running no packet engine declares
+small pools and gets a small reserve; a 40-core DP declares large ones and gets
+a large one.
+
+The derived reserve is a defensible starting point, not a measured total --
+cvmx's full later footprint is not enumerable from here -- so the boot log states
+the figure and how to raise it. An explicit mem= always wins, detected by
+checking whether max_memory still holds its compile-time default, because
+prom_init() consumes mem= and does not re-append it to arcs_cmdline.
+
+3. The device tree is found by name
+
+ffn_fdt= made the operator supply the tree's address as a constant. On a PA-5220
+CP that constant is 0x80000 -- which is the base of the cvmx_bootmem named block
+"__fdt" that u-boot allocated when it built the tree for this board. Read live
+from the descriptor at /proc/octeon_info:phy_mem_desc_addr (0x6c108), the
+named-block array holds:
+
+    base=0x00080000  size=0x00020000  name=__fdt
+
+and the FDT there checks out: magic d00dfeed, totalsize 0x136f (4975 bytes),
+inside the 128 KiB reservation. So look it up by name, which is what the vendor
+CP software does for every region it needs -- brdagent modules reach everything
+through cvmx_phys_to_ptr on named blocks, never through hardcoded addresses.
+
+Three checks, because a wrong tree is worse than no tree (the bug this path
+exists for was fdt_check_header() faulting on an uninitialised fdt_addr and
+hanging the boot with no message): the base must be inside DRAM;
+fdt_check_header() must pass; and fdt_totalsize() must fit the block, since a
+valid header does not mean the reservation is large enough for the tree it
+claims. ffn_fdt= is retained and still wins.
+
+Deployment note: the boot line must keep passing ffn_fdt= until this kernel is
+the one running. Dropping it against a kernel without this change falls through
+to octeon_bootinfo->fdt_addr, which on the PCIe boot path is the uninitialised
+0x...756e6b6e6f ("unknown") value, and the boot dies in octeon_irq_init_ciu on
+the built-in legacy-CIU tree.
+
+Verified: 38/38 host unit tests against the code extracted verbatim from this
+file -- exclusion arithmetic over the real 4 MB chunk pattern (no emitted region
+overlaps a reservation; emitted + reserved == fed; every range fully hit), a bad
+entry not taking its siblings down, a stale hardcoded size caught as
+under-covering its payload, the repeated-parameter form, and the ffn_mem=auto
+reserve derivation for both the CP and DP command lines. Cross build is
+warning-clean and vmlinux links.
+--- a/arch/mips/cavium-octeon/setup.c
++++ b/arch/mips/cavium-octeon/setup.c
+@@ -77,6 +77,36 @@
+ static unsigned long long reserve_low_mem;
+ 
+ /*
++ * FFN: physical ranges the MP owns, which Linux must not manage.
++ *
++ * FFN's CP<->MP transports -- the cpdp and pcnet rings, the ffn_rootfs
++ * staging area, ffn_mem -- live at fixed physical addresses. The MP writes them
++ * through the PCIe BAR window before Linux starts, and ffn_cpdpd / ffn_pcnetd
++ * then mmap them out of /dev/mem and keep writing. Those bases were picked when
++ * max_memory still capped Linux at 512 MB, so they sat above everything the
++ * kernel managed. With mem=8G they no longer do: they land in ZONE_DMA32 and go
++ * into the buddy allocator, so the kernel hands the very same pages to somebody
++ * else while the daemons are writing them. Nothing catches it -- this kernel has
++ * CONFIG_DEVMEM without CONFIG_STRICT_DEVMEM, so the mmap succeeds silently.
++ *
++ *     ffn_reserve=<base>,<size>[;<base>,<size>...]
++ *
++ * keeps those ranges out of the memory map entirely. That is exactly what the
++ * PCIe-hole exclusion in plat_mem_setup() already does, and for the same
++ * reason, so this reuses that mechanism rather than inventing another.
++ */
++#define FFN_RESERVE_MAX 8
++
++struct ffn_reserve_range {
++	u64 base;
++	u64 size;
++	u64 hit;	/* bytes actually excluded, for the sanity check below */
++};
++
++static struct ffn_reserve_range ffn_reserve[FFN_RESERVE_MAX] __initdata;
++static int ffn_reserve_count __initdata;
++
++/*
+  * modified in hernel-entry-init.h, must have an initial value to keep
+  * it from being clobbered when bss is zeroed.
+  */
+@@ -1114,6 +1144,326 @@
+ 	}
+ }
+ 
++/*
++ * Advance past the current entry to the start of the next one, so that one
++ * malformed entry costs only itself.
++ *
++ * This exists because the obvious alternative -- stop parsing at the first bad
++ * entry -- fails in the worst possible direction. A typo in the middle of the
++ * list would keep the ranges before it, silently drop every range after it, and
++ * leave a boot line that still reads exactly as the operator intended. The
++ * regions that lost their reservation then get corrupted later with nothing
++ * pointing back to the cause. Entries are independent, so they fail
++ * independently.
++ */
++static __init const char *ffn_reserve_next_entry(const char *p)
++{
++	while (*p && *p != ';' && *p != ' ')
++		p++;
++	if (*p == ';')
++		p++;
++	return p;
++}
++
++/*
++ * Parse ffn_reserve=<base>,<size>[;<base>,<size>...].
++ *
++ * The parameter MAY BE REPEATED, and on OCTEON that is the form to prefer:
++ *
++ *     ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M
++ *
++ * is equivalent to the ';'-separated list but cannot be damaged in transit.
++ * ';' is u-boot's command separator, and the boot line here is executed by
++ * u-boot: an unescaped ';' truncates the line at that point and every argument
++ * after it is silently lost -- the later ranges, and anything following, which
++ * on this platform includes mem= and the pktbuf=/wqe= FPA sizing whose absence
++ * kills the packet engine. u-boot runs the first half, boots, and reports
++ * nothing. Measured on a PA-5220 DP. A backslash-escaped '\;' survives and the
++ * kernel still sees a plain ';', but relying on every caller to escape
++ * correctly is a worse design than accepting a form that needs no escaping, so
++ * both are supported and repetition is documented as the safe one.
++ *
++ * Bases and sizes both go through memparse(), so 0x28000000,1M works as well as
++ * 0x28000000,0x100000. Ranges are aligned outwards, so a size that is not a
++ * whole number of pages still ends up fully protected, and sorted ascending,
++ * which memory_exclude_range() relies on.
++ */
++static __init void ffn_reserve_parse_one(const char *p, int *rejected)
++{
++	while (*p && *p != ' ') {
++		u64 base, size, end_addr;
++		char *endp;
++
++		if (ffn_reserve_count >= FFN_RESERVE_MAX) {
++			pr_warn("FFN: ffn_reserve: more than %d ranges, ignoring \"%s\"\n",
++				FFN_RESERVE_MAX, p);
++			break;
++		}
++
++		base = memparse(p, &endp);
++		if (endp == p || *endp != ',') {
++			pr_warn("FFN: ffn_reserve: expected <base>,<size> at \"%s\", skipping this entry\n",
++				p);
++			(*rejected)++;
++			p = ffn_reserve_next_entry(p);
++			continue;
++		}
++		p = endp + 1;
++
++		size = memparse(p, &endp);
++		if (endp == p || !size) {
++			pr_warn("FFN: ffn_reserve: bad or zero size at \"%s\", skipping this entry\n",
++				p);
++			(*rejected)++;
++			p = ffn_reserve_next_entry(p);
++			continue;
++		}
++		p = endp;
++
++		/* align outwards: a partial page must still be fully removed */
++		end_addr = PAGE_ALIGN(base + size);
++		base &= PAGE_MASK;
++
++		ffn_reserve[ffn_reserve_count].base = base;
++		ffn_reserve[ffn_reserve_count].size = end_addr - base;
++		ffn_reserve[ffn_reserve_count].hit = 0;
++		ffn_reserve_count++;
++
++		if (*p != ';')
++			break;
++		p++;
++	}
++}
++
++/*
++ * Parse every ffn_reserve= occurrence on the command line, then normalise the
++ * table: sort, coalesce, report.
++ */
++static __init void ffn_reserve_parse(void)
++{
++	const char *occ = arcs_cmdline;
++	int rejected = 0;
++	int i, j;
++
++	while ((occ = strstr(occ, "ffn_reserve=")) != NULL) {
++		occ += sizeof("ffn_reserve=") - 1;
++		if (ffn_reserve_count >= FFN_RESERVE_MAX)
++			break;
++		ffn_reserve_parse_one(occ, &rejected);
++	}
++
++	/*
++	 * Insertion sort, ascending by base. memory_exclude_range() only ever
++	 * moves the chunk cursor forward, so a lower range applied after a
++	 * higher one would be silently skipped.
++	 */
++	for (i = 1; i < ffn_reserve_count; i++) {
++		struct ffn_reserve_range t = ffn_reserve[i];
++
++		for (j = i - 1; j >= 0 && ffn_reserve[j].base > t.base; j--)
++			ffn_reserve[j + 1] = ffn_reserve[j];
++		ffn_reserve[j + 1] = t;
++	}
++
++	/*
++	 * Coalesce overlapping or touching ranges. Without this, two ranges that
++	 * overlap would each claim the shared bytes, so the second would record
++	 * a short hit and the sanity check at the end of plat_mem_setup() would
++	 * report it as only partly excluded -- when in fact the union had been
++	 * removed in full. A reservation list that lies about what it protected
++	 * is worse than no check at all.
++	 */
++	for (i = 0, j = 1; j < ffn_reserve_count; j++) {
++		u64 iend = ffn_reserve[i].base + ffn_reserve[i].size;
++
++		if (ffn_reserve[j].base <= iend) {
++			u64 jend = ffn_reserve[j].base + ffn_reserve[j].size;
++
++			if (jend > iend)
++				ffn_reserve[i].size = jend - ffn_reserve[i].base;
++		} else {
++			i++;
++			ffn_reserve[i] = ffn_reserve[j];
++		}
++	}
++	if (ffn_reserve_count)
++		ffn_reserve_count = i + 1;
++
++	for (i = 0; i < ffn_reserve_count; i++)
++		pr_info("FFN: ffn_reserve 0x%llx+0x%llx will be kept out of the kernel's memory map\n",
++			(unsigned long long)ffn_reserve[i].base,
++			(unsigned long long)ffn_reserve[i].size);
++
++	/*
++	 * Say this once, at the end, at error level. A rejected entry never
++	 * reaches the table, so the hit check at the end of plat_mem_setup()
++	 * cannot see it -- without this line the only trace of a lost
++	 * reservation would be a pr_warn scrolled past hundreds of boot
++	 * messages earlier.
++	 */
++	if (rejected)
++		pr_err("FFN: ffn_reserve: %d malformed entry/entries REJECTED -- the regions they named are NOT protected\n",
++		       rejected);
++}
++
++/*
++ * Exclude an arbitrary physical range from the regions obtained in
++ * plat_mem_setup, splitting the chunk when the range falls inside it. Same
++ * shape as memory_exclude_page() above but for a range, and it records how much
++ * it actually removed so that a base which is not in DRAM at all gets reported
++ * rather than silently doing nothing.
++ *
++ * Callers must apply ranges in ascending address order.
++ */
++static __init void memory_exclude_range(struct ffn_reserve_range *r,
++					u64 *mem, u64 *size)
++{
++	u64 rend = r->base + r->size;
++	u64 mend = *mem + *size;
++	u64 drop;
++
++	if (!r->size || !*size)
++		return;
++	if (rend <= *mem || r->base >= mend)
++		return;			/* none of this range is in this chunk */
++
++	/* the part of the chunk below the range is ordinary RAM */
++	if (r->base > *mem) {
++		u64 head = r->base - *mem;
++
++		add_memory_region(*mem, head, BOOT_MEM_RAM);
++		*mem += head;
++		*size -= head;
++	}
++
++	/* drop what the range covers; the caller adds whatever is left */
++	drop = (rend >= mend) ? *size : rend - *mem;
++	*mem += drop;
++	*size -= drop;
++	r->hit += drop;
++}
++
++/*
++ * FFN: ffn_mem=auto -- size Linux's memory from what the board actually has.
++ *
++ * plat_mem_setup() already computes exactly the right number and then throws it
++ * away. cvmx_bootmem_available_mem(mem_alloc_size) sums the cvmx free blocks
++ * that are at least one allocation unit large, which is precisely what the
++ * allocation loop below is able to consume -- blocks smaller than
++ * mem_alloc_size cannot satisfy a request and are skipped, which is why the
++ * memory map has the holes it has. That figure is then clamped to max_memory,
++ * whose compile-time default is 512 MB, so an 8 GiB CP and a 32 GiB DP both
++ * come up with ~442 MB unless somebody passes a per-board mem= constant.
++ *
++ * Those constants are the problem this removes. mem=8G / mem=30G have to be
++ * maintained per board, and they travel on a command line executed by u-boot,
++ * where a stray ';' truncates the line and silently drops everything after it
++ * -- including mem=, reverting the board to 442 MB with no diagnostic at all.
++ * ffn_mem=auto is one token that is correct on every board.
++ *
++ * It deliberately does NOT take everything. What Linux claims comes out of the
++ * cvmx free list, and cvmx still needs that list afterwards: the FPA packet
++ * buffers and WQE pools are allocated from it when the dataplane starts, and
++ * starving them yields "cvmx_fpa3_pool_populate: out of memory" and a dead
++ * packet engine -- which presents exactly like a misprogrammed ring and is not
++ * one.
++ *
++ * So a reserve is held back, derived from the pool sizing the operator has
++ * already declared on the same command line (pktbuf=<count>,<size> and
++ * wqe=<count>,<size>), doubled to cover allocator overhead and the PKO tables,
++ * plus a flat margin. A board running no packet engine declares small pools and
++ * gets a small reserve; a 40-core DP declares large ones and gets a large one.
++ * That is the same derive-rather-than-hardcode rule the reservation list
++ * follows, applied to the last number that was still a constant.
++ *
++ *   ffn_mem=auto            detect, and derive the reserve
++ *   ffn_mem=auto,<size>     detect, but hold back exactly <size>
++ *
++ * The derived reserve is a defensible starting point, not a measured total --
++ * cvmx's full later footprint is not enumerable from here. The boot log states
++ * the figure and how to raise it, so tuning it is an informed act rather than a
++ * guess.
++ *
++ * An explicit mem= always wins. That is detected by checking whether
++ * max_memory still holds its compile-time default, because prom_init() consumes
++ * mem= and does not re-append it to arcs_cmdline -- so unlike every other
++ * argument it cannot be found there afterwards.
++ */
++#define FFN_MEM_MARGIN	(256ull << 20)
++#define FFN_MEM_FLOOR	(256ull << 20)
++
++/* pktbuf=<count>,<size> / wqe=<count>,<size> -> count * size, or 0 */
++static __init u64 ffn_pool_bytes(const char *key)
++{
++	const char *arg = strstr(arcs_cmdline, key);
++	u64 count, size;
++	char *endp;
++
++	if (!arg)
++		return 0;
++
++	arg += strlen(key);
++	count = memparse(arg, &endp);
++	if (endp == arg || *endp != ',')
++		return 0;
++
++	arg = endp + 1;
++	size = memparse(arg, &endp);
++	if (endp == arg)
++		return 0;
++
++	return count * size;
++}
++
++static __init void ffn_mem_auto(u64 avail)
++{
++	const char *arg = strstr(arcs_cmdline, "ffn_mem=auto");
++	u64 reserve = 0, pktbuf, wqe;
++	char *endp;
++
++	if (!arg)
++		return;
++
++	if (max_memory != (512ull << 20)) {
++		pr_info("FFN: ffn_mem=auto ignored -- max_memory is already 0x%llx (mem= or simulation)\n",
++			(unsigned long long)max_memory);
++		return;
++	}
++
++	arg += sizeof("ffn_mem=auto") - 1;
++	if (*arg == ',') {
++		reserve = memparse(arg + 1, &endp);
++		if (endp == arg + 1 || !reserve) {
++			pr_warn("FFN: ffn_mem=auto: unusable reserve, deriving one instead\n");
++			reserve = 0;
++		}
++	}
++
++	pktbuf = ffn_pool_bytes("pktbuf=");
++	wqe = ffn_pool_bytes("wqe=");
++
++	if (!reserve)
++		reserve = 2 * (pktbuf + wqe) + FFN_MEM_MARGIN;
++
++	if (avail <= reserve + FFN_MEM_FLOOR) {
++		pr_warn("FFN: ffn_mem=auto: %llu MB available but the cvmx reserve is %llu MB -- keeping max_memory at %llu MB\n",
++			(unsigned long long)(avail >> 20),
++			(unsigned long long)(reserve >> 20),
++			(unsigned long long)(max_memory >> 20));
++		return;
++	}
++
++	max_memory = avail - reserve;
++
++	pr_info("FFN: ffn_mem=auto: %llu MB detected, holding %llu MB for cvmx (pktbuf %llu MB + wqe %llu MB), Linux takes %llu MB\n",
++		(unsigned long long)(avail >> 20),
++		(unsigned long long)(reserve >> 20),
++		(unsigned long long)(pktbuf >> 20),
++		(unsigned long long)(wqe >> 20),
++		(unsigned long long)(max_memory >> 20));
++	pr_info("FFN: if the FPA pools later fail to populate, raise the reserve with ffn_mem=auto,<size>\n");
++}
++
+ void __init plat_mem_setup(void)
+ {
+ 	u64 mem_alloc_size = 4 << 20;
+@@ -1121,6 +1471,7 @@
+ 	u64 total = 0;
+ 	s64 memory;
+ 	u64 limit_max, limit_min;
++	int ri;
+ 	const struct cvmx_bootmem_named_block_desc *named_block;
+ 	u64 system_limit = cvmx_bootmem_available_mem(mem_alloc_size);
+ 
+@@ -1133,6 +1484,17 @@
+ 		panic("Must build kernel with CONFIG_NUMA for multi-node system.");
+ #endif
+ 
++	/* must run before anything is handed to add_memory_region() */
++	ffn_reserve_parse();
++
++	/*
++	 * ffn_mem=auto: raise max_memory to what cvmx actually has, less a
++	 * reserve. system_limit already holds the available figure, computed
++	 * with this same mem_alloc_size, and the clamps below then use the new
++	 * max_memory.
++	 */
++	ffn_mem_auto(system_limit);
++
+ #ifdef CONFIG_BLK_DEV_INITRD
+ 	if (rd_name[0]) {
+ 		const struct cvmx_bootmem_named_block_desc *initrd_block;
+@@ -1218,6 +1580,18 @@
+ 
+ 		if (memory >= 0) {
+ 			u64 size = mem_alloc_size;
++
++			/*
++			 * FFN: keep the MP-owned transport ranges out of the
++			 * map. Done before the PCIe-hole pages below so that
++			 * the exclusions stay in ascending address order --
++			 * ffn_reserve ranges sit well below
++			 * CVMX_PCIE_BAR1_PHYS_BASE (0xf0000000), and both
++			 * helpers only move the cursor forward.
++			 */
++			for (ri = 0; ri < ffn_reserve_count; ri++)
++				memory_exclude_range(&ffn_reserve[ri],
++						     (u64 *)&memory, &size);
+ 			/*
+ 			 * exclude a page at the beginning and end of
+ 			 * the 256MB PCIe 'hole' so the kernel will not
+@@ -1247,6 +1621,20 @@
+ 	}
+ 	cvmx_bootmem_unlock();
+ 
++	/*
++	 * A base that is not in DRAM, or one already consumed before we got
++	 * here, would otherwise be silently ignored -- and the operator would
++	 * believe a region was protected when it was not.
++	 */
++	for (ri = 0; ri < ffn_reserve_count; ri++) {
++		if (ffn_reserve[ri].hit == ffn_reserve[ri].size)
++			continue;
++		pr_warn("FFN: ffn_reserve 0x%llx+0x%llx: only 0x%llx bytes were excluded -- the remainder is NOT protected, check the base\n",
++			(unsigned long long)ffn_reserve[ri].base,
++			(unsigned long long)ffn_reserve[ri].size,
++			(unsigned long long)ffn_reserve[ri].hit);
++	}
++
+ mem_alloc_done:
+ 
+ 	/*
+@@ -1411,6 +1799,65 @@
+ extern const char __appended_dtb;
+ extern const char __dtb_octeon_3xxx_begin;
+ extern const char __dtb_octeon_68xx_begin;
++
++/*
++ * FFN: locate the device tree by NAME rather than by a hardcoded address.
++ *
++ * u-boot publishes the tree it built for this board as the cvmx_bootmem named
++ * block "__fdt" (on a PA-5220 CP: base 0x80000, size 0x20000 -- read live from
++ * the named-block array at the descriptor in /proc/octeon_info). Looking a
++ * region up by name is what the vendor's own CP software does for everything it
++ * needs, and it is the difference between a constant that happens to be correct
++ * on this board and a kernel that finds its own tree on any reclaimed board --
++ * which is the entire point of using each board's own firmware in place instead
++ * of packaging it.
++ *
++ * ffn_fdt= is kept as an explicit override, and still wins, for the case where
++ * the operator knows something the descriptor does not.
++ */
++#define FFN_FDT_BLOCK "__fdt"
++
++static __init u64 ffn_fdt_from_named_block(void)
++{
++	const struct cvmx_bootmem_named_block_desc *nb;
++	u64 dram_end = (u64)octeon_bootinfo->dram_size << 20;
++	const void *virt;
++
++	nb = cvmx_bootmem_find_named_block(FFN_FDT_BLOCK);
++	if (!nb)
++		return 0;
++
++	if (!nb->base_addr || nb->base_addr >= dram_end) {
++		pr_warn("FFN: named block \"%s\" at 0x%llx is outside DRAM, ignoring\n",
++			FFN_FDT_BLOCK, (unsigned long long)nb->base_addr);
++		return 0;
++	}
++
++	virt = phys_to_virt(nb->base_addr);
++	if (fdt_check_header(virt)) {
++		pr_warn("FFN: named block \"%s\" at 0x%llx holds no valid FDT, ignoring\n",
++			FFN_FDT_BLOCK, (unsigned long long)nb->base_addr);
++		return 0;
++	}
++
++	/*
++	 * A valid header does not mean the block is big enough to hold the tree
++	 * it claims. Check the declared total size against the reservation
++	 * rather than trusting the header on its own.
++	 */
++	if ((u64)fdt_totalsize(virt) > nb->size) {
++		pr_warn("FFN: named block \"%s\" is 0x%llx bytes but its FDT claims 0x%x, ignoring\n",
++			FFN_FDT_BLOCK, (unsigned long long)nb->size,
++			fdt_totalsize(virt));
++		return 0;
++	}
++
++	pr_info("FFN: Device Tree found by name: \"%s\" at 0x%llx (0x%x of 0x%llx bytes)\n",
++		FFN_FDT_BLOCK, (unsigned long long)nb->base_addr,
++		fdt_totalsize(virt), (unsigned long long)nb->size);
++
++	return nb->base_addr;
++}
+ void __init device_tree_init(void)
+ {
+ 	const void *fdt;
+@@ -1443,6 +1890,14 @@
+ 		}
+ 	}
+ 
++	/*
++	 * No usable ffn_fdt= : ask the bootmem descriptor where u-boot put the
++	 * tree. This is the path that needs no per-board constant, so it is the
++	 * one that works on a board nobody has measured yet.
++	 */
++	if (!ffn_fdt_addr)
++		ffn_fdt_addr = ffn_fdt_from_named_block();
++
+ #ifdef CONFIG_MIPS_ELF_APPENDED_DTB
+ 	if (!fdt_check_header(&__appended_dtb)) {
+ 		fdt = &__appended_dtb;
+@@ -1453,8 +1908,7 @@
+ #endif
+ 	if (ffn_fdt_addr) {
+ 		fdt = phys_to_virt(ffn_fdt_addr);
+-		pr_info("FFN: using Device Tree from ffn_fdt=0x%llx\n",
+-			ffn_fdt_addr);
++		pr_info("FFN: using Device Tree at 0x%llx\n", ffn_fdt_addr);
+ 		do_prune = false;
+ 		fill_mac = false;
+ 	} else
