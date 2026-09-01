@@ -208,10 +208,44 @@ read the GOT slot the site loads, and base plus the site's displacement is the
 string. Same family as the `jal`-scan that located `sync.c:554`. Scripted as
 `tools/ffn_gotstr.py`.
 
-### Next step
+### CORRECTION: nothing populates it, and the above conclusion was wrong
 
-Find what allocates and populates that per-memory state array during attach, and
-why the flag bit is clear or the array empty. `soc_driver_t.mem_info` (+0x48) is
-the static side and is already extractable; the runtime side hangs off
-`soc_control` at the offset above. A bounded question about one array — not
-another property sweep.
+The array is not a runtime structure. The chain resolves entirely to static
+chip-driver data:
+
+    soc_control[unit] + 0x1550698   ->  chip_driver   (soc_driver_t *)
+    soc_driver_t      + 72 (0x48)   ->  mem_info      (soc_mem_info_t **)
+    soc_mem_info_t    + 0x00        ->  flags, tested against bit 1
+
+`soc_control_s` is 22,352,144 bytes with 405 members and DWARF names the member at
+`0x1550698` as **`chip_driver`**. `soc_mem_info_t` is 112 bytes with `flags` at
++0x00, confirming the `lw v0,0(v0)` / `andi 0x2` reading.
+
+So `chip_driver` is `soc_driver_bcm88375_b0` and `mem_info` is its **static**
+array. Counted statically:
+
+    non-NULL mem_info entries : 1262 of 10730
+    entries with (flags & 2)  : 1262      <- every single one
+
+Bit 1 is effectively "this memory exists on this chip", not an opt-in cache flag.
+The loop should create 1262 mutexes, roughly 60 KB of mallocs. **Nothing is
+missing and nothing needs populating**, so the conclusion above — that the missing
+mutex was a per-table one whose gating array was empty — does not hold.
+
+The follow-on idea, that attach returns early before reaching the loop at ~85%
+through the function, is also wrong. Asked directly, the shell answers:
+
+    Attach: Unit 0 (BCM88375_B0): attached (current unit)
+
+### Where that leaves it
+
+The specific NULL mutex is **still unidentified**. Eliminated with evidence so
+far: memory total (442 MB -> 7.77 GB, no change), `sw_state`/`stable` properties
+(warning clears, assert remains), an unpopulated per-memory array (it is static
+and complete), and attach bailing early (the unit reports attached).
+
+**Better approach than more static scanning:** the shell survives the assert and
+answers queries — which makes it a live diagnostic tool this work had not been
+using. Run `init soc` by hand, then its sub-steps individually, and bisect which
+one asserts. That will localise it in a few commands, where cross-referencing
+hundreds of `sal_mutex_take` sites statically will not.
