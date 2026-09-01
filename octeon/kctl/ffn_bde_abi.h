@@ -110,7 +110,8 @@ typedef struct {
  * the BCM88375's registers are little-endian relative to it, so the SDK is told
  * explicitly how to swap for each traffic class. Getting this wrong does not
  * fail loudly -- it silently byte-swaps every register access to a live switch.
- * Filled in response to the _bus_features command.
+ * Filled in response to GET_BUS_FEATURES -- which this SDK never issues, so
+ * byte order is decided at probe (PAXB_ENDIANESS), not here.
  */
 struct ffn_bde_bus {
 	int be_pio;			/* programmed I/O accesses */
@@ -119,66 +120,73 @@ struct ffn_bde_bus {
 };
 
 /*
- * Command numbers.
+ * Command numbers -- the vendor's own, from OpenBCM (sdk-6.5.26-DNX.1,
+ * systems/bde/linux/user/kernel/linux-user-bde.h). The earlier table here was
+ * reconstructed from call sites in a stripped binary and carried confidence tags;
+ * it was right about the ones the SDK uses and wrong about 13/14/16 (SPI access
+ * and unused, not "interrupt array init"). Names below are LUBDE_* with the
+ * FFN_BDE_ prefix; numbers 15-18 have no definition in the vendor header.
  *
- * CONFIDENCE KEY
- *   [vendor]  the name is the vendor's own, from surviving strings
- *   [derived] FFN's name, from the single client function that issues this nr
- *   [unclear] issuing function known but the command's role is not established
- *   [unused]  no client reference found; may be unused by this client, or built
- *             in a way the scan did not match. Do not assume absent.
+ * What a full run through DNX init actually issues: 5, 0, 1, 30, 12, 2, 26, 9,
+ * then 6/22 once interrupts are live. 21 (bus features) is never issued, so byte
+ * order is not negotiated here -- it is set in hardware at probe.
  */
+#define FFN_BDE_VERSION			_IO(FFN_BDE_IOC_MAGIC,  0)
+#define FFN_BDE_GET_NUM_DEVICES		_IO(FFN_BDE_IOC_MAGIC,  1)
+#define FFN_BDE_GET_DEVICE		_IO(FFN_BDE_IOC_MAGIC,  2)  /* d0 id, d1 rev, d2/d3 CMIC phys */
+#define FFN_BDE_PCI_CONFIG_PUT32	_IO(FFN_BDE_IOC_MAGIC,  3)  /* d0 offset, d1 value */
+#define FFN_BDE_PCI_CONFIG_GET32	_IO(FFN_BDE_IOC_MAGIC,  4)  /* d0 offset -> d1 */
+#define FFN_BDE_GET_DMA_INFO		_IO(FFN_BDE_IOC_MAGIC,  5)  /* d3:d0 dma_pbase, d1 size,
+								     * d2 mmap-via-kernel-bde,
+								     * dx.dw[1]:dw[0] cpu_pbase */
+#define FFN_BDE_ENABLE_INTERRUPTS	_IO(FFN_BDE_IOC_MAGIC,  6)
+#define FFN_BDE_DISABLE_INTERRUPTS	_IO(FFN_BDE_IOC_MAGIC,  7)
+#define FFN_BDE_USLEEP			_IO(FFN_BDE_IOC_MAGIC,  8)
+#define FFN_BDE_WAIT_FOR_INTERRUPT	_IO(FFN_BDE_IOC_MAGIC,  9)  /* BLOCKS until one arrives */
+#define FFN_BDE_SEM_OP			_IO(FFN_BDE_IOC_MAGIC, 10)
+#define FFN_BDE_UDELAY			_IO(FFN_BDE_IOC_MAGIC, 11)
+#define FFN_BDE_GET_DEVICE_TYPE		_IO(FFN_BDE_IOC_MAGIC, 12)  /* d0 = dev_type */
+#define FFN_BDE_SPI_READ_REG		_IO(FFN_BDE_IOC_MAGIC, 13)
+#define FFN_BDE_SPI_WRITE_REG		_IO(FFN_BDE_IOC_MAGIC, 14)
+#define FFN_BDE_READ_REG_16BIT_BUS	_IO(FFN_BDE_IOC_MAGIC, 19)
+#define FFN_BDE_WRITE_REG_16BIT_BUS	_IO(FFN_BDE_IOC_MAGIC, 20)
+#define FFN_BDE_GET_BUS_FEATURES	_IO(FFN_BDE_IOC_MAGIC, 21)  /* fills struct ffn_bde_bus;
+								     * never issued by this SDK */
+#define FFN_BDE_WRITE_IRQ_MASK		_IO(FFN_BDE_IOC_MAGIC, 22)  /* store d1 at CMIC offset d0 */
+#define FFN_BDE_CPU_WRITE_REG		_IO(FFN_BDE_IOC_MAGIC, 23)
+#define FFN_BDE_CPU_READ_REG		_IO(FFN_BDE_IOC_MAGIC, 24)
+#define FFN_BDE_CPU_PCI_REGISTER	_IO(FFN_BDE_IOC_MAGIC, 25)
+#define FFN_BDE_DEV_RESOURCE		_IO(FFN_BDE_IOC_MAGIC, 26)  /* d0 rsrc (0 CMIC, 1 iProc)
+								     * -> d3:d2 phys, d1 size */
+#define FFN_BDE_IPROC_READ_REG		_IO(FFN_BDE_IOC_MAGIC, 27)
+#define FFN_BDE_IPROC_WRITE_REG		_IO(FFN_BDE_IOC_MAGIC, 28)
+#define FFN_BDE_ATTACH_INSTANCE		_IO(FFN_BDE_IOC_MAGIC, 29)
+#define FFN_BDE_GET_DEVICE_STATE	_IO(FFN_BDE_IOC_MAGIC, 30)
+#define FFN_BDE_REPROBE			_IO(FFN_BDE_IOC_MAGIC, 31)
+/* 32..37 are EDK (embedded-core) interrupt/instance/DMA commands; not used here. */
 
-/* --- issued from _open(), the discovery path. Exact assignment of the four
- *     vendor names among these is still being established; do not rely on the
- *     mapping below until it is confirmed. ---------------------------------- */
-#define FFN_BDE_VERSION		_IO(FFN_BDE_IOC_MAGIC,  0)  /* [vendor?] */
-#define FFN_BDE_GET_NUM_DEVICES	_IO(FFN_BDE_IOC_MAGIC,  1)  /* [vendor?] */
-#define FFN_BDE_GET_DEVICE	_IO(FFN_BDE_IOC_MAGIC,  2)  /* [vendor?] */
-#define FFN_BDE_GET_DEVICE_TYPE	_IO(FFN_BDE_IOC_MAGIC, 12)  /* [vendor?] */
-#define FFN_BDE_OPEN_UNK26	_IO(FFN_BDE_IOC_MAGIC, 26)  /* [unclear] _open */
-
-/* --- PCI configuration space ------------------------------------------------ */
-#define FFN_BDE_PCI_CONFIG_PUT32 _IO(FFN_BDE_IOC_MAGIC,  3) /* [derived] */
-#define FFN_BDE_PCI_CONFIG_GET32 _IO(FFN_BDE_IOC_MAGIC,  4) /* [derived] */
-#define FFN_BDE_CPU_PCI_REGISTER _IO(FFN_BDE_IOC_MAGIC, 25) /* [derived] */
-
-/* --- DMA -------------------------------------------------------------------- */
-#define FFN_BDE_GET_DMA_INFO	_IO(FFN_BDE_IOC_MAGIC,  5)  /* [derived] */
-
-/* --- interrupts ------------------------------------------------------------- */
-#define FFN_BDE_ENABLE_INTERRUPTS  _IO(FFN_BDE_IOC_MAGIC, 6)  /* [derived] */
-#define FFN_BDE_DISABLE_INTERRUPTS _IO(FFN_BDE_IOC_MAGIC, 7)  /* [derived] */
-#define FFN_BDE_WAIT_FOR_INTERRUPT _IO(FFN_BDE_IOC_MAGIC, 9)  /* [derived] */
-#define FFN_BDE_IRQ_MASK_SET	   _IO(FFN_BDE_IOC_MAGIC, 22) /* [derived] */
-/* nr 13, 14, 16 are issued from the *_interrupts_array_init family
- * (jer_/jerp_/arad_/qax_). Role not yet established. */
-#define FFN_BDE_INTR_ARRAY_A	_IO(FFN_BDE_IOC_MAGIC, 13)  /* [unclear] */
-#define FFN_BDE_INTR_ARRAY_B	_IO(FFN_BDE_IOC_MAGIC, 14)  /* [unclear] */
-#define FFN_BDE_INTR_ARRAY_C	_IO(FFN_BDE_IOC_MAGIC, 16)  /* [unclear] */
-
-/* --- register access -------------------------------------------------------- */
-#define FFN_BDE_CPU_WRITE	_IO(FFN_BDE_IOC_MAGIC, 23)  /* [derived] */
-#define FFN_BDE_CPU_READ	_IO(FFN_BDE_IOC_MAGIC, 24)  /* [derived] */
-#define FFN_BDE_IPROC_IHOST_READ  _IO(FFN_BDE_IOC_MAGIC, 27) /* [derived] */
-#define FFN_BDE_IPROC_IHOST_WRITE _IO(FFN_BDE_IOC_MAGIC, 28) /* [derived] */
-
-/* --- bus / instance / state -------------------------------------------------- */
-#define FFN_BDE_BUS_FEATURES	_IO(FFN_BDE_IOC_MAGIC, 21)  /* [derived] fills
-							     * struct ffn_bde_bus */
-#define FFN_BDE_INSTANCE_ATTACH	_IO(FFN_BDE_IOC_MAGIC, 29)  /* [derived] */
-#define FFN_BDE_GET_DEV_STATE	_IO(FFN_BDE_IOC_MAGIC, 30)  /* [derived] */
-
-/* --- chip-specific: issued from soc_get_bcm88x7x / soc_set_bcm88x7x --------- */
-#define FFN_BDE_BCM88X7X	_IO(FFN_BDE_IOC_MAGIC, 17)  /* [unclear] */
+/* Older spellings, kept so nothing that used them breaks. */
+#define FFN_BDE_OPEN_UNK26		FFN_BDE_DEV_RESOURCE
+#define FFN_BDE_IRQ_MASK_SET		FFN_BDE_WRITE_IRQ_MASK
+#define FFN_BDE_CPU_WRITE		FFN_BDE_CPU_WRITE_REG
+#define FFN_BDE_CPU_READ		FFN_BDE_CPU_READ_REG
+#define FFN_BDE_IPROC_IHOST_READ	FFN_BDE_IPROC_READ_REG
+#define FFN_BDE_IPROC_IHOST_WRITE	FFN_BDE_IPROC_WRITE_REG
+#define FFN_BDE_BUS_FEATURES		FFN_BDE_GET_BUS_FEATURES
+#define FFN_BDE_INSTANCE_ATTACH		FFN_BDE_ATTACH_INSTANCE
+#define FFN_BDE_GET_DEV_STATE		FFN_BDE_GET_DEVICE_STATE
 
 /*
- * nr 8, 10, 11, 15, 18, 19, 20: [unused] -- no client reference was found. That
- * is a useful result if it holds, because it shrinks what has to be implemented,
- * but it is an absence of evidence and the scan pattern only matched one way of
- * building the constant. Return an error for these and log it, so an unexpected
- * use shows up immediately instead of silently doing nothing.
+ * dev_type bits (include/ibde.h, include/sal/types.h). The one that mattered:
+ * BDE_NO_IPROC makes the client bypass iProc windowing and index BAR0 with raw
+ * iProc addresses -- it must be CLEAR for this device.
  */
+#define FFN_BDE_DEV_PCI			0x00000001
+#define FFN_BDE_DEV_BUS_MSI		0x00008000
+#define FFN_BDE_DEV_BYTE_SWAP		0x01000000
+#define FFN_BDE_DEV_NO_IPROC		0x02000000
+#define FFN_BDE_DEV_8MB_REG_SPACE	0x10000000
+#define FFN_BDE_DEV_256K_REG_SPACE	0x20000000
 
 /*
  * The device this module binds. Same part ffn_bcm already drives, so the two must

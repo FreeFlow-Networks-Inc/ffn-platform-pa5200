@@ -66,5 +66,5 @@ cd /usr/share/broadcom || exit 1
 } > "$LOG"
 
 # 300s ceiling: init soc is long, but a wedged run must not hold the box.
-timeout 300 /usr/local/cp/bcm.user < "$CMDS" >> "$LOG" 2>&1
+timeout ${FFN_BCM_TIMEOUT:-300} /usr/local/cp/bcm.user < "$CMDS" >> "$LOG" 2>&1
 echo "=== exit=$? $(date) ===" >> "$LOG"
