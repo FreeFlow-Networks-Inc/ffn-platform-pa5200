@@ -103,3 +103,63 @@ investigation, and the next thing to chase.
 
 Loading the rc script is where DNX init actually begins, so this is the last gate
 before the vendor stack starts programming the switch.
+
+
+---
+
+## `sync.c:554` identified
+
+The assert the SDK dies on is **`sal_mutex_take` checking that its handle is
+non-NULL** — not a mutex that failed to be created.
+
+Found without dumping a quarter-gigabyte line table: the assert macro passes
+`__LINE__` as an argument, so compute the exact `jal` encoding for `_sal_assert`
+(`0x0d1216a0`), scan `.text` for it to get all **407** calling functions, then
+intersect with functions loading 554 (`0x22a`) into an argument register. Four
+candidates; only one has it in `a2`, the line-number position.
+
+Confirmed by disassembly at `0x14486758`:
+
+    sd   a0, 32(s8)      ; save the mutex handle argument
+    ld   v0, 8(s8)       ; rm = mutex
+    bnez v0, +0x6c       ; if rm != NULL, proceed
+    li   a2, 554         ; else line 554
+    jal  _sal_assert     ; assert(rm)
+
+So something calls `sal_mutex_take(NULL)` — a mutex that was never created,
+because an earlier init step did not run or bailed silently. A failed
+`sal_mutex_create` would return NULL gracefully; it is only a `malloc(48)` plus
+`pthread_mutexattr_init`.
+
+### Ruled out by experiment
+
+  * **Memory.** `mem=8G` took the CP from 442 MB to 7.77 GB. Identical failure,
+    ~48 MB used. The earlier prediction that this would fix it was wrong.
+  * **sw_state sizing.** Defining `sw_state_max_size`, `stable_size` and
+    `stable_location` does take effect — the "not defined" warning disappears —
+    but the assertion still fires. Tried invented values and PAN's own runtime
+    values from `runningConfig.soc` (`stable_size=250000000`,
+    `stable_location=3`).
+
+`config.bcm` is a **hardcoded absolute path** in the binary, so CWD and
+environment variables cannot redirect it. Overrides go in via a bind mount of an
+augmented copy, which leaves the owner's file byte-identical — sha256
+`59e093faa92c9a48` verified before and after every run — and is undone by
+`umount`.
+
+### Narrowed to
+
+Counting direct `jal` calls on the init path:
+
+    soc_dpp_attach                     creates 7 mutexes, takes none
+    soc_dpp_init and its five callees  create 0, take 0
+    shr_sw_state_init                  create 0, take 0
+
+No function on the init path creates a mutex; all seven come from
+`soc_dpp_attach`. So the NULL handle is a mutex **attach** should have created,
+taken later when the rc script runs `init soc` — consistent with attach returning
+early or partially while the rc script proceeds anyway.
+
+**Next step, bounded:** find which of attach's seven `sal_mutex_create` sites are
+actually reached, and which subsystem's mutex is taken first during `init soc`.
+Further config guessing is not the way; two rounds of it produced nothing.
