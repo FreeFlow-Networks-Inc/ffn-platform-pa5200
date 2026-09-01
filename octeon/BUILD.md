@@ -40,6 +40,19 @@ OCTEON III with the 2x10G BGX2 NIF trunk up (`eth0`/`eth1`, `carrier=1`).
 `HOSTCFLAGS="-fcommon -O2"` is required: this tree plus a modern host GCC otherwise fails with
 `multiple definition of 'yylloc'` in `scripts/dtc`.
 
+**The source tree must be clean before the first `O=` build**, or that build fails part-way through
+`archprepare` with
+
+    arch/mips/kernel/asm-offsets.c:11:
+    include/linux/preempt.h:59:25: fatal error: asm/preempt.h: No such file or directory
+
+The cause is a previous IN-tree build having left `arch/mips/include/generated` and
+`include/generated` in the source tree: kbuild then never writes the generated `asm/` header wrappers
+into `$B`, and the first file to need one dies. `make mrproper` in the source tree fixes it. The
+failure is easy to misread, because an output directory that has already been built in keeps working
+— it has its own generated headers — so only a *fresh* `$B` shows the problem. If other people are
+reading that SDK tree, copy it (839 MB) and `mrproper` the copy rather than theirs.
+
 Then strip and stage:
 
     $S/tools/bin/mips64-octeon-linux-gnu-strip -o ffn-vmlinux-octeon3 $B/vmlinux
