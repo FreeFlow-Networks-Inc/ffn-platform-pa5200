@@ -56,6 +56,20 @@
 #include <linux/mutex.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
+#include <linux/interrupt.h>
+#include <linux/wait.h>
+#include <linux/sched.h>
+/*
+ * get_dbe(): a load whose Data Bus Error is FIXED UP instead of fatal. MIPS
+ * keeps a second exception table (__dbe_table) just for this, do_be() consults
+ * it via search_dbe_tables(), and arch/mips/kernel/module.c registers the
+ * __dbe_table of a loaded module -- so it works from here, not just from
+ * built-in PCI probe code. This is the only reason probing BAR0+0x2C00 is not
+ * a gamble: see ffn_bde_paxb_probe_window().
+ */
+#include <asm/paccess.h>
+#include <asm/octeon/octeon.h>
+#include <asm/octeon/cvmx-pemx-defs.h>
 
 #include "ffn_bde_abi.h"
 
@@ -131,7 +145,7 @@ MODULE_PARM_DESC(dma_flag,
  * Hardware byte-swap. The CMIC is little-endian and this CPU is big-endian, so
  * something has to swap. Without this the SDK's S-channel operations time out
  * with no other symptom, which is a long way from the cause. See
- * ffn_bde_paxb_be_enable() for the mechanism and the evidence.
+ * ffn_bde_paxb_init() for the mechanism and the evidence.
  */
 static int paxb_be = 1;
 module_param(paxb_be, int, 0444);
@@ -142,12 +156,192 @@ MODULE_PARM_DESC(paxb_be,
 	"against a device left in hardware-swap mode without accounting for "
 	"it.");
 
-static int dev_type = 0x22000001;
+/*
+ * The rest of the vendor's shbde_iproc_paxb_init, decoded from
+ * linux-kernel-bde.ko .text 0x6878. See ffn_bde_paxb_init() below.
+ *
+ * DEFAULT OFF, deliberately. Step 2 reads BAR0 + 0x2C08, which lives in the
+ * same block as the BAR0 + 0x2C00 read that once left the OCTEON PCIe path in
+ * an error state and took the MP down with it -- recovery was a physical power
+ * cycle. From the kernel a bus error there is a panic, not a SIGSEGV. Two
+ * things argue it is safe now (the vendor kernel reads 0x2C08 itself on this
+ * hardware, and it does so only after the 0x2030 write that ffn_bde now always
+ * performs), but "argues" is not "measured", so this stays opt-in.
+ */
+static int paxb_full = 1;
+module_param(paxb_full, int, 0444);
+MODULE_PARM_DESC(paxb_full,
+	"run the full vendor PAXB init, not just the byte-order step (default "
+	"1). Programs the OUTBOUND window (PAXB_OARR_2 / _UPPER) the CMIC DMA "
+	"engines use to reach host memory; without it every DMA reports DONE "
+	"and nothing crosses the bus. The BAR0+0x2C08 read this involves was "
+	"once suspected of wedging PCIe; it has since been probed and read by "
+	"the vendor client on this board without incident. 0 reproduces the "
+	"old failure.");
+
+static int paxb_dma_hi_bits;
+module_param(paxb_dma_hi_bits, int, 0444);
+MODULE_PARM_DESC(paxb_dma_hi_bits,
+	"value for PAXB_OARR_2_UPPER (BAR0+0x2D64), the upper AXI address bits "
+	"of the outbound window the CMIC's DMA engines use to reach host memory. "
+	"0 = derive as the vendor does: PAXB_IMAP0_2 (BAR0+0x2C08) bit 12 set "
+	"means PAXB_1 and gives 2, clear gives 1. Force 1 or 2 to skip the "
+	"read. This board reads 0x18012001 -> 1.");
+
+/* Deprecated spelling of paxb_dma_hi_bits, kept so existing insmod lines load. */
+static int paxb_variant;
+module_param(paxb_variant, int, 0444);
+MODULE_PARM_DESC(paxb_variant, "deprecated alias of paxb_dma_hi_bits");
+
+static int paxb_preemph;
+module_param(paxb_preemph, int, 0444);
+MODULE_PARM_DESC(paxb_preemph,
+	"also set PAXB_OARR_FUNC0_MSI_PAGE bit 0 (BAR0+0x2D34) even when MSI "
+	"is off (default 0). OpenBCM names this register; it is not a PCIe "
+	"pre-emphasis control as earlier guessed. With use_msi=1 it is set "
+	"regardless of this knob.");
+
+/*
+ * Probe the PAXB iProc window block instead of assuming anything about it.
+ *
+ * BAR0 + 0x2C00 is where the vendor client reads the existing window registers
+ * during _open, and BAR0 + 0x2C1C is the dynamic window control register the
+ * SDK programs for every iProc access outside its three static windows. A read
+ * of 0x2C00 once left this board's PCIe path in an error state that took the MP
+ * down with it, which is why dev_type bit 25 was set to make the client skip
+ * that loop -- and bit 25 turned out to ALSO switch _iproc_read to linear
+ * addressing, which is what makes soc_dpp_init die. So whether this block reads
+ * is the question that decides whether bit 25 can be cleared.
+ *
+ * This probe answers it without risking the box: get_dbe() turns a bus error
+ * into -EFAULT.
+ */
+static int probe_paxb_win;
+module_param(probe_paxb_win, int, 0444);
+MODULE_PARM_DESC(probe_paxb_win,
+	"probe BAR0+0x2C00..0x2C1C at load and log what each word reads "
+	"(default 0). Safe: uses get_dbe(), so a data bus error is reported as "
+	"a fault rather than taking the CP down. Run this before clearing "
+	"dev_type bit 25 -- if the block reads, the client can do its own "
+	"window discovery and iProc addressing works properly.");
+
+/*
+ * Interrupts.
+ *
+ * The ISR cannot decide whether this device raised the line without reading
+ * chip registers, and those belong to the SDK -- touching them from here would
+ * race the very code we are serving. So the ISR masks at the *controller*
+ * instead: exactly one interrupt is delivered, and the line stays masked until
+ * userspace comes back through command 9 (or 6). That is the uio_pci_generic
+ * pattern and it makes an interrupt storm structurally impossible.
+ */
+static int use_msi = 1;
+module_param(use_msi, int, 0444);
+MODULE_PARM_DESC(use_msi,
+	"request MSI and install an interrupt handler at load (default 1). "
+	"With 0, or if MSI cannot be had, command 9 still blocks correctly -- "
+	"it just never wakes on hardware, which parks the SDK interrupt thread "
+	"instead of letting it spin. Parking is the safe failure: spinning is "
+	"what bus-errored on SBUSDMA_CH1_STATUS.");
+
+static int intr_poll_ms;
+module_param(intr_poll_ms, int, 0644);
+MODULE_PARM_DESC(intr_poll_ms,
+	"if non-zero, wake the command 9 waiter this often even with no "
+	"interrupt (default 0 = block until one arrives). A debugging aid for "
+	"the case where the SDK needs its handlers to run but MSI is not "
+	"being delivered; keep it large, because each wake makes the SDK read "
+	"chip status registers.");
+
+/*
+ * Probe a fixed set of BAR2 CMIC registers with get_dbe() at load. Three known-
+ * good registers act as controls: if those read and the SBUSDMA ones do not,
+ * the block genuinely does not decode; if everything reads here but the SDK
+ * still bus-errors on the same address, then it is something the SDK does that
+ * stops the chip answering, not the address.
+ */
+static int probe_bar2;
+module_param(probe_bar2, int, 0444);
+MODULE_PARM_DESC(probe_bar2,
+	"probe CMIC control + SBUSDMA registers in BAR2 at load and log what "
+	"each reads (default 0). Safe: get_dbe() reports a data bus error "
+	"instead of taking the CP down.");
+
+/*
+ * An arbitrary BAR2 range, for the register block currently under suspicion.
+ * The fixed list above is the standing regression check; this is the scratchpad,
+ * and having it as a parameter is what keeps a new question from costing a
+ * rebuild, a redeploy and a CP re-boot.
+ */
+static int probe_bar2_off;
+module_param(probe_bar2_off, int, 0444);
+MODULE_PARM_DESC(probe_bar2_off,
+	"byte offset into BAR2 to start the ad-hoc probe at (with "
+	"probe_bar2_n). Rounded down to a word.");
+
+static int probe_bar2_n;
+module_param(probe_bar2_n, int, 0444);
+MODULE_PARM_DESC(probe_bar2_n,
+	"how many 32-bit words to probe from probe_bar2_off (default 0 = "
+	"skip). Uses get_dbe(), so an offset that does not decode is logged "
+	"rather than fatal. Capped at 64.");
+
+/* Same idea as probe_bar2_off/_n, for BAR0 (the PAXB/iProc window). */
+static int probe_bar0_off;
+module_param(probe_bar0_off, int, 0444);
+MODULE_PARM_DESC(probe_bar0_off,
+	"byte offset into BAR0 to start the ad-hoc probe at (with "
+	"probe_bar0_n). Rounded down to a word.");
+
+static int probe_bar0_n;
+module_param(probe_bar0_n, int, 0444);
+MODULE_PARM_DESC(probe_bar0_n,
+	"how many 32-bit words to probe from probe_bar0_off (default 0 = "
+	"skip). get_dbe(), so a non-decoding offset is a log line. Capped at 64.");
+
+
+/*
+ * Which PEM (PCIe port) to dump the inbound BAR setup for. The BCM88375 is on
+ * domain 0001, which is PEM1 on CN73XX -- that chip has ports 1..3, and the
+ * three domains we see (0001 BCM, 0002 FE100, 0003 the DP OCTEON) line up with
+ * them.
+ */
+static int probe_pem = -1;
+module_param(probe_pem, int, 0444);
+MODULE_PARM_DESC(probe_pem,
+	"PCIe port whose PEM inbound BAR configuration to dump at load "
+	"(default -1 = off; 1 is the BCM). Reports BAR_CTL decoded, so "
+	"bar2_enb can be checked directly -- with it clear the chip's DMA "
+	"writes get UR and are silently dropped, which is exactly what we "
+	"measure.");
+
+
+
+/*
+ * Bus mastering. Off by default in the hardware as we find it, and nothing else
+ * in the boot path turns it on -- the CP log line
+ * "PCI: Enabling device 0001:01:00.0 (0000 -> 0002)" is memory space alone.
+ */
+static int set_master = 1;
+module_param(set_master, int, 0444);
+MODULE_PARM_DESC(set_master,
+	"enable PCI bus mastering on the switch at load (default 1). The chip "
+	"cannot DMA without it, so the SDK's first SBUSDMA in block init never "
+	"completes and the status poll turns into a Data Bus Error. Set 0 only "
+	"to reproduce that.");
+
+
+
+
+
+
+static int dev_type = 0x20000001;
 module_param(dev_type, int, 0644);
 MODULE_PARM_DESC(dev_type,
 	"bus type reported by command 12. Default 0x22000001, one bit at a "
-	"time: bit 0 PCI, bit 29 256K register space, bit 25 skip the PAXB "
-	"probe read. All three were read out of the client's own _open. "
+	"time: bit 0 PCI, bit 29 256K register space. Bit 25 is DELIBERATELY "
+	"NOT set -- see the comment below. Both were read out of the "
+	"client's own _open. "
 	"Bits 0 and 29: _open gates the whole register window on "
 	"(dev_type & 0x0001008d) and sizes it from bits 30/29/31 = "
 	"128K/256K/320K; the vendor kernel ORs bit 29 for this device, so "
@@ -158,32 +352,54 @@ MODULE_PARM_DESC(dev_type,
 	"below for why it defaults on.");
 
 /*
- * Bit 25 of dev_type, and why it defaults to on.
+ * Bit 25 of dev_type, and why it is now CLEAR.
  *
- * After the second window is mapped, _open reads BAR0 + 0x2C00 + i*4 in a loop
- * (linux-user-bde.c line 965). Bit 25 makes it skip that loop. On this board
- * that read took a data bus error:
+ * It was set here for months on the belief that it meant "skip the BAR0 + 0x2C00
+ * probe read" -- a read that had once left this board's PCIe path in an error
+ * state and needed a power cycle. It does skip that read. It also does something
+ * else, and that something else broke every iProc access the SDK made.
  *
- *   Data bus error, epc == 00000000104f0148, ra == 00000000104f00f8
+ * Bit 25 has TWO effects, in two different functions:
  *
- * and epc 0x104f0148 is exactly that load. The cost of the fault is the reason
- * this defaults to skipping rather than to faithfulness: the abort did not stop
- * at the process. Every subsequent MMIO access bus errored, including addresses
- * that had just read correctly, and the following config-space read hung the CP
- * hard enough to take the MP down with it. Recovering needed a power cycle.
+ *   _open (line 962)         skips the loop at line 965 over BAR0 + 0x2C00 + i*4.
+ *                            That loop is WINDOW DISCOVERY: it reads the PAXB
+ *                            IMAP registers and fills iproc_map[dev] from the
+ *                            hardware's real configuration. Skip it and iproc_map
+ *                            stays at the compiled-in iproc_map_default.
  *
- * What is NOT established: whether BAR0 + 0x2C00 is genuinely absent on this
- * chip or whether our /dev/mem access path is wrong for it. BAR0 + 0x0 and
- * BAR0 + 0x2030 both read fine, and the vendor kernel reads 0x2C08 itself in
- * shbde_iproc_paxb_init, which argues the address is real on the vendor's own
- * access path. A clean isolated read of BAR0 + 0x2C00 in a healthy state was
- * never obtained -- by the time it was attempted the bus was already wedged.
+ *   _iproc_read (line 1863)  bypasses _iproc_offset() ENTIRELY and uses the raw
+ *                            iProc address as a direct index into the 32 KB BAR0
+ *                            mapping:
  *
- * So the first test after the next bring-up is that single read, on its own,
- * before anything else touches the device. If it succeeds, clear bit 25 and let
- * the client do what the vendor's client does. Until then a default that cannot
- * take the appliance down is worth more than a default that is arguably more
- * faithful.
+ *                              v0 = devs[dev]->[0x04]   (this field is dev_type)
+ *                              ext v0, v0, 0x19, 0x1    (bit 25)
+ *                              bnez v0, <skip the windowing>
+ *
+ * So with bit 25 set, soc_dpp_init's first iProc read computed
+ * base + 0x18300004 against a 0x8000 window and died. There is no range check in
+ * _iproc_read, only a NULL check on the base, so it faults at a wild address far
+ * from anything mapped.
+ *
+ * The 0x2C00 block was then probed properly, from the kernel, with get_dbe() --
+ * see ffn_bde_paxb_probe_window(). All 8 words read, no bus errors, and they are
+ * IMAP windows already programmed by firmware:
+ *
+ *   0x2C00 0x18000001   0x2C08 0x18012001   0x2C10 0x18300001   0x2C18 0
+ *   0x2C04 0xffff0001   0x2C0C 0xffff1001   0x2C14 0x18310001   0x2C1C 0
+ *
+ * Window 4 already covers 0x18300000 -- exactly the address the SDK wanted. The
+ * hardware layout differs from iproc_map_default (which has 0x18030000 and lacks
+ * 0x18300000), which is precisely why the discovery loop exists. With bit 25
+ * clear the client reads these itself, and the SDK walks on into real DNX init:
+ * Device Reset and Access Enable, Blocks OOR and PLL configuration, Traffic
+ * Disable, Blocks Initial configuration.
+ *
+ * Clearing bit 25 does re-enable the client's own user-mode read of that block
+ * through /dev/mem. That was the thing feared -- and it succeeds. The original
+ * abort was not this address being absent.
+ *
+ * Set bit 25 again only to reproduce the old failure. It is not a safety knob;
+ * it changes the iProc addressing mode.
  */
 
 /*
@@ -225,6 +441,26 @@ struct ffn_bde_dev {
 	void *dma_cpu;
 	dma_addr_t dma_handle;
 	size_t dma_size;
+
+	/*
+	 * Interrupt delivery to userspace. The SDK runs a thread that blocks in
+	 * command 9 and services the chip itself, so all this side has to do is
+	 * "wake me when the line asserts" -- it must never touch chip interrupt
+	 * registers, because the SDK owns those.
+	 *
+	 * irq_seq is a counter rather than a flag so a wakeup cannot be missed:
+	 * a waiter records the value it started from and sleeps until it moves.
+	 * irq_masked tracks whether the ISR has disabled the line, so that
+	 * disable/enable stay balanced (an unbalanced enable_irq() warns and
+	 * then breaks the count).
+	 */
+	int irq;
+	bool irq_requested;
+	bool msi_enabled;
+	wait_queue_head_t irq_wq;
+	atomic_t irq_seq;
+	atomic_t irq_masked;
+	u32 irq_seen;
 };
 
 static DEFINE_MUTEX(ffn_bde_lock);
@@ -268,40 +504,598 @@ static int ffn_bde_ndev;
 #define FFN_PAXB_ENDIAN_OFF	0x2030
 #define FFN_PAXB_BE_PATTERN	0x01010101
 
-static int ffn_bde_paxb_be_enable(struct ffn_bde_dev *d)
-{
-	void __iomem *paxb;
-	u32 back;
+/*
+ * The rest of the vendor sequence, same order as shbde_iproc_paxb_init(). Names
+ * are the ones OpenBCM uses (systems/bde/shared/shbde_iproc.c).
+ */
+#define FFN_PAXB_IMAP0_2_OFF		0x2C08	/* bit 12: PAXB_1 selected           */
+#define FFN_PAXB_IMAP0_2_PAXB1_BIT	12
+#define FFN_PAXB_EP_AXI_CONFIG_OFF	0x2104	/* written 0: enable DMA to host    */
+#define FFN_PAXB_OARR_2_OFF		0x2D60	/* outbound window: 1 = valid       */
+#define FFN_PAXB_OARR_2_UPPER_OFF	0x2D64	/* outbound window: dma_hi_bits     */
+#define FFN_PAXB_OMAP_2_OFF		0x2D68	/* its PCIe-side base, read for log */
+#define FFN_PAXB_OMAP_2_UPPER_OFF	0x2D6C
+#define FFN_PAXB_MSI_PAGE_OFF		0x2D34	/* OARR_FUNC0_MSI_PAGE |= 1 for MSI */
+#define FFN_PAXB_INTR_EN_OFF		0x2380	/* CMICD_TO_PCIE_INTR_EN bit0 = INTx */
 
-	if (!paxb_be)
+/* Old names, kept for any reference that still uses them. */
+#define FFN_PAXB_STRAP_OFF		FFN_PAXB_IMAP0_2_OFF
+#define FFN_PAXB_CLR_OFF		FFN_PAXB_EP_AXI_CONFIG_OFF
+#define FFN_PAXB_WIN_EN_OFF		FFN_PAXB_OARR_2_OFF
+#define FFN_PAXB_WIN_VAR_OFF		FFN_PAXB_OARR_2_UPPER_OFF
+#define FFN_PAXB_PREEMPH_OFF		FFN_PAXB_MSI_PAGE_OFF
+
+/* Where the SDK programs the dynamic iProc window. Logged, not written here. */
+#define FFN_PAXB_IPROC_WIN_OFF	0x2C1C
+
+/*
+ * Read the PAXB window block one word at a time, reporting rather than dying.
+ *
+ * Every access goes through get_dbe(), so a word that does not decode comes
+ * back as -EFAULT and the scan carries on. What we are looking for:
+ *
+ *   all 8 words fault      -> the block genuinely does not decode here, bit 25
+ *                             has to stay set and iProc access needs another
+ *                             route entirely
+ *   all 8 words read       -> the old abort was about HOW it was accessed (user
+ *                             mode through /dev/mem, possibly before the
+ *                             0x2030 byte-order write), not about the address.
+ *                             Clear bit 25 and let the client window properly.
+ */
+#define FFN_PAXB_WIN_BLOCK	0x2C00
+#define FFN_PAXB_WIN_WORDS	8
+
+static void ffn_bde_paxb_probe_window(void __iomem *bar0)
+{
+	int i, ok = 0, bad = 0;
+
+	pr_info(DRV ": probing BAR0+0x%x..0x%x with get_dbe (bus errors are "
+		"caught, not fatal)\n", FFN_PAXB_WIN_BLOCK,
+		FFN_PAXB_WIN_BLOCK + (FFN_PAXB_WIN_WORDS - 1) * 4);
+
+	for (i = 0; i < FFN_PAXB_WIN_WORDS; i++) {
+		unsigned int off = FFN_PAXB_WIN_BLOCK + i * 4;
+		volatile u32 *p = (volatile u32 *)((unsigned long)bar0 + off);
+		u32 v = 0;
+
+		if (get_dbe(v, p)) {
+			pr_info(DRV ":   BAR0+0x%04x  BUS ERROR\n", off);
+			bad++;
+			continue;
+		}
+		pr_info(DRV ":   BAR0+0x%04x  0x%08x%s\n", off, v,
+			off == FFN_PAXB_IPROC_WIN_OFF ?
+				"   <- dynamic window control" : "");
+		ok++;
+	}
+
+	pr_info(DRV ": PAXB window probe: %d readable, %d bus errors. %s\n",
+		ok, bad,
+		bad == 0 ?
+		"Block decodes -- dev_type bit 25 can be cleared so the client "
+		"does real iProc windowing." :
+		"Block does not fully decode -- leave bit 25 set.");
+}
+
+/*
+ * ffn_bde_paxb_init() -- the whole vendor PAXB bring-up.
+ *
+ * Step 1 (byte order) is unconditional and is the part that has always been
+ * here. Steps 2-5 are gated on paxb_full; the reasoning for that default is on
+ * the module parameter. The vendor reaches these registers from the kernel via
+ * linux_io32_read/_write, which is what we do here -- the user-mode /dev/mem
+ * path is the one with the abort history.
+ *
+ * Why steps 2-5 matter at all: the SDK reaches iProc registers through a
+ * dynamic window it programs at BAR0+0x2C1C, reading back to confirm, then
+ * accessing BAR0+0x7000 + (addr & 0xfff). With the PAXB only half configured
+ * that window does not take, and the first iProc read in soc_dpp_init computes
+ * an offset outside the 32 KB aperture and dies -- there is no range check in
+ * _iproc_read, only a NULL check on the base.
+ *
+ * BAR0 is mapped once for the whole sequence rather than per register: the old
+ * code ioremapped four bytes, which is fine for one register and silly for six.
+ */
+static int ffn_bde_paxb_init(struct ffn_bde_dev *d)
+{
+	void __iomem *bar0;
+	u32 back, strap, variant;
+	int rc = 0;
+
+	if (!paxb_be && !paxb_full)
 		return 0;
-	if (!d->bar_len[0] || d->bar_len[0] < FFN_PAXB_ENDIAN_OFF + 4) {
-		pr_warn(DRV ": no BAR0 to configure byte order on\n");
+
+	if (!d->bar_len[0] || d->bar_len[0] < FFN_PAXB_WIN_VAR_OFF + 4) {
+		pr_warn(DRV ": BAR0 is %lu bytes, too small for the PAXB "
+			"registers -- byte order NOT configured\n",
+			(unsigned long)d->bar_len[0]);
 		return -ENODEV;
 	}
 
-	paxb = ioremap(d->bar_start[0] + FFN_PAXB_ENDIAN_OFF, 4);
-	if (!paxb) {
-		pr_warn(DRV ": cannot map the PAXB endianness register\n");
+	bar0 = ioremap(d->bar_start[0], d->bar_len[0]);
+	if (!bar0) {
+		pr_warn(DRV ": cannot map BAR0 for PAXB init\n");
 		return -ENOMEM;
 	}
 
-	__raw_writel(FFN_PAXB_BE_PATTERN, paxb);
-	back = __raw_readl(paxb);
-
-	if (back != 1) {
-		/* Not the register we think it is. Leave nothing behind. */
-		__raw_writel(0, paxb);
-		iounmap(paxb);
-		pr_warn(DRV ": PAXB endianness readback 0x%08x, expected 1 -- "
-			"reverted, PIO byte order is NOT configured\n", back);
-		return -EIO;
+	/* 1. byte order. */
+	if (paxb_be) {
+		__raw_writel(FFN_PAXB_BE_PATTERN, bar0 + FFN_PAXB_ENDIAN_OFF);
+		back = __raw_readl(bar0 + FFN_PAXB_ENDIAN_OFF);
+		if (back != 1) {
+			/* Not the register we think it is. Leave nothing behind. */
+			__raw_writel(0, bar0 + FFN_PAXB_ENDIAN_OFF);
+			pr_warn(DRV ": PAXB endianness readback 0x%08x, "
+				"expected 1 -- reverted, PIO byte order is "
+				"NOT configured\n", back);
+			rc = -EIO;
+			goto out;
+		}
+		pr_info(DRV ": PAXB big-endian PIO mode on (BAR0+0x%x reads "
+			"1); registers now read natural values\n",
+			FFN_PAXB_ENDIAN_OFF);
 	}
 
-	iounmap(paxb);
-	pr_info(DRV ": PAXB big-endian PIO mode on (BAR0+0x%x reads 1); "
-		"registers now read natural values\n", FFN_PAXB_ENDIAN_OFF);
+	if (probe_paxb_win)
+		ffn_bde_paxb_probe_window(bar0);
+
+	if (!paxb_full) {
+		pr_info(DRV ": PAXB init stopped after byte order "
+			"(paxb_full=0). iProc register access will NOT work: "
+			"the SDK programs its dynamic window at BAR0+0x%x and "
+			"soc_dpp_init needs it.\n", FFN_PAXB_IPROC_WIN_OFF);
+		goto out;
+	}
+
+	/*
+	 * 2. Which PAXB core is in use decides the outbound window's upper AXI
+	 *    bits. Vendor: if (IMAP0_2 & 0x1000) pci_num = 1; dma_hi_bits =
+	 *    pci_num ? 2 : 1, unless the chip table already set it (it does not
+	 *    know 0x8375). Read after step 1, as the vendor orders it.
+	 */
+	if (paxb_dma_hi_bits == 0 && (paxb_variant == 1 || paxb_variant == 2))
+		paxb_dma_hi_bits = paxb_variant;
+	if (paxb_dma_hi_bits == 1 || paxb_dma_hi_bits == 2) {
+		variant = paxb_dma_hi_bits;
+		pr_info(DRV ": PAXB dma_hi_bits forced to %u, IMAP0_2 not read\n",
+			variant);
+	} else {
+		strap = __raw_readl(bar0 + FFN_PAXB_IMAP0_2_OFF);
+		variant = (strap & (1u << FFN_PAXB_IMAP0_2_PAXB1_BIT)) ? 2 : 1;
+		pr_info(DRV ": PAXB_IMAP0_2 = 0x%08x -> PAXB_%u -> dma_hi_bits %u\n",
+			strap, variant - 1, variant);
+	}
+
+	/* 3. "Enable iProc DMA to external host memory". Unconditional. */
+	__raw_writel(0, bar0 + FFN_PAXB_EP_AXI_CONFIG_OFF);
+
+	/*
+	 * 4. The outbound window itself. Vendor gates this on cmic_ver < 4 (i.e.
+	 *    not CMICX); the BCM88375 is CMICm, so it applies. OMAP_2 is the
+	 *    PCIe-side base of the same window and is logged, not written --
+	 *    the vendor leaves it at reset.
+	 */
+	__raw_writel(1, bar0 + FFN_PAXB_OARR_2_OFF);
+	__raw_writel(variant, bar0 + FFN_PAXB_OARR_2_UPPER_OFF);
+	pr_info(DRV ": PAXB OARR_2 0x%08x OARR_2_UPPER 0x%08x  OMAP_2 0x%08x "
+		"OMAP_2_UPPER 0x%08x\n",
+		__raw_readl(bar0 + FFN_PAXB_OARR_2_OFF),
+		__raw_readl(bar0 + FFN_PAXB_OARR_2_UPPER_OFF),
+		__raw_readl(bar0 + FFN_PAXB_OMAP_2_OFF),
+		__raw_readl(bar0 + FFN_PAXB_OMAP_2_UPPER_OFF));
+
+	/* 5. MSI page bit, and route interrupts to MSI rather than INTx. */
+	if (paxb_preemph || use_msi) {
+		back = __raw_readl(bar0 + FFN_PAXB_MSI_PAGE_OFF);
+		__raw_writel(back | 1, bar0 + FFN_PAXB_MSI_PAGE_OFF);
+		pr_info(DRV ": PAXB OARR_FUNC0_MSI_PAGE 0x%08x -> 0x%08x\n",
+			back, back | 1);
+	}
+	back = __raw_readl(bar0 + FFN_PAXB_INTR_EN_OFF);
+	if (use_msi)
+		__raw_writel(back & ~1u, bar0 + FFN_PAXB_INTR_EN_OFF);
+	else
+		__raw_writel(back | 1u, bar0 + FFN_PAXB_INTR_EN_OFF);
+	pr_info(DRV ": PAXB CMICD_TO_PCIE_INTR_EN 0x%08x -> 0x%08x (%s)\n", back,
+		__raw_readl(bar0 + FFN_PAXB_INTR_EN_OFF), use_msi ? "MSI" : "INTx");
+
+	pr_info(DRV ": full PAXB init done (dma_hi_bits %u); the iProc window at "
+		"BAR0+0x%x should now take\n", variant, FFN_PAXB_IPROC_WIN_OFF);
+out:
+	iounmap(bar0);
+	return rc;
+}
+
+/*
+ * One interrupt gets through, then the line is masked until userspace asks for
+ * the next one. disable_irq_nosync() is used rather than disable_irq() because
+ * we are in the handler for that very irq and the synchronous form would
+ * deadlock waiting for itself to finish.
+ */
+static irqreturn_t ffn_bde_isr(int irq, void *arg)
+{
+	struct ffn_bde_dev *d = arg;
+
+	if (!atomic_xchg(&d->irq_masked, 1))
+		disable_irq_nosync(d->irq);
+
+	atomic_inc(&d->irq_seq);
+	wake_up_interruptible(&d->irq_wq);
+	return IRQ_HANDLED;
+}
+
+/* Undo the ISR's mask. Safe to call when not masked; the xchg makes it a no-op. */
+static void ffn_bde_irq_rearm(struct ffn_bde_dev *d)
+{
+	if (d->irq_requested && atomic_xchg(&d->irq_masked, 0))
+		enable_irq(d->irq);
+}
+
+static void ffn_bde_irq_mask(struct ffn_bde_dev *d)
+{
+	if (d->irq_requested && !atomic_xchg(&d->irq_masked, 1))
+		disable_irq_nosync(d->irq);
+}
+
+static void ffn_bde_irq_setup(struct ffn_bde_dev *d)
+{
+	int rc;
+
+	init_waitqueue_head(&d->irq_wq);
+	atomic_set(&d->irq_seq, 0);
+	atomic_set(&d->irq_masked, 0);
+	d->irq_seen = 0;
+	d->irq = -1;
+
+	if (!use_msi) {
+		pr_info(DRV ": use_msi=0, no interrupt handler installed; "
+			"command 9 will block forever, which parks the SDK "
+			"interrupt thread rather than letting it spin\n");
+		return;
+	}
+
+	if (pci_enable_msi(d->pdev)) {
+		pr_warn(DRV ": pci_enable_msi failed; no interrupt handler. "
+			"Command 9 will block forever (thread parks).\n");
+		return;
+	}
+	d->msi_enabled = true;
+	d->irq = d->pdev->irq;
+
+	rc = request_irq(d->irq, ffn_bde_isr, 0, DRV, d);
+	if (rc) {
+		pr_warn(DRV ": request_irq(%d) failed (%d); no handler. "
+			"Command 9 will block forever (thread parks).\n",
+			d->irq, rc);
+		pci_disable_msi(d->pdev);
+		d->msi_enabled = false;
+		d->irq = -1;
+		return;
+	}
+	d->irq_requested = true;
+	pr_info(DRV ": MSI irq %d installed; command 9 waits on it\n", d->irq);
+}
+
+static void ffn_bde_irq_teardown(struct ffn_bde_dev *d)
+{
+	if (d->irq_requested) {
+		/* Balance the ISR's mask before freeing, or free_irq() warns. */
+		ffn_bde_irq_rearm(d);
+		free_irq(d->irq, d);
+		d->irq_requested = false;
+	}
+	if (d->msi_enabled) {
+		pci_disable_msi(d->pdev);
+		d->msi_enabled = false;
+	}
+}
+
+/*
+ * BAR2 is 8 MB but the client only ever maps the first 256 KB (dev_type bit 29),
+ * and the highest register in the recovered CMIC map is 0x33858, so mapping
+ * 256 KB here covers everything the SDK can reach and keeps the probe honest
+ * about what it is testing.
+ */
+#define FFN_BDE_BAR2_WINDOW	0x40000
+
+struct ffn_bde_probe_reg {
+	unsigned int off;
+	const char *name;
+	int control;	/* known to read; a failure here means the probe is wrong */
+};
+
+static const struct ffn_bde_probe_reg ffn_bde_bar2_probe[] = {
+	{ 0x10000, "CMIC_COMMON_SCHAN_CTRL",              1 },
+	{ 0x10098, "CMIC_SBUS_RING_MAP_0_7",              1 },
+	{ 0x10224, "device id",                           1 },
+	{ 0x31600, "CMIC_CMC0_SBUSDMA_CH0_CONTROL",       0 },
+	{ 0x3161c, "CMIC_CMC0_SBUSDMA_CH0_STATUS",        0 },
+	{ 0x31650, "CMIC_CMC0_SBUSDMA_CH1_CONTROL",       0 },
+	{ 0x3166c, "CMIC_CMC0_SBUSDMA_CH1_STATUS",        0 },
+	{ 0x31690, "CMIC_CMC0_SBUSDMA_CH1_SBUSDMA_DEBUG", 0 },
+};
+
+static void ffn_bde_probe_bar2_regs(struct ffn_bde_dev *d)
+{
+	void __iomem *bar2;
+	unsigned int i;
+	int ctl_bad = 0, sbus_bad = 0;
+
+	if (!d->bar_len[2]) {
+		pr_warn(DRV ": no BAR2 to probe\n");
+		return;
+	}
+
+	bar2 = ioremap(d->bar_start[2], FFN_BDE_BAR2_WINDOW);
+	if (!bar2) {
+		pr_warn(DRV ": cannot map BAR2 for the register probe\n");
+		return;
+	}
+
+	pr_info(DRV ": probing BAR2 CMIC registers with get_dbe\n");
+	for (i = 0; i < ARRAY_SIZE(ffn_bde_bar2_probe); i++) {
+		const struct ffn_bde_probe_reg *r = &ffn_bde_bar2_probe[i];
+		volatile u32 *p =
+			(volatile u32 *)((unsigned long)bar2 + r->off);
+		u32 v = 0;
+
+		if (get_dbe(v, p)) {
+			pr_info(DRV ":   BAR2+0x%05x  BUS ERROR   %s%s\n",
+				r->off, r->name,
+				r->control ? "   <- CONTROL, probe is wrong" : "");
+			if (r->control)
+				ctl_bad++;
+			else
+				sbus_bad++;
+			continue;
+		}
+		pr_info(DRV ":   BAR2+0x%05x  0x%08x  %s\n", r->off, v, r->name);
+	}
+	iounmap(bar2);
+
+	if (ctl_bad)
+		pr_warn(DRV ": %d CONTROL register(s) bus errored -- do not trust "
+			"this probe, the mapping or byte order is wrong\n", ctl_bad);
+	else if (sbus_bad)
+		pr_info(DRV ": controls read, %d SBUSDMA register(s) bus errored "
+			"-- the SBUSDMA block does not decode on a clean chip\n",
+			sbus_bad);
+	else
+		pr_info(DRV ": all probed registers read, SBUSDMA included -- the "
+			"SDK's later bus error there is something it does, not the "
+			"address\n");
+}
+
+/*
+ * Turn on bus mastering, and say what changed. The before/after is logged
+ * because "the chip cannot DMA" is invisible in every other symptom -- register
+ * access keeps working perfectly, so the failure only shows up much later and
+ * looks like a dead register.
+ */
+static void ffn_bde_set_master(struct ffn_bde_dev *d)
+{
+	u16 cmd_before = 0, cmd_after = 0;
+
+	if (!set_master)
+		return;
+
+	pci_read_config_word(d->pdev, PCI_COMMAND, &cmd_before);
+	pci_set_master(d->pdev);
+	pci_read_config_word(d->pdev, PCI_COMMAND, &cmd_after);
+
+	if (cmd_after & PCI_COMMAND_MASTER)
+		pr_info(DRV ": bus master enabled, PCI_COMMAND 0x%04x -> 0x%04x; "
+			"the chip can now DMA (SBUSDMA needs this)\n",
+			cmd_before, cmd_after);
+	else
+		pr_warn(DRV ": bus master did NOT stick, PCI_COMMAND 0x%04x -> "
+			"0x%04x; SBUSDMA will hang and its status read will bus "
+			"error\n", cmd_before, cmd_after);
+}
+
+
+/* Ad-hoc range dump. Offsets only -- names are mapped offline from the
+ * recovered CMIC register map, which is vendor-derived and stays off the box. */
+static void ffn_bde_probe_bar2_range(struct ffn_bde_dev *d)
+{
+	void __iomem *bar2;
+	unsigned int start = (unsigned int)probe_bar2_off & ~3u;
+	unsigned int n = (unsigned int)probe_bar2_n;
+	unsigned int i;
+
+	if (n > 64)
+		n = 64;
+	if (!d->bar_len[2] || start + n * 4 > FFN_BDE_BAR2_WINDOW) {
+		pr_warn(DRV ": ad-hoc probe 0x%05x+%u words is outside the "
+			"0x%x window\n", start, n, FFN_BDE_BAR2_WINDOW);
+		return;
+	}
+
+	bar2 = ioremap(d->bar_start[2], FFN_BDE_BAR2_WINDOW);
+	if (!bar2) {
+		pr_warn(DRV ": cannot map BAR2 for the ad-hoc probe\n");
+		return;
+	}
+
+	pr_info(DRV ": ad-hoc probe BAR2+0x%05x, %u words\n", start, n);
+	for (i = 0; i < n; i++) {
+		unsigned int off = start + i * 4;
+		volatile u32 *p =
+			(volatile u32 *)((unsigned long)bar2 + off);
+		u32 v = 0;
+
+		if (get_dbe(v, p))
+			pr_info(DRV ":   BAR2+0x%05x  BUS ERROR\n", off);
+		else
+			pr_info(DRV ":   BAR2+0x%05x  0x%08x\n", off, v);
+	}
+	iounmap(bar2);
+}
+
+
+/*
+ * PEMX_BAR_CTL layout (from cvmx-pemx-defs.h):
+ *   [6:4] bar1_siz   0x1=64M 0x2=128M 0x3=256M 0x4=512M 0x5=1G 0x6=2G
+ *   [3]   bar2_enb   1 = BAR2 responds; 0 = BAR2 access gets UR
+ *   [2:1] bar2_esx   XORed with PCIe address [43:42] -> endian swap mode
+ *   [0]   bar2_cax   XORed with PCIe address [44]    -> L2 cache attribute
+ *
+ * The esx/cax fields are the reason an inbound address is not simply a physical
+ * address: bits [44:42] of what the device emits select attributes, so a device
+ * reaching DRAM through BAR2 targets OCTEON_BAR2_PCI_ADDRESS (0x8000000000)
+ * plus the physical address, not the bare physical address.
+ */
+static void ffn_bde_probe_pem_regs(int port)
+{
+	u64 bar_ctl, b0, b1, b2, ctl_status;
+	unsigned int bar1_siz, bar2_enb, bar2_esx, bar2_cax;
+
+	if (port < 0 || port > 3) {
+		pr_warn(DRV ": probe_pem=%d is not a PCIe port\n", port);
+		return;
+	}
+
+	bar_ctl    = cvmx_read_csr(CVMX_PEMX_BAR_CTL(port));
+	b0         = cvmx_read_csr(CVMX_PEMX_P2N_BAR0_START(port));
+	b1         = cvmx_read_csr(CVMX_PEMX_P2N_BAR1_START(port));
+	b2         = cvmx_read_csr(CVMX_PEMX_P2N_BAR2_START(port));
+	ctl_status = cvmx_read_csr(CVMX_PEMX_CTL_STATUS(port));
+
+	bar1_siz = (unsigned int)((bar_ctl >> 4) & 0x7);
+	bar2_enb = (unsigned int)((bar_ctl >> 3) & 0x1);
+	bar2_esx = (unsigned int)((bar_ctl >> 1) & 0x3);
+	bar2_cax = (unsigned int)(bar_ctl & 0x1);
+
+	pr_info(DRV ": PEM%d inbound configuration\n", port);
+	pr_info(DRV ":   PEMX_BAR_CTL        0x%016llx\n",
+		(unsigned long long)bar_ctl);
+	pr_info(DRV ":     bar1_siz %u  bar2_enb %u  bar2_esx %u  bar2_cax %u\n",
+		bar1_siz, bar2_enb, bar2_esx, bar2_cax);
+	pr_info(DRV ":   P2N_BAR0_START      0x%016llx\n",
+		(unsigned long long)b0);
+	pr_info(DRV ":   P2N_BAR1_START      0x%016llx\n",
+		(unsigned long long)b1);
+	pr_info(DRV ":   P2N_BAR2_START      0x%016llx\n",
+		(unsigned long long)b2);
+	pr_info(DRV ":   PEMX_CTL_STATUS     0x%016llx\n",
+		(unsigned long long)ctl_status);
+
+	if (!bar2_enb)
+		pr_warn(DRV ":   bar2_enb is CLEAR -- inbound writes to BAR2 get "
+			"UR and are dropped. This is why the chip reports DMA "
+			"complete and nothing lands in DRAM.\n");
+	else
+		pr_info(DRV ":   bar2_enb is set, so BAR2 responds; a device "
+			"reaches DRAM at OCTEON_BAR2_PCI_ADDRESS (0x8000000000) "
+			"+ phys, NOT at the bare physical address.\n");
+}
+
+
+/*
+ * Fill / dump the DMA region from the kernel side.
+ *
+ * Deliberately uses d->dma_cpu rather than a fresh mapping: that is the exact
+ * memory dma_alloc_coherent handed out and whose bus address the device was
+ * given, so what it shows is what the device should have written to. Reading it
+ * any other way reintroduces the question this is meant to settle.
+ */
+static int ffn_bde_dma_probe_set(const char *val, const struct kernel_param *kp)
+{
+	struct ffn_bde_dev *d = &ffn_bde_devs[0];
+	unsigned int i, nonpat = 0;
+	const u32 *w;
+	char cmd[16];
+	size_t n;
+
+	if (!d->dma_cpu) {
+		pr_warn(DRV ": no DMA region to probe\n");
+		return -ENODEV;
+	}
+
+	n = strlcpy(cmd, val, sizeof(cmd));
+	if (n >= sizeof(cmd))
+		return -EINVAL;
+	while (n && (cmd[n - 1] == 10 || cmd[n - 1] == 13 || cmd[n - 1] == 32))
+		cmd[--n] = 0;
+
+	if (!strcmp(cmd, "fill")) {
+		memset(d->dma_cpu, 0xff, 4096);
+		/* Make sure it is visible to the device before it starts. */
+		wmb();
+		pr_info(DRV ": DMA region first 4K filled with 0xff (kernel "
+			"mapping %p, bus 0x%llx)\n", d->dma_cpu,
+			(unsigned long long)d->dma_handle);
+		return 0;
+	}
+
+	if (strcmp(cmd, "show"))
+		return -EINVAL;
+
+	rmb();
+	w = (const u32 *)d->dma_cpu;
+	pr_info(DRV ": DMA region, words that are no longer the 0xff "
+		"pattern (kernel coherent mapping):\n");
+	for (i = 0; i < 1024; i++) {
+		if (w[i] == 0xffffffffu)
+			continue;
+		nonpat++;
+		/* Cap the log: the shape is visible long before 1024. */
+		if (nonpat <= 24)
+			pr_info(DRV ":   +0x%04x  %08x\n", i * 4, w[i]);
+	}
+	if (nonpat > 24)
+		pr_info(DRV ":   ... and %u more\n", nonpat - 24);
+	pr_info(DRV ": %u of 1024 words in the first 4K differ -- %s\n",
+		nonpat,
+		nonpat ? "the device DID write here" :
+		"nothing was written through this mapping");
 	return 0;
+}
+
+static const struct kernel_param_ops ffn_bde_dma_probe_ops = {
+	.set = ffn_bde_dma_probe_set,
+};
+module_param_cb(dma_probe, &ffn_bde_dma_probe_ops, NULL, 0200);
+MODULE_PARM_DESC(dma_probe,
+	"write \"fill\" to stamp the DMA region with 0xff, or \"show\" to "
+	"dump it, both through the kernel coherent mapping. Use this rather "
+	"than /dev/mem when the question is whether the device wrote at all: "
+	"it reads the same memory the device was pointed at.");
+
+
+static void ffn_bde_probe_bar0_range(struct ffn_bde_dev *d)
+{
+	void __iomem *bar0;
+	unsigned int start = (unsigned int)probe_bar0_off & ~3u;
+	unsigned int n = (unsigned int)probe_bar0_n;
+	unsigned int i;
+
+	if (n > 64)
+		n = 64;
+	if (!d->bar_len[0] || start + n * 4 > d->bar_len[0]) {
+		pr_warn(DRV ": ad-hoc BAR0 probe 0x%04x+%u words is outside "
+			"BAR0 (%llu bytes)\n", start, n,
+			(unsigned long long)d->bar_len[0]);
+		return;
+	}
+	bar0 = ioremap(d->bar_start[0], d->bar_len[0]);
+	if (!bar0) {
+		pr_warn(DRV ": cannot map BAR0 for the ad-hoc probe\n");
+		return;
+	}
+	pr_info(DRV ": ad-hoc probe BAR0+0x%04x, %u words\n", start, n);
+	for (i = 0; i < n; i++) {
+		unsigned int off = start + i * 4;
+		volatile u32 *p =
+			(volatile u32 *)((unsigned long)bar0 + off);
+		u32 v = 0;
+
+		if (get_dbe(v, p))
+			pr_info(DRV ":   BAR0+0x%04x  BUS ERROR\n", off);
+		else
+			pr_info(DRV ":   BAR0+0x%04x  0x%08x\n", off, v);
+	}
+	iounmap(bar0);
 }
 
 /* ------------------------------------------------------------- discovery -- */
@@ -352,7 +1146,17 @@ static int ffn_bde_scan(void)
 	 * device is still enumerable and the log says byte order is unconfigured,
 	 * which is more useful than refusing to load.
 	 */
-	ffn_bde_paxb_be_enable(d);
+	ffn_bde_set_master(d);
+	ffn_bde_paxb_init(d);
+	ffn_bde_irq_setup(d);
+	if (probe_bar2)
+		ffn_bde_probe_bar2_regs(d);
+	if (probe_bar2_n)
+		ffn_bde_probe_bar2_range(d);
+	if (probe_bar0_n)
+		ffn_bde_probe_bar0_range(d);
+	if (probe_pem >= 0)
+		ffn_bde_probe_pem_regs(probe_pem);
 	return 1;
 }
 
@@ -564,10 +1368,15 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 *   *a1 = d0
 		 *   *a2 = d1
 		 *
-		 * So dx.dw[0..1] carry the region's physical address split low
-		 * then high. Both d0 and d1 are the size: d1 is the length the
-		 * client hands to mmap. It was zero here at first, and the SDK
-		 * duly printed "DMA pool size: 1" and mmapped one byte.
+		 * The three outputs go to three consecutive globals, and they
+		 * are three DIFFERENT things:
+		 *
+		 *   dx.dw[1]:dw[0] -> _cpu_pbase, what the client mmaps
+		 *   d0             -> _dma_pbase, what the DEVICE targets
+		 *   d1             -> _dma_size,  also the mmap length
+		 *
+		 * d1 was zero here at first and the SDK duly printed
+		 * "DMA pool size: 1" and mmapped one byte.
 		 */
 		if (!d->dma_cpu) {
 			io.rc = (u32)-1;
@@ -586,7 +1395,23 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		 * with length 1 -- and it said so, printing "DMA pool size: 1",
 		 * which was misread as a count rather than a size in bytes.
 		 */
-		io.d0 = (u32)d->dma_size;
+		/*
+		 * d0 is _dma_pbase: the address the DEVICE uses. It is NOT
+		 * the size. _l2p() computes every DMA target as
+		 * _dma_pbase + (laddr - _dma_vbase), so reporting the size
+		 * here pointed the chip at 0x400000 and it DMA'd there --
+		 * cleanly, with SBUSDMA STATUS DONE and no error bits, just
+		 * into the wrong memory. The SDK then failed its own block
+		 * access check because nothing it expected was there.
+		 *
+		 * dx.dw[1]:dw[0] stays the CPU physical base, which is a
+		 * different thing and is what the client mmaps. On this
+		 * platform the two coincide, and ffn_bde_dma_setup() checks
+		 * that rather than assuming it -- but they are reported
+		 * separately because the client keeps them separate.
+		 */
+		io.d0 = lower_32_bits(d->dma_handle);
+		io.d3 = upper_32_bits(d->dma_handle);	/* OpenBCM kmod: d3 = dma_pbase >> 32 */
 		io.d1 = (u32)d->dma_size;
 		io.d2 = (u32)dma_d2;
 		break;
@@ -660,6 +1485,80 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 		io.dx.dw[2] = (u32)be_other;
 		pr_info(DRV ": bus_features -> be_pio=%d be_packet=%d be_other=%d\n",
 			be_pio, be_packet, be_other);
+		break;
+
+	case 6:	/* enable_interrupts */
+		/*
+		 * _enable_interrupts (linux-user-bde.c:1136) asserts on the
+		 * result at line 1139, so this must succeed. It is called by
+		 * _interrupt_connect AFTER the thread is already spinning in
+		 * command 9, so all it has to do is un-mask.
+		 */
+		ffn_bde_irq_rearm(d);
+		io.rc = 0;
+		break;
+
+	case 7:	/* disable_interrupts */
+		ffn_bde_irq_mask(d);
+		io.rc = 0;
+		break;
+
+	case 9: {	/* wait_for_interrupt -- BLOCKS, see below */
+		u32 seen;
+		long w;
+
+		/*
+		 * This is the one command that sleeps, and two things about
+		 * that matter.
+		 *
+		 * First, the caller holds ffn_bde_lock for the whole switch.
+		 * Sleeping under it would deadlock every other command against
+		 * an interrupt thread that is idle by design, so drop it across
+		 * the wait and take it back before leaving.
+		 *
+		 * Second, sample the sequence BEFORE re-arming. An interrupt
+		 * that lands between the re-arm and the sleep still moves the
+		 * counter past the sampled value, so wait_event sees the
+		 * condition already true and returns rather than sleeping
+		 * through it.
+		 */
+		seen = (u32)atomic_read(&d->irq_seq);
+		ffn_bde_irq_rearm(d);
+		mutex_unlock(&ffn_bde_lock);
+
+		if (intr_poll_ms > 0)
+			w = wait_event_interruptible_timeout(d->irq_wq,
+				(u32)atomic_read(&d->irq_seq) != seen,
+				msecs_to_jiffies(intr_poll_ms));
+		else
+			w = wait_event_interruptible(d->irq_wq,
+				(u32)atomic_read(&d->irq_seq) != seen);
+
+		mutex_lock(&ffn_bde_lock);
+		d->irq_seen = (u32)atomic_read(&d->irq_seq);
+		(void)w;
+		/*
+		 * Always report success, including on a signal. The client
+		 * ignores the value and simply runs its handlers; reporting a
+		 * failure would only invite it to treat an ordinary wakeup as
+		 * an error.
+		 */
+		io.rc = 0;
+		break;
+	}
+
+	case 22:	/* irq_mask_set */
+		/*
+		 * The vendor uses this to push a chip interrupt mask down. We
+		 * deliberately do NOT write chip registers from here -- the SDK
+		 * owns them and masking is handled at the controller instead.
+		 * Log the value so its meaning can be established from real
+		 * traffic rather than guessed.
+		 */
+		pr_info(DRV ": irq_mask_set dev=%u d0=0x%x d1=0x%x d2=0x%x "
+			"d3=0x%x (recorded, not applied to the chip)\n",
+			in.dev, in.d0, in.d1, in.d2, in.d3);
+		io.rc = 0;
 		break;
 
 	default:
@@ -739,7 +1638,15 @@ static int ffn_bde_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	pr_info(DRV ": mmap entered: phys 0x%llx len %lu (bar match %u)\n",
 		phys, len, i);
-	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+	/*
+	 * Registers must be uncached. The DMA region must NOT be: the
+	 * device's inbound writes land in L2 (PEM bar2_cax = 0) and the
+	 * kernel's own coherent mapping is cached, so an uncached view
+	 * here would read around the data the SDK is waiting for. That
+	 * mismatch is what 'Failed accessing DMA' actually was.
+	 */
+	if (i < 6)
+		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff, len,
 			    vma->vm_page_prot))
 		return -EAGAIN;
@@ -816,6 +1723,7 @@ static int __init ffn_bde_init(void)
 
 static void __exit ffn_bde_exit(void)
 {
+	ffn_bde_irq_teardown(&ffn_bde_devs[0]);
 	if (ffn_bde_devs[0].dma_cpu)
 		dma_free_coherent(&ffn_bde_devs[0].pdev->dev,
 				  ffn_bde_devs[0].dma_size,
