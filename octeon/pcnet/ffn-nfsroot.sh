@@ -14,12 +14,32 @@
 # generous time to come up after this OCTEON boots.
 BB=busybox
 NFS_SERVER=127.1.1.1
-NFS_EXPORT=/opt/dpfs
-MNT=/tmp/dpfs
-MOUNT_WAIT=90        # seconds to wait for the MP before giving up to a shell
+# The CP's own root on the appliance's dedicated mirrored NFS volume
+# (install-to-disk.sh creates it; provision.sh exports it to the PCIC
+# subnet only). NOT /opt/dpfs: that is the vendor CentOS 7 tree, whose
+# glibc is 2.16 and which SIGSEGVs the instant bash starts on a 6.18
+# kernel. The mount worked; the binaries did not. cproot/ holds a
+# glibc-2.41 Buildroot tree -- the same userland the initramfs runs, so
+# already proven on this kernel. /opt/dpfs stays exported for anything
+# that needs the vendor tree.
+NFS_EXPORT=/opt/ffn-nfs/cproot
+MNT=/tmp/cproot
+# 90s could never work: the host end cannot come up until the boot
+# script's --watch window closes and releases /run/ffn-octeon-ctl.lock.
+# Measured 165s on the first real 6.18 boot.
+MOUNT_WAIT=300       # seconds to wait for the MP before giving up to a shell
 
 say() { echo "ffn-nfsroot: $*"; }
-fallback() { say "$* -- dropping to a console"; exec $BB sh; }
+# NOTE: this exec REPLACES the script, so init's respawn loop cannot retry
+# the mount -- the console parks here. That is deliberate (a boot must never
+# lose its shell to a transport that is not up yet), but it means the mount
+# has to be finished by hand, so say how. ffn_pcnetd is supervised
+# separately in init and recovers on its own regardless.
+fallback() {
+	say "$* -- dropping to a console"
+	say "to finish the mount once the MP answers: sh /sbin/ffn-nfsroot.sh"
+	exec $BB sh
+}
 
 # Already mounted (a previous run)? Just re-enter it.
 if [ -e "$MNT/bin/bash" ]; then
