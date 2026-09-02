@@ -67,3 +67,48 @@ destination, but they print nothing on this build — `Signal DB for qmx was not
 
 * `ffn_itmhsend.py` — send a frame with an arbitrary 32-bit header prepended.
 * `ffn_tmrecv.py`   — capture and hex-dump what the chip puts in front of a frame on a TM out port.
+
+## Verified: the header is 4 bytes at offset 0
+
+The first claim of this was unsound. The probe frames began `ff:ff:ff:ff:ff:ff`, so a header read at
+offset 0, 1 or 2 all sees `0xffffffff` and reports `snoop = 15` regardless — the observation could
+not distinguish them.
+
+`ffn_offsetprobe.py` plants a *different* snoop nibble at each candidate offset (byte 3 = `0x30`,
+byte 5 = `0x70`, byte 7 = `0xb0`) and lets the chip name the one it read:
+
+    Committed_snoop: bcmRxTrapItmhSnoop3        snoop 3 = byte 3 => header at offset 0
+
+So layout and position are both settled. Note `diag pp Frwrd_Decision_Trace` *does* print the
+Committed_snoop and Considered-trap sections despite the missing signal DB; only the
+resolved-destination part is lost.
+
+## Verified: ingress and egress headers are different structures
+
+Feeding the chip its own emitted word back in settles it. The 4 → 5 capture produced `00 05 00 04`;
+injecting exactly `0x00050004` at port 4 (`in=TM`, with a VOQ built for port 5) was rejected —
+`IqmRjctQnvalidErrPktCnt` for all 30 frames, zero enqueued.
+
+`[dest16][src16]` therefore describes only what the chip **emits**. Sweeping that shape on ingress
+cannot work, which accounts for a large share of the failed attempts.
+
+## Withdrawn: the flow-region hypothesis
+
+`dtm_flow_mapping_mode_region_*` governs **queue connectors**, and our connector is allocated at id
+16 — far below the configured regions 65–128 — yet traffic flows through it. More decisively, **qid 4
+is a demonstrably valid queue**: `force_forward` drives real traffic through it. "Queue not valid" is
+therefore not a statement about the queue; the ITMH destination simply never resolves to it.
+
+Which sharpens the open question rather than answering it. The config says what the field means:
+
+    # Set the Base Queue to be added to the packet flow-id
+    # when the Flow-Id is set explicitely either by the ITMH
+    flow_mapping_queue_base.BCM88650=0
+
+so queue = flow_id + 0, and `dst_prt = 4` ought to hit our VOQ. It does not, for any `type` and with
+`ext` either way. That contradiction is the thing to resolve next.
+
+One lead not yet eliminated: `bcmRxTrapVlanTagDiscard` appears in every Considered-trap list at
+**trap_strength 4**, above the ITMH snoop's 3, and the injected frames are untagged. `Committed_trap`
+reads "Not valid", so it is not plainly firing — but it is the only strength-4 trap present and is
+worth ruling out before blaming the destination field.
