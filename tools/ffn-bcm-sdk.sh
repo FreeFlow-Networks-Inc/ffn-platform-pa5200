@@ -53,7 +53,11 @@ fi
 ulimit -c unlimited
 echo "/tmp/core.%e.%p" > /proc/sys/kernel/core_pattern 2>/dev/null
 
-cd /usr/share/broadcom || exit 1
+# Config directory. Defaults to the vendor tree, read in place. Point
+# FFN_BCM_DIR at a COPY to change SOC properties -- never edit the vendor
+# files: bcm.user takes config.bcm, rc.soc and jer.soc from the CWD.
+cd ${FFN_BCM_DIR:-/usr/share/broadcom} || exit 1
+echo "--- config dir: $(pwd) ---" >> "$LOG" 2>/dev/null || true
 {
 	echo "=== ffn-bcm-sdk $(date) ==="
 	echo "--- uptime: $(cat /proc/uptime) ---"
