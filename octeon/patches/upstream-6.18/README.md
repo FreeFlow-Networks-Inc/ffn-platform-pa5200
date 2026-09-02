@@ -99,3 +99,38 @@ CP and 78xx for the DP *are* needed).
     scripts/config --set-val SERIAL_8250_NR_UARTS 8 \
                    --set-val SERIAL_8250_RUNTIME_UARTS 8 --disable SERIAL_8250_PCI
     make olddefconfig && make -j8 vmlinux
+
+## Userland: embed the Buildroot rootfs, and `ffn_rootfs=` disappears
+
+Tranche 1 also removes the fourth 4.9 patch. Setting `CONFIG_INITRAMFS_SOURCE` to a cpio of the
+Buildroot tree makes the kernel self-contained, which deletes the whole `ffn_rootfs=` mechanism
+along with the staging region at `0x22000000`, its derived overlay reserve, the two-derivations
+hazard, the NFS root, and the vendor `/opt/dpfs` dependency. **So 6.18 needs ONE patch where 4.9
+needed four.**
+
+The DP's existing Buildroot output is reusable on the CP as-is -- verified, not assumed. Its binaries
+are `ELF 64-bit MSB ... Flags: octeon3, mips64r2`, the same ISA the CN73XX needs, and it carries
+glibc, bash, busybox and python3.12.
+
+    unsquashfs -d tree ffn-dp-buildroot.squashfs        # 19.6 MB -> 80 MB, 1837 entries
+    cp ffn_init.sh tree/init && chmod 0755 tree/init    # it has sbin/init but NO /init
+    chown -R 0:0 tree                                   # a non-root cpio gives uid-1000 files
+    (cd tree && find . | cpio -o -H newc > rootfs.cpio)
+    scripts/config --set-str INITRAMFS_SOURCE /path/to/rootfs.cpio
+    scripts/config --enable RD_XZ --enable INITRAMFS_COMPRESSION_XZ
+    scripts/config --enable DEVTMPFS --enable DEVTMPFS_MOUNT
+
+**The self-contained kernel is smaller to stage than what runs today**: 27.9 MB in one piece against
+10.1 MB kernel + 27.5 MB overlay = 37.6 MB in two. XZ takes the 80 MB rootfs to 16.6 MB. Confirm the
+payload landed via `__initramfs_start`/`__initramfs_size` in `System.map` and the size delta -- the
+compressed blob's plaintext will NOT appear in `strings`, so its absence proves nothing.
+
+`ffn_init.sh` is deliberately self-reporting. This is a first boot of a kernel nobody has booted, on
+a serial console with no network and no NFS, so it prints the answer to every verification question
+at once: MemTotal and core count (does upstream's `ULLONG_MAX` really give the full DRAM with no
+`mem=`?), the `System RAM` ranges (did `ffn_reserve=` punch holes?), kpageflags at the four transport
+bases, the `FFN:`/`Device Tree` dmesg lines (did `__fdt`-by-name work?), the CIU3 interrupt lines,
+and `/sys/class/net`.
+
+**Expect `/sys/class/net` to be EMPTY.** `octeon3-ethernet` is tranche 4, so a boot with no network
+is the correct result here, not a failure.
