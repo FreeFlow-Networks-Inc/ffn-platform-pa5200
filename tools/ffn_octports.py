@@ -1,6 +1,29 @@
 #!/usr/bin/env python3
 """ffn_octports -- enumerate the interface ports the OCTEON owns.
 
+CORRECTION 2026-09-01: "the DP owns the front panel" below is WRONG
+-------------------------------------------------------------------
+Measured on the live DP, the GSER (SerDes) lane assignment disproves it:
+
+    GSER0  = 0x01  PCIE (endpoint, to the CP)
+    GSER4  = 0x14  BGX + BGX_QUAD  -- the ONE 40G link, to BCM xl24
+    GSER5, GSER8..13 = 0x02  ILA (Interlaken)
+    GSER1,2,3,6,7 = 0x00  unassigned
+
+No SerDes lanes are routed to BGX0/1/3/4/5, so their MACs are attached to
+nothing. `CMR_RX_LMACS = 4` on those blocks is a RESET DEFAULT, not evidence of
+wiring -- which is exactly the trap the "6 blocks x 4 LMACs = 24" arithmetic
+below falls into. The match with platform.portcount = 24 is a coincidence.
+
+The DP's entire outside connectivity is: PCIe to the CP, one 40G BGX to the
+BCM88375, and seven QLMs of Interlaken (very likely the FE100; the BCM carries
+ILKN4 on port 20, down, "no ELK device"). The front panel is on the BCM -- see
+ffn_bcmports.py.
+
+Rule this cost us: the CMR tells you what a block COULD do; only GSER tells you
+whether anything is CONNECTED. Read GSER before enabling any BGX LMAC.
+
+
 The problem
 -----------
 A PA-5220 shows only seven NICs on the x86 bus, all management-class. Its 24

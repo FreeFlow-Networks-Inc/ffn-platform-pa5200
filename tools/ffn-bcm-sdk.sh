@@ -53,7 +53,20 @@ fi
 ulimit -c unlimited
 echo "/tmp/core.%e.%p" > /proc/sys/kernel/core_pattern 2>/dev/null
 
-cd /usr/share/broadcom || exit 1
+# Config directory. Defaults to the vendor tree, read in place. Point
+# FFN_BCM_DIR at a COPY to change SOC properties -- never edit the vendor
+# files: bcm.user takes config.bcm, rc.soc and jer.soc from the CWD.
+#
+# CWD IS NOT ENOUGH. bcm.user carries absolute /usr/share/broadcom paths --
+# jer.soc even writes runningConfig.soc back there by absolute path -- so a
+# copy is only actually READ when BCM_CONFIG_FILE names it. Every config
+# change made before this was silently inert: the copy said RAW while the
+# chip still reported port_header_type=tm.
+cd ${FFN_BCM_DIR:-/usr/share/broadcom} || exit 1
+if [ -n "${FFN_BCM_DIR:-}" ]; then
+	BCM_CONFIG_FILE="$FFN_BCM_DIR/config.bcm"; export BCM_CONFIG_FILE
+fi
+echo "--- config dir: $(pwd) ---" >> "$LOG" 2>/dev/null || true
 {
 	echo "=== ffn-bcm-sdk $(date) ==="
 	echo "--- uptime: $(cat /proc/uptime) ---"
