@@ -1,0 +1,101 @@
+# Forward port to upstream Linux 6.18 LTS — tranche 1
+
+**These patches target UPSTREAM `linux-6.18.49`. The series in the parent directory
+(`0001`–`0003`) targets the SDK's `4.9.57` tree. They are NOT interchangeable and must never be
+applied to the same base** — the 4.9 patches use `add_memory_region`/`boot_mem_map`, which no longer
+exist in `arch/mips`, and the 6.18 patch assumes `memblock_add`.
+
+## Status: BUILDS, NOT YET BOOTED
+
+Built warning-clean with the kernel.org crosstool GCC 14.4.0 mips64 (big-endian) against
+`linux-6.18.49` + `cavium_octeon_defconfig`. `vmlinux` is 11.3 MB stripped. **It has not been booted
+on hardware.** Do not treat any of the runtime behaviour below as verified until it has.
+
+## Why a forward port is cheap here
+
+Stock upstream 6.18.49 builds for this SoC with **zero patches**, and the symbols the CP needs are in
+the resulting image:
+
+    octeon_irq_init_ciu3           PRESENT
+    cvmx_bootmem_find_named_block  PRESENT
+    plat_mem_setup                 PRESENT
+
+CIU3 — the OCTEON III interrupt controller, and the single biggest risk in the port — is fully
+upstream: `octeon_irq_init_ciu3()`, the `cavium,octeon-7890-ciu3` compatible, IP2/IP3 handlers,
+mailbox, SMP affinity. (The Cavium upstreaming tracker's note that "all the ciu3 code was deleted"
+describes an intermediate state during upstreaming, not the outcome.)
+
+## What this patch contains, and what it drops
+
+| 4.9 patch | fate on 6.18 |
+|---|---|
+| `ffn_mem=auto` | **DROPPED — obsolete.** Upstream `setup.c` has `max_memory = ULLONG_MAX`; it already takes all memory. The 512 MB cap that patch existed to lift is a Cavium SDK-ism. |
+| `ffn_reserve=` | **~180 lines → ~10.** `boot_mem_map`, `add_memory_region` and `BOOT_MEM_RAM` are gone from `arch/mips`; `plat_mem_setup()` calls `memblock_add()` directly, so a reservation is just `memblock_reserve()` with no chunk-splitting. Applied at the END of `plat_mem_setup()`, after every add, so it cannot be undone by a later add — and unlike the 4.9 form it does not depend on allocator ordering. |
+| `__fdt` by name | ports as-is (`cvmx_bootmem_find_named_block` is upstream) |
+| bootdesc FDT validation | **still required — this is an UPSTREAM bug.** See below. |
+
+247 added lines, against 457 for the 4.9 equivalent.
+
+## The upstream bug this fixes
+
+Upstream `device_tree_init()` does:
+
+    if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
+            fdt = phys_to_virt(octeon_bootinfo->fdt_addr);
+            if (fdt_check_header(fdt))
+                    panic("Corrupt Device Tree passed to kernel.");
+
+`fdt_addr` is **not bounds-checked before being dereferenced**. On the PCIe / L2-cache boot path the
+bootloader leaves that field uninitialised — observed on a PA-5220 CP as `0x830001756e6b6e6f`, which
+is ASCII for the tail of the string `"unknown"` — and `phys_to_virt()` of it is unmapped, so
+`fdt_check_header()` takes a fault *before* it can reach the `panic()` that was meant to report the
+problem. The boot hangs with no message at all.
+
+This is worth sending upstream once it has been validated on hardware.
+
+## Config changes also required (not in the patch)
+
+The stock `cavium_octeon_defconfig` reproduces a trap already known on this board:
+
+    CONFIG_SERIAL_8250_NR_UARTS=2      ->  8
+    CONFIG_SERIAL_8250_RUNTIME_UARTS=2 ->  8
+    CONFIG_SERIAL_8250_PCI=y           ->  n
+
+The Exar XR17V354 quad UART on the OCTEON's own PCIe bus claims both 8250 slots, so the internal
+UARTs fail with `-28` (ENOSPC) and never become ttys. `console=ttyS0` then binds to the *Exar*, and
+all output — including any panic — goes out a port nobody is reading.
+
+Also note `CONFIG_DEVMEM=y` with `CONFIG_STRICT_DEVMEM` unset, exactly as on 4.9. The upgrade does
+**not** hand you that hardening: enabling it would break `ffn_cpdpd`/`ffn_pcnetd`, which mmap
+`/dev/mem`. That requires moving the transports to a real driver interface first.
+
+## Remaining tranches
+
+2. cvmx executive + register headers — bulk but mechanical, BSD-3 licensed.
+3. pcnet/cpdp transports as a chardev/uio driver rather than `/dev/mem` (the `STRICT_DEVMEM`
+   prerequisite).
+4. BGX + `octeon3-ethernet` — **~4,433 lines** is the real OCTEON III gap
+   (`octeon3-ethernet.c` 2679, `octeon-bgx-nexus.c` 728, `octeon-bgx-port.c` 607, plus headers).
+   `drivers/staging/octeon/` is back upstream in 6.18 and covers the OCTEON I/II path, so 11 of the
+   24 SDK ethernet files already have upstream homes. The MAC half can be aligned against upstream
+   `drivers/net/ethernet/cavium/thunder/thunder_bgx.c` (1418 lines) — ThunderX uses the same BGX IP
+   and is maintained. The packet path (PKI/SSO/PKO3/FPA3) has no upstream analogue.
+5. FPA3/PKI/SSO/PKO3 — only when the packet engine is genuinely being brought up.
+
+Deliberately excluded as not-this-hardware: `ethernet-srio.c`, `octeon-srio-nexus.c` (no SRIO),
+`octeon-pow-ethernet.c` (OCTEON II POW era), `octeon-75xx-errors.c` (not this chassis; 73xx for the
+CP and 78xx for the DP *are* needed).
+
+## Reproducing the build
+
+    # kernel.org crosstool, mips64-linux is BIG-endian (no "el")
+    wget .../pub/tools/crosstool/files/bin/x86_64/14.4.0/x86_64-gcc-14.4.0-nolibc-mips64-linux.tar.xz
+    # host deps: flex bison libssl-dev libelf-dev bc zstd
+    export PATH=$PWD/gcc-14.4.0-nolibc/mips64-linux/bin:$PATH
+    export ARCH=mips CROSS_COMPILE=mips64-linux-
+    cd linux-6.18.49
+    patch -p1 < .../upstream-6.18/0001-ffn-octeon-6.18.patch
+    make cavium_octeon_defconfig
+    scripts/config --set-val SERIAL_8250_NR_UARTS 8 \
+                   --set-val SERIAL_8250_RUNTIME_UARTS 8 --disable SERIAL_8250_PCI
+    make olddefconfig && make -j8 vmlinux
