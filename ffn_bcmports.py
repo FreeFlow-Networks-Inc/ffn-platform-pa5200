@@ -51,6 +51,7 @@ FRONT = "front"      # faceplate data port
 CP = "cp"            # link to the control-plane OCTEON (CN73XX)
 DP = "dp"            # link to the dataplane OCTEON (CN78xx)
 CPU = "cpu"          # the chip's own CPU port
+MP = "mp"            # link to the x86 management processor
 RECYCLE = "recycle"  # internal recycle path
 FABRIC = "fabric"    # ILKN / external-fabric
 UNKNOWN = "unknown"  # linked and real, but not yet identified
@@ -65,8 +66,8 @@ PORTS = {
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
     6:  ("XE29",   0, 6,  "RAW", "RAW_DSA",  FRONT,   ""),
     7:  ("XE64",   0, 7,  "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 16 (medium unknown)"),
-    8:  ("XE38",   0, 8,  "TM",  "RAW",      UNKNOWN, "KR+autoneg, up, low background RX; NOT the CP"),
-    9:  ("XE39",   0, 9,  "TM",  "RAW",      UNKNOWN, "KR+autoneg, up, low background RX; NOT the CP"),
+    8:  ("XE38",   0, 8,  "TM",  "RAW",      MP,      "MEASURED: MP enp8s0f1, MAC 00:0a:0b:0c:10:02"),
+    9:  ("XE39",   0, 9,  "TM",  "RAW",      MP,      "MEASURED: MP enp8s0f0, MAC 00:0a:0b:0c:10:01"),
     10: ("XE57",   0, 10, "RAW", "RAW_DSA",  FRONT,   ""),
     11: ("XE65",   0, 11, "RAW", "RAW_DSA",  FRONT,   ""),
     12: ("CGE1",   0, 12, "TM",  "RAW",      FRONT,   "front panel per enable_fp_ports.c, labelled HSCI"),
