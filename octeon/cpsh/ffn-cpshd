@@ -1,26 +1,22 @@
 #!/bin/sh
-# ffn-cpshd -- expose the CP shell to the MP over the PCIe link ONLY.
+# ffn-cpshd -- serve a shell on the CP over the pcnet PCIe link.
 #
-# SECURITY: binds 127.1.1.2 exclusively -- the CP pcnet (PCIe) address. The CP
-# has NO IP on eth0/eth1, so there is no physical-topology path to this port;
-# same isolation boundary the NFS server already relies on. Never bind 0.0.0.0.
-BIND=127.1.1.2
-PORT=2323
+# Was: busybox telnetd -b 127.1.1.2:2323 -l /bin/bash
+# The Buildroot rootfs busybox has no telnetd applet (only the client), so that
+# could never run here. This rootfs ships full OpenSSH instead, so use it:
+# reach the CP with `ssh root@127.1.1.2` from the MP.
+#
+# sshd needs /dev/pts for interactive sessions, and the lean initramfs does not
+# mount it, so do that first -- same as the telnetd version did.
 BB=/bin/busybox
-
-# telnetd needs devpts to allocate PTYs (the chroot only has an empty /dev/pts)
 if ! grep -q " /dev/pts " /proc/mounts 2>/dev/null; then
 	mkdir -p /dev/pts
 	mount -t devpts devpts /dev/pts 2>/dev/null
 fi
-
-# already running?
-if $BB pidof telnetd >/dev/null 2>&1; then
-	echo "ffn-cpshd: already running"
+if $BB pidof sshd >/dev/null 2>&1; then
+	echo "ffn-cpshd: sshd already running"
 	exit 0
 fi
-# -l /bin/bash: hand out a root shell directly (no login/PAM in this userland)
-$BB telnetd -b ${BIND}:${PORT} -l /bin/bash
-rc=$?
-echo "ffn-cpshd: telnetd on ${BIND}:${PORT} rc=$rc"
-exit $rc
+# -e sends the log to stderr so a boot-time failure is visible on the console
+# rather than vanishing into a syslog nobody is running.
+exec /usr/sbin/sshd -D -e
