@@ -16,7 +16,13 @@ nobody steals anybody's bytes. Writes are serialised through the FIFO in
 arrival order.
 
 Usage:
-    ffn_octconsoled.py start      # background, exclusive on /dev/ttyS1
+    ffn_octconsoled.py start      # RUNS IN THE FOREGROUND, exclusive on
+                                  # /dev/ttyS1 -- it does not fork. Start it as
+                                  # ffn-octconsoled.service, or background it
+                                  # yourself with setsid. Calling this from a
+                                  # script and expecting it to return will hang
+                                  # that script (it did exactly that to
+                                  # ffn-octeon-up.sh on every cold boot).
     ffn_octconsoled.py stop
     ffn_octconsoled.py status
 

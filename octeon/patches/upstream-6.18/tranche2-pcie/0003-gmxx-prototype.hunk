@@ -1,0 +1,16 @@
+ #ifndef __CVMX_GMXX_DEFS_H__
+ #define __CVMX_GMXX_DEFS_H__
+ 
+-static inline uint64_t CVMX_GMXX_HG2_CONTROL(unsigned long block_id)
++/*
++ * FFN: restored from upstream's cvmx-gmxx-defs.h, which this SDK header
++ * replaced. Defined in arch/mips/cavium-octeon/executive/
++ * cvmx-interrupt-rsl.c and called from cvmx-helper-{xaui,rgmii,sgmii}.c;
++ * the SDK does not ship those callers, so it never declared this.
++ * Mirrors cvmx-asxx-defs.h, the untouched upstream header for the
++ * sibling block.
++ */
++void __cvmx_interrupt_gmxx_enable(int interface);
++
++#if CVMX_ENABLE_CSR_ADDRESS_CHECKING
++static inline uint64_t CVMX_GMXX_BAD_REG(unsigned long offset)

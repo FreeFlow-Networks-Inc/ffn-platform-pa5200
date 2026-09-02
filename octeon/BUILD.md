@@ -28,6 +28,24 @@ OCTEON III with the 2x10G BGX2 NIF trunk up (`eth0`/`eth1`, `carrier=1`).
 
     S=/path/to/SDK-5.1.0/OCTEON-SDK
     patch -p0 -d $S/linux/kernel/linux < octeon/patches/0001-bootdesc-fdt-validation.patch
+    patch -p0 -d $S/linux/kernel/linux < octeon/patches/0002-ffn-rootfs-overlay.patch
+    patch -p1 -d $S/linux/kernel/linux < octeon/patches/0003-ffn-reserve-memauto-fdtname.patch
+
+Apply them in order: 0003 modifies the `ffn_fdt=` handling that 0001 introduces. Note the **`-p1`** on
+0003 -- it is a git-style diff with `a/` and `b/` prefixes, whereas 0001 and 0002 carry absolute paths
+and need `-p0`.
+
+`octeon/tests/` holds a host-side unit test for the 0003 arithmetic. It `#include`s the code
+**extracted verbatim** from the patched `setup.c`, so it tests what actually ships rather than a
+retyped copy:
+
+    python3 octeon/tests/extract.py          # pulls the blocks out of the patched setup.c
+    cc -Wall -Wextra -O2 -o t octeon/tests/ffn_reserve_test.c && ./t
+
+40 checks: exclusion arithmetic over the real 4 MB chunk pattern, malformed input, the repeated-
+parameter form, and the `ffn_mem=auto` reserve derivation. `extract.py` pulls line ranges, so if you
+add a function above the extracted block it fails loudly at compile time rather than silently testing
+stale code.
 
     $S/tools/bin/mips64-octeon-linux-gnu-gcc -O2 -mabi=64 -march=octeon3 \
         -mno-abicalls -fno-pic -fno-stack-protector -ffreestanding -nostdlib \
@@ -69,9 +87,62 @@ which looks exactly like a dead line or a wrong baud rate.
 
 Resulting command line:
 
-    bootoctlinux 0x21000000 numcores=4 console=ttyS0,115200n8 ffn_fdt=0x80000 rw
+    bootoctlinux 0x21000000 numcores=8 console=ttyS0,115200n8 \
+      ffn_rootfs=0x22000000,<len> ffn_reserve=0x22000000,<len> rw \
+      ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M
 
-### CORRECTED: you DO want `mem=`
+That is what `tools/ffn-octeon-up.sh` emits, verified on hardware 2026-09-01. Three things in it are
+worth understanding before changing any of them.
+
+**No `ffn_fdt=`.** With 0003 the kernel finds the tree by looking up the `cvmx_bootmem` named block
+`__fdt` through the descriptor at `/proc/octeon_info:phy_mem_desc_addr`, so the per-board constant is
+gone. `ffn_fdt=` still works and still wins as an override. **The kernel and the boot line must be
+deployed together**: dropping `ffn_fdt=` against a kernel without 0003 falls through to the
+uninitialised `octeon_bootinfo->fdt_addr` and the boot dies in `octeon_irq_init_ciu`.
+
+**`ffn_reserve=` is repeated, never a `;` list.** `;` is the u-boot command separator and this line is
+executed by u-boot: an unescaped one truncates the line and silently drops every argument after it --
+the later ranges, and `mem=`/`pktbuf=`/`wqe=` too. u-boot runs the first half, boots, and reports
+nothing. A backslash-escaped `\;` survives, but repetition needs no escaping at all. (Escaped `;` is
+the safer choice where one script must feed *many kernel versions*: repetition against a kernel
+predating 0003's outer loop keeps only the first range, silently.)
+
+**The overlay reserve is required, not tidiness.** The overlay is staged before Linux starts but
+consumed by Linux in `do_populate_rootfs`, i.e. after the allocator is live, so the kernel will hand
+those pages out before the unpacker reads them. Booting without it on 2026-09-01 gave
+`FFN: no cpio at 0x22000000 (magic ffffff80000000), skipping` -- kernel data written over the staged
+cpio -- and the CP came up with no overlay, hence no `/sbin/ffn-nfsroot` and no NFS root. Its size is
+emitted by `ffn_octboot.py` from the same `len(blob)` that sizes `ffn_rootfs=`; do not write it as a
+literal here, or the two derivations drift and the reserve under-covers a grown payload while the
+boot line still reads correctly.
+
+### SUPERSEDED by `ffn_mem=auto` -- kept for the trap, not the recommendation
+
+**Read this for the `memparse()` trap and the measurements. Do not follow its recommendation:**
+patch 0003 adds `ffn_mem=auto[,<reserve>]`, which sizes memory from what the board reports and
+removes the per-board `mem=` constant entirely. `mem=` still works and still wins.
+
+Why auto is better than a correct constant: `plat_mem_setup()` already computes the right figure and
+throws it away -- `cvmx_bootmem_available_mem(mem_alloc_size)` sums the cvmx free blocks at least one
+allocation unit large, which is exactly what the allocation loop can consume -- and then clamps it to
+`max_memory`, whose compile-time default is 512 MB. `ffn_mem=auto` uses that figure minus a reserve,
+because what Linux claims comes out of the cvmx free list and the FPA pools are allocated from that
+list later; starving them gives `cvmx_fpa3_pool_populate: out of memory` and a dead packet engine that
+presents as a misprogrammed ring. Reserve is `2 * (pktbuf + wqe) + max(avail/16, 256 MB)`, and the
+`avail/16` term is primary -- `pktbuf=`/`wqe=` are a bring-up placeholder on a board whose engine has
+never initialised, so a reserve derived from them alone would be arithmetic over a number that does
+not mean what it looks like.
+
+One measured warning about *any* `max_memory` change, `mem=` or auto: **it moves which physical
+addresses Linux manages, non-obviously.** cvmx hands out large blocks first, so fewer requests leave
+the low region untouched. On this CP, `mem=8G` put the second block at `0x20300000`, bare
+`ffn_mem=auto` (reserve 510 MB) moved it to `0x30300000`, and `ffn_mem=auto,256M` brought it back to
+`0x20700000` -- a 254 MB change in the reserve moved the FFN transport regions in and out of managed
+RAM. So never conclude a region is safe from a measurement taken at one `max_memory`, and keep its
+`ffn_reserve=` even on a boot where the log says it excluded nothing: the reservation is the only
+thing that does not depend on allocator ordering.
+
+The original section follows.
 
 This section previously said "do not add `mem=`, the bootmem descriptor sizes DRAM
 correctly by itself". **That is wrong, and it cost us real work.** It conflated a

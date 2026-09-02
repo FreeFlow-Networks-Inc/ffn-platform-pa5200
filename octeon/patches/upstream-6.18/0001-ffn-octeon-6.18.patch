@@ -1,0 +1,280 @@
+--- a/arch/mips/cavium-octeon/setup.c
++++ b/arch/mips/cavium-octeon/setup.c
+@@ -925,6 +925,144 @@
+ 
+ /* Exclude a single page from the regions obtained in plat_mem_setup. */
+ #ifndef CONFIG_CRASH_DUMP
++
++/*
++ * FFN: ffn_reserve=<base>,<size>  -- keep MP-owned DRAM out of the allocator.
++ *
++ * FFN's CP<->MP transports (the cpdp and pcnet rings, and the staging area for
++ * an ffn_rootfs= overlay) live at fixed physical addresses. The MP writes them
++ * through the PCIe BAR window before Linux starts, and ffn_cpdpd / ffn_pcnetd
++ * then mmap them out of /dev/mem and keep writing. They are NOT cvmx_bootmem
++ * named blocks -- the bases are bare physical addresses the MP picks -- so
++ * plat_mem_setup() hands them to memblock like any other DRAM, and the buddy
++ * allocator will hand the same pages to somebody else. Measured on a PA-5220
++ * CN73XX: /proc/kpageflags at each base read 0x400 (KPF_BUDDY), the same as an
++ * arbitrary free page, while the daemons were writing them. CONFIG_DEVMEM
++ * without CONFIG_STRICT_DEVMEM, so the mmap succeeds silently.
++ *
++ * This is the 6.x form of the fix and it is far simpler than the 4.9 one.
++ * arch/mips no longer has boot_mem_map / add_memory_region / BOOT_MEM_RAM;
++ * plat_mem_setup() calls memblock_add() directly, so a reservation is just
++ * memblock_reserve() and there is no need to split the chunk as it is added.
++ *
++ * The parameter MAY BE REPEATED, and that is the form to prefer:
++ *
++ *     ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M
++ *
++ * ';' is the u-boot command separator and this boot line is executed by u-boot,
++ * so an unescaped ';' truncates it and silently drops every argument after it --
++ * measured on a PA-5220 DP, where it took mem= and the pktbuf=/wqe= FPA sizing
++ * with it and u-boot booted the first half reporting nothing. A ';'-separated
++ * list is still accepted (a backslash-escaped '\;' survives u-boot), because a
++ * single script feeding many kernel versions is safer escaping in one place than
++ * relying on every kernel having this parser.
++ */
++#define FFN_RESERVE_MAX 8
++
++static struct {
++	u64 base;
++	u64 size;
++} ffn_reserve[FFN_RESERVE_MAX] __initdata;
++static int ffn_reserve_count __initdata;
++
++/* skip to the next entry, so one malformed entry costs only itself */
++static __init const char *ffn_reserve_next(const char *p)
++{
++	while (*p && *p != ';' && *p != ' ')
++		p++;
++	return (*p == ';') ? p + 1 : p;
++}
++
++static __init void ffn_reserve_parse_one(const char *p, int *rejected)
++{
++	while (*p && *p != ' ') {
++		u64 base, size, end;
++		char *endp;
++
++		if (ffn_reserve_count >= FFN_RESERVE_MAX) {
++			pr_warn("FFN: ffn_reserve: more than %d ranges, ignoring \"%s\"\n",
++				FFN_RESERVE_MAX, p);
++			return;
++		}
++
++		base = memparse(p, &endp);
++		if (endp == p || *endp != ',') {
++			pr_warn("FFN: ffn_reserve: expected <base>,<size> at \"%s\", skipping this entry\n",
++				p);
++			(*rejected)++;
++			p = ffn_reserve_next(p);
++			continue;
++		}
++		p = endp + 1;
++
++		size = memparse(p, &endp);
++		if (endp == p || !size) {
++			pr_warn("FFN: ffn_reserve: bad or zero size at \"%s\", skipping this entry\n",
++				p);
++			(*rejected)++;
++			p = ffn_reserve_next(p);
++			continue;
++		}
++		p = endp;
++
++		/* align outwards: a partial page must still be fully removed */
++		end = PAGE_ALIGN(base + size);
++		base &= PAGE_MASK;
++		ffn_reserve[ffn_reserve_count].base = base;
++		ffn_reserve[ffn_reserve_count].size = end - base;
++		ffn_reserve_count++;
++
++		if (*p != ';')
++			return;
++		p++;
++	}
++}
++
++/*
++ * Parse every occurrence, then apply. Reservations are applied AFTER
++ * plat_mem_setup() has finished adding memory, so a range is reserved whether
++ * or not the region it names was added -- memblock_reserve() on an address
++ * outside memblock.memory is harmless and still keeps it out of the allocator
++ * if it is added later.
++ */
++static __init void ffn_reserve_apply(void)
++{
++	const char *occ = arcs_cmdline;
++	int rejected = 0;
++	int i;
++
++	while ((occ = strstr(occ, "ffn_reserve=")) != NULL) {
++		occ += sizeof("ffn_reserve=") - 1;
++		if (ffn_reserve_count >= FFN_RESERVE_MAX)
++			break;
++		ffn_reserve_parse_one(occ, &rejected);
++	}
++
++	for (i = 0; i < ffn_reserve_count; i++) {
++		int rc = memblock_reserve(ffn_reserve[i].base,
++					  ffn_reserve[i].size);
++
++		if (rc) {
++			pr_err("FFN: ffn_reserve 0x%llx+0x%llx: memblock_reserve failed (%d) -- NOT protected\n",
++			       (unsigned long long)ffn_reserve[i].base,
++			       (unsigned long long)ffn_reserve[i].size, rc);
++			continue;
++		}
++		pr_info("FFN: ffn_reserve 0x%llx+0x%llx reserved, kept out of the allocator\n",
++			(unsigned long long)ffn_reserve[i].base,
++			(unsigned long long)ffn_reserve[i].size);
++	}
++
++	/*
++	 * Reported once, at error level. A rejected entry never reaches the
++	 * table, so nothing downstream can notice it -- and the failure mode
++	 * this whole parameter guards against is a region left quietly
++	 * unprotected while the boot line still reads exactly as intended.
++	 */
++	if (rejected)
++		pr_err("FFN: ffn_reserve: %d malformed entry/entries REJECTED -- the regions they named are NOT protected\n",
++		       rejected);
++}
+ static __init void memory_exclude_page(u64 addr, u64 *mem, u64 *size)
+ {
+ 	if (addr > *mem && addr < *mem + *size) {
+@@ -1087,6 +1225,13 @@
+ 	if (total == 0)
+ 		panic("Unable to allocate memory from "
+ 		      "cvmx_bootmem_phy_alloc");
++
++	/*
++	 * FFN: reserve the MP-owned transport regions. Done last, after every
++	 * memblock_add() above, so a reservation cannot be undone by a
++	 * subsequent add.
++	 */
++	ffn_reserve_apply();
+ }
+ 
+ /*
+@@ -1139,6 +1284,98 @@
+ 
+ void __init octeon_fill_mac_addresses(void);
+ 
++
++/*
++ * FFN: find the device tree by NAME, and never dereference an unvalidated
++ * fdt_addr.
++ *
++ * Two separate problems, both live in this file upstream.
++ *
++ * 1. u-boot publishes the tree it built for the board as the cvmx_bootmem named
++ *    block "__fdt" (on a PA-5220 CP: base 0x80000, size 0x20000, holding a tree
++ *    with magic d00dfeed and totalsize 0x136f). Looking it up by name is what
++ *    the vendor's own control-plane software does for every region it needs, and
++ *    it removes a per-board constant: each reclaimed board knows where its own
++ *    tree is, so ask the board. ffn_fdt=<addr> is kept as an override.
++ *
++ * 2. The octeon_bootinfo->fdt_addr path below dereferences phys_to_virt() of an
++ *    address it has not bounds-checked. On the PCIe / L2-cache boot path that
++ *    field is left UNINITIALISED -- observed as 0x830001756e6b6e6f, which is
++ *    ASCII for the tail of the string "unknown" -- and phys_to_virt() of it is
++ *    unmapped, so fdt_check_header() takes a fault BEFORE it can reach the
++ *    panic() that was supposed to report the problem. The boot hangs with no
++ *    message at all. Requiring the address to land inside real DRAM first turns
++ *    a silent hang into a diagnosable one, and lets the pruned built-in tree be
++ *    used instead.
++ */
++#define FFN_FDT_BLOCK "__fdt"
++
++static __init bool ffn_fdt_usable(u64 phys, const char *how)
++{
++	u64 dram_end = (u64)octeon_bootinfo->dram_size << 20;
++	const void *virt;
++
++	if (!phys || phys >= dram_end) {
++		pr_warn("FFN: %s gives 0x%llx, outside DRAM (size 0x%llx) -- ignoring\n",
++			how, (unsigned long long)phys,
++			(unsigned long long)dram_end);
++		return false;
++	}
++
++	virt = phys_to_virt(phys);
++	if (fdt_check_header(virt)) {
++		pr_warn("FFN: %s gives 0x%llx, no valid FDT there -- ignoring\n",
++			how, (unsigned long long)phys);
++		return false;
++	}
++
++	return true;
++}
++
++static __init u64 ffn_fdt_locate(void)
++{
++	const struct cvmx_bootmem_named_block_desc *nb;
++	const char *arg;
++	u64 phys;
++
++	/* an explicit ffn_fdt= wins: the operator may know better */
++	arg = strstr(arcs_cmdline, "ffn_fdt=");
++	if (arg) {
++		phys = simple_strtoull(arg + sizeof("ffn_fdt=") - 1, NULL, 0);
++		if (ffn_fdt_usable(phys, "ffn_fdt=")) {
++			pr_info("FFN: using Device Tree from ffn_fdt=0x%llx\n",
++				(unsigned long long)phys);
++			return phys;
++		}
++	}
++
++	/* otherwise ask the bootmem descriptor where u-boot put it */
++	nb = cvmx_bootmem_find_named_block(FFN_FDT_BLOCK);
++	if (!nb)
++		return 0;
++
++	phys = nb->base_addr;
++	if (!ffn_fdt_usable(phys, "named block \"" FFN_FDT_BLOCK "\""))
++		return 0;
++
++	/*
++	 * A valid header does not mean the reservation is big enough for the
++	 * tree it claims -- check the declared size against the block.
++	 */
++	if ((u64)fdt_totalsize(phys_to_virt(phys)) > nb->size) {
++		pr_warn("FFN: named block \"%s\" is 0x%llx bytes but its FDT claims 0x%x -- ignoring\n",
++			FFN_FDT_BLOCK, (unsigned long long)nb->size,
++			fdt_totalsize(phys_to_virt(phys)));
++		return 0;
++	}
++
++	pr_info("FFN: Device Tree found by name: \"%s\" at 0x%llx (0x%x of 0x%llx bytes)\n",
++		FFN_FDT_BLOCK, (unsigned long long)phys,
++		fdt_totalsize(phys_to_virt(phys)),
++		(unsigned long long)nb->size);
++
++	return phys;
++}
+ void __init device_tree_init(void)
+ {
+ 	const void *fdt;
+@@ -1153,10 +1390,16 @@
+ 		pr_info("Using appended Device Tree.\n");
+ 	} else
+ #endif
+-	if (octeon_bootinfo->minor_version >= 3 && octeon_bootinfo->fdt_addr) {
++	u64 ffn_fdt = ffn_fdt_locate();
++
++	if (ffn_fdt) {
++		fdt = phys_to_virt(ffn_fdt);
++		do_prune = false;
++		fill_mac = false;
++	} else if (octeon_bootinfo->minor_version >= 3 &&
++		   ffn_fdt_usable(octeon_bootinfo->fdt_addr,
++				  "octeon_bootinfo->fdt_addr")) {
+ 		fdt = phys_to_virt(octeon_bootinfo->fdt_addr);
+-		if (fdt_check_header(fdt))
+-			panic("Corrupt Device Tree passed to kernel.");
+ 		do_prune = false;
+ 		fill_mac = false;
+ 		pr_info("Using passed Device Tree.\n");

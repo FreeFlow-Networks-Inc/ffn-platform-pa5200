@@ -1,0 +1,25 @@
+[Unit]
+Description=FFN OCTEON CP bring-up (PCIe stage + NFS-root over pcnet)
+After=network-online.target nfs-server.service ffn-octconsoled.service
+Wants=nfs-server.service
+# The console broker owns /dev/ttyS1 and must already be up: readiness here
+# is read from its log, and it has to outlive this oneshot.
+#
+# Wants=, NOT Requires=. The broker runs Restart=always, and Requires= propagates
+# a required unit's restart to this one -- so a single broker blip stopped and
+# re-ran this oneshot, which RESETS AND RE-BOOTS THE OCTEON. That destroys all CP
+# state (loaded modules, /dev nodes, any running SDK session) and throws PCIe AER
+# CmpltTO storms on the MP while the NFS/pcnet path is still open. Observed
+# 2026-09-01 15:17:33: broker SIGKILLed -> scheduled restart -> CP re-booted under
+# a live ffn_bde session. Ordering (After=) plus the script's own broker_up()
+# gate, which aborts with a clear message, is all the coupling this needs.
+Wants=ffn-octconsoled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/ffn-ngfw-v2/tools/ffn-octeon-up.sh
+TimeoutStartSec=400
+
+[Install]
+WantedBy=multi-user.target
