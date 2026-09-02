@@ -1,0 +1,8 @@
+179: * xiface support, and defining FFN_QLM_HAVE_BGX restores this as-is.
+181:#ifdef FFN_QLM_HAVE_BGX
+208:#endif /* FFN_QLM_HAVE_BGX */
+225: * xiface support, and defining FFN_QLM_HAVE_BGX restores this as-is.
+227:#ifdef FFN_QLM_HAVE_BGX
+367:#endif /* FFN_QLM_HAVE_BGX */
+2533:#ifdef FFN_QLM_OWN_CDR_ERRATA
+2565:#endif /* FFN_QLM_OWN_CDR_ERRATA */
