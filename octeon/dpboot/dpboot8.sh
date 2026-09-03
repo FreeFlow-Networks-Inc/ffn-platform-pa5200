@@ -166,11 +166,17 @@ i=0
 while [ $i -lt 18 ]; do
   S=$(/usr/local/bin/ffn-dpsh --status 2>&1)
   case "$S" in *"agent v2"*) say "   UP: $S"
-    # The kernel logs one line per range it excludes. This is the only
-    # trustworthy check that a REPEATED ffn_reserve= ACCUMULATED rather than
-    # the last occurrence overwriting the earlier one: if just one range
-    # appears here, the other is NOT protected and the staged image will be
-    # handed out by the allocator.
+    # The kernel logs one line per range it parses. Two lines here prove a
+    # REPEATED ffn_reserve= ACCUMULATED rather than the last occurrence
+    # overwriting earlier ones -- one line would mean the other range was
+    # never even seen.
+    #
+    # Do NOT read "only 0x0 bytes were excluded" as a failure. Per
+    # octeon/dproot/DP-MEMORY.md, Linux takes its 30 GiB from 0x8ef00000
+    # UPWARD, so both staged regions sit ~1.73 GiB below the lowest managed
+    # page and there is genuinely nothing to exclude. That message is the
+    # correct result at this mem=, and kpageflags reads KPF_NOPAGE there.
+    # /proc/iomem is the authoritative check; kpageflags only corroborates.
     say "   ranges the DP kernel kept out of its memory map:"
     /usr/local/bin/ffn-dpsh -t 60 -c "dmesg | grep ffn_reserve" 2>&1 | grep -oE "0x[0-9a-f]+\+0x[0-9a-f]+.*" | sed "s/^/     /" | tee -a "$LOG"
     say "=== DP IS ALIVE ==="; exit 0;; esac
