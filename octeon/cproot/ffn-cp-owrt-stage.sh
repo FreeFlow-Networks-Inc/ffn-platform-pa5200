@@ -85,12 +85,29 @@ echo "== runtime dirs =="
 # Create them in the tree, and ship a helper to redo it at entry in case /tmp
 # is a tmpfs at that point.
 for d in lock run log state opkg-lists; do mkdir -p "$DEST/tmp/$d"; done
-{
-	printf '#!/bin/sh\n'
-	printf '# Recreate the dirs procd would have made. Safe to run repeatedly.\n'
-	printf 'for d in lock run log state opkg-lists; do mkdir -p "/tmp/$d"; done\n'
-	printf 'exit 0\n'
-} > "$DEST/sbin/ffn-cp-prepare"
+cat > "$DEST/sbin/ffn-cp-prepare" <<'PREP'
+#!/bin/sh
+# Recreate what procd would have done, and put the CP on the network.
+#
+# Nothing runs procd here: ffn-nfsroot.sh chroots straight into this root from
+# the initramfs. So the dirs OpenWrt assumes exist have to be made, or opkg
+# fails with "Could not create lock file /var/lock/opkg.lock" (/var -> /tmp).
+for d in lock run log state opkg-lists; do mkdir -p "/tmp/$d"; done
+
+# sshd's privilege-separation and pidfile dirs. Without these an unattended
+# boot reaches a CONSOLE shell only and the CP is unreachable over the PCIe
+# link until someone types at the serial port -- which is exactly the manual
+# step this whole change exists to remove.
+mkdir -p /run/sshd /var/empty
+if [ -x /usr/sbin/sshd ] && ! pidof sshd >/dev/null 2>&1; then
+	# Host keys are staged by ffn-cp-owrt-stage.sh on the MP; generate only if
+	# somehow absent, so a boot never blocks on missing keys.
+	[ -s /etc/ssh/ssh_host_ed25519_key ] || \
+		ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/ssh_host_ed25519_key </dev/null 2>/dev/null
+	/usr/sbin/sshd 2>/tmp/sshd.err && echo "ffn-cp-prepare: sshd started"
+fi
+exit 0
+PREP
 chmod +x "$DEST/sbin/ffn-cp-prepare"
 echo "   /tmp/{lock,run,log,state,opkg-lists} + /sbin/ffn-cp-prepare"
 

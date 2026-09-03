@@ -121,3 +121,50 @@ on bus `0003:01`.
 into `/usr/libexec` (`lspci` -> `/usr/libexec/lspci-pciutils`), which dangle
 when tested from outside the chroot. Test by running the binary, not by
 stat-ing the path.
+
+## Unattended boot
+
+The CP now boots to a working, reachable userland with no console interaction.
+Three things had to change for that, all of them defects rather than features:
+
+1. **`ffn-nfsroot.sh` probes candidate exports** instead of naming one. The
+   layout differs between appliances -- `install-to-disk.sh` creates
+   `/opt/ffn-nfs/{cproot,dproot}` on newly imaged boxes, while boxes imaged
+   before that export `/opt/ffn-cproot` directly -- and nothing on the CP side
+   can tell which it is talking to. Hardcoding either one stranded the other,
+   which is what produced "MP never answered" and a console with no rootfs. The
+   `-owrt` roots are tried first so the package manager is the default, with the
+   glibc Buildroot roots as the proven fallback.
+
+2. **`boot618-pcie.sh` staged the wrong kernel.** It named `-nfs`, the build
+   from *before* the `pci-legacy.c` busn fix, so a boot from the documented path
+   printed `PCI host bridge to bus 0002:02 / 0003:03` and lost the FE100 and the
+   dataplane. It also set `$K` and then ignored it -- the `--kernel` line carried
+   its own literal, so editing `$K` changed nothing. And `WANT=` pinned the old
+   kernel's md5 by hand, so retargeting `$K` made the checksum fail closed. Now:
+   one `$K`, a sanity check that refuses anything that is not a big-endian MIPS64
+   ELF, and the checksum pin living beside the kernel as `<kernel>.md5` so
+   staging a new image brings its own.
+
+3. **`ffn-cp-prepare` starts sshd.** `enter()` chroots into an interactive shell,
+   so without this an unattended boot reached a *console* shell only and the CP
+   stayed unreachable over PCIe until someone typed at the serial port -- exactly
+   the manual step the rest of this was meant to remove. It also creates sshd's
+   privsep and pidfile dirs, which procd would normally have made.
+
+Verified on hardware, nothing typed at the console:
+
+    Brought up 1 node, 8 CPUs
+    PCI host bridge to bus 0001:00 / 0002:00 / 0003:00     <- busn fix active
+    ffn-nfsroot: trying 127.1.1.1:/opt/ffn-nfs/cproot-owrt  <- absent here, skipped
+    ffn-nfsroot: mounted /opt/ffn-cproot-owrt over PCIe
+    ffn-cp-prepare: sshd started
+    -> ssh root@127.1.1.2: OpenWrt 24.10.4 / 6.18.49-dirty
+       opkg 189 installed / 9465 available, 14 PCI devices, DP present
+
+`jq` installed before the reboot was still there afterwards, which is the point
+of an NFS-backed root rather than a ramdisk.
+
+One gap worth knowing: `nproc` is absent (busybox is built without it), so
+scripts that use it to size parallelism will see an empty string. `opkg install
+coreutils-nproc` if that matters.
