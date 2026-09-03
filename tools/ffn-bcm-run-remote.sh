@@ -37,7 +37,7 @@ oct_inv=$(systemctl show -p InvocationID --value ffn-octeon.service 2>/dev/null)
 echo "=== before: console=${con_off}B resets=${res_off}B octeon-invocation=$oct_inv"
 
 echo "=== preconditions on the CP"
-cpssh 'sh /opt/ffn/ffn-bcm-prep.sh' || { echo "!!! prep failed rc=$?"; exit 2; }
+cpssh "FFN_BCM_THP=${FFN_BCM_THP:-never} sh /opt/ffn/ffn-bcm-prep.sh" || { echo "!!! prep failed rc=$?"; exit 2; }
 
 echo "=== launching bcm.user (transcript streams here, line by line)"
 cpssh "python3 -u /opt/ffn/ffn-bcm-run.py $DEADLINE $SETTLE"

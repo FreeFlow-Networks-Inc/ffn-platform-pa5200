@@ -19,10 +19,17 @@ was first written are fixed in tranche 3: `pcie-octeon.c` marked its `map_irq` h
 post-boot driver bind; and upstream shares one `next_busno` across PCI domains, which hid the
 FE100 and the dataplane.
 
-**Known-bad on 6.18:** `CONFIG_PCI_MSI` panics this platform (`msi-octeon.c` is CIU-era), and
-the vendor's statically linked `bcm.user` cannot run at all -- with THP enabled it triggers a
-`__update_tlb` machine check, and with THP off it SIGBUSes in `do_ade` during static-glibc TLS
-setup. Build with `CONFIG_TRANSPARENT_HUGEPAGE_MADVISE`, not `_ALWAYS`.
+**Config is not a free choice.** See `cp-config-fragment` in this directory: `THP=MADVISE` (not
+`_ALWAYS`, which machine-checks at `__update_tlb`) and `PCI_MSI` off (`msi-octeon.c` is CIU-era
+and panics on CIU3). `CONFIG_IKCONFIG` is on so the finished image and the running kernel can be
+checked with `scripts/extract-ikconfig vmlinux` and `zcat /proc/config.gz` rather than trusting
+the tree.
+
+**Still known-bad:** the vendor's statically linked `bcm.user` cannot run on 6.18. With
+`THP=MADVISE` it no longer takes the kernel down, but it dies of `SIGBUS` in `do_ade` during
+static-glibc TLS startup, before issuing a single BDE ioctl. Two separate defects; only the
+first is fixed. BCM/L2 work therefore still runs on the 4.9 CP via the one-shot
+`FFN_CP_KERNEL` override.
 
 ## Why a forward port is cheap here
 

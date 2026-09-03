@@ -1,0 +1,77 @@
+# FFN control-plane kernel config: the settings that are NOT free choices.
+#
+# Merge into linux-6.18.49's cavium_octeon_defconfig. Everything here was
+# established by a failure on the PA-5220's CN73XX control plane, so each line
+# carries the reason it exists. Apply with:
+#
+#   ./scripts/kconfig/merge_config.sh -m arch/mips/configs/cavium_octeon_defconfig \
+#       <this file>
+#   make ARCH=mips CROSS_COMPILE=<mips64 BE prefix> syncconfig
+#
+# Then VERIFY, do not assume -- include/generated/autoconf.h is what the build
+# actually uses, and a .config restored with `cp -a` keeps its old mtime so
+# kbuild silently reuses a stale autoconf.h:
+#
+#   grep TRANSPARENT_HUGEPAGE include/generated/autoconf.h
+#
+# CONFIG_IKCONFIG below also lets you check the finished image and the running
+# kernel rather than the tree:
+#
+#   scripts/extract-ikconfig vmlinux | grep TRANSPARENT_HUGEPAGE
+#   zcat /proc/config.gz | grep TRANSPARENT_HUGEPAGE
+
+# ---------------------------------------------------------------------------
+# THP: MADVISE, never ALWAYS.
+#
+# With _ALWAYS and 4 KB base pages, running the vendor's 187 MB statically
+# linked bcm.user faults in a huge number of pages at once and the CP dies:
+#
+#   epc : __update_tlb+0x1d0/0x298
+#   Kernel panic - not syncing: Caught Machine Check exception
+#     - caused by multiple matching entries in the TLB.
+#
+# Every other core then prints "NMI Watchdog interrupt on Core 0xNN" with
+# err_epc -> stop_this_cpu, which reads like a hardware watchdog fault but is
+# only the aftermath of one core panicking and IPI-ing the rest to stop.
+# On MIPS __update_tlb handles huge PMDs specially and a 4 KB entry coexisting
+# with a huge entry for the same VA is exactly "multiple matching entries".
+#
+# Verified 2026-09-03: with MADVISE compiled in and NO runtime intervention,
+# the same bcm.user run leaves the CP up (verdict=UP, no death markers).
+CONFIG_TRANSPARENT_HUGEPAGE=y
+# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+
+# ---------------------------------------------------------------------------
+# PCI_MSI must stay OFF on OCTEON III.
+#
+#   Kernel panic - not syncing: request_irq(OCTEON_IRQ_PCI_MSI0) failed
+#
+# CONFIG_PCI_MSI pulls in arch/mips/pci/msi-octeon.c, which is CIU-era OCTEON
+# I/II code. It requests OCTEON_IRQ_PCI_MSI0, an interrupt that does not exist
+# on the CN73XX's CIU3, and panics rather than degrading. ffn_bde falls back to
+# INTx instead (irq 13 via CIU3), which is why this costs nothing.
+#
+# NOTE: this one DOES change struct pci_dev's size, and vermagic does not encode
+# config -- a stale .ko will load happily against wrong offsets. Rebuild the
+# out-of-tree modules whenever you flip it. (THP above does not: the modules
+# came out byte-identical across that change.)
+# CONFIG_PCI_MSI is not set
+
+# ---------------------------------------------------------------------------
+# Self-describing image: makes the two verification commands above possible.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+
+# ---------------------------------------------------------------------------
+# Platform baseline the CP relies on. 4 KB pages interact with the THP choice
+# above; NR_CPUS must exceed the CN73XX's 8.
+CONFIG_CAVIUM_OCTEON_SOC=y
+CONFIG_SMP=y
+CONFIG_NR_CPUS=32
+CONFIG_PAGE_SIZE_4KB=y
+
+# NFS root over the PCIe pcnet transport, plus the built-in initramfs that runs
+# /sbin/ffn-nfsroot to set it up.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_ROOT_NFS=y
