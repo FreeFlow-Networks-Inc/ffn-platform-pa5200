@@ -83,7 +83,65 @@ python3 tools/ffn_octctl.py boot --dev 0 --force
 # bcm_petra_rx_init fails with Out of memory. 0x30000000 is inside the
 # 0x29400000-0x7fefffff System RAM range, below 4 GB (SBUSDMA host addresses
 # are 32-bit), clear of the rootfs (0x22000000) and transport (0x28/0x29000000).
-python3 tools/ffn_octboot.py --watch 150 --fdt "" --extra "ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" &
+# --- which CP kernel, and the args that go with it --------------------------
+# 6.18 is preferred, but "bootable" means more than the image existing: a 6.18
+# CP mounts its userland over NFS from the MP, so with no staged CP root it
+# reaches a bare console shell with no tools. The 4.9 image carries its own
+# vendor root and always comes up. So require BOTH a 6.18 image AND a usable
+# CP root before choosing it, and let a one-line file override everything.
+CP_K_CONF=/etc/ffn-ngfw/octeon-kernel
+CP_K_49=/var/lib/ffn-ngfw/octeon/ffn-vmlinux-octeon3
+
+cp_root_present(){
+	for r in /opt/ffn-nfs/cproot-owrt /opt/ffn-cproot-owrt 	         /opt/ffn-nfs/cproot /opt/ffn-cproot; do
+		[ -x "$r/bin/sh" ] && return 0
+	done
+	return 1
+}
+# NO mtime heuristic here on purpose. "Newest 6.18 image" is NOT "good 6.18
+# image": at the time of writing the newest staged one was
+# ffn-vmlinux-6.18.49-msi, which panics on this chip with
+#   Kernel panic - not syncing: request_irq(OCTEON_IRQ_PCI_MSI0) failed
+# because CONFIG_PCI_MSI pulls in CIU-era msi-octeon.c and this is OCTEON III.
+# Picking by date would have panicked every boot. So 6.18 must be named
+# EXPLICITLY, and anything unnamed falls back to the kernel that always works.
+# provision.sh writes the pin once a 6.18 image and a CP root are both staged.
+CP_KERNEL=""
+if [ -r "$CP_K_CONF" ]; then
+	CP_KERNEL=$(sed -n '1{s/[[:space:]]//g;p}' "$CP_K_CONF")
+	if [ -n "$CP_KERNEL" ] && [ ! -s "$CP_KERNEL" ]; then
+		echo "CP kernel pinned in $CP_K_CONF does not exist: $CP_KERNEL"
+		echo "  falling back to 4.9 rather than refusing to boot the CP"
+		CP_KERNEL=""
+	fi
+	[ -n "$CP_KERNEL" ] && echo "CP kernel pinned by $CP_K_CONF: $(basename "$CP_KERNEL")"
+fi
+if [ -n "$CP_KERNEL" ] && ! cp_root_present; then
+	echo "WARNING: $CP_K_CONF pins a 6.18 kernel but no CP root is staged."
+	echo "  6.18 has no userland of its own -- it mounts one over NFS -- so the CP"
+	echo "  will reach a console shell with no tools. Stage one with"
+	echo "  octeon/cproot/ffn-cp-owrt-stage.sh, or clear the pin for 4.9."
+fi
+if [ -z "$CP_KERNEL" ]; then
+	CP_KERNEL=$CP_K_49
+	echo "CP kernel: 4.9 (no pin in $CP_K_CONF)"
+fi
+[ -s "$CP_KERNEL" ] || { echo "CP kernel $CP_KERNEL is missing; aborting"; exit 1; }
+# Honour a checksum sidecar if one was staged beside the image.
+if [ -s "$CP_KERNEL.md5" ]; then
+	md5sum "$CP_KERNEL" | grep -q "$(cut -d' ' -f1 < "$CP_KERNEL.md5")" 		|| { echo "CP kernel checksum mismatch against $CP_KERNEL.md5; aborting"; exit 1; }
+	echo "CP kernel checksum verified"
+fi
+# ffn_mem=auto is a 4.9-only knob and is obsolete upstream; 6.18 needs no mem=
+# at all, since nothing clamps max_memory there and it sees all 8 GB.
+# 0x30000000,64M stays in BOTH: it is the BCM88375 BDE DMA pool, and without it
+# the SDK falls back to a 4 MB dma_alloc_coherent and bcm_petra_rx_init fails
+# with Out of memory.
+case "$CP_KERNEL" in
+	*6.18*) CP_EXTRA="ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" ;;
+	*)      CP_EXTRA="ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" ;;
+esac
+python3 tools/ffn_octboot.py --watch 150 --fdt "" --kernel "$CP_KERNEL" --extra "$CP_EXTRA" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."
