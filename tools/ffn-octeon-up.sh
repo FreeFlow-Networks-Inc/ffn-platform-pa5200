@@ -36,10 +36,17 @@ trap 'octlock_release' EXIT
 # Readiness = the OCTEON's own init banner / NFS-root line appearing in the
 # console log AFTER we start watching. No oct-remote involved.
 console_mark() { wc -l < "$CL" 2>/dev/null || echo 0; }
+# The readiness patterns are per-kernel and BOTH must be here. 'it booted'
+# and 'NFS-root: /sbin/ffn-nfsroot' are what the 4.9 CP prints. The 6.18 CP
+# prints 'FFN-INIT:' and then 'ffn-nfsroot: waiting up to 300s for the MP'
+# instead, so a 4.9-only pattern never fires: the wait times out after 180s,
+# the script exits 1, pcnet-up never runs, and the CP sits waiting for a host
+# end that is never brought up. 'ffn-nfsroot: waiting' is in fact the ideal
+# trigger -- it is printed at exactly the moment the host end is needed.
 booted_since() {
 	local mark="$1"
 	tail -n "+$mark" "$CL" 2>/dev/null | tr -d '\r' \
-		| grep -qE 'it booted|NFS-root: /sbin/ffn-nfsroot'
+		| grep -qE 'it booted|NFS-root: /sbin/ffn-nfsroot|FFN-INIT:|ffn-nfsroot: waiting'
 }
 
 # 1. console broker (single owner of /dev/ttyS1).
@@ -72,6 +79,22 @@ sleep 1
 #    on an already-up OCTEON this simply reboots it cleanly into the same flow.
 MARK=$(console_mark)
 echo "resetting + staging FFN kernel over PCIe (sole oct-remote user)"
+# Stop the host end of pcnet BEFORE the reset. Resetting the OCTEON while
+# ffn_pcnetd is polling its BAR window produced a PCIe Completion-Timeout ->
+# AER storm that took the MP down entirely on 2026-09-02 -- "AER: can't recover
+# (no error_detected callback)" -- and needed a physical power cycle. Nothing is
+# lost by stopping it: pcnet-up.sh below brings it back and reprograms BAR1
+# index 1, which the reset clears regardless.
+systemctl stop ffn-pcnetd 2>/dev/null || true
+for _i in 1 2 3 4 5; do
+	systemctl is-active --quiet ffn-pcnetd || break
+	sleep 1
+done
+if systemctl is-active --quiet ffn-pcnetd; then
+	echo "ABORT: ffn-pcnetd is still active; refusing to reset the OCTEON under a live BAR writer"
+	exit 1
+fi
+echo "host ffn-pcnetd stopped (PCIe CmpltTO/AER hazard)"
 python3 tools/ffn_octctl.py boot --dev 0 --force
 # mem= is REQUIRED. Without it the kernel takes whatever the OCTEON boot
 # descriptor offers, which is ~432 MB of the 8 GB this CP actually has
@@ -137,11 +160,26 @@ fi
 # 0x30000000,64M stays in BOTH: it is the BCM88375 BDE DMA pool, and without it
 # the SDK falls back to a 4 MB dma_alloc_coherent and bcm_petra_rx_init fails
 # with Out of memory.
+# The OVERLAY matters as much as the args. ffn_octboot stages an overlay rootfs
+# at 0x22000000 by default and passes ffn_rootfs=/ffn_reserve= for it. The 6.18
+# kernel carries its OWN embedded initramfs, so handing it the 4.9-era overlay
+# on top faults on an unaligned load during init and panics:
+#     do_ade / handle_adel_int
+#     Kernel panic - not syncing: Attempted to kill the idle task!
+# Every working 6.18 boot passed --no-overlay; dropping that when this moved
+# into the service path is what panicked the CP.
 case "$CP_KERNEL" in
-	*6.18*) CP_EXTRA="ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" ;;
-	*)      CP_EXTRA="ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" ;;
+	*6.18*)
+		CP_EXTRA="ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M"
+		CP_OVERLAY_ARG="--no-overlay"
+		;;
+	*)
+		CP_EXTRA="ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M"
+		CP_OVERLAY_ARG=""
+		;;
 esac
-python3 tools/ffn_octboot.py --watch 150 --fdt "" --kernel "$CP_KERNEL" --extra "$CP_EXTRA" &
+echo "CP boot: $(basename "$CP_KERNEL") ${CP_OVERLAY_ARG:-with overlay}"
+python3 tools/ffn_octboot.py --watch 150 --fdt "" $CP_OVERLAY_ARG --kernel "$CP_KERNEL" --extra "$CP_EXTRA" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."
