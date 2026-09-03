@@ -45,6 +45,22 @@ if awk '$2 ~ /:0913$/ && $4 == "0A" { found = 1 } END { exit !found }' \
 	exit 0
 fi
 
+# sshd refuses to start without host keys, and this rootfs is an initramfs that
+# is rebuilt from a cpio on every boot -- so there are none until we make them.
+# Baking keys into the image instead would ship one private host key to every
+# appliance, which is worse than regenerating.
+#
+# Regenerating each boot does mean the host key changes on every reboot. That is
+# why the MP-side client pins nothing and sends UserKnownHostsFile=/dev/null:
+# the link is a private PCIe transport to 127.1.1.2 that no physical topology
+# can reach, so the key buys no authentication that the transport does not
+# already give, and pinning it would break the tool on every reboot.
+if [ -x /usr/sbin/sshd ] && [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+	echo "ffn-cpshd: no host keys in this initramfs; generating"
+	ssh-keygen -A >/tmp/ffn-keygen.log 2>&1 \
+		|| echo "ffn-cpshd: ssh-keygen -A failed; see /tmp/ffn-keygen.log" >&2
+fi
+
 # Preferred: OpenSSH. -e sends the log to stderr so a boot-time failure is
 # visible on the console rather than vanishing into a syslog nobody is running.
 # This does not return: sshd -D holds the console, which is the accepted trade

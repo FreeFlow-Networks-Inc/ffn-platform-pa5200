@@ -63,10 +63,12 @@ FLD_VADDR,  FLD_BYTES  = 0x109f5c38, 30610
 VADDR_BIAS = 0x10000000          # file_offset = vaddr - bias, for these sections
 
 DESC_SZ = 28
-FLD_SZ  = 2      # {msb, lsb}: the table is only 30610 B, so 10 B/entry is impossible
+FLD_SZ  = 10     # {char *name; u8 msb; u8 lsb} -- 3061 UNIQUE entries, shared
+                 # between registers. The often-quoted 14456 is the SUM of every
+                 # register field_num, i.e. field REFERENCES, not table entries.
 
 EXPECT_REGS   = 5951
-EXPECT_FIELDS = 15305   # 30610 B / 2 B per entry
+EXPECT_FIELDS = 3061    # 30610 B / 10 B per entry
 
 
 def read_at(fh, vaddr, nbytes):
@@ -97,8 +99,8 @@ def parse(path):
     with open(path, "rb") as fh:
         blob = read_at(fh, FLD_VADDR, FLD_BYTES)
         for off in range(0, len(blob) - FLD_SZ + 1, FLD_SZ):
-            msb, lsb = struct.unpack_from(">BB", blob, off)
-            fields.append({"msb": msb, "lsb": lsb})
+            namep, msb, lsb = struct.unpack_from(">QBB", blob, off)
+            fields.append({"name": cstr(fh, namep), "msb": msb, "lsb": lsb})
 
         blob = read_at(fh, DESC_VADDR, DESC_BYTES)
         for off in range(0, len(blob) - DESC_SZ + 1, DESC_SZ):
@@ -150,7 +152,8 @@ def main():
         for r in sorted(sel, key=lambda x: x["addr"])[:200]:
             print("%-40s 0x%08x 0x%08x   %s" %
                   (r["name"], r["addr"], r["rstval"],
-                   ",".join("[%d:%d]" % (f["msb"], f["lsb"]) for f in r["fields"][:6])))
+                   ",".join("%s[%d:%d]" % (f["name"], f["msb"], f["lsb"])
+                            for f in r["fields"][:6] if f["name"])))
         print("(%d matched)" % len(sel))
 
     if not a.json and sel is None:
