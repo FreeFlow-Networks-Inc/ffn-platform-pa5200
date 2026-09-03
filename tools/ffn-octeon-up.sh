@@ -163,8 +163,8 @@ elif [ -r "$CP_K_CONF" ]; then
 	CP_KERNEL=$(sed -n '1{s/[[:space:]]//g;p}' "$CP_K_CONF")
 	if [ -n "$CP_KERNEL" ] && [ ! -s "$CP_KERNEL" ]; then
 		echo "CP kernel pinned in $CP_K_CONF does not exist: $CP_KERNEL"
-		echo "  falling back to 4.9 rather than refusing to boot the CP"
-		CP_KERNEL=""
+		echo "  REFUSING to fall back to 4.9 -- see the note at the 4.9 guard below."
+		exit 1
 	fi
 	[ -n "$CP_KERNEL" ] && echo "CP kernel pinned by $CP_K_CONF: $(basename "$CP_KERNEL")"
 fi
@@ -172,11 +172,28 @@ if [ -n "$CP_KERNEL" ] && ! cp_root_present; then
 	echo "WARNING: $CP_K_CONF pins a 6.18 kernel but no CP root is staged."
 	echo "  6.18 has no userland of its own -- it mounts one over NFS -- so the CP"
 	echo "  will reach a console shell with no tools. Stage one with"
-	echo "  octeon/cproot/ffn-cp-owrt-stage.sh, or clear the pin for 4.9."
+	echo "  octeon/cproot/ffn-cp-owrt-stage.sh, or fix the pin."
 fi
+# The 4.9 kernel is the VENDOR kernel and is considered too vulnerable to run,
+# so it must never be reached by accident. It used to be the silent fallback for
+# a missing or invalid pin, which meant a corrupt one-line file was enough to
+# boot it. Booting it now takes a deliberate FFN_ALLOW_49=1, and there is no
+# path to it that does not say so out loud.
+case "$CP_KERNEL" in
+*"$(basename "$CP_K_49")"*)
+	if [ "${FFN_ALLOW_49:-0}" != 1 ]; then
+		echo "REFUSING to boot the 4.9 vendor kernel ($CP_KERNEL)."
+		echo "  It is too vulnerable to run. Set FFN_ALLOW_49=1 to override"
+		echo "  deliberately; there is no automatic fallback to it."
+		exit 1
+	fi
+	echo "WARNING: booting the 4.9 VENDOR kernel because FFN_ALLOW_49=1 was set."
+	;;
+esac
 if [ -z "$CP_KERNEL" ]; then
-	CP_KERNEL=$CP_K_49
-	echo "CP kernel: 4.9 (no pin in $CP_K_CONF)"
+	echo "No CP kernel: $CP_K_CONF holds no pin and there is no fallback."
+	echo "  Pin a 6.18 kernel, or pass FFN_CP_KERNEL=<path> for a one-shot."
+	exit 1
 fi
 [ -s "$CP_KERNEL" ] || { echo "CP kernel $CP_KERNEL is missing; aborting"; exit 1; }
 # Honour a checksum sidecar if one was staged beside the image.
