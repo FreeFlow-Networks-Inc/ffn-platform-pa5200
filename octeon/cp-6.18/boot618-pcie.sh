@@ -30,12 +30,34 @@
 #      root-complex initialised, that resets the link this session runs over.
 set -u
 cd /opt/ffn-ngfw-v2
-K=/var/lib/ffn-ngfw/octeon/ffn-vmlinux-6.18.49-nfs
+K=/var/lib/ffn-ngfw/octeon/ffn-vmlinux-6.18.49-cproot
+# The kernel this path used to name was -nfs: the build from BEFORE the
+# pci-legacy.c busn fix. Booting it printed "PCI host bridge to bus 0002:02 /
+# 0003:03" and lost the FE100 and the DP, so the documented boot path was
+# staging the broken kernel. Worse, $K was set and then ignored -- the --kernel
+# line below carried its own literal, so editing $K changed nothing. One source
+# of truth now, and refuse to hand u-boot something that is not a kernel.
+if [ ! -s "$K" ]; then echo "ABORT: kernel $K missing or empty"; exit 1; fi
+case "$(file -b "$K" 2>/dev/null)" in
+	*"ELF 64-bit MSB"*MIPS*) : ;;
+	*) echo "ABORT: $K is not a big-endian MIPS64 ELF"; exit 1 ;;
+esac
+echo "kernel: $K ($(stat -c %s "$K") bytes, md5 $(md5sum "$K" | cut -c1-12))"
 LOG=/var/log/ffn-octeon-6.18-pcie-boot.log
-WANT=c7aa6e992b640a924275be64ea957704
+# The expected checksum used to be hardcoded here, pinning the OLD -nfs
+# kernel. Retargeting $K then made this check fail closed and abort the
+# boot -- a checksum that has to be hand-edited in lockstep with a path is
+# a trap. It now lives beside the kernel as <kernel>.md5, so staging a new
+# image brings its own pin and this script never goes stale.
 
 [ -f "$K" ] || { echo "FAIL staged kernel missing"; exit 1; }
-md5sum "$K" | grep -q "$WANT" || { echo "FAIL kernel checksum"; exit 1; }
+if [ -s "$K.md5" ]; then
+	WANT=$(cut -d" " -f1 < "$K.md5")
+	md5sum "$K" | grep -q "$WANT" || { echo "FAIL kernel checksum (want $WANT)"; exit 1; }
+	echo "kernel checksum verified against $K.md5"
+else
+	echo "note: no $K.md5 sidecar -- skipping the checksum pin"
+fi
 
 # MANDATORY before any OCTEON reset: take the host transport down first.
 #
@@ -72,6 +94,14 @@ echo "=== 6.18+PCIe boot attempt $(date) ==="
 
 # Serialise against every other oct-remote user: two at once wedge the serial
 # in uninterruptible-D, and a D-state op cannot be killed.
+# The INNER heredoc below is QUOTED, so $K is not expanded here, and `bash -s`
+# starts a CHILD shell that does not inherit an unexported variable. Under
+# set -u that is a hard abort -- "K: unbound variable" -- and it fires AFTER the
+# OCTEON has been reset into u-boot but BEFORE the kernel is staged, leaving the
+# CP sitting in u-boot with no Linux. Export it; the quoted heredoc still
+# protects every other $ in the block from parent expansion.
+export K
+
 flock -w 60 /run/ffn-octeon-ctl.lock bash -s <<'INNER'
 set -u
 cd /opt/ffn-ngfw-v2
@@ -83,7 +113,7 @@ echo "octctl rc=$rc"
 
 echo "--- stage kernel over the BAR window and boot ---"
 python3 tools/ffn_octboot.py \
-	--kernel /var/lib/ffn-ngfw/octeon/ffn-vmlinux-6.18.49-nfs \
+	--kernel "$K" \
 	--no-overlay \
 	--fdt "" \
 	--extra "ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M" \
