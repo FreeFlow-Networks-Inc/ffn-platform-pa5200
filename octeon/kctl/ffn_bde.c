@@ -762,6 +762,47 @@ static void ffn_bde_irq_mask(struct ffn_bde_dev *d)
 		disable_irq_nosync(d->irq);
 }
 
+/*
+ * Route the CMIC interrupt to the INTx line instead of MSI.
+ *
+ * ffn_bde_paxb_init() already does this when use_msi=0, but it runs BEFORE
+ * ffn_bde_irq_setup(), so a load that ASKED for MSI and only discovered at
+ * request time that MSI is unavailable has already cleared the bit. Set it
+ * back, or the fallback installs a handler for a line the chip will never
+ * assert -- which looks exactly like having no handler at all.
+ */
+static void ffn_bde_paxb_route_intx(struct ffn_bde_dev *d)
+{
+	void __iomem *bar0;
+	u32 back;
+
+	bar0 = ioremap(d->bar_start[0], d->bar_len[0]);
+	if (!bar0) {
+		pr_warn(DRV ": cannot map BAR0 to route INTx\n");
+		return;
+	}
+	back = __raw_readl(bar0 + FFN_PAXB_INTR_EN_OFF);
+	__raw_writel(back | 1u, bar0 + FFN_PAXB_INTR_EN_OFF);
+	pr_info(DRV ": PAXB CMICD_TO_PCIE_INTR_EN 0x%08x -> 0x%08x (INTx fallback)\n",
+		back, __raw_readl(bar0 + FFN_PAXB_INTR_EN_OFF));
+	iounmap(bar0);
+}
+
+/*
+ * Install the one interrupt the SDK's command 9 waits on: MSI when available,
+ * otherwise INTx.
+ *
+ * The fallback is not a nicety here. CONFIG_PCI_MSI cannot be enabled on the
+ * 6.18 CP at all -- it drags in arch/mips/pci/msi-octeon.c, CIU-era OCTEON I/II
+ * code that requests OCTEON_IRQ_PCI_MSI0, an interrupt which does not exist on
+ * the CN73XX CIU3, and panics rather than degrading. So pci_enable_msi() always
+ * fails on this platform, and with no fallback the SDK's first interrupt wait
+ * never returns: every core wedges at one PC and the chip soft-resets. That is
+ * exactly what running bcm.user on 6.18 produced.
+ *
+ * INTx is available because pci_assign_irq() works again -- it used to oops on
+ * a dangling __init map_irq handler -- so the device has a real legacy IRQ.
+ */
 static void ffn_bde_irq_setup(struct ffn_bde_dev *d)
 {
 	int rc;
@@ -772,33 +813,56 @@ static void ffn_bde_irq_setup(struct ffn_bde_dev *d)
 	d->irq_seen = 0;
 	d->irq = -1;
 
-	if (!use_msi) {
-		pr_info(DRV ": use_msi=0, no interrupt handler installed; "
-			"command 9 will block forever, which parks the SDK "
-			"interrupt thread rather than letting it spin\n");
-		return;
+	if (use_msi) {
+		if (!pci_enable_msi(d->pdev)) {
+			d->msi_enabled = true;
+			d->irq = d->pdev->irq;
+			rc = request_irq(d->irq, ffn_bde_isr, 0, DRV, d);
+			if (!rc) {
+				d->irq_requested = true;
+				pr_info(DRV ": MSI irq %d installed; command 9 waits on it\n",
+					d->irq);
+				return;
+			}
+			pr_warn(DRV ": request_irq(%d) for MSI failed (%d); falling back to INTx\n",
+				d->irq, rc);
+			pci_disable_msi(d->pdev);
+			d->msi_enabled = false;
+			d->irq = -1;
+		} else {
+			pr_info(DRV ": pci_enable_msi failed -- expected on this CP (CONFIG_PCI_MSI is off; msi-octeon.c is CIU-era and panics on CIU3). Falling back to INTx.\n");
+		}
 	}
 
-	if (pci_enable_msi(d->pdev)) {
-		pr_warn(DRV ": pci_enable_msi failed; no interrupt handler. "
-			"Command 9 will block forever (thread parks).\n");
-		return;
-	}
-	d->msi_enabled = true;
+	/* paxb_init cleared the INTx enable if it ran with use_msi=1. */
+	ffn_bde_paxb_route_intx(d);
+
 	d->irq = d->pdev->irq;
+	if (d->irq <= 0) {
+		pr_warn(DRV ": no legacy IRQ assigned (pdev->irq=%d); no handler. Command 9 will block forever (thread parks).\n",
+			d->irq);
+		d->irq = -1;
+		return;
+	}
 
+	/*
+	 * Exclusive, NOT IRQF_SHARED. ffn_bde_isr() cannot tell whether this
+	 * device raised the line without reading chip registers that belong to
+	 * the SDK -- racing the very code we serve -- so it returns IRQ_HANDLED
+	 * unconditionally. That is only honest on a line nobody else is on, and
+	 * /proc/interrupts shows this one unused. Requesting it exclusively means
+	 * request_irq() fails loudly if that stops being true, rather than
+	 * silently swallowing another driver's interrupts.
+	 */
 	rc = request_irq(d->irq, ffn_bde_isr, 0, DRV, d);
 	if (rc) {
-		pr_warn(DRV ": request_irq(%d) failed (%d); no handler. "
-			"Command 9 will block forever (thread parks).\n",
+		pr_warn(DRV ": request_irq(%d) for INTx failed (%d); no handler. Command 9 will block forever (thread parks).\n",
 			d->irq, rc);
-		pci_disable_msi(d->pdev);
-		d->msi_enabled = false;
 		d->irq = -1;
 		return;
 	}
 	d->irq_requested = true;
-	pr_info(DRV ": MSI irq %d installed; command 9 waits on it\n", d->irq);
+	pr_info(DRV ": INTx irq %d installed; command 9 waits on it\n", d->irq);
 }
 
 static void ffn_bde_irq_teardown(struct ffn_bde_dev *d)
@@ -1206,6 +1270,33 @@ static int ffn_bde_scan(void)
  * while userspace maps the other would corrupt silently, so say so loudly rather
  * than continue.
  */
+/*
+ * Is every page of [first,last] claimed at boot and thus never allocatable?
+ *
+ * memblock_reserve() leaves a struct page in place with PageReserved set,
+ * whereas memblock_remove() leaves no struct page at all. Both mean "the
+ * allocator will never hand this out", and both are legitimate ways for an
+ * ffn_reserve= range to be protected, so accept either: no struct page
+ * (pfn_valid() false) or a reserved one. A single free page anywhere in the
+ * range is a refusal -- DMA onto live RAM corrupts silently.
+ */
+/* NOT __init: ffn_bde_dma_setup() runs at RUNTIME (the SDK's command 5 during
+ * attach), so an __init helper would be a call into freed .init.text -- the
+ * same defect that made pci_assign_irq oops on this platform. */
+static bool ffn_bde_range_boot_reserved(unsigned long first,
+					unsigned long last)
+{
+	unsigned long pfn;
+
+	for (pfn = first; pfn <= last; pfn++) {
+		if (!pfn_valid(pfn))
+			continue;			/* removed from the map entirely */
+		if (!PageReserved(pfn_to_page(pfn)))
+			return false;			/* allocatable -- refuse */
+	}
+	return true;
+}
+
 static void ffn_bde_dma_setup(void)
 {
 	struct ffn_bde_dev *d = &ffn_bde_devs[0];
@@ -1228,13 +1319,28 @@ static void ffn_bde_dma_setup(void)
 				"SBUSDMA host addresses are 32-bit -- refused, "
 				"falling back to coherent allocation\n",
 				dma_phys, size);
-		} else if (page_is_ram(first) || page_is_ram(last)) {
+		} else if ((page_is_ram(first) || page_is_ram(last)) &&
+			   !ffn_bde_range_boot_reserved(first, last)) {
 			/*
 			 * page_is_ram(), not pfn_valid(): under SPARSEMEM the latter is
 			 * section-granular (256 MB sections here), so it says yes for a
 			 * reserved range that merely shares a section with real RAM.
-			 * page_is_ram() walks the System RAM resources, which is exactly
-			 * what an ffn_reserve= range is kept out of.
+			 *
+			 * But page_is_ram() alone is NOT sufficient, and assuming it was
+			 * cost a bring-up: it walks the System RAM RESOURCES, and whether
+			 * an ffn_reserve= range is absent from those depends on how the
+			 * kernel side implements it. The 6.18 CP uses memblock_reserve(),
+			 * which keeps the range out of the buddy allocator but leaves it
+			 * in memblock.memory -- so it still appears as System RAM in
+			 * /proc/iomem and still has a struct page. (memblock_remove()
+			 * would produce the hole this check originally expected, which is
+			 * why DP-MEMORY.md records reserved ranges reading KPF_NOPAGE.)
+			 *
+			 * So ask the question that is actually load-bearing: is every page
+			 * of the range marked PageReserved, i.e. claimed at boot and never
+			 * available to the allocator? If so a DMA window onto it cannot
+			 * collide with anything, whichever mechanism reserved it. Only
+			 * refuse when the range contains genuinely free RAM.
 			 */
 			pr_warn(DRV ": 0x%llx+%zu is IN the kernel's memory map -- "
 				"no ffn_reserve= covers it, and a DMA window onto "
