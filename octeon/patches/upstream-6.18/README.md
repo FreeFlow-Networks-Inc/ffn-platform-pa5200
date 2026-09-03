@@ -5,11 +5,24 @@
 applied to the same base** — the 4.9 patches use `add_memory_region`/`boot_mem_map`, which no longer
 exist in `arch/mips`, and the 6.18 patch assumes `memblock_add`.
 
-## Status: BUILDS, NOT YET BOOTED
+## Status: BOOTS ON HARDWARE
 
 Built warning-clean with the kernel.org crosstool GCC 14.4.0 mips64 (big-endian) against
-`linux-6.18.49` + `cavium_octeon_defconfig`. `vmlinux` is 11.3 MB stripped. **It has not been booted
-on hardware.** Do not treat any of the runtime behaviour below as verified until it has.
+`linux-6.18.49` + `cavium_octeon_defconfig`. `vmlinux` is 11.3 MB stripped.
+
+**Booted on hardware (PA-5220 CN73XX control plane).** Verified: 8 CPUs, 8.14 GB, all three
+PCIe roots enumerating (including the BCM88375 at `0001:01:00.0` and the CN78XX dataplane at
+`0003:03:00.0`), NFS root over the PCIe pcnet transport, an OpenWrt userland with `opkg`, and
+`ffn_bcm.ko` + `ffn_bde.ko` loading and reaching the chip. Two runtime defects found after this
+was first written are fixed in tranche 3: `pcie-octeon.c` marked its `map_irq` handlers
+`__init`, so the long-lived `octeon_pcibios_map_irq` pointer dangled and oopsed on the first
+post-boot driver bind; and upstream shares one `next_busno` across PCI domains, which hid the
+FE100 and the dataplane.
+
+**Known-bad on 6.18:** `CONFIG_PCI_MSI` panics this platform (`msi-octeon.c` is CIU-era), and
+the vendor's statically linked `bcm.user` cannot run at all -- with THP enabled it triggers a
+`__update_tlb` machine check, and with THP off it SIGBUSes in `do_ade` during static-glibc TLS
+setup. Build with `CONFIG_TRANSPARENT_HUGEPAGE_MADVISE`, not `_ALWAYS`.
 
 ## Why a forward port is cheap here
 

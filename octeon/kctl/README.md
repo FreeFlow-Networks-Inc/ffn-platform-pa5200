@@ -1,7 +1,7 @@
 # FFN OCTEON III kernel control driver for the BCM88375 CMIC
 
 `ffn_bcm.ko` runs on the PA-5220's dataplane OCTEON III (CN73XX) and owns the
-CPU Management Interface of the Broadcom BCM88375 Qumran-AX at `0001:01:00.0`.
+CPU Management Interface of the Broadcom BCM88375 Qumran-MX at `0001:01:00.0`.
 It is the ordered, exclusive register path that the port bring-up work needs.
 
 ## What it provides

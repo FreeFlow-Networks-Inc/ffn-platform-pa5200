@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ffn_bcm -- FFN OCTEON III control driver for the BCM88375 (Qumran-AX) CMIC.
+ * ffn_bcm -- FFN OCTEON III control driver for the BCM88375 (Qumran-MX) CMIC.
+ *
+ * Qumran-MX, NOT Qumran-AX: in the Broadcom SDK the BCM88375 is in the Jericho
+ * family and SOC_IS_QAX is FALSE for it, so QAX-specific code paths do not
+ * apply. Earlier FFN comments said Qumran-AX and were wrong.
  *
  * Runs on the PA-5220's dataplane complex: an OCTEON III CN73XX with the
  * Broadcom switch on its own PCIe segment (0001:01:00.0/.1). This driver owns

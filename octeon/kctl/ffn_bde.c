@@ -353,7 +353,7 @@ MODULE_PARM_DESC(set_master,
 static int dev_type = 0x20000001;
 module_param(dev_type, int, 0644);
 MODULE_PARM_DESC(dev_type,
-	"bus type reported by command 12. Default 0x22000001, one bit at a "
+	"bus type reported by command 12. Default 0x20000001, one bit at a "
 	"time: bit 0 PCI, bit 29 256K register space. Bit 25 is DELIBERATELY "
 	"NOT set -- see the comment below. Both were read out of the "
 	"client's own _open. "
@@ -364,7 +364,7 @@ MODULE_PARM_DESC(dev_type,
 	"prints a banner, but matches none of the mask bits, so the register "
 	"mmap AND a sal_mutex_create are both skipped and init later dies on "
 	"a NULL mutex nowhere near the cause. Bit 25: see skip_iproc_probe "
-	"below for why it defaults on.");
+	"below for why it is deliberately CLEAR in the default.");
 
 /*
  * Bit 25 of dev_type, and why it is now CLEAR.
@@ -797,8 +797,18 @@ static void ffn_bde_paxb_route_intx(struct ffn_bde_dev *d)
  * code that requests OCTEON_IRQ_PCI_MSI0, an interrupt which does not exist on
  * the CN73XX CIU3, and panics rather than degrading. So pci_enable_msi() always
  * fails on this platform, and with no fallback the SDK's first interrupt wait
- * never returns: every core wedges at one PC and the chip soft-resets. That is
- * exactly what running bcm.user on 6.18 produced.
+ * (command 9) never returns, so the thread parks forever.
+ *
+ * CORRECTION (2026-09-03): an earlier version of this comment blamed the
+ * observed "every core wedges at one PC and the chip soft-resets" on the
+ * missing interrupt. That was WRONG. The wedge was a MIPS TLB machine check at
+ * __update_tlb, caused by the CP kernel being built
+ * CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS with 4 KB pages while bcm.user faults in a
+ * 187 MB static image; disabling THP removes it entirely. With THP off,
+ * bcm.user then dies of SIGBUS in do_ade during static-glibc TLS startup --
+ * BEFORE it issues a single ioctl to this driver, which logs zero. So this
+ * fallback was never exercised by that crash and cannot have caused it.
+ * It is still correct to have: command 9 genuinely blocks without an interrupt.
  *
  * INTx is available because pci_assign_irq() works again -- it used to oops on
  * a dangling __init map_irq handler -- so the device has a real legacy IRQ.
