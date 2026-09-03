@@ -1,22 +1,71 @@
 #!/bin/sh
 # ffn-cpshd -- serve a shell on the CP over the pcnet PCIe link.
 #
-# Was: busybox telnetd -b 127.1.1.2:2323 -l /bin/bash
-# The Buildroot rootfs busybox has no telnetd applet (only the client), so that
-# could never run here. This rootfs ships full OpenSSH instead, so use it:
-# reach the CP with `ssh root@127.1.1.2` from the MP.
+# Two rootfs are in play on this board and they have OPPOSITE capabilities:
 #
-# sshd needs /dev/pts for interactive sessions, and the lean initramfs does not
-# mount it, so do that first -- same as the telnetd version did.
+#   6.18 Buildroot initramfs : ships full OpenSSH; its busybox has only the
+#                              telnet CLIENT, no telnetd applet
+#   4.9 vendor CentOS NFS root : has NO sshd anywhere; its busybox DOES have
+#                              telnetd
+#
+# so this has to pick whichever is actually present. Hard-coding sshd made the
+# script die with "/usr/sbin/sshd: No such file or directory" on the vendor
+# rootfs and leave the CP with no shell daemon at all -- the MP could ping it
+# and nothing else, which is a miserable way to lose access to a board whose
+# only other route in is a line-garbling serial console.
+#
+# 127.1.1.2 is the CP's pcnet address, reachable only across the PCIe link: the
+# CP holds no IP on eth0/eth1, so no physical topology reaches these ports.
+# That is the same isolation boundary the NFS export already relies on.
+#
+# Either daemon needs /dev/pts for interactive sessions and the lean initramfs
+# does not mount it, so that comes first regardless of which one we start.
+
 BB=/bin/busybox
+[ -x "$BB" ] || BB=$(command -v busybox 2>/dev/null)
+
 if ! grep -q " /dev/pts " /proc/mounts 2>/dev/null; then
 	mkdir -p /dev/pts
 	mount -t devpts devpts /dev/pts 2>/dev/null
 fi
-if $BB pidof sshd >/dev/null 2>&1; then
-	echo "ffn-cpshd: sshd already running"
+
+# Already serving? Nothing to do -- and say which, because "already running" on
+# its own has sent people looking for the wrong client.
+if [ -n "$BB" ] && $BB pidof sshd >/dev/null 2>&1; then
+	echo "ffn-cpshd: sshd already running (reach it with: ssh root@127.1.1.2)"
 	exit 0
 fi
-# -e sends the log to stderr so a boot-time failure is visible on the console
-# rather than vanishing into a syslog nobody is running.
-exec /usr/sbin/sshd -D -e
+# busybox telnetd runs under the name "busybox", not "telnetd", so pidof never
+# matches it -- checking that way silently started a second daemon on a port
+# that was already bound. Look for the listening socket instead: /proc/net/tcp
+# needs no tools and exists on both rootfs. 2323 = 0x0913, state 0A = LISTEN.
+if awk '$2 ~ /:0913$/ && $4 == "0A" { found = 1 } END { exit !found }' \
+        /proc/net/tcp 2>/dev/null; then
+	echo "ffn-cpshd: a shell is already listening on 127.1.1.2:2323 (use: ffn-cpsh)"
+	exit 0
+fi
+
+# Preferred: OpenSSH. -e sends the log to stderr so a boot-time failure is
+# visible on the console rather than vanishing into a syslog nobody is running.
+# This does not return: sshd -D holds the console, which is the accepted trade
+# on a rootfs where ssh then works.
+if [ -x /usr/sbin/sshd ]; then
+	echo "ffn-cpshd: starting sshd (reach it with: ssh root@127.1.1.2)"
+	exec /usr/sbin/sshd -D -e
+fi
+
+# Fallback: busybox telnetd, if this rootfs has the applet. Deliberately NOT
+# exec'd in the foreground -- telnetd daemonises by default, which returns the
+# console to whoever invoked us. Losing the console as well as ssh on a rootfs
+# with no sshd would leave no way in at all.
+if [ -n "$BB" ] && $BB telnetd --help >/dev/null 2>&1; then
+	SH=/bin/bash
+	[ -x "$SH" ] || SH=/bin/sh
+	echo "ffn-cpshd: no sshd here; starting busybox telnetd (reach it with: ffn-cpsh)"
+	$BB telnetd -b 127.1.1.2:2323 -l "$SH"
+	exit $?
+fi
+
+echo "ffn-cpshd: neither /usr/sbin/sshd nor a busybox telnetd applet is present" >&2
+echo "ffn-cpshd: this rootfs cannot serve a CP shell; the serial console is the only way in" >&2
+exit 1
