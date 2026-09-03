@@ -1,0 +1,9 @@
+[Unit]
+Description=Probe OCTEON control-plane health every 30s
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=ffn-cp-health.service
+[Install]
+WantedBy=timers.target

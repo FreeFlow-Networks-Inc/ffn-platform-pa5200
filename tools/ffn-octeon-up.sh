@@ -19,6 +19,27 @@
 #   * oct-remote is NEVER killed (a D-state op is unkillable; killing leaves the
 #     wedge). If a prior op is genuinely stuck, this aborts rather than piling on.
 set -u
+
+# ---- audit: WHO is resetting the control plane -------------------------------
+# Restarting this unit RESETS the CP.  When that lands mid-work the CP's cores
+# are stopped via stop_this_cpu() and the console prints an NMI-watchdog banner
+# -- indistinguishable from a genuine hardware fault unless the cause is on
+# record.  On 2026-09-03 that ambiguity cost two bcm.user runs and a long
+# misdiagnosis, so every invocation now records its caller.
+{
+  printf 'ffn-octeon-up: START pid=%s at %s\n' "$$" "$(date -Is 2>/dev/null || date)"
+  _p=$PPID
+  for _ in 1 2 3 4 5; do
+    [ -r "/proc/$_p/cmdline" ] || break
+    printf 'ffn-octeon-up:   caller %-7s %s\n' "$_p" \
+      "$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null)"
+    _n=$(awk '{print $4}' "/proc/$_p/stat" 2>/dev/null)
+    if [ -z "$_n" ] || [ "$_n" = 0 ] || [ "$_n" = "$_p" ]; then break; fi
+    _p=$_n
+    [ "$_p" = 1 ] && { printf 'ffn-octeon-up:   caller 1       (systemd)\n'; break; }
+  done
+} 2>/dev/null | tee -a /var/log/ffn-octeon-resets.log
+
 cd /opt/ffn-ngfw-v2
 . tools/ffn-octlock.sh
 CL=/var/log/ffn-octeon-console.log
@@ -130,7 +151,15 @@ cp_root_present(){
 # EXPLICITLY, and anything unnamed falls back to the kernel that always works.
 # provision.sh writes the pin once a 6.18 image and a CP root are both staged.
 CP_KERNEL=""
-if [ -r "$CP_K_CONF" ]; then
+# One-shot override.  Lets a session boot a different CP kernel WITHOUT editing
+# the persistent pin in $CP_K_CONF, so an unattended reboot still comes up on
+# whatever the operator chose as the default.  Needed because bcm.user cannot
+# run on 6.18 (SIGBUS in do_ade before unaligned emulation is reached) while the
+# BCM/L2 bring-up is proven on 4.9.
+if [ -n "${FFN_CP_KERNEL:-}" ]; then
+	CP_KERNEL=$FFN_CP_KERNEL
+	echo "CP kernel from FFN_CP_KERNEL (one-shot; $CP_K_CONF left untouched): $(basename "$CP_KERNEL")"
+elif [ -r "$CP_K_CONF" ]; then
 	CP_KERNEL=$(sed -n '1{s/[[:space:]]//g;p}' "$CP_K_CONF")
 	if [ -n "$CP_KERNEL" ] && [ ! -s "$CP_KERNEL" ]; then
 		echo "CP kernel pinned in $CP_K_CONF does not exist: $CP_KERNEL"

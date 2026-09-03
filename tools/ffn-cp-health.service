@@ -1,0 +1,9 @@
+[Unit]
+Description=FFN OCTEON control-plane health probe (heartbeat for ffn-octeon.service)
+Documentation=file:/opt/ffn-ngfw-v2/tools/ffn-cp-health.sh
+After=ffn-octeon.service
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/ffn-ngfw-v2/tools/ffn-cp-health.sh
+SuccessExitStatus=0 1
+TimeoutStartSec=90
