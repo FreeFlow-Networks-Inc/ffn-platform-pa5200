@@ -1,0 +1,34 @@
+--- a/arch/mips/pci/pcie-octeon.c
++++ b/arch/mips/pci/pcie-octeon.c
+@@ -108,7 +108,14 @@
+ 	return IRQ_HANDLED;
+ }
+ 
+-static int __init octeon_pcie78xx_pcibios_map_irq(const struct pci_dev *dev,
++/* NOT __init: its address is stored in the long-lived function pointer
++ * octeon_pcibios_map_irq, which pcibios_map_irq() dispatches through on
++ * EVERY pci_enable_device() -- including a driver bound long after boot.
++ * Marking it __init put it in .init.text, which is freed once init
++ * completes, so the first post-boot driver bind jumped into released
++ * memory and oopsed in pci_assign_irq. Upstream does not mark it __init;
++ * this annotation was introduced by the forward port. */
++static int octeon_pcie78xx_pcibios_map_irq(const struct pci_dev *dev,
+ 					      u8 slot, u8 pin)
+ {
+ 	struct octeon_pcie_interface *pcie;
+@@ -210,7 +217,14 @@
+  *		 as it goes through each bridge.
+  * Returns Interrupt number for the device
+  */
+-static int __init octeon_pcie_pcibios_map_irq(const struct pci_dev *dev,
++/* NOT __init: its address is stored in the long-lived function pointer
++ * octeon_pcibios_map_irq, which pcibios_map_irq() dispatches through on
++ * EVERY pci_enable_device() -- including a driver bound long after boot.
++ * Marking it __init put it in .init.text, which is freed once init
++ * completes, so the first post-boot driver bind jumped into released
++ * memory and oopsed in pci_assign_irq. Upstream does not mark it __init;
++ * this annotation was introduced by the forward port. */
++static int octeon_pcie_pcibios_map_irq(const struct pci_dev *dev,
+ 					      u8 slot, u8 pin)
+ {
+ 	/*

@@ -1031,15 +1031,25 @@ static int ffn_bde_dma_probe_set(const char *val, const struct kernel_param *kp)
 	const u32 *w;
 	char cmd[16];
 	size_t n;
+	ssize_t r;
 
 	if (!d->dma_cpu) {
 		pr_warn(DRV ": no DMA region to probe\n");
 		return -ENODEV;
 	}
 
-	n = strlcpy(cmd, val, sizeof(cmd));
-	if (n >= sizeof(cmd))
+	/* strlcpy() was removed in 6.8. It returned the SOURCE length, so the
+	 * old "n >= sizeof(cmd)" was a truncation test. strscpy() instead
+	 * returns the copied length or -E2BIG, so test the error explicitly.
+	 * Assigning it straight to a size_t happens to still reject truncation
+	 * (-E2BIG wraps to a huge unsigned), but relying on that wraparound is
+	 * not something to leave in a driver -- and if n were ever made signed,
+	 * cmd[n - 1] below would index before the buffer.
+	 */
+	r = strscpy(cmd, val, sizeof(cmd));
+	if (r < 0)
 		return -EINVAL;
+	n = (size_t)r;
 	while (n && (cmd[n - 1] == 10 || cmd[n - 1] == 13 || cmd[n - 1] == 32))
 		cmd[--n] = 0;
 
