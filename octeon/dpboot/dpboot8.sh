@@ -53,6 +53,16 @@ MEM=${FFN_DP_MEM:-30G}
 # and bash splits on it inside ${VAR:-a;b} as well.
 RESERVE=${FFN_DP_RESERVE:-0x400000,4M}
 
+# Optional squashfs rootfs, staged into DP DRAM at 0x28000000 while u-boot is
+# STILL UP. That ordering is load-bearing: oct-remote-load's final
+# "setenv fileaddr" step talks to the BOOTLOADER mailbox, so staging after
+# Linux is running returns rc=255 even though the bytes transfer -- a false
+# failure that invites re-staging over a good copy. Its range gets its OWN
+# ffn_reserve: without that, mem=30G means Linux manages 0x28000000 and the
+# allocator hands out the staged image.
+ROOTFS=${FFN_DP_ROOTFS:-}
+ROOTFS_ADDR=0x28000000
+
 say(){ echo "dpboot8: $*" | tee -a "$LOG"; }
 : > "$LOG"
 
@@ -74,6 +84,21 @@ if [ "$(strings -a "$K" 2>/dev/null | grep -c ffn_reserve)" -eq 0 ]; then
 fi
 say "kernel  $K ($(wc -c < "$K") bytes, ffn_reserve OK)"
 say "u-boot  $UBOOT"
+RES_ARGS="ffn_reserve=$RESERVE"
+if [ -n "$ROOTFS" ]; then
+	[ -s "$ROOTFS" ] || { say "FATAL: rootfs $ROOTFS missing"; exit 1; }
+	# squashfs 4.0 starts with "hsqs". Refuse anything else rather than stage
+	# the wrong thing and have ffn-dproot fail on the far side, where the only
+	# diagnostic is a mailbox shell.
+	MAG=$(dd if="$ROOTFS" bs=4 count=1 2>/dev/null)
+	[ "$MAG" = "hsqs" ] || { say "FATAL: $ROOTFS is not squashfs (magic '$MAG')"; exit 1; }
+	# Size the reservation from the FILE, never a literal: the image changes size
+	# on every rebuild, and a stale literal is the original bug back again
+	# wearing a reservation line as camouflage.
+	RFS_B=$(wc -c < "$ROOTFS"); RFS_MIB=$(( (RFS_B + 1048575) / 1048576 ))
+	RES_ARGS="$RES_ARGS ffn_reserve=$ROOTFS_ADDR,${RFS_MIB}M"
+	say "rootfs  $ROOTFS ($RFS_B bytes -> reserving ${RFS_MIB}M at $ROOTFS_ADDR)"
+fi
 
 # --- 1. the modern-loader wrapper -------------------------------------------
 LD=/lib/ld.so.1
@@ -120,13 +145,19 @@ say "2. load DP u-boot into L2 cache"
 OCT oct-remote-boot --devnum="$DEV" --loadcache "$UBOOT" >>"$LOG" 2>&1; say "   u-boot rc=$?"
 sleep 20; reen
 
+if [ -n "$ROOTFS" ]; then
+	say "2b. stage the rootfs at $ROOTFS_ADDR (u-boot still up)"
+	OCT oct-remote-load --devnum="$DEV" "$ROOTFS_ADDR" "$ROOTFS" >>"$LOG" 2>&1
+	say "    rootfs rc=$?"
+	reen
+fi
 say "3. stage the kernel at 0x21000000"
 OCT oct-remote-load --devnum="$DEV" 0x21000000 "$K" >>"$LOG" 2>&1; say "   kernel rc=$?"
 reen; wins
 
-say "4. boot (mem=$MEM ffn_reserve=$RESERVE)"
+say "4. boot (mem=$MEM $RES_ARGS)"
 /usr/bin/python3 "$FFN/ffn_dpsend.py" --wait 25 \
-  "bootoctlinux 21000000 numcores=40 console=ttyS0,115200n8 ffn_fdt=0x80000 rw mem=$MEM ffn_reserve=$RESERVE pktbuf=8192,2048 wqe=256,128" \
+  "bootoctlinux 21000000 numcores=40 console=ttyS0,115200n8 ffn_fdt=0x80000 rw mem=$MEM $RES_ARGS pktbuf=8192,2048 wqe=256,128" \
   >>"$LOG" 2>&1
 say "   dpsend rc=$?"
 
@@ -134,7 +165,15 @@ say "5. waiting for the DP agent session"
 i=0
 while [ $i -lt 18 ]; do
   S=$(/usr/local/bin/ffn-dpsh --status 2>&1)
-  case "$S" in *"agent v2"*) say "   UP: $S"; say "=== DP IS ALIVE ==="; exit 0;; esac
+  case "$S" in *"agent v2"*) say "   UP: $S"
+    # The kernel logs one line per range it excludes. This is the only
+    # trustworthy check that a REPEATED ffn_reserve= ACCUMULATED rather than
+    # the last occurrence overwriting the earlier one: if just one range
+    # appears here, the other is NOT protected and the staged image will be
+    # handed out by the allocator.
+    say "   ranges the DP kernel kept out of its memory map:"
+    /usr/local/bin/ffn-dpsh -t 60 -c "dmesg | grep ffn_reserve" 2>&1 | grep -oE "0x[0-9a-f]+\+0x[0-9a-f]+.*" | sed "s/^/     /" | tee -a "$LOG"
+    say "=== DP IS ALIVE ==="; exit 0;; esac
   i=$((i + 1)); sleep 5
 done
 say "   no agent session after 90s; last status: ${S:-none}"
