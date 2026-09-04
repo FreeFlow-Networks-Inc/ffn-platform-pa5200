@@ -356,3 +356,38 @@ port 12 is ce12 (HSCI); 32-35 are the 100G class.
 
 A full init takes about **700 s** to reach the prompt, most of it SHMOO, so use
 an 800 s deadline / 700 s settle on the pty runner.
+
+
+## Loopback test with plugs fitted: the die is fine, the cage is not
+
+Physical loopbacks on the SFP+ cages, the QSFP28 and the RJ45s. All 25 front
+ports enabled with `cint /usr/share/broadcom/enable_fp_ports.c` (which flips
+every one from `!ena` to `down` -- port control confirmed). **Nothing linked**,
+and it is not stale reporting: `bcm_port_link_status_get` returns
+`rv 0, link 0` for all 25, agreeing with `ps`.
+
+`port <p> lb=` isolates it in three commands:
+
+    ps xe13               down                external loopback: no link
+    port xe13 lb=mac  ->  up  ... MAC         MAC + PCS work
+    port xe13 lb=phy  ->  up  ... PHY         SerDes works
+    port xe13 lb=none ->  down                external again: no link
+
+PHY loopback links, exercising the SerDes datapath, PCS, MAC and link detection.
+So **port enable, MAC, PCS, SerDes and link reporting are all good**, and the
+break is strictly outside the die: SerDes pins -> cage -> module -> back.
+
+That points at the front-panel module control plane, which FFN does not drive
+yet: SFP **TX_DISABLE** and cage power are CPLD/GPIO on this chassis and are
+normally de-asserted by the vendor's board agent. The related gap is I2C --
+**`CONFIG_I2C_CHARDEV is not set`** in the CP kernel, so there are no
+`/dev/i2c-*` nodes and the SDK's `sal_i2c_init_fd` fails, even though the buses
+work in-kernel (`CONFIG_I2C=y`, `CONFIG_I2C_OCTEON=y`, EEPROM detected at
+`1-0057`). Enabling I2C_CHARDEV is one kernel line; the MP CPLD at 0x600 is the
+other half. Do not expect I2C alone to fix it -- on most designs TX_DISABLE is a
+pin, not an I2C register.
+
+**`linkscan` is working**, despite its shell display reading
+`Software Port BitMap 0x000...0` -- it tracked every `lb=` transition within the
+250 ms poll. That display is cosmetic on this chip family; do not build theories
+on it (I did, twice).
