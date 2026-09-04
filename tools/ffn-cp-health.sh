@@ -90,6 +90,10 @@ con_size=0; deathsig=
 if [ -f "$CONSOLE_LOG" ]; then
   con_size=$(stat -c %s "$CONSOLE_LOG")
   con_age=$(( now - $(stat -c %Y "$CONSOLE_LOG") ))
+  # $now is sampled once at probe start and the console log is LIVE, so a write
+  # landing mid-probe makes this negative. Harmless (negative still reads as
+  # "recent") but it looks like a broken clock in the logs, so clamp it.
+  [ "$con_age" -lt 0 ] && con_age=0
   if [ "$con_size" -gt "$up_console_off" ]; then
     deathsig=$(tail -c +$(( up_console_off + 1 )) "$CONSOLE_LOG" 2>/dev/null \
                | grep -aoiE "Kernel panic|NMI watchdog|Attempted to kill init|soft reset|Reboot in " \
