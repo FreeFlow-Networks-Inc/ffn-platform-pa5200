@@ -75,3 +75,26 @@ CONFIG_PAGE_SIZE_4KB=y
 # /sbin/ffn-nfsroot to set it up.
 CONFIG_BLK_DEV_INITRD=y
 CONFIG_ROOT_NFS=y
+
+# ---------------------------------------------------------------------------
+# DATAPLANE ONLY -- the CP does not need these.
+#
+# NR_CPUS: the CP ships 32, which would cap the CN78XX's 40 cores.
+# CONFIG_NR_CPUS=64
+#
+# The DP mounts a squashfs userland with a tmpfs overlay on top (the CP
+# NFS-roots instead, which is why its config has neither). The mount fails as
+# "mounting /dev/loop0 failed: No such device" without them -- which reads like
+# a missing loop device but is a missing FILESYSTEM. BLK_DEV_LOOP and TMPFS are
+# already on in the base config.
+#
+# SQUASHFS_XZ is MANDATORY, not optional: the Buildroot image is xz-compressed
+# (`unsquashfs -s` reports "Compression xz"), so enabling SQUASHFS alone still
+# fails to mount. The others cost a few KB and cover a re-built image.
+# CONFIG_SQUASHFS=y
+# CONFIG_SQUASHFS_XZ=y
+# CONFIG_SQUASHFS_ZLIB=y
+# CONFIG_SQUASHFS_LZO=y
+# CONFIG_SQUASHFS_ZSTD=y
+# CONFIG_SQUASHFS_FILE_DIRECT=y
+# CONFIG_OVERLAY_FS=y
