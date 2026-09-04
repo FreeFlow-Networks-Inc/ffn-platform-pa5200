@@ -460,3 +460,75 @@ which is why 4 MB could never have worked.
 degraded -- `systemctl restart ffn-octeon.service` is the (software) recovery. The diag shell keeps
 reading stdin after `jer.soc` fails, so `getreg` / `listmem` / `dump raw` can be driven from the
 command file.
+
+
+## Our own bcm.user: classified PCI, past CPS reset, stopped at a DMA data compare
+
+Built from OpenBCM sdk-6.5.26-DNX.1 with `-D__DUNE_LINUX_BCM_CPU_PCIE__` and
+`-D_SIMPLE_MEMORY_ALLOCATION_=0` (what the SDK's own `Make.pkg.88670` does for
+this chip). 1722 files, 0 errors, 141,628,112 bytes, ELF 64-bit MSB MIPS64 rel2,
+static. It now reports:
+
+    BDE dev 0 (PCI), Dev 0x8375, Rev 0x11, Chip BCM88375_B0
+    DMA pool size: 67108864 bytes.
+    + 0: Device Reset and Access Enable      <- the CPS reset; PASSES now
+
+**(PCI), not (I2C)**, and the `soc_dcmn_cmic_device_hard_reset` failure is gone.
+The 134 `sal_i2c_init_fd` errors collapsed to one benign line. It reaches a live
+`BCM.0>` prompt with `SchanOps=418`, `Timeout: Schan=0`, `Flags=0x203 attached
+initialized`.
+
+### The remaining blocker is a data compare, not a transport fault
+
+`soc_jer_regs_blocks_access_check_dma` writes `0xaaff5500 + i` over 20 entries
+into IRR_MCDBm via `soc_mem_write_range`, zeroes the buffer, reads it back, and
+compares under `soc_mem_datamask_rw_get`. **jer_regs.c:220 is the COMPARE
+branch**, so both range calls returned SOC_E_NONE: the DMA ran, reported DONE,
+raised no error, and moved well-formed data.
+
+    entry 0: received:7f5541      expected:7f5500
+
+Only the low byte differs -- `7f 55` matches, so **byte order is not the fault**.
+And `(0xaaff5500 + 0x41)` masked is exactly `0x7f5541`, the value belonging to
+**index 65**, while only entries 0..19 were written. So this is an
+**indexing/stride or field-mask** discrepancy against IRR_MCDBm.
+
+To see that line, insert `debug soc init debug` into OUR copy of `jer.soc`
+before the `INIT_DNX` at line 158. It cannot be done from the prompt: the check
+runs only in the FIRST init, and a later `init soc` on an attached device skips
+phase1 (only `soc_jer_regs_eci_access_check` reruns), so a second init only
+*looks* like it passes.
+
+### Eliminated on hardware, not by assumption
+
+| hypothesis | disproof |
+|---|---|
+| TDMA waits on an interrupt | `tdma_intr_enable.BCM88650=0` changes nothing; `config show tdma` confirms the edit was read |
+| DMA address translation wrong | `dma_alloc_coherent` returns `dma_handle 0x2400000 phys 0x2400000` -- the platform itself is identity-mapped |
+| cached reserved mapping / coherency | a 4 MB uncached coherent pool fails identically |
+| INTx never re-enabled after MSI fails | `ffn_bde_paxb_route_intx()` runs and restores CMICD_TO_PCIE_INTR_EN to 1 |
+| `get_dma_info` layout mismatch vs OpenBCM | matches the reference BDE field for field; `d2 = 1 = USE_LINUX_BDE_MMAP` |
+| `SYS_BE_OTHER` not reaching the SDK | for `device & 0xF000 == 0x8000` byte order comes from compile-time `_bus`; `socdiag.c:181` sets it and passes `&bus` |
+
+### Two separate items
+
+* `interrupt priority set: : Function not implemented` is a `perror()` from
+  `sched_setscheduler(0, SCHED_RR, {90})` at
+  `systems/bde/linux/user/linux-user-bde.c:1895` -- cosmetic; silence with
+  `-DSAL_BDE_THREAD_PRIO_DEFAULT`. Its presence does prove the BDE interrupt
+  thread was created, i.e. `polled_irq_mode=0`, which is NOT this chip's SDK
+  default of 1. `polled_irq_mode=1` would remove MSI/INTx from the path.
+* A SIGSEGV in `arad_mgmt_sw_ver_set_unsafe`, plausibly tied to the recurring
+  `sw_state_max_size SOC property is not defined` warning.
+
+### Reproducing a run (everything below is lost on a CP reboot)
+
+Config/cmd files are in tmpfs and device nodes are devtmpfs. Stage binaries
+through the NFS root, not scp -- the busybox CP has no sftp-server, and the CP
+roots on `127.1.1.1:/opt/ffn-cproot-owrt` (rw), so writing
+`/opt/ffn-cproot-owrt/usr/local/ffn/x` on the MP makes it appear at
+`/usr/local/ffn/x`. The VM reaches the MP but **the MP cannot reach the VM**, so
+stream with `ssh VM 'cat bin' | ssh MP 'cat > dest'` and verify by sha256.
+`insmod ffn_bcm.ko` BEFORE `ffn_bde.ko dma_phys=0x30000000 dma_mb=64`; mknod both
+BDE nodes; export `BCM_CONFIG_FILE` (CWD alone is not enough); run on a **pty**
+because a static glibc block-buffers on a pipe.
