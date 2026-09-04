@@ -285,3 +285,74 @@ The program is a close relative of Broadcom's `generic8led.asm` (both carry
 `16 E0 CA`, `12 A0 F8`, `32 00 .. 97 75`, `77 64`), which independently confirms
 the MSB-of-dword byte extraction. The microcode bytes are vendor firmware and are
 deliberately NOT in this repo: bring-your-own, use-in-place, never packaged.
+
+
+## The front panel is no longer dark: full init, LEDs running, ports enumerated
+
+Our own OpenBCM build now initialises the chip end to end. `jer.soc` runs to
+completion and writes `runningConfig.soc`; `Init SOC Done` and `Init BCM Done`
+both appear; 41 init stages including real DDR SHMOO training, PP init, and every
+BCM module (l2, l3, vlan, mpls, vswitch, cosq, fabric, linkscan, field, policer,
+mirror, trunk).
+
+### Three things had to be fixed, in this order
+
+1. **`SYS_BE_OTHER=0`** -- see `octeon/kctl/FFN-BDE.md`. ffn_bde enables the PAXB
+   *hardware* byte swap, so software must not swap DMA again. Without this,
+   `soc_jer_regs_blocks_access_check_dma` failed its own data compare.
+
+2. **KAPS off.** `jer_kaps_init_app()` hits our deliberate 49-function stub.
+   `JER_KAPS_ENABLE` is driven by three sizes (jer_pp_kaps.h:39-42) whose
+   config.bcm properties drop the `kaps_` prefix:
+   `private_ip_frwrd_table_size=0` and `public_ip_frwrd_table_size=0` disable it.
+   Appropriate here -- KAPS is an external-TCAM route engine we have no library
+   for, and this chip is a NIF: the OCTEON forwards. `NoElkDevice=1
+   NoElkAppl=1` on the INIT_DNX line does NOT cover the KAPS *app*.
+
+3. **`ln -s /tmp/bcmcfg /usr/share/broadcom`**, created in the NFS root at
+   `/opt/ffn-cproot-owrt/usr/share/` so it survives a CP reboot. jer.soc sources
+   `phy_tx_settings.c`, `gryphon_llfc.c`, `panEgrTcMap.c` and writes
+   `runningConfig.soc` by ABSOLUTE path, ignoring `BCM_CONFIG_FILE` -- the trap
+   `tools/ffn-bcm-sdk.sh` already documented.
+
+### LEDs: running
+
+`jer.soc` enables them itself once init completes -- there was never a register
+to find. **Three** LED processors, 8 slots each:
+
+    if $?feature_led_proc && !$?simulator         "led 0 prog $ledcode_0; led 1 prog $ledcode_1; led 2 prog $ledcode_2;          led auto on; led 0 start; led 1 start; led 2 start"
+
+`feature_led_proc` needs nothing set: `system.c:1087` resolves any `feature_*`
+shell variable from the SDK feature flags, and `soc_features_bcm88375_b0` grants
+`soc_feature_led_proc`. Confirmed by register, remembering the byte reversal:
+
+    CTRL bar2+0x20000 = 0x0b020000 -> logical 0x0000020b, bit0 LEDUP_EN = 1
+    (0x00000000 before init -> 0x0a020000 mid-init, bit0=0 -> 0x0b020000 now)
+    CLK_DIV 0x20050 = 0x00974901   (was 0x808d5b00; SDK reprogrammed it)
+
+`led prog` and `led start` print NOTHING on success, so an empty log is not
+evidence they were skipped -- read CTRL bit 0. Physical illumination still wants
+eyes on the chassis; with ports disabled, expect link-down patterns.
+
+### The live port table (`ps` at the BCM.0> prompt)
+
+    xe1(1)   !ena 10G   XFI      xe18(18)   !ena 10G   XFI
+    xl2(2)   UP   40G   XLAUI    il20(20)   down 12.5G ILKN
+    ce3(3)   down 100G  CAUI     xe21-23    !ena 10G   XFI
+    xe4,5    down 10G   XFI      xl24,25,26 down 40G   XLAUI
+    xe6,7    !ena 10G   XFI      xe27-31    !ena 10G   XFI
+    xe8,9    down  -    KR       ce32-35    !ena 100G  CAUI
+    xe10-16  !ena 10G   XFI      xe36(36)   !ena 10G   XFI
+    ce12(12) !ena 100G  CAUI
+
+`xe`=10G, `xl`=40G, `ce`=100G, `il`=ILKN. **`xl2` is UP at 40G XLAUI** -- the
+live link to the DP OCTEON, now read from the chip rather than inferred.
+
+Every front port reads **`!ena`**, which independently confirms the "shipped
+config disables every front port" row in the table above, and is exactly the
+state `bcm_port_enable_set` changes. The table also corroborates the faceplate
+map: the 20x10G xe ports are 1, 6, 7, 10, 11, 13-16, 18, 19, 21-23, 27-31, 36;
+port 12 is ce12 (HSCI); 32-35 are the 100G class.
+
+A full init takes about **700 s** to reach the prompt, most of it SHMOO, so use
+an 800 s deadline / 700 s settle on the pty runner.
