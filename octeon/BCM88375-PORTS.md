@@ -200,3 +200,88 @@ since it is reverse-engineering detail rather than platform wiring.
 
 The owner-supplied DNX files this switch needs in order to initialise are
 verified and loaded by `ffn_dnx.py` in FFN-NGFW; they are never shipped.
+
+
+## The LED processor: what is in it, and why it is dark (2026-09-04)
+
+`ledup0_ctrl = 0` above is not a value waiting for the right bit. **CTRL will not
+accept the enable bit at all** -- `leden 0 1` leaves it 0 -- because the block is
+held in reset.
+
+### The gate is the CPS reset, which is also what stops soc_dpp_init
+
+`soc_dcmn_cmic_device_hard_reset` writes 1 to `CMIC_CPS_RESET` (**0x10220** bit
+0), sleeps 1 ms, then polls for the bit to **self-clear to 0**, giving up after
+100 ms with "CPS reset field not asserted correctly". That error therefore means
+the bit never read back 0 -- not that the write was refused.
+
+Read through our own PCIe path the register is healthy:
+
+    bar2+0x10220 = 0x00000000    CPS_RESET: not asserted, clean
+    bar2+0x10224 = 0x75831100    device ID + rev, byte-reversed
+                                 -> 00 11 83 75 = dev 0x8375 rev 0x11
+
+A correct device ID at its documented offset proves that path reads real
+hardware. The SDK's did not: it misclassified the device as I2C (134
+`sal_i2c_init_fd` failures), so its poll of CPS_RESET never saw 0 and init died,
+leaving LEDUP in reset. **The dark front panel and the stalled SDK init are one
+blocker, not two**, and `-D__DUNE_LINUX_BCM_CPU_PCIE__` addresses both.
+
+The byte reversal is also a measurement to settle the open `SYS_BE_PIO` question
+against, rather than guessing at it.
+
+### Register layout, and a hazard that costs a CP reboot
+
+    LEDUP0 CTRL   bar2+0x20000   bit 0 = LEDUP_EN
+    CLK_DIV       bar2+0x20050 / 0x2005c
+    DATA_RAM      bar2+0x20400   ONLY 64 dwords -- see the hazard
+    PROGRAM_RAM   bar2+0x20800
+
+Byte-wide registers read as dwords put the byte in the **MSB** (`0x02000000` is
+byte 0x02).
+
+**HAZARD.** The DATA_RAM aperture is only `0x20400`-`0x204FC`. Reading past it
+aborts on the bus even though the offset is far inside the 8 MB BAR2: a read at
+`0x20780` Oopsed the kernel inside `ffn_bcm_ioctl` (`Code: <8c420000>` =
+`lw v0,0(v0)`), left four **unkillable D-state** tasks pinning the module
+refcount at 4 so `rmmod` refused, and cost a CP reboot. BAR size is not decode.
+The aperture does not linearly cover all 256 LED-RAM bytes, so LED-RAM byte 0xa0
+is **not** at `bar2+0x20680`. The full RAM needs the indexed address/data
+register pair CMIC RAMs normally use; find it in the SDK before poking further.
+
+`ffn_bcm_ioctl` should either whitelist the decoded windows or install a MIPS
+bus-error fixup around the access and return -EIO, which is what Broadcom's own
+BDE does. Until then, probe any new offset from a throwaway process, never from
+a session holding state worth keeping.
+
+### The resident program, disassembled
+
+`tools/led/tools` in the SDK builds three **host** dev tools with `make all`:
+`ledasm`, `leddasm`, `ledsim`, plus `tools/led/example/*.asm`. They append the
+extension themselves (`./ledasm /tmp/x`, not `/tmp/x.asm`); `.hex` is 16
+space-separated uppercase bytes per line. That is the own-code path for the LEDs:
+understand the hardware with Broadcom's host tools, then write FFN's own `.asm`
+-- needed regardless, since a chip reset wipes whatever is resident now.
+
+    ld a,0x15 / call 0x35  x8        eight LED slots
+    inc (0xe0)                       blink timebase in DATA_RAM
+    send 0x08                        shift 8 bits to the external LED chain
+    port a / pushst 0 / pushst 1 / tor   OR the port's two hw status bits
+    and b,0x06                       blink phase from the counter
+    ld b,0xa0 / add b,a / ld b,(b)   sw per-port state at DATA_RAM[0xa0+port]
+    pushst 0x0e | 0x0f / pack        on-pattern vs off-pattern
+
+**DATA_RAM split:** LED-RAM bytes 0..49 are 25 ports x 2 bytes maintained by
+HARDWARE -- and 50/2 = 25 matches the faceplate count reached independently,
+which corroborates the layout rather than assuming it. `0xa0` and `0xe0` are
+software scratch, outside the readable aperture.
+
+The eight slots name ports 21,1,13,1,9,1,17,5. **That is not this chassis's
+faceplate map** -- 5 and 9 sit in the "not in the front-panel enable set" row of
+the table above -- so it is a `generic8led`-derived leftover for another variant.
+Use the table, not the LED program, for the port map.
+
+The program is a close relative of Broadcom's `generic8led.asm` (both carry
+`16 E0 CA`, `12 A0 F8`, `32 00 .. 97 75`, `77 64`), which independently confirms
+the MSB-of-dword byte extraction. The microcode bytes are vendor firmware and are
+deliberately NOT in this repo: bring-your-own, use-in-place, never packaged.
