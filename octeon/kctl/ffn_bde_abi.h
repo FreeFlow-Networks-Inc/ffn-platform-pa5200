@@ -59,7 +59,15 @@
 #include <linux/ioctl.h>
 
 #define FFN_BDE_IOC_MAGIC	'L'		/* 0x4c */
-#define FFN_BDE_IOC_NR_MAX	30		/* 31 commands, 0..30 */
+/*
+ * The SDK's LUBDE ioctl numbers run 0..37. This was 30, which rejected
+ * LUBDE_REPROBE (31) in the range check BEFORE the switch -- so adding a case
+ * for it in ffn_bde.c had no effect at all, and the SDK kept aborting on
+ * assert(_ioctl_LUBDE_REPROBE == 0). An unknown-but-in-range nr still falls to
+ * the default arm and is reported in rc, so widening this costs nothing and
+ * makes the next unimplemented ioctl visible instead of silently ignored.
+ */
+#define FFN_BDE_IOC_NR_MAX	37		/* 38 commands, 0..37 (SDK LUBDE range) */
 
 /*
  * Device nodes, with FIXED majors. The vendor's /sbin/rc creates them with

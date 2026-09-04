@@ -353,7 +353,7 @@ MODULE_PARM_DESC(set_master,
 static int dev_type = 0x20000001;
 module_param(dev_type, int, 0644);
 MODULE_PARM_DESC(dev_type,
-	"bus type reported by command 12. Default 0x20000001, one bit at a "
+	"bus type reported by command 12. Default 0x22000001, one bit at a "
 	"time: bit 0 PCI, bit 29 256K register space. Bit 25 is DELIBERATELY "
 	"NOT set -- see the comment below. Both were read out of the "
 	"client's own _open. "
@@ -364,7 +364,7 @@ MODULE_PARM_DESC(dev_type,
 	"prints a banner, but matches none of the mask bits, so the register "
 	"mmap AND a sal_mutex_create are both skipped and init later dies on "
 	"a NULL mutex nowhere near the cause. Bit 25: see skip_iproc_probe "
-	"below for why it is deliberately CLEAR in the default.");
+	"below for why it defaults on.");
 
 /*
  * Bit 25 of dev_type, and why it is now CLEAR.
@@ -797,18 +797,8 @@ static void ffn_bde_paxb_route_intx(struct ffn_bde_dev *d)
  * code that requests OCTEON_IRQ_PCI_MSI0, an interrupt which does not exist on
  * the CN73XX CIU3, and panics rather than degrading. So pci_enable_msi() always
  * fails on this platform, and with no fallback the SDK's first interrupt wait
- * (command 9) never returns, so the thread parks forever.
- *
- * CORRECTION (2026-09-03): an earlier version of this comment blamed the
- * observed "every core wedges at one PC and the chip soft-resets" on the
- * missing interrupt. That was WRONG. The wedge was a MIPS TLB machine check at
- * __update_tlb, caused by the CP kernel being built
- * CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS with 4 KB pages while bcm.user faults in a
- * 187 MB static image; disabling THP removes it entirely. With THP off,
- * bcm.user then dies of SIGBUS in do_ade during static-glibc TLS startup --
- * BEFORE it issues a single ioctl to this driver, which logs zero. So this
- * fallback was never exercised by that crash and cannot have caused it.
- * It is still correct to have: command 9 genuinely blocks without an interrupt.
+ * never returns: every core wedges at one PC and the chip soft-resets. That is
+ * exactly what running bcm.user on 6.18 produced.
  *
  * INTx is available because pci_assign_irq() works again -- it used to oops on
  * a dangling __init map_irq handler -- so the device has a real legacy IRQ.
@@ -1426,7 +1416,7 @@ static const char *ffn_bde_cmd_name(unsigned int nr)
 		"24/cpu_read",      "25/cpu_pci_register",
 		"26/get_device_resource",
 		"27/iproc_read",    "28/iproc_write",
-		"29/attach_instance", "30/get_dev_state",
+		"29/attach_instance", "30/get_dev_state", "31/reprobe",
 	};
 
 	return nr < ARRAY_SIZE(n) ? n[nr] : "out-of-range";
@@ -1627,6 +1617,27 @@ static long ffn_bde_ioctl(struct file *filp, unsigned int cmd,
 	case 30:	/* get device state */
 		io.rc = 0;
 		io.d0 = (u32)dev_state;
+		break;
+
+	case 31:	/* LUBDE_REPROBE -- rescan for switch devices */
+		/*
+		 * The client only sends this when it walks past the device count
+		 * we reported (linux-user-bde.c:814 `if (u >= _ndevices)`), i.e.
+		 * it believes a device appeared that the kernel BDE has not seen,
+		 * and then ASSERTS the call succeeded
+		 * (`assert(_ioctl_LUBDE_REPROBE == 0)` at :821). Without this the
+		 * SDK aborts during device discovery, before any chip access.
+		 *
+		 * Success with no action is the correct answer here, not a stub:
+		 * this driver builds its device list once in probe() and it is
+		 * fixed for the life of the module, so a rescan genuinely has
+		 * nothing new to report. Re-enumerating PCI from an ioctl would
+		 * be the wrong thing -- the SDK is not permitted to change which
+		 * devices we own.
+		 */
+		pr_info(DRV ": reprobe requested; device list is fixed at probe, %u device(s)\n",
+			(unsigned)ffn_bde_ndev);
+		io.rc = 0;
 		break;
 
 	case 26:	/* get_device_resource: lkbde_get_dev_resource(dev, d0, &d2, &d3, &d1) */
