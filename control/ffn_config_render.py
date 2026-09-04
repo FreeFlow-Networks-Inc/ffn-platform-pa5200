@@ -145,7 +145,7 @@ def _emit(out, key, value):
 # without taking the rest of the config with it -- see render().
 # ---------------------------------------------------------------------------
 
-def render_routes(out, db, root, portmap, problems):
+def render_routes(out, db, root, portmap, problems, base):
     """static_routes -> dp.l3.route.<id>, in the DP's own grammar.
 
     The table columns line up with that grammar almost exactly -- dest_cidr,
@@ -158,29 +158,44 @@ def render_routes(out, db, root, portmap, problems):
         return
     try:
         rows = db.execute(
-            "SELECT id, dest_cidr, next_hop, dev, metric FROM static_routes "
-            "ORDER BY id").fetchall()
+            "SELECT id, dest_cidr, next_hop, dev, metric, table_id FROM "
+            "static_routes ORDER BY id").fetchall()
     except sqlite3.Error:
         return
     aliases = _alias_map(root) if root is not None else {}
-    for rid, cidr, nh, dev, _metric in rows:
+    for rid, cidr, nh, dev, _metric, table in rows:
         cidr = _clean(cidr)
         dev = _clean(dev)
         if not cidr or not dev:
             # Both are mandatory in the DP grammar. Skipping is right: a
             # half-rendered route would be parsed as something else.
             continue
-        # PAN-OS name -> kernel name -> DP port index. The last hop is the one
-        # that matters: the DP requires a NUMBER here.
+        # PAN-OS name -> kernel name. The CP routes by NAME.
         dev = aliases.get(dev, dev)
+
+        # The CP's own kernel route. Emitted independently of the portmap,
+        # because only the DP needs an index -- withholding the CP route for a
+        # missing DP mapping would stop the control plane routing over a
+        # dataplane detail.
+        nh = _clean(nh)
+        if nh:
+            cp_val = "%s via %s dev %s" % (cidr, nh, dev)
+        else:
+            cp_val = "%s dev %s" % (cidr, dev)
+        # table 254 is the kernel's main table; naming it explicitly is
+        # redundant and makes the route look VRF-scoped when it is not.
+        if table and str(table) not in ("", "254"):
+            cp_val += " table %s" % table
+        _emit(out, "cp.route.%s%s" % (MGR_ID, rid), cp_val)
+
+        # The DP addresses egresses by INDEX, so its copy needs the portmap.
         idx = portmap.get(dev)
         if idx is None:
             problems.append(
                 "route %s: no %s%s -- the DP needs a numeric egress and would "
-                "reject 'dev %s' as a syntax error, so the route is not "
-                "published" % (rid, PORTMAP_PREFIX, dev, dev))
+                "reject 'dev %s' as a syntax error, so the DP copy is not "
+                "published (the CP route still is)" % (rid, PORTMAP_PREFIX, dev, dev))
             continue
-        nh = _clean(nh)
         val = ("%s via %s dev %s" % (cidr, nh, idx) if nh
                else "%s dev %s" % (cidr, idx))
         _emit(out, "dp.l3.route.%s%s" % (MGR_ID, rid), val)
@@ -203,7 +218,7 @@ def _alias_map(root):
     return m
 
 
-def render_interfaces(out, db, root, portmap, problems):
+def render_interfaces(out, db, root, portmap, problems, base):
     """Per-interface settings, keyed by the name the planes can act on.
 
     Interfaces come from the running XML rather than a table: that is where the
@@ -288,7 +303,7 @@ def render_interfaces(out, db, root, portmap, problems):
                 _emit(out, "dp.l3.iface.%s.mac" % idx, mac)
 
 
-def render_routers(out, db, root, portmap, problems):
+def render_routers(out, db, root, portmap, problems, base):
     """virtual_routers -> which router owns which table, and its identity.
 
     The DP forwarder has ONE FIB and no notion of multiple virtual routers, so
@@ -319,7 +334,7 @@ def render_routers(out, db, root, portmap, problems):
         _emit(out, "cp.vr.count", active)
 
 
-def render_policy(out, db, root, portmap, problems):
+def render_policy(out, db, root, portmap, problems, base):
     """Firewall rules -> a SUMMARY and a version, never the rules themselves.
 
     The DP does not consume rules as key/value: ffn_dp_afpacket_main.c loads a
@@ -366,7 +381,7 @@ def render_policy(out, db, root, portmap, problems):
           or "drop")
 
 
-def render_platform(out, db, root, portmap, problems):
+def render_platform(out, db, root, portmap, problems, base):
     """The handful of keys that are simply true of this box."""
     # NOT hardcoded. The curated base already declares all.platform=pa5220
     # for this chassis, and a renderer asserting "pa5200" would quietly
@@ -378,6 +393,40 @@ def render_platform(out, db, root, portmap, problems):
     # the network id and identity secret stay on the MP. Rendering the pattern
     # lets a plane recognise the traffic class without holding any credential.
     _emit(out, "all.zerotier.iface_pattern", "zt*")
+
+
+def render_forwarding(out, db, root, portmap, problems, base):
+    """IP forwarding for the CONTROL PLANE.
+
+    This moved off the MP: ffn_manager.py used to run `sysctl -w
+    net.ipv4.tcp_l3mdev_accept=1` itself. Under the MP/CP/DP split the
+    management plane holds config and orchestrates; it does not forward, and
+    should carry none of the machinery for it.
+
+    The intent is DERIVED rather than invented: a box with an admin-up virtual
+    router is a router, and a router that does not forward is broken. So
+    forwarding follows from the presence of a VR.
+
+    The curated base wins if it says otherwise. That matters because forwarding
+    is exactly the kind of thing an operator may need to hold down during a
+    migration, and a renderer that overrode them would be fighting the person
+    trying to keep the box up.
+    """
+    for k in ("cp.forwarding.ipv4", "cp.forwarding.ipv6",
+              "cp.forwarding.l3mdev", "cp.forwarding.rp_filter"):
+        if k in base:
+            continue                      # operator has spoken; leave it
+        if k == "cp.forwarding.ipv4":
+            _emit(out, k, "1" if out.get("cp.vr.count") else "0")
+        elif k == "cp.forwarding.l3mdev":
+            # Only meaningful once a real VRF DEVICE exists. A virtual router on
+            # table 254 (main) creates none -- 30-vrf explicitly skips it -- so
+            # requesting l3mdev there just warns about a sysctl this kernel may
+            # not even expose (it needs CONFIG_NET_L3_MASTER_DEV). Emit it only
+            # when some VR uses a non-main table.
+            if any(v not in ("", "254") for kk, v in out.items()
+                   if kk.startswith("cp.vr.") and kk.endswith(".table")):
+                _emit(out, k, "1")
 
 
 def _running_text(root, path):
@@ -392,6 +441,8 @@ RENDERERS = (
     ("interfaces", render_interfaces),
     ("routes", render_routes),
     ("routers", render_routers),
+    # after routers: it derives forwarding from cp.vr.count
+    ("forwarding", render_forwarding),
     ("policy", render_policy),
 )
 
@@ -471,7 +522,7 @@ def render(db_path=DEF_DB, xml_path=DEF_XML, local_path=DEF_LOCAL):
     out = {}
     for name, fn in RENDERERS:
         try:
-            fn(out, db, root, portmap, problems)
+            fn(out, db, root, portmap, problems, base)
         except Exception as exc:
             problems.append("%s: %r" % (name, exc))
     if db is not None:

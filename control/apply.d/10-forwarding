@@ -1,0 +1,70 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 FreeFlow Networks, Inc.
+#
+# IP forwarding, on the CONTROL PLANE where it belongs.
+#
+# This used to be the MP's job -- ffn_manager.py ran
+# `sysctl -w net.ipv4.tcp_l3mdev_accept=1` and friends directly. Under the
+# MP/CP/DP split the management plane orchestrates and holds config; it does not
+# forward packets and should carry none of the machinery for it. So the sysctls
+# move here and the MP only expresses the intent as cp.forwarding.*.
+#
+# Runs first (10-) because everything after it -- interfaces, VRFs, routes --
+# is pointless on a box that will not forward.
+set -u
+. "$(dirname "$0")/00-common.sh"
+
+apply_sysctl() {
+	_k="$1"; _want="$2"
+	[ -n "$_want" ] || return 0
+	_have=$(sysctl -n "$_k" 2>/dev/null)
+	if [ "$_have" = "$_want" ]; then
+		return 0                      # already right; say nothing
+	fi
+	if sysctl -w "$_k=$_want" >/dev/null 2>&1; then
+		log "$_k: $_have -> $_want"
+	else
+		warn "could not set $_k=$_want"
+	fi
+}
+
+# The headline switch. Without this the CP is a host, not a router.
+apply_sysctl net.ipv4.ip_forward           "$(get cp.forwarding.ipv4 0)"
+apply_sysctl net.ipv6.conf.all.forwarding  "$(get cp.forwarding.ipv6 0)"
+
+# l3mdev accept: makes sockets bound in the default VRF accept traffic arriving
+# through a VRF device. Required for anything that terminates ON the CP while
+# VRFs are in use -- without it, control-plane traffic that arrives via a VRF is
+# silently not delivered, which presents as "the router forwards but you cannot
+# reach it".
+#
+# Default EMPTY, not 0. apply_sysctl skips an empty value, so "not configured"
+# means "do not touch" rather than "set it to 0" -- these sysctls only exist
+# when the kernel has CONFIG_NET_L3_MASTER_DEV, and this CP kernel does not, so
+# a 0 default made every single apply warn about a knob nobody asked for.
+_l3=$(get cp.forwarding.l3mdev "")
+if [ -n "$_l3" ]; then
+	if [ -e /proc/sys/net/ipv4/tcp_l3mdev_accept ]; then
+		apply_sysctl net.ipv4.tcp_l3mdev_accept "$_l3"
+		apply_sysctl net.ipv4.udp_l3mdev_accept "$_l3"
+	else
+		# Asked for, but unavailable. Worth one clear line: a VRF will still
+		# forward, but traffic terminating ON the CP via a VRF will not be
+		# delivered, and that is a confusing symptom to meet later.
+		warn "l3mdev requested but this kernel lacks it (CONFIG_NET_L3_MASTER_DEV);" \
+		     "VRF-scoped traffic terminating on the CP will not be delivered"
+	fi
+fi
+
+# rp_filter: strict reverse-path checking drops asymmetrically-routed traffic,
+# which is normal on a firewall with multiple paths. Left at whatever the
+# operator asked for rather than assumed, but reported when non-default so it is
+# visible in the apply log rather than a mystery later.
+_rp=$(get cp.forwarding.rp_filter "")
+if [ -n "$_rp" ]; then
+	apply_sysctl net.ipv4.conf.all.rp_filter "$_rp"
+	[ "$_rp" = "1" ] && log "rp_filter=1 (strict): asymmetric paths will be dropped"
+fi
+
+exit 0

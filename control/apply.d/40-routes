@@ -1,0 +1,84 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 FreeFlow Networks, Inc.
+#
+# Static routes, on the control plane.
+#
+# Replaces the MP running `ip route add/del` itself (ffn_manager.py ~5192-5209,
+# ~5652-5665). Routing is the control plane's job; the MP now only states the
+# intent.
+#
+# Keys, iproute2-shaped so they read the way an operator expects:
+#
+#     cp.route.<id> = <prefix>/<len> [via <gw>] dev <name> [table <n>]
+#
+# Note this is the CP's own kernel routing table and uses interface NAMES, while
+# the DP's dp.l3.route.* uses numeric port INDEXES for the same logical route.
+# Two renderings of one intent, because the two planes address egresses
+# differently -- see ffn_config_render.
+#
+# CONVERGENT, and it tracks what it owns.
+# --------------------------------------
+# Routes this hook installed are recorded in a state file, so a route removed
+# from config is removed from the kernel. Without that, deleting a route in the
+# UI would leave it forwarding forever.
+#
+# It deletes ONLY routes it previously added. Reconciling against the whole
+# kernel table would delete routes that belong to someone else -- a DHCP
+# default, a connected route, later an FRR-learned prefix -- and on a router
+# that is an outage rather than a tidy-up. Ownership is tracked explicitly for
+# exactly that reason.
+set -u
+. "$(dirname "$0")/00-common.sh"
+
+STATE=/var/lib/ffn/routes.owned
+mkdir -p "$(dirname "$STATE")" 2>/dev/null
+[ -f "$STATE" ] || : > "$STATE"
+
+NEW=$(mktemp 2>/dev/null || echo /tmp/ffn-routes.$$)
+: > "$NEW"
+
+for key in $(keys_matching "cp.route."); do
+	spec=$(get "$key")
+	[ -n "$spec" ] || continue
+
+	# The dev must exist and must not be a protected path. A route pointed at
+	# the management interface would be an easy way to blackhole the CP.
+	dev=$(echo "$spec" | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+	if [ -n "$dev" ]; then
+		protected "$dev" && { warn "$key: refusing a route via protected $dev"; continue; }
+		have "$dev" || { warn "$key: no such interface $dev; skipping"; continue; }
+	fi
+
+	# Idempotent: `ip route replace` is add-or-update, so re-applying an
+	# unchanged route is a no-op instead of an EEXIST error on every run.
+	if ip route replace $spec 2>/dev/null; then
+		echo "$spec" >> "$NEW"
+	else
+		warn "$key: failed to apply: $spec"
+	fi
+done
+
+# Withdraw anything we own that is no longer wanted.
+while IFS= read -r old; do
+	[ -n "$old" ] || continue
+	grep -qxF "$old" "$NEW" && continue
+	if ip route del $old 2>/dev/null; then
+		log "withdrew: $old"
+	else
+		# Already gone (link down, or removed by hand) -- not an error worth
+		# shouting about, but worth seeing.
+		log "withdraw skipped (already absent): $old"
+	fi
+done < "$STATE"
+
+sort -u "$NEW" > "$STATE" 2>/dev/null || cp "$NEW" "$STATE"
+rm -f "$NEW"
+
+# `grep -c` prints 0 AND exits non-zero when there is no match, so a
+# `|| echo 0` fallback printed the count twice. wc -l has neither
+# behaviour.
+_n=$(wc -l < "$STATE" 2>/dev/null | tr -d " ")
+[ -n "$_n" ] || _n=0
+log "$_n route(s) owned by config"
+exit 0
