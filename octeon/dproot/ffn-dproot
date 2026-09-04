@@ -1,0 +1,146 @@
+#!/bin/sh
+# ffn-dproot -- give the DP its real userland, from an image staged in DRAM.
+#
+# The DP boots on a lean initramfs (busybox + the session agent). This mounts the
+# 299 MB CentOS userland that the CP staged into DP DRAM over PCIe, and enters it.
+#
+# WHY SQUASHFS AND NOT A cpio: the DP has ~441 MB of RAM. Unpacking a 299 MB
+# userland into ramfs would leave almost nothing; squashfs keeps it COMPRESSED in
+# memory (55 MB) and decompresses on demand, so the same userland costs a fifth of
+# the RAM. The kernel has CONFIG_SQUASHFS + SQUASHFS_XZ, LOOP and OVERLAY_FS, which
+# is everything this needs.
+#
+# WHY THE COPY: the image is sitting at a physical address, but the loop driver
+# needs a regular file or block device -- /dev/mem is a char device, so it cannot be
+# looped directly. One 55 MB read out of /dev/mem is the price.
+#
+# WRITABILITY: squashfs is read-only, so an overlay puts a tmpfs on top. The result
+# is a writable 299 MB userland whose cost is the 55 MB image plus whatever is
+# actually written.
+set -u
+# Where the CP staged the image, and how big it is.
+#
+# These used to be hardcoded here (ADDR_MB=640 / SIZE_MB=56) while dpboot8.sh
+# had its own ROOTFS_ADDR -- two independent copies of one fact, in a script
+# baked into the kernel image and a script on the CP. Changing one silently
+# broke the other, and SIZE_MB was still 56 for a 55 MB image long after the
+# rootfs became 19 MB.
+#
+# Both are now derived from the kernel command line, which dpboot8.sh already
+# writes: it emits one ffn_reserve= per staged region. The mailbox/rings region
+# is the low one (0x400000); the rootfs is the other. So dpboot8.sh is the single
+# source of truth and this script needs no edit -- and no kernel rebuild -- when
+# the address moves.
+#
+# FFN_ROOTFS_ADDR_MB / FFN_ROOTFS_SIZE_MB override it for a manual run.
+MAILBOX_ADDR=0x400000
+
+parse_reserve() {
+	# ffn_reserve=<base>,<size>   size suffix K/M/G, or bytes if bare.
+	for tok in $(cat /proc/cmdline 2>/dev/null); do
+		case "$tok" in
+		ffn_reserve=*) ;;
+		*) continue ;;
+		esac
+		spec=${tok#ffn_reserve=}
+		base=${spec%%,*}
+		size=${spec#*,}
+		[ "$base" = "$MAILBOX_ADDR" ] && continue	# that one is the mailbox
+		case "$size" in
+		*K|*k) mb=$(( ${size%[Kk]} / 1024 )) ;;
+		*M|*m) mb=${size%[Mm]} ;;
+		*G|*g) mb=$(( ${size%[Gg]} * 1024 )) ;;
+		*)     mb=$(( size / 1048576 )) ;;
+		esac
+		# shell arithmetic understands the 0x prefix
+		echo "$(( base / 1048576 )) $mb"
+		return 0
+	done
+	return 1
+}
+
+if [ -n "${FFN_ROOTFS_ADDR_MB:-}" ]; then
+	ADDR_MB=$FFN_ROOTFS_ADDR_MB
+	SIZE_MB=${FFN_ROOTFS_SIZE_MB:-56}
+	say_src="environment"
+elif set -- $(parse_reserve) && [ -n "${1:-}" ]; then
+	ADDR_MB=$1
+	SIZE_MB=$2
+	say_src="ffn_reserve on the kernel cmdline"
+else
+	# Last resort, and say so loudly: this is the historical value and is only
+	# right if dpboot8.sh still stages at 0x28000000.
+	ADDR_MB=640
+	SIZE_MB=56
+	say_src="FALLBACK -- no rootfs ffn_reserve found on the cmdline"
+fi
+# Round the copy up so a partial final megabyte is not lost.
+[ "$SIZE_MB" -gt 0 ] 2>/dev/null || SIZE_MB=56
+SIZE_MB=$(( SIZE_MB + 1 ))
+IMG=/tmp/dproot.sqfs
+LOWER=/mnt/lower
+UPPER=/mnt/upper
+WORK=/mnt/work
+ROOT=/mnt/root
+
+say() { echo "ffn-dproot: $*"; }
+
+# Already up? Just enter it again.
+if [ -x "$ROOT/bin/bash" ]; then
+	say "already mounted; entering"
+	exec chroot "$ROOT" /bin/bash -l
+fi
+
+[ -c /dev/mem ] || mknod /dev/mem c 1 1
+mkdir -p "$LOWER" "$UPPER" "$WORK" "$ROOT"
+
+if [ ! -f "$IMG" ]; then
+	say "address from $say_src: ${ADDR_MB}MB, copying ${SIZE_MB}MB"
+	dd if=/dev/mem of="$IMG" bs=1M skip=$ADDR_MB count=$SIZE_MB 2>/dev/null || {
+		say "dd from /dev/mem failed"; exit 1; }
+fi
+
+# squashfs 4.0 starts with the little-endian magic "hsqs"; check before mounting so
+# a mis-staged image fails loudly instead of as a confusing mount error.
+MAGIC=$(dd if="$IMG" bs=4 count=1 2>/dev/null)
+case "$MAGIC" in
+	hsqs) say "image looks like squashfs 4.0" ;;
+	*)    say "not a squashfs image at ${ADDR_MB}MB (magic '$MAGIC') -- refusing"
+	say "  if the CP staged elsewhere, check ffn_reserve= on /proc/cmdline"; exit 1 ;;
+esac
+
+modprobe loop 2>/dev/null
+if ! mount -t squashfs -o ro,loop "$IMG" "$LOWER" 2>/dev/null; then
+	# busybox mount may not wire up loop itself; do it explicitly
+	losetup /dev/loop0 "$IMG" 2>/dev/null || losetup -f "$IMG" 2>/dev/null
+	mount -t squashfs -o ro /dev/loop0 "$LOWER" || {
+		say "squashfs mount failed"; exit 1; }
+fi
+say "squashfs mounted read-only at $LOWER"
+
+mount -t tmpfs -o size=128M tmpfs "$UPPER" 2>/dev/null
+mkdir -p "$UPPER/up" "$UPPER/work"
+if mount -t overlay overlay -o \
+	lowerdir="$LOWER",upperdir="$UPPER/up",workdir="$UPPER/work" "$ROOT" 2>/dev/null
+then
+	say "overlay mounted: writable userland at $ROOT"
+else
+	say "overlay unavailable; using the read-only squashfs directly"
+	ROOT="$LOWER"
+fi
+
+for d in proc sys dev; do mkdir -p "$ROOT/$d"; done
+mount -t proc  proc "$ROOT/proc" 2>/dev/null
+mount -t sysfs sys  "$ROOT/sys"  2>/dev/null
+mount -o bind  /dev "$ROOT/dev"  2>/dev/null
+
+if [ "${FFN_DPROOT_NOCHROOT:-0}" = 1 ]; then
+	say "mounted; not entering (FFN_DPROOT_NOCHROOT=1)"
+	df -h "$ROOT" 2>/dev/null | tail -2
+	echo "--- top level ---"; ls "$ROOT"
+	echo "--- proof it is the big userland ---"
+	ls -l "$ROOT/bin/bash" "$ROOT/bin/python" 2>/dev/null
+	exit 0
+fi
+say "entering the DP userland (exit returns to the initramfs shell)"
+exec chroot "$ROOT" /bin/bash -l
