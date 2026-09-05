@@ -73,6 +73,7 @@
  * this path on a live CN78XX.
  */
 #include "ffn_dp_io_octeon3.h"
+#include "ffn_dp_vsys.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -138,7 +139,10 @@ const char *oct_gen_name(enum oct_gen g)
 #include "cvmx.h"
 #include "cvmx-fpa3.h"
 #include "cvmx-helper.h"
+#include "cvmx-helper-pki.h"
 #include "cvmx-helper-util.h"
+#include "cvmx-pki.h"
+#include "cvmx-pki-resources.h"
 #include "cvmx-packet.h"
 #include "cvmx-pko3.h"
 #include "cvmx-pko3-queue.h"
@@ -222,6 +226,207 @@ static int cvmx3_hw_init(struct oct_ctx *c)
     return DP_OK;
 }
 
+/*
+ * Apply a vsys plan to PKI and SSO.
+ *
+ * The chain being programmed, and the reason each link exists:
+ *
+ *     port (pkind) --> PKI style --> QPG entry --> { SSO group, FPA aura }
+ *
+ *   style      one per tenant, so a packet's tenant is decided by which style
+ *              matched -- in the parser, before any core is involved.
+ *   QPG entry  carries grp_ok, which is where the work is scheduled, and
+ *              aura_num, which is whose buffers it consumes. One entry per
+ *              tenant is what makes the isolation real rather than nominal:
+ *              separate groups mean one tenant cannot starve another's
+ *              scheduling, separate auras mean one cannot exhaust another's
+ *              buffers.
+ *   pkind      a port's starting style, for the common case where a physical
+ *              port belongs to exactly one tenant.
+ *
+ * PCAM is the finer selector -- a VLAN id, say -- and its action ADDS to the
+ * style rather than setting it, which is why the planner lays tenant styles out
+ * contiguously and hands back a checked adder.
+ *
+ * Everything here is behind FFN_HAVE_CVMX and is exercised by
+ * `make oct3-cvmx SDK=...`, which compiles it against the real SDK headers.
+ * That target exists because this file cannot be run without hardware, and
+ * because every previous mistake in it -- an invented accessor, a call with the
+ * wrong arity -- was the kind that compiles into a dataplane that moves no
+ * packets and reports nothing.
+ */
+
+/* The planner carries its own copy of the hardware limits so it can be built
+ * and tested with no SDK present. Where the SDK IS present, hold the two to
+ * each other: a divergence would mean the planner had been validating against
+ * numbers the chip does not have. */
+static int cvmx3_vsys_limits_agree(void)
+{
+    const struct dp_vsys_limits *l = &DP_VSYS_LIMITS_CN78XX;
+
+    if ((int)l->qpg_entries != CVMX_PKI_NUM_QPG_ENTRY) return 0;
+    if ((int)l->final_styles != CVMX_PKI_NUM_FINAL_STYLE) return 0;
+    if ((int)l->internal_styles != CVMX_PKI_NUM_INTERNAL_STYLE) return 0;
+    /* CVMX_PKI_NUM_SSO_GROUP is a call, not a constant -- it is the running
+     * part's group count, so this also catches being built for CN78XX and run
+     * on something else. */
+    if ((int)l->sso_groups != (int)CVMX_PKI_NUM_SSO_GROUP) return 0;
+    return 1;
+}
+
+/*
+ * Program one tenant: its QPG entry, then the style that points at it.
+ *
+ * The style is CLONED from the port's current style rather than built from
+ * zeros. A style carries the whole parse and checking configuration -- FCS
+ * handling, length checks, tag generation -- which the SDK's own bring-up has
+ * already set correctly for this port's interface type. Starting from zeros
+ * would silently drop all of that and produce a tenant whose packets are parsed
+ * differently from everyone else's.
+ */
+static int cvmx3_vsys_apply_one(int node, const struct dp_vsys_res *r,
+                                int aura, uint64_t cluster_mask)
+{
+    struct cvmx_pki_qpg_config qpg;
+    struct cvmx_pki_style_config style;
+
+    memset(&qpg, 0, sizeof(qpg));
+    qpg.qpg_base = r->qpg_offset;
+    qpg.port_add = 0;
+    qpg.aura_num = aura;
+    qpg.grp_ok   = r->sso_group;
+    /* Errored packets go to the SAME group as good ones. They are still this
+     * tenant's traffic and still consume this tenant's budget; sending them to
+     * a shared group would let a tenant push its own error load onto everyone
+     * else -- which is precisely the isolation this is here to provide. */
+    qpg.grp_bad  = r->sso_group;
+    qpg.grptag_ok  = 0;
+    qpg.grptag_bad = 0;
+    cvmx_pki_write_qpg_entry(node, r->qpg_offset, &qpg);
+
+    /* read/write_style_config return void -- the SDK reports nothing here, so
+     * there is no status to check and pretending otherwise would be a check
+     * that always passes. */
+    cvmx_pki_read_style_config(node, r->style, cluster_mask, &style);
+    style.parm_cfg.qpg_base = r->qpg_offset;
+    /* The QPG algorithm can derive group, aura and port-adder from the packet.
+     * Derivation is disabled here because the whole point is that the TENANT
+     * decides these, not the packet: a packet that could influence its own
+     * group could place itself in another tenant's scheduler. */
+    style.parm_cfg.qpg_dis_grp   = 0;   /* the group must come from the QPG entry */
+    style.parm_cfg.qpg_dis_aura  = 0;   /* so must the aura */
+    style.parm_cfg.qpg_dis_padd  = 1;   /* but not a port adder off the packet */
+    style.parm_cfg.qpg_dis_grptag = 1;  /* nor a group tweak off WQE[TAG] */
+    cvmx_pki_write_style_config(node, r->style, cluster_mask, &style);
+    return DP_OK;
+}
+
+/*
+ * Apply a whole plan, and point each port at its tenant's style.
+ *
+ * Ordering matters and is not arbitrary: every QPG entry and style is written
+ * BEFORE any pkind is repointed. A pkind pointing at a style whose QPG entry is
+ * not yet written would, for that window, steer live traffic into an
+ * unconfigured group -- and this runs on a box that may already be forwarding.
+ */
+int cvmx3_vsys_apply(struct oct_ctx *c, const struct dp_vsys_plan *p, int aura)
+{
+    const int node = cvmx_get_node_num();
+    uint64_t cluster_mask = (1ull << cvmx_pki_num_clusters()) - 1;
+    uint32_t i;
+    int rc;
+
+    if (!c || !p)
+        return DP_ERR_RANGE;
+    if (p->count == 0) {
+        /* No tenants is a valid configuration, not a no-op to be skipped: it
+         * means every group maps to the wildcard, which is the single-vsys
+         * behaviour this forwarder had before tenants existed. */
+        c->vsys_plan = p;
+        return DP_OK;
+    }
+    if (!cvmx3_vsys_limits_agree())
+        return DP_ERR_UNSUPP;
+
+    for (i = 0; i < p->count; i++) {
+        rc = cvmx3_vsys_apply_one(node, &p->res[i], aura, cluster_mask);
+        if (rc != DP_OK)
+            return rc;
+    }
+
+    /* Now the ports. A port with no tenant keeps whatever style the SDK gave
+     * it, which lands in the default group and reads back as the wildcard. */
+    for (i = 0; i < (uint32_t)c->nports; i++) {
+        const struct dp_vsys_res *r = dp_vsys_find(p, c->ports[i].vsys);
+        struct cvmx_pki_pkind_config pk;
+        int pkind;
+
+        if (!r)
+            continue;
+        pkind = cvmx_helper_get_pknd(cvmx_helper_get_interface_num(c->ports[i].ipd_port),
+                                     cvmx_helper_get_interface_index_num(c->ports[i].ipd_port));
+        if (pkind < 0)
+            return DP_ERR_RANGE;
+        if (cvmx_pki_read_pkind_config(node, pkind, &pk) < 0)
+            return DP_ERR_RANGE;
+        pk.initial_style = r->style;
+        cvmx_pki_write_pkind_config(node, pkind, &pk);
+    }
+
+    c->vsys_plan = p;
+    return DP_OK;
+}
+
+/*
+ * A PCAM entry that moves traffic matching one VLAN id into another tenant.
+ *
+ * For a trunk port carrying several tenants: the port's pkind selects the
+ * base tenant's style, and one of these per VLAN moves the matching packets up
+ * to the right style. The adder is computed and RANGE-CHECKED by the planner,
+ * because PCAM adds -- a move to a lower style cannot be expressed at all, and
+ * clamping it would deliver a tenant's packets into another tenant's group.
+ */
+int cvmx3_vsys_pcam_vlan(struct oct_ctx *c, const struct dp_vsys_plan *p,
+                         uint8_t base_vsys, uint16_t vlan_id, uint8_t to_vsys)
+{
+    const int node = cvmx_get_node_num();
+    uint64_t cluster_mask = (1ull << cvmx_pki_num_clusters()) - 1;
+    const struct dp_vsys_res *base = dp_vsys_find(p, base_vsys);
+    struct cvmx_pki_pcam_input in;
+    struct cvmx_pki_pcam_action act;
+    int add, index;
+
+    if (!c || !p || !base)
+        return DP_ERR_RANGE;
+    add = dp_vsys_pcam_style_add(p, base_vsys, to_vsys);
+    if (add < 0)
+        return add;
+
+    index = cvmx_pki_pcam_entry_alloc(node, CVMX_PKI_FIND_AVAL_ENTRY,
+                                      0, cluster_mask);
+    if (index < 0)
+        return DP_ERR_TOOMANY;
+
+    memset(&in, 0, sizeof(in));
+    memset(&act, 0, sizeof(act));
+    /* Match only packets that already carry the base tenant's style, so this
+     * entry cannot pull traffic out of some unrelated port that happens to use
+     * the same VLAN id. */
+    in.style       = base->style;
+    in.style_mask  = 0xff;
+    in.field       = CVMX_PKI_PCAM_TERM_ETHTYPE0;
+    in.field_mask  = 0xff;
+    in.data        = ((uint64_t)0x8100 << 16) | vlan_id;
+    in.data_mask   = 0xffff0fff;   /* ethertype exactly; VLAN id, not PCP/DEI */
+    act.style_add  = add;
+    act.parse_mode_chg = CVMX_PKI_PARSE_NO_CHG;
+    act.layer_type_set = CVMX_PKI_LTYPE_E_NONE;
+    act.pointer_advance = 0;
+
+    cvmx_pki_pcam_write_entry(node, index, cluster_mask, in, act);
+    return DP_OK;
+}
+
 static void cvmx3_hw_fini(struct oct_ctx *c) { c->available = 0; }
 
 static int cvmx3_hw_work_get(struct oct_ctx *c, struct oct_wqe *w)
@@ -237,6 +442,12 @@ static int cvmx3_hw_work_get(struct oct_ctx *c, struct oct_wqe *w)
     memset(w, 0, sizeof(*w));
     w->hw   = wqe;
     w->disp = OCT_DISP_HELD;
+    /* The tenant, decided by PKI before any core saw the packet. With a vsys
+     * plan applied the style that matched routed this work into its tenant's
+     * SSO group, so the group IS the answer -- the receive path reads it rather
+     * than looking anything up. Read unconditionally: it costs one field and it
+     * means a plan applied later needs no change here. */
+    w->sso_group = cvmx_wqe_get_grp(wqe);
 
     /* Capture everything the disposal path will need BEFORE deciding whether
      * this is a packet worth forwarding. A work item we are about to drop still
@@ -354,6 +565,28 @@ enum oct_gen oct_detect_gen(void)
 
 static int  stub3_init(struct oct_ctx *c) { c->available = 0; return DP_ERR_NOMEM; }
 static void stub3_fini(struct oct_ctx *c) { (void)c; }
+
+/* Without the SDK there is no PKI to program. Refuse rather than return DP_OK:
+ * a caller that thinks it applied tenant isolation and did not is worse off
+ * than one told plainly that this build cannot. */
+int cvmx3_vsys_apply(struct oct_ctx *c, const struct dp_vsys_plan *p, int aura)
+{
+    (void)aura;
+    if (!c || !p)
+        return DP_ERR_RANGE;
+    if (p->count == 0) {          /* nothing to enforce, so nothing is claimed */
+        c->vsys_plan = p;
+        return DP_OK;
+    }
+    return DP_ERR_UNSUPP;
+}
+
+int cvmx3_vsys_pcam_vlan(struct oct_ctx *c, const struct dp_vsys_plan *p,
+                         uint8_t base_vsys, uint16_t vlan_id, uint8_t to_vsys)
+{
+    (void)c; (void)p; (void)base_vsys; (void)vlan_id; (void)to_vsys;
+    return DP_ERR_UNSUPP;
+}
 static int  stub3_work_get(struct oct_ctx *c, struct oct_wqe *w)
 { (void)c; (void)w; return 0; }
 static int  stub3_send(struct oct_ctx *c, struct oct_wqe *w, uint16_t p)

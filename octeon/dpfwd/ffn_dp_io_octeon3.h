@@ -90,4 +90,19 @@ struct pko3_desc {
  * caller must not issue. */
 int oct3_build_desc(struct pko3_desc *d, const struct oct_wqe *w, int keep_data);
 
+
+struct dp_vsys_plan;
+
+/* Apply a tenant plan to PKI/SSO: one style and one QPG entry per tenant, and
+ * each port pointed at its tenant's style. `aura` is the FPA aura the tenant
+ * QPG entries draw from. Returns DP_ERR_UNSUPP on a build without the SDK --
+ * it does not pretend to have applied isolation it cannot. */
+int cvmx3_vsys_apply(struct oct_ctx *c, const struct dp_vsys_plan *p, int aura);
+
+/* A PCAM entry moving one VLAN id from `base_vsys` to `to_vsys`, for a trunk
+ * port carrying several tenants. The style adder is range-checked by the
+ * planner: PCAM adds, so not every move is expressible. */
+int cvmx3_vsys_pcam_vlan(struct oct_ctx *c, const struct dp_vsys_plan *p,
+                         uint8_t base_vsys, uint16_t vlan_id, uint8_t to_vsys);
+
 #endif /* FFN_DP_IO_OCTEON3_H */

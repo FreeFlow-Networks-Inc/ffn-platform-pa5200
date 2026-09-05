@@ -34,6 +34,18 @@ L3_OBJ   = $(L3_SRC:.c=.o)
 # The control plane steers where L3 goes; inline analysis lives here. Kept
 # separate from the forwarder so the engine tests link without dragging in the
 # packet-I/O backends -- the scanners are pure functions over a byte range and
+# --- virtual systems ---
+# The plan half of hardware-enforced vsys: which SSO group, QPG entry and PKI
+# style each tenant gets. Portable and chip-free on purpose -- it is the part
+# that is easy to get wrong (PCAM ADDS to a style, it does not set one) and
+# the only part testable without an OCTEON.
+VSYS_SRC  = ffn_dp_vsys.c
+VSYS_HDRS = ffn_dp_vsys.h
+VSYS_OBJ  = $(VSYS_SRC:.c=.o)
+
+$(VSYS_OBJ): %.o: %.c $(VSYS_HDRS) ffn_dp_oct.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # should be testable as such.
 ENG_SRC  = ffn_dp_engine.c ffn_dp_dlp.c
 ENG_HDRS = ffn_dp_engine.h ffn_dp_dlp.h
@@ -65,8 +77,8 @@ ffn_dp_oct.o: $(SRC) $(HDRS)
 $(L3_OBJ): %.o: %.c $(HDRS) $(L3_HDRS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-ffn_dp_oct_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(TEST_SRC) $(HDRS)
-	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(TEST_SRC) -o $@
+ffn_dp_oct_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(TEST_SRC) $(HDRS)
+	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(TEST_SRC) -o $@
 
 test: ffn_dp_oct_test
 	./ffn_dp_oct_test
@@ -148,7 +160,7 @@ SDK_CFLAGS  = -c -march=octeon3 -mabi=64 -EB -O2 -g -std=gnu99 -Wall -Wextra \
               -DCVMX_ENABLE_PARAMETER_CHECKING=0 \
               -DCVMX_ENABLE_CSR_ADDRESS_CHECKING=0 \
               -DOCTEON_MODEL=$(MODEL) -I$(SDK)/target/include -I.
-CVMX_SRCS   = $(SRC) $(L3_SRC) $(ENG_SRC) $(OCT_SRC) $(OCT3_SRC) ffn_dp_bgx_octeon3.c
+CVMX_SRCS   = $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(OCT_SRC) $(OCT3_SRC) ffn_dp_bgx_octeon3.c
 
 oct3-cvmx:
 	@test -n "$(SDK)" || { echo "set SDK=/path/to/OCTEON-SDK"; exit 1; }
@@ -161,7 +173,7 @@ oct3-cvmx:
 	@echo "octeon backends compile clean against $(MODEL)"
 
 # everything that can run without Octeon hardware
-check: test l3-test arp-test engine-test oct-test oct3-test
+check: test l3-test arp-test engine-test vsys-test oct-test oct3-test
 	@echo "--- big-endian ---"
 	@$(MAKE) -s qemu-test
 	@$(MAKE) -s oct-qemu
@@ -169,6 +181,7 @@ check: test l3-test arp-test engine-test oct-test oct3-test
 	@$(MAKE) -s l3-qemu
 	@$(MAKE) -s arp-qemu
 	@$(MAKE) -s engine-qemu
+	@$(MAKE) -s vsys-qemu
 
 # --- cross build for the real target ---
 mips64: $(SRC) $(L3_SRC) $(ENG_SRC) $(TEST_SRC) $(HDRS) $(L3_HDRS)
@@ -192,11 +205,12 @@ clean:
 	      ffn_dp_oct3_io_test ffn_dp_oct3_io_test.mips64 \
 	      ffn_dp_l3_test ffn_dp_l3_test.mips64 \
 	      ffn_dp_arp_test ffn_dp_arp_test.mips64 \
-	      ffn_dp_engine_test ffn_dp_engine_test.mips
+	      ffn_dp_engine_test ffn_dp_engine_test.mips \
+      ffn_dp_vsys_test ffn_dp_vsys_test.mips
 	
 	$(RM) -r cvmx-obj
 
-.PHONY: all test l3-test arp-test engine-test engine-qemu mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
+.PHONY: all test l3-test arp-test engine-test engine-qemu vsys-test vsys-qemu mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
         oct3-qemu oct3-cvmx l3-qemu arp-qemu interop check clean
 
 # interop harness: runs the real DP command loop over an mmap'd file so the
@@ -224,6 +238,18 @@ ffn_dp_engine_test: $(ENG_SRC) ffn_dp_engine_test.c $(ENG_HDRS) ffn_dp_oct.h
 
 engine-test: ffn_dp_engine_test
 	./ffn_dp_engine_test
+
+ffn_dp_vsys_test: $(VSYS_SRC) ffn_dp_vsys_test.c $(VSYS_HDRS) ffn_dp_oct.h
+	$(CC) $(CFLAGS) -o $@ $(VSYS_SRC) ffn_dp_vsys_test.c
+
+vsys-test: ffn_dp_vsys_test
+	./ffn_dp_vsys_test
+
+ffn_dp_vsys_test.mips: $(VSYS_SRC) ffn_dp_vsys_test.c $(VSYS_HDRS) ffn_dp_oct.h
+	$(MIPS_CC) $(MIPS_CFLAGS) -o $@ $(VSYS_SRC) ffn_dp_vsys_test.c
+
+vsys-qemu: ffn_dp_vsys_test.mips
+	qemu-mips64 ./ffn_dp_vsys_test.mips
 
 ffn_dp_engine_test.mips: $(ENG_SRC) ffn_dp_engine_test.c $(ENG_HDRS) ffn_dp_oct.h
 	$(MIPS_CC) $(MIPS_CFLAGS) -o $@ $(ENG_SRC) ffn_dp_engine_test.c
