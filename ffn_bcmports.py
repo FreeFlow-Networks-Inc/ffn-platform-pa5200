@@ -54,6 +54,7 @@ CPU = "cpu"          # the chip's own CPU port
 MP = "mp"            # link to the x86 management processor
 RECYCLE = "recycle"  # internal recycle path
 FABRIC = "fabric"    # ILKN / external-fabric
+FE100 = "fe100"      # a link to the FE100 front-end ASIC
 UNKNOWN = "unknown"  # linked and real, but not yet identified
 
 # logical port -> (PAN name, core, channel, in_hdr, out_hdr, role, note)
@@ -61,7 +62,7 @@ PORTS = {
     0:  ("CPU",    0, 0,  "RAW", "RAW",      CPU,     "chip CPU port"),
     1:  ("XE24",   0, 1,  "RAW", "RAW_DSA",  FRONT,   ""),
     2:  ("XLGE11", 0, 2,  "RAW", "RAW_DSA",  UNKNOWN, "40G, links up; second 40G, not yet identified"),
-    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  UNKNOWN, "quad 0 -> a GEARBOX per board.soc; the ONLY in=ETH port, which fits -- whatever is behind the gearbox speaks plain Ethernet. What that is, is still unknown"),
+    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  FE100,   "100G to the FE100 NIF through a Broadcom Sesto gearbox PHY. PAN's own gryphon_llfc.c names it: `int nif2fe100 = 3`"),
     4:  ("XE36",   0, 4,  "TM",  "TM",       CP,      "MEASURED: CP eth1 (20 frames sent -> 20 counted)"),
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
     6:  ("XE29",   0, 6,  "RAW", "RAW_DSA",  FRONT,   ""),
@@ -78,7 +79,7 @@ PORTS = {
     17: ("RCY",    0, 17, "TM",  "RAW",      RECYCLE, "recycle port -- why there is no 'xe17' in ps"),
     18: ("XE26",   0, 18, "RAW", "RAW_DSA",  FRONT,   ""),
     19: ("XE27",   0, 19, "RAW", "RAW_DSA",  FRONT,   ""),
-    20: ("ILKN4",  0, 20, "TM",  "TM",       FABRIC,  "Interlaken NIF on 12 FABRIC lanes (use_fabric_links_for_ilkn_nif_ilkn4=1) -- a data interface, not an external-lookup link; no faceplate quad maps to it and it is not in the enable list"),
+    20: ("ILKN4",  0, 20, "TM",  "TM",       FE100,   "12-lane Interlaken to the FE100 TMI block, DIRECT (no gearbox). Not an external-lookup link and not unused: it is the second of the two BCM<->FE100 links"),
     21: ("XE31",   0, 21, "RAW", "RAW_DSA",  FRONT,   ""),
     22: ("XE30",   0, 22, "RAW", "RAW_DSA",  FRONT,   ""),
     23: ("XE28",   0, 23, "RAW", "RAW_DSA",  FRONT,   ""),
@@ -285,6 +286,35 @@ assert len(set(f[0] for f in FACEPLATE.values())) == len(FACEPLATE),     "duplic
 assert all(f[3] in (PLANE_DATA, PLANE_MGMT) for f in FACEPLATE.values()), \
     "faceplate entry with an unknown plane"
 
+
+# The BCM <-> FE100 topology: TWO links, and only one of them is Ethernet.
+#
+#   port 3  (ce3,  CGE0, quad 0)  100G CAUI, DSA_RAW egress
+#           -> Broadcom "Sesto" gearbox PHY -> FE100 `nif` (Ethernet) block
+#   port 20 (il20, ILKN4)         12 lanes of Interlaken, DIRECT
+#           -> FE100 `tmi` block
+#
+# Proven from PAN's own material rather than inferred:
+#   * gryphon_llfc.c:182  `int nif2fe100 = 3;`  -- names the port outright.
+#   * dsa_tag_support.c:331 "Direct traffic from all front ports to FE100",
+#     then force-forward of all 26 front ports at the port-3 DSA port. Port 3
+#     is the only port on the chip with tm_port_header_type_out=DSA_RAW.
+#   * PAN's own fe100.py decodes the FE100 NIF tag type as "DSA (Marvell,
+#     Broadcom Qumran)" -- Qumran being this switch.
+#   * The FE100 tmi block's rx_serdes0..11_framelock is 12 lanes, matching
+#     ilkn_num_lanes_4=12 / ilkn_lanes_20=0x000fff exactly.
+#
+# THE GEARBOX IS ON THE CP'S MDIO BUS, NOT THE SWITCH'S. libpanbcm_cp.so's
+# pan_read_gearbox_register calls cvmx_mdio_45_read(1, ...) -- clause-45 MDIO
+# on OCTEON SMI bus 1. Own-code has to drive it from the control plane; going
+# looking for it through the switch will not find it. The part is a Sesto
+# (BCM82764/82790/82792/82796); which one, and at what MDIO address, is NOT
+# established -- a C45 read of the Sesto chip-id registers on SMI bus 1 would
+# settle both, but it needs an address cycle, which is a write.
+#
+# Port 3 also has no TX FIR entry in phy_tx_settings.c, unlike every other
+# port list there. Its equalisation is the gearbox's job, over MDIO, on both
+# sides.
 
 # Connected pairs, found by disabling one end and watching the other drop.
 #
