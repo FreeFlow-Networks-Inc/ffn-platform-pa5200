@@ -187,12 +187,28 @@ def cycle(server, port, verbose=False):
     cp_lines = [p for p in pairs if p.startswith("cp.") or p.startswith("all.")]
     dp_lines = [p for p in pairs if p.startswith("dp.") or p.startswith("all.")]
 
-    if write_if_changed(CP_CONF, cp_lines):
+    cp_changed = write_if_changed(CP_CONF, cp_lines)
+    dp_changed = write_if_changed(DP_CONF, dp_lines)
+
+    # Hooks run when EITHER file changes, not cp.env alone.
+    #
+    # Some DP-scoped config is applied BY THE CP on the dataplane's behalf,
+    # because only the CP can reach the hardware: the forwarding fabric is
+    # dp.fabric.* but the BCM88375 is on the CP's PCIe bus, so 50-fabric runs
+    # here and reads dp.env.
+    #
+    # Firing on cp.env alone meant a pure fabric change staged into dp.env and
+    # then sat there -- the key arrived, no hook ran, the port kept its old
+    # state, and nothing anywhere reported a problem. That is the worst shape a
+    # config system can fail in, so the condition is widened rather than having
+    # 50-fabric poll.
+    if cp_changed or dp_changed:
         if verbose:
-            print("cp config changed (%d keys) -> running hooks" % len(cp_lines))
+            print("config changed (cp=%d dp=%d keys, cp_changed=%s dp_changed=%s)"
+                  " -> running hooks"
+                  % (len(cp_lines), len(dp_lines), cp_changed, dp_changed))
         run_hooks(CP_HOOKS, CP_CONF)
 
-    write_if_changed(DP_CONF, dp_lines)
     push_to_dp_if_needed(dp_lines, verbose)
 
     return ver
