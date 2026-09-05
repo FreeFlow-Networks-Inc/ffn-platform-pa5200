@@ -11,6 +11,10 @@
 
 #include "ffn_dp_l3.h"
 
+/* Inline analysis engines. Only the pointer is needed here, so the engine
+ * header is not pulled into everything that includes this one. */
+struct dp_engine_set;
+
 /* decisions / verdicts -- values MUST match ffn_fastpath.h */
 #define FP_FORWARD_W    0
 #define FP_INSPECT_W    1
@@ -55,6 +59,19 @@
 #define DP_FF_INSPECT   0x1
 #define DP_FF_OFFLOADED 0x2
 
+/* How many packets at the head of a flow are offered to the inline analysis
+ * engines. Not one: a credential or card number rarely lands in the first
+ * segment, and a single-packet scan would miss almost everything an inline
+ * scanner is for. Not unbounded either -- a long-lived flow must not pay for
+ * analysis forever, and an attacker who can keep a flow open must not be able
+ * to keep the scanners running on it.
+ *
+ * The honest limitation this leaves: the engines see individual packets, never
+ * a reassembled stream, so a token split across a segment boundary is missed.
+ * Reassembly needs per-flow buffering, which needs allocation, which is exactly
+ * what the dataplane may not do. Deep reassembly belongs on the punt path. */
+#define DP_ENGINE_FLOW_PKTS 8u
+
 /* NOTE: there is deliberately no dp_ntohl()-style helper here. IPv4 fields in
  * the fastpath tables are network-order BYTES and must be read with ld_be32()
  * from ffn_dp_abi.h, which is endian-neutral. A host-endianness-dependent
@@ -75,11 +92,18 @@ struct dp_tables {
     struct dp_policy_row policy[DP_MAX_POLICY];
 };
 
-/* parsed packet 5-tuple (host order) */
+/* parsed packet 5-tuple (host order), plus where the L4 payload starts.
+ *
+ * The payload location lives here because dp_parse() has already walked the
+ * VLAN tag, the IPv4 header and the L4 header to build the tuple; recomputing
+ * it at the inspection site would be a second parser to keep in agreement with
+ * this one. Both are byte offsets from the start of the frame, and both are 0
+ * when the packet carries no payload the engines can see. */
 struct dp_tuple {
     uint32_t src_ip, dst_ip;
     uint16_t sport, dport;
     uint8_t  proto, vsys, tcp_flags, pad;
+    uint32_t pay_off, pay_len;
 };
 
 /* normalized bidirectional flow key */
@@ -139,6 +163,15 @@ struct dp_result {
     uint8_t  emit_len;
     uint16_t emit_egress;
     uint8_t  emit[64];
+    /* What the inline analysis engines said, for logging. engine_verdict is a
+     * dp_engine_verdict; the two names point into static engine storage and are
+     * NULL when nothing fired. The forwarding decision is already in
+     * `decision` -- these exist so a log line can say WHICH engine and WHICH
+     * rule convicted the flow, not to be re-interpreted into a decision. */
+    uint8_t     engine_verdict;
+    uint32_t    engine_offset;
+    const char *engine_name;
+    const char *engine_rule;
 };
 
 struct dp_ctx {
@@ -150,6 +183,12 @@ struct dp_ctx {
     struct dp_tables tables;
     struct dp_flow_table flows;
     struct dp_l3 *l3;          /* optional: NULL disables routing entirely */
+    /* Inline analysis. NULL disables the engines entirely, the same contract as
+     * l3 above, so a build or a deployment that does not want them pays
+     * nothing and changes no forwarding behaviour. Attach with
+     * dp_engine_attach(); dp_init() memsets the ctx, so every existing caller
+     * starts with this NULL and is unaffected. */
+    struct dp_engine_set *engines;
     uint32_t l3_tick_ms;       /* last neighbour-ageing sweep, CLOCK_MONOTONIC ms */
     const struct dp_io_ops *io;
     void   *io_arg;
@@ -158,6 +197,7 @@ struct dp_ctx {
     uint64_t stat_drop, stat_punt, stat_local, stat_cache_hit, stat_classify;
     uint64_t stat_parse_err, stat_flow_full;
     uint64_t stat_l3_routed, stat_l3_noroute, stat_l3_noneigh;
+    uint64_t stat_engine_scanned, stat_engine_alert, stat_engine_block;
 };
 
 /* API */
@@ -191,6 +231,10 @@ int  dp_service_commands(struct dp_ctx *c);
 int  dp_port_config(struct dp_ctx *c, uint32_t lport, uint64_t cfg, uint64_t a2);
 int  dp_port_admin(struct dp_ctx *c, uint32_t lport, int up);
 int  dp_port_count(struct dp_ctx *c);
+/* Attach (or detach, with NULL) the inline analysis engine set. Separate from
+ * dp_init() on purpose: which engines run is a policy decision that changes at
+ * runtime, while dp_init() is the once-per-process hardware and table setup. */
+void dp_engine_attach(struct dp_ctx *c, struct dp_engine_set *set);
 int  dp_init(struct dp_ctx *c, const struct dp_io_ops *io, void *io_arg,
              uint32_t flow_slots);
 void dp_fini(struct dp_ctx *c);

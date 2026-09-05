@@ -13,6 +13,8 @@
  */
 #include "ffn_dp_abi.h"
 #include "ffn_dp_oct.h"
+#include "ffn_dp_engine.h"
+#include "ffn_dp_dlp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,8 +101,33 @@ static uint32_t mkpkt(uint8_t *buf, uint32_t sip, uint32_t dip, uint8_t proto,
     uint8_t *l4 = ip + 20;
     l4[0] = (uint8_t)(sp >> 8); l4[1] = (uint8_t)sp;
     l4[2] = (uint8_t)(dp_ >> 8); l4[3] = (uint8_t)dp_;
-    if (proto == DP_IPPROTO_TCP) l4[13] = 0x02;   /* SYN */
+    if (proto == DP_IPPROTO_TCP) {
+        l4[12] = 0x50;                       /* data offset: 5 words = 20 B */
+        l4[13] = 0x02;                       /* SYN */
+    }
+    /* IPv4 Total Length. Left zero until the payload locator started reading
+     * it, which made every packet this builder produced look like a datagram
+     * with no body -- a fixture that quietly disagreed with every real frame.
+     * It describes the IP datagram, so it excludes the 14/18-byte L2 header
+     * and, deliberately, any Ethernet padding a caller adds afterwards. */
+    {
+        uint32_t tot = 20 + 20 + payload;
+        ip[2] = (uint8_t)(tot >> 8);
+        ip[3] = (uint8_t)tot;
+    }
     return o + 20 + 20 + payload;
+}
+
+/* Same frame with an actual payload copied in. Separate from mkpkt() so the
+ * existing cases keep their exact bytes; buf must be at least 128 bytes, which
+ * is what every caller here declares. */
+static uint32_t mkpkt_data(uint8_t *buf, uint32_t sip, uint32_t dip,
+                           uint8_t proto, uint16_t sp, uint16_t dp_, int vlan,
+                           const char *body, uint32_t blen)
+{
+    uint32_t len = mkpkt(buf, sip, dip, proto, sp, dp_, vlan, blen);
+    memcpy(buf + len - blen, body, blen);
+    return len;
 }
 
 /* ---- sim I/O backend ---- */
@@ -449,9 +476,9 @@ int main(void)
     struct dp_flow_table ft;
     chk(dp_flow_init(&ft, 1024) == DP_OK, "flow table init");
     struct dp_tuple fwd = { IP(10,1,2,3), IP(5,6,7,8), 1234, 443,
-                            DP_IPPROTO_TCP, 1, 0, 0 };
+                            DP_IPPROTO_TCP, 1, 0, 0, 0, 0 };
     struct dp_tuple rev = { IP(5,6,7,8), IP(10,1,2,3), 443, 1234,
-                            DP_IPPROTO_TCP, 1, 0, 0 };
+                            DP_IPPROTO_TCP, 1, 0, 0, 0, 0 };
     struct dp_flow_key kf, kr;
     dp_flow_key_from_tuple(&kf, &fwd);
     dp_flow_key_from_tuple(&kr, &rev);
@@ -581,6 +608,136 @@ int main(void)
     chk(ctx.stat_drop >= 1, "drop counted");
     chk(ctx.stat_rx == 4, "rx counter");
 
+    /* ---------- 9. inline analysis engines on the inspect path ---------- */
+    printf("\n[9] inline analysis engines on the FP_INSPECT path\n");
+
+    /* Locating the payload is the half of this that has to be right on a
+     * big-endian target, so check it directly before checking any verdict.
+     * Rule 102 sends 10.1.0.0/16 -> tcp/80 to FP_INSPECT_W with a pinned
+     * egress, so routing does not enter into it. */
+    static const char clean[] = "GET /index.html HTTP/1.1\r\nHost: example.com\r\n\r\n";
+    static const char leak[]  = "card=4111111111111111&exp=12/29";
+    const uint32_t clean_n = (uint32_t)(sizeof(clean) - 1);
+    const uint32_t leak_n  = (uint32_t)(sizeof(leak) - 1);
+
+    struct dp_tuple pl;
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 0, clean, clean_n);
+    chk(dp_parse(pkt, len, 1, &pl) == DP_OK && pl.pay_len == clean_n &&
+        memcmp(pkt + pl.pay_off, clean, clean_n) == 0,
+        "payload located exactly (no VLAN)");
+
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 1, clean, clean_n);
+    chk(dp_parse(pkt, len, 1, &pl) == DP_OK && pl.pay_len == clean_n &&
+        memcmp(pkt + pl.pay_off, clean, clean_n) == 0,
+        "payload located exactly through an 802.1Q tag");
+
+    /* The case that makes IP Total Length the right end marker rather than the
+     * captured length: a real MAC pads anything under 60 bytes, and offering
+     * that padding to a scanner is how a run of zeros becomes a finding. */
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 0, "hi", 2);
+    {
+        uint32_t padded = len;
+        while (padded < 60) pkt[padded++] = 0;
+        chk(dp_parse(pkt, padded, 1, &pl) == DP_OK && pl.pay_len == 2 &&
+            memcmp(pkt + pl.pay_off, "hi", 2) == 0,
+            "Ethernet padding is not offered to the engines as payload");
+    }
+
+    /* An illegal TCP data offset must not aim the scanners at the TCP header. */
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 0, clean, clean_n);
+    pkt[14 + 20 + 12] = 0x00;                     /* doff 0: below the minimum */
+    chk(dp_parse(pkt, len, 1, &pl) == DP_OK && pl.pay_len == clean_n,
+        "an illegal TCP data offset is clamped to the 20-byte minimum");
+
+    /* With no engine set attached the forwarder must behave exactly as before.
+     * This is the assertion that says linking the engines in changed nothing by
+     * itself; enabling them is a separate, explicit act. */
+    dp_activate_bank(&ctx, 0);
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 0, leak, leak_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_INSPECT_W && res.engine_verdict == DP_EV_NONE,
+        "no engine set attached: INSPECT unchanged even on a hit payload");
+
+    struct dp_engine_set eng;
+    struct dp_dlp dlp;
+    memset(&eng, 0, sizeof(eng));
+    memset(&dlp, 0, sizeof(dlp));
+    chk(dp_engine_register(&eng, "dlp", dp_dlp_scan, &dlp) >= 0,
+        "DLP engine registered");
+    chk(dp_dlp_config_line(&dlp, "dp.dlp.rule.pan", "credit_card:block:any:") == 1,
+        "credit-card block rule accepted from config");
+    chk(dp_engine_enable(&eng, "dlp", 1) == 0, "engine enabled");
+    dp_engine_attach(&ctx, &eng);
+    dp_activate_bank(&ctx, 0);                    /* flush the flow cache */
+
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40011, 80, 0, clean, clean_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_INSPECT_W && res.engine_verdict == DP_EV_NONE,
+        "clean payload scanned and left as INSPECT");
+
+    len = mkpkt_data(pkt, IP(10,1,2,4), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40012, 80, 0, leak, leak_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_DROP_W && res.engine_verdict == DP_EV_BLOCK &&
+        res.engine_name && strcmp(res.engine_name, "dlp") == 0,
+        "card number turns INSPECT into DROP, and names the engine");
+    chk(ctx.stat_engine_block == 1,
+        "the conviction is counted as an engine block");
+
+    /* The conviction has to stick to the FLOW, or the next packet of the same
+     * connection walks through carrying the rest of the data. */
+    len = mkpkt_data(pkt, IP(10,1,2,4), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40012, 80, 0, clean, clean_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_DROP_W && res.from_cache,
+        "convicted flow keeps dropping from the cache, clean payload or not");
+
+    /* Head-of-flow budget: the engines see the first DP_ENGINE_FLOW_PKTS
+     * packets of a flow and then stop, so a long-lived flow cannot make the
+     * forwarder scan forever. */
+    {
+        uint64_t before = ctx.stat_engine_scanned;
+        for (unsigned i = 0; i < DP_ENGINE_FLOW_PKTS + 6u; i++) {
+            len = mkpkt_data(pkt, IP(10,1,2,5), IP(93,184,216,34),
+                             DP_IPPROTO_TCP, 40013, 80, 0, clean, clean_n);
+            dp_process(&ctx, pkt, len, 1, &res);
+        }
+        chk(ctx.stat_engine_scanned - before == DP_ENGINE_FLOW_PKTS,
+            "engines see the head of a flow, then stop");
+    }
+
+    /* RESET is a stronger conviction than BLOCK and has to reach the flow entry
+     * as FP_V_RESET_W, which is what makes out->reset true on later packets. */
+    memset(&dlp, 0, sizeof(dlp));
+    chk(dp_dlp_config_line(&dlp, "dp.dlp.rule.pan2",
+                           "credit_card:reset:any:") == 1, "reset rule accepted");
+    dp_activate_bank(&ctx, 0);
+    len = mkpkt_data(pkt, IP(10,1,2,6), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40014, 80, 0, leak, leak_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_DROP_W && res.reset &&
+        res.engine_verdict == DP_EV_RESET, "reset rule drops and asks for RST");
+    len = mkpkt_data(pkt, IP(10,1,2,6), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40014, 80, 0, clean, clean_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_DROP_W && res.from_cache && res.reset,
+        "the cached conviction keeps asking for RST");
+
+    /* Detaching must restore the previous behaviour exactly. */
+    dp_engine_attach(&ctx, NULL);
+    dp_activate_bank(&ctx, 0);
+    len = mkpkt_data(pkt, IP(10,1,2,7), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40015, 80, 0, leak, leak_n);
+    chk(dp_process(&ctx, pkt, len, 1, &res) == DP_OK &&
+        res.decision == FP_INSPECT_W,
+        "detaching the engine set restores plain INSPECT");
+
     printf("\ncounters: rx=%llu tx=%llu fwd=%llu insp=%llu drop=%llu local=%llu "
            "cache_hit=%llu classify=%llu\n",
            (unsigned long long)ctx.stat_rx, (unsigned long long)ctx.stat_tx,
@@ -589,9 +746,13 @@ int main(void)
            (unsigned long long)ctx.stat_cache_hit,
            (unsigned long long)ctx.stat_classify);
 
+    /* test_ports() reads the port table out of the shared region and uses the
+     * live ctx, so it has to run while both still exist. It was called after
+     * dp_fini() and free(region) -- a use-after-free that happened to pass
+     * because glibc had not yet reused the pages. */
+    test_ports(region, &ctx);
     dp_fini(&ctx);
     free(region);
-    test_ports(region, &ctx);
 
     printf("\n==== ffn_dp_oct test: %d failed ====\n", g_fail);
     return g_fail ? 1 : 0;
