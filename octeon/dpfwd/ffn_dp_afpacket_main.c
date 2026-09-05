@@ -20,6 +20,8 @@
 #include "ffn_dp_abi.h"
 #include "ffn_dp_oct.h"
 #include "ffn_dp_io_afpacket.h"
+#include "ffn_dp_engine.h"
+#include "ffn_dp_dlp.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -53,7 +55,98 @@ static void usage(const char *a0)
 {
     fprintf(stderr,
         "usage: %s -i IFACE [-i IFACE ...] [-p policy.bin] [-d drop|forward|local]\n"
-        "          [-v vsys] [-P] [-s sec] [-c count]\n", a0);
+        "          [-v vsys] [-P] [-s sec] [-c count] [-e dp.env]\n"
+        "  -e   inline analysis engines: dp.engine.*/dp.dlp.* from a key=value\n"
+        "       file, the same one the control plane delivers. Without it the\n"
+        "       engines are not attached and nothing is scanned.\n", a0);
+}
+
+/*
+ * Build the inline analysis engine set from a config file, and attach it.
+ *
+ * Without this the engines are inert in production: dp_process() will run them
+ * when a set is attached, and nothing outside the unit test ever attached one.
+ * The file is the same key=value dp.env the control plane already delivers, so
+ * the rules an operator enters in the WebUI reach the forwarder through one
+ * path rather than two.
+ *
+ *     dp.engine.<name>.enable = 0|1
+ *     dp.dlp.rule.<id>        = <type>:<action>:<direction>:<pattern>
+ *
+ * Storage is static and file-scope on purpose: the engine set and the DLP rule
+ * table must outlive this function and must not be allocated, because the
+ * forwarder dereferences them on the packet path.
+ */
+static struct dp_engine_set g_engines;
+static struct dp_dlp        g_dlp;
+
+static int load_engines(struct dp_ctx *dp, const char *path)
+{
+    FILE *f = fopen(path, "r");
+    char line[512];
+    int rules = 0, bad = 0;
+
+    if (!f) {
+        fprintf(stderr, "engines: cannot read %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    memset(&g_engines, 0, sizeof(g_engines));
+    memset(&g_dlp, 0, sizeof(g_dlp));
+    if (dp_engine_register(&g_engines, "dlp", dp_dlp_scan, &g_dlp) < 0) {
+        fprintf(stderr, "engines: cannot register dlp\n");
+        fclose(f);
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *eq, *key, *val, *nl;
+        if (line[0] == '#' || line[0] == '\n')
+            continue;
+        nl = strchr(line, '\n');
+        if (nl)
+            *nl = '\0';
+        eq = strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        key = line;
+        val = eq + 1;
+
+        /* A malformed rule is REPORTED, never skipped in silence. A DLP rule
+         * that quietly failed to load leaves an operator looking at a policy
+         * they believe is enforced while nothing on the wire enforces it. */
+        int rc = dp_dlp_config_line(&g_dlp, key, val);
+        if (rc == 1) {
+            rules++;
+            continue;
+        }
+        if (rc < 0) {
+            fprintf(stderr, "engines: bad rule %s=%s\n", key, val);
+            bad++;
+            continue;
+        }
+        if (dp_engine_config_line(&g_engines, key, val))
+            continue;
+    }
+    fclose(f);
+
+    if (bad) {
+        /* Fail closed on a malformed policy rather than run a partial one:
+         * "some of your DLP rules are loaded" is not a state an operator can
+         * reason about. */
+        fprintf(stderr, "engines: %d malformed rule(s) in %s; not attaching\n",
+                bad, path);
+        return -1;
+    }
+
+    dp_engine_attach(dp, &g_engines);
+    printf("engines: %u registered, %d dlp rule(s) from %s\n",
+           g_engines.count, rules, path);
+    for (uint32_t i = 0; i < g_engines.count; i++)
+        printf("  %-12s %s\n", g_engines.e[i].name,
+               g_engines.e[i].enabled ? "enabled" : "disabled");
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -61,19 +154,21 @@ int main(int argc, char **argv)
     const char *ifaces[AFP_MAX_PORTS];
     int nif = 0;
     const char *polpath = NULL;
+    const char *engpath = NULL;
     int default_dec = FP_DROP_W;
     int promisc = 0, stats_sec = 0;
     unsigned long stop_after = 0;
     uint8_t vsys = 1;
 
     int opt;
-    while ((opt = getopt(argc, argv, "i:p:d:v:Ps:c:h")) != -1) {
+    while ((opt = getopt(argc, argv, "i:p:d:v:Ps:c:e:h")) != -1) {
         switch (opt) {
         case 'i':
             if (nif >= AFP_MAX_PORTS) { fprintf(stderr, "too many ports\n"); return 2; }
             ifaces[nif++] = optarg;
             break;
         case 'p': polpath = optarg; break;
+        case 'e': engpath = optarg; break;
         case 'd':
             if (!strcmp(optarg, "drop"))         default_dec = FP_DROP_W;
             else if (!strcmp(optarg, "forward")) default_dec = FP_FORWARD_W;
@@ -121,6 +216,14 @@ int main(int argc, char **argv)
         fprintf(stderr, "region attach: %s\n", dp_strerror(rc));
         return 1;
     }
+
+    /* Engines before the first packet: attaching mid-run would mean the flows
+     * already in the cache were classified without analysis and would keep
+     * their unanalysed verdict. */
+    if (engpath && load_engines(&dp, engpath) != 0)
+        return 1;
+    if (!engpath)
+        printf("engines: none attached (-e to load dp.engine.*/dp.dlp.*)\n");
 
     if (polpath) {
         size_t plen = 0;

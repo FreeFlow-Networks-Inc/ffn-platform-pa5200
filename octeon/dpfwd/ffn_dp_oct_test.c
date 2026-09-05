@@ -738,6 +738,31 @@ int main(void)
         res.decision == FP_INSPECT_W,
         "detaching the engine set restores plain INSPECT");
 
+    /* The budget counts packets SCANNED, not packets of the flow. A handshake
+     * and a few bare ACKs carry no payload; if they spent the budget, the
+     * first byte of real data could arrive with nothing left to scan it. */
+    dp_engine_attach(&ctx, &eng);
+    dp_activate_bank(&ctx, 0);
+    {
+        uint64_t before = ctx.stat_engine_scanned;
+        for (int i = 0; i < 6; i++) {
+            len = mkpkt(pkt, IP(10,1,2,8), IP(93,184,216,34), DP_IPPROTO_TCP,
+                        40016, 80, 0, 0);            /* no payload at all */
+            dp_process(&ctx, pkt, len, 1, &res);
+        }
+        chk(ctx.stat_engine_scanned == before,
+            "payload-free packets do not consume the scan budget");
+        for (unsigned i = 0; i < DP_ENGINE_FLOW_PKTS + 4u; i++) {
+            len = mkpkt_data(pkt, IP(10,1,2,8), IP(93,184,216,34),
+                             DP_IPPROTO_TCP, 40016, 80, 0, clean, clean_n);
+            dp_process(&ctx, pkt, len, 1, &res);
+        }
+        chk(ctx.stat_engine_scanned - before == DP_ENGINE_FLOW_PKTS,
+            "the full budget is still available once data arrives");
+    }
+    dp_engine_attach(&ctx, NULL);
+
+
     printf("\ncounters: rx=%llu tx=%llu fwd=%llu insp=%llu drop=%llu local=%llu "
            "cache_hit=%llu classify=%llu\n",
            (unsigned long long)ctx.stat_rx, (unsigned long long)ctx.stat_tx,

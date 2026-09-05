@@ -389,8 +389,10 @@ def op_status(chip, req):
     }
     if chip.state == "init":
         out["eta_s"] = max(0, round(INIT_TIMEOUT - (now() - chip.started)))
-        out["hint"] = ("a cold init is ~150 s, most of it DDR SHMOO training; "
-                       "warm inits are faster once runningConfig.soc exists")
+        out["hint"] = ("a warm init is ~30-50 s; a cold one is far longer -- "
+                       "up to ~700 s measured, almost all of it DDR SHMOO "
+                       "training -- and is only cold until runningConfig.soc "
+                       "exists")
     if chip.ready_at:
         out["init_took_s"] = round(chip.ready_at - chip.started, 1)
     return out
@@ -563,7 +565,11 @@ def op_sys_inventory(chip, req):
     try:
         names = sorted(os.listdir("/sys/bus/pci/devices"))
     except OSError as exc:
-        return {"devices": [], "error": "cannot enumerate PCI: %s" % exc}
+        # Raise rather than return. handle_line turns a raised error into
+        # ok=false; returning a dict would have been wrapped in ok=TRUE with an
+        # "error" key inside it, and a caller checking ok would read "no
+        # devices on this machine" from a failed enumeration.
+        raise RuntimeError("cannot enumerate PCI: %s" % exc)
 
     for dev in names:
         vend = _pci_read(dev, "vendor").replace("0x", "").lower()
@@ -577,14 +583,20 @@ def op_sys_inventory(chip, req):
             if kind == "npu":
                 desc = desc.split(" (")[0] + " root complex"
             kind = "bridge"
+        # os.path.realpath does NOT raise for a path that does not exist -- it
+        # returns the path unchanged -- so a device with no driver would come
+        # back as the literal string "driver". Test the link first; the
+        # try/except around realpath was dead code guarding the wrong thing.
+        link = "/sys/bus/pci/devices/%s/driver" % dev
         driver = None
-        try:
-            driver = os.path.basename(
-                os.path.realpath("/sys/bus/pci/devices/%s/driver" % dev))
-        except OSError:
-            driver = None
-        if driver and not os.path.exists("/sys/bus/pci/devices/%s/driver" % dev):
-            driver = None
+        if os.path.islink(link):
+            driver = os.path.basename(os.path.realpath(link))
+        # Whether the device's PCI memory decode has been switched on. Reported
+        # because on this board the dataplane OCTEON is driven WITHOUT a kernel
+        # driver -- dpboot writes this file and then mmaps resourceN directly --
+        # so its driver link is permanently empty and says nothing at all about
+        # whether anything is running on it. Note this is not a boot indicator
+        # either: it stays 1 after whatever enabled it has gone away.
         bars = []
         try:
             with open("/sys/bus/pci/devices/%s/resource" % dev) as f:
@@ -596,8 +608,14 @@ def op_sys_inventory(chip, req):
                             bars.append({"bar": i, "bytes": en - st + 1})
         except (OSError, ValueError):
             pass
+        try:
+            with open("/sys/bus/pci/devices/%s/enable" % dev) as f:
+                pci_enabled = f.read().strip() == "1"
+        except OSError:
+            pci_enabled = None
         devices.append({
             "pci": dev,
+            "pci_enabled": pci_enabled,
             "vendor": vend,
             "device": devid,
             "kind": kind,

@@ -115,7 +115,11 @@ struct dp_flow_key {
 
 struct dp_flow_ent {
     struct dp_flow_key key;
-    uint8_t  used, verdict, flags, pad;
+    /* `scans` was the spare pad byte. It counts packets of this flow that were
+     * actually OFFERED to the engines, which is not the same as packets of the
+     * flow: a TCP handshake and bare ACKs carry no payload, so counting flow
+     * packets would spend most of the budget before any data arrived. */
+    uint8_t  used, verdict, flags, scans;
     uint16_t rule_id, egress;
     uint32_t pkts;
     uint64_t bytes;

@@ -490,12 +490,16 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         fe->bytes += len;
         c->stat_cache_hit++;
         out->decision = dp_l3_resolve(c, &t, out);
-        /* Analyse the head of the flow, not just its first packet. fe->pkts
-         * has already been incremented above, so this covers packets 1..N of
-         * the flow across both this path and the classify path below. Once a
-         * flow is convicted the verdict is written back, so every later packet
-         * drops straight out of the cache without scanning. */
-        if (out->decision == FP_INSPECT_W && fe->pkts <= DP_ENGINE_FLOW_PKTS) {
+        /* Analyse the head of the flow, not just its first packet -- and
+         * budget by packets actually SCANNED, not by packets of the flow. A
+         * TCP handshake plus a few bare ACKs carry no payload at all, so
+         * counting flow packets would burn most of the budget before the first
+         * byte of data arrived. Once a flow is convicted the verdict is
+         * written back, so every later packet drops out of the cache without
+         * scanning. */
+        if (out->decision == FP_INSPECT_W && c->engines && t.pay_len &&
+            fe->scans < DP_ENGINE_FLOW_PKTS) {
+            fe->scans++;
             out->decision = dp_inspect(c, pkt, &t, out);
             if (out->decision == FP_DROP_W) {
                 fe->verdict = (out->engine_verdict >= DP_EV_RESET)
@@ -527,14 +531,6 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
     out->decision = dec = dp_l3_resolve(c, &t, out);
     egress = out->egress;
 
-    /* Inline analysis. Ordered after routing (so it never scans a packet that
-     * is about to be dropped for want of a route) and before both the flow
-     * store and the counter switch below -- both of those read `dec`, so a
-     * conviction that arrived later would be cached as ALLOW and counted as
-     * INSPECT. */
-    if (dec == FP_INSPECT_W)
-        out->decision = dec = dp_inspect(c, pkt, &t, out);
-
     if (!fe)
         fe = dp_flow_insert(&c->flows, &key);
     if (fe) {
@@ -542,6 +538,27 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         fe->egress = egress;
         fe->pkts++;
         fe->bytes += len;
+    } else {
+        c->stat_flow_full++;
+    }
+
+    /* Inline analysis. Ordered after routing, so it never scans a packet that
+     * is about to be dropped for want of a route; after the flow entry exists,
+     * so the per-flow scan budget can be enforced; and before the counter
+     * switch below, which reads `dec` -- a conviction arriving later would be
+     * counted as an inspect while the packet was dropped.
+     *
+     * Requiring `fe` is deliberate. With no flow entry there is nowhere to
+     * keep the budget, so every packet of every flow would be scanned forever
+     * -- and the case where there is no entry is precisely flow-table
+     * exhaustion, which is when the box can least afford it. */
+    if (dec == FP_INSPECT_W && fe && c->engines && t.pay_len &&
+        fe->scans < DP_ENGINE_FLOW_PKTS) {
+        fe->scans++;
+        out->decision = dec = dp_inspect(c, pkt, &t, out);
+    }
+
+    if (fe) {
         switch (dec) {
         case FP_FORWARD_W: fe->verdict = FP_V_ALLOW_W; break;
         case FP_INSPECT_W: fe->verdict = FP_V_ALLOW_W;
@@ -554,8 +571,6 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
                                          ? FP_V_RESET_W : FP_V_DROP_W; break;
         default:           fe->verdict = FP_V_UNSET_W; break;  /* punt/local: re-evaluate */
         }
-    } else {
-        c->stat_flow_full++;
     }
 
     switch (dec) {
