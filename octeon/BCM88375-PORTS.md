@@ -35,7 +35,8 @@ Property suffix in `config.bcm` is `.BCM88650` — the Jericho-family base ID, n
 | 12 | **CGE1** | 0 | **HSCI** — labelled so in the vendor's own enable script |
 | 32, 33, 34, 35 | CGE3, CGE5, CGE4, CGE2 | 1 | 100G-class; one serves the front QSFP28 |
 | 3 | CGE0 | 1 | 100G-class → **a GEARBOX** (board.soc quad 0); not in the enable set |
-| **2, 24, 25, 26** | **XLGE11, XLGE17, XLGE13, XLGE10** | 0 | **40G internal links to the DP Octeons** |
+| **24, 25, 26** | **XLGE17, XLGE13, XLGE10** | 0 | **40G XLAUI links to the DP Octeons** |
+| 2 | XLGE11 | 0 | health-monitoring **loopback** — `up` only because it is in PHY loopback |
 | 0 | CPU | 0 | the CMIC CPU port |
 | 17 | RCY | 0 | recycle |
 | 20 | ILKN4 | 0 | Interlaken **NIF on 12 fabric lanes** — see the correction below |
@@ -455,3 +456,36 @@ policy.
 Note quads 2-5 here are board.soc's *polarity* comments, which disagree with `config.bcm`'s
 declaration order on which CGE serves which QSFP28 cage. That conflict is recorded in
 `ffn_bcmports.QSFP_CONFLICT` and is still unresolved — measure it, do not guess.
+
+
+# Correction, 2026-09-05: three DP links, not four, and the DSA direction was backwards
+
+Settled by reading PAN's own cint and SerDes tuning tables on the CP.
+
+**The DP links are ports 24, 25, 26 only.** `gryphon_llfc.c:182-185` names them outright:
+
+    int nif2fe100 = 3;  int nifdp0 = 24;  int nifdp1 = 25;  int nifdp2 = 26;
+
+and `phy_tx_settings.c:86-96` keeps `dp_port_list[] = { 24, 25, 26 }`, separate from the CP list
+`{4,5}` and the HSCI list `{12}`. **Port 2 is not a DP link at all** — it is the health-monitoring
+loopback, and it reads `up` only because it is in PHY loopback. The old text here called `xl2`
+"the live link to the DP OCTEON"; that was wrong. `ffn_bcmports.py`'s `UNKNOWN` for port 2 was the
+honest position and is now resolved.
+
+**The medium is 40G XLAUI, not Interlaken.** `serdes_if_type_24/25/26=XLAUI`, four SerDes lanes at
+10.3125 Gbaud each; the DP end reads `GSER4_LANE_MODE=5`. These are the only ports on the chip
+declared XLAUI. `board.soc` maps quads 17/13/10 to DP0/DP1/DP2 and mentions no ILKN anywhere near
+them.
+
+**`RAW_DSA` STRIPS, it does not add.** `tm_port_header_type_out=RAW_DSA` is DSA_RX. The earlier
+reading here ("DSA header added on egress") was the exact inverse, and it is load-bearing: it flips
+which side of the FE100 link builds the tag.
+
+**Do not trust the DP0/DP1 labels without naming the file.** `config.bcm:217-222` heads
+`ucode_port_25=XLGE13` "# DP0" and `ucode_port_24=XLGE17` "# DP1"; `bcm88375_board.soc:117,133`
+says the opposite. The *wiring* (quad → XLGE → logical port) agrees across both files; only the
+DP0/DP1 **names** are swapped.
+
+**Still open:** which of xl24/xl25/xl26 is the populated one on a PA-5220 was not re-verified —
+all three read `down` while the DP is unbooted. Port 24 comes from a prior live pairing. One DP
+boot settles it: exactly one of the three flips to `up`.

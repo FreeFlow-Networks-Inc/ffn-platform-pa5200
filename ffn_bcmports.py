@@ -30,13 +30,18 @@ The board is a Traffic Manager, not a switch
 --------------------------------------------
 Only ONE port (3, CGE0) has `in=ETH`. Everything else is `RAW` or `TM`:
 
-    front panel   in=RAW  out=RAW_DSA   raw on ingress, DSA header added on egress
+    front panel   in=RAW  out=RAW_DSA   raw on ingress; RAW_DSA is DSA_RX, which STRIPS
+                                     a DSA tag on egress -- it does not add one
     CP / DP links in=TM   out=TM|RAW    expect a Broadcom TM/DSA header
     port 3        in=ETH  out=DSA_RAW   the only L2 Ethernet port
 
-So the BCM does not do L2 lookups for the datapath. Front-panel traffic is
-tagged with a DSA header and steered to the dataplane Octeon; the DP reads the
-header to learn the source port, and writes one back to choose the egress port.
+So the BCM does not do L2 lookups for the datapath.
+
+CORRECTED 2026-09-05, and the correction matters because it flips which side
+builds the tag: `RAW_DSA` is DSA_RX, which STRIPS a DSA tag, not adds one. And
+front-panel traffic in the vendor's shipped configuration does not go to the DP
+at all -- dsa_tag_support.c force-forwards all 26 front ports to port 3, the
+FE100. The DP's three 40G links (24/25/26) are a separate path.
 That is why plain VLAN/STP/LIF configuration produces receive counters and no
 transmit: a frame injected without a TM header on a `TM` ingress port is
 discarded in the pipeline, correctly, however the VLAN is configured.
@@ -53,6 +58,7 @@ DP = "dp"            # link to the dataplane OCTEON (CN78xx)
 CPU = "cpu"          # the chip's own CPU port
 MP = "mp"            # link to the x86 management processor
 RECYCLE = "recycle"  # internal recycle path
+LOOPBACK = "loopback"  # in PHY loopback on purpose; not a link to anything
 FABRIC = "fabric"    # ILKN / external-fabric
 FE100 = "fe100"      # a link to the FE100 front-end ASIC
 UNKNOWN = "unknown"  # linked and real, but not yet identified
@@ -61,7 +67,7 @@ UNKNOWN = "unknown"  # linked and real, but not yet identified
 PORTS = {
     0:  ("CPU",    0, 0,  "RAW", "RAW",      CPU,     "chip CPU port"),
     1:  ("XE24",   0, 1,  "RAW", "RAW_DSA",  FRONT,   ""),
-    2:  ("XLGE11", 0, 2,  "RAW", "RAW_DSA",  UNKNOWN, "40G, links up; second 40G, not yet identified"),
+    2:  ("XLGE11", 0, 2,  "RAW", "RAW_DSA",  LOOPBACK, "40G health-monitoring loopback. It reads `up` ONLY because it is in PHY loopback -- it is not a link to anything. There are THREE DP links (24/25/26), not four"),
     3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  FE100,   "100G to the FE100 NIF through a Broadcom Sesto gearbox PHY. PAN's own gryphon_llfc.c names it: `int nif2fe100 = 3`"),
     4:  ("XE36",   0, 4,  "TM",  "TM",       CP,      "MEASURED: CP eth1 (20 frames sent -> 20 counted)"),
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
