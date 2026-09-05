@@ -34,11 +34,11 @@ Property suffix in `config.bcm` is `.BCM88650` — the Jericho-family base ID, n
 | 1, 6, 10, 11, 13, 14, 15, 16, 18, 19, 21, 22, 23, 27, 28, 29, 30, 31, 36, 7 | XE24–XE35, XE56–XE59, XE64–XE67 | 0 and 1 | **20 x 10G front panel** — the 16 SFP+ and 4 RJ45 |
 | 12 | **CGE1** | 0 | **HSCI** — labelled so in the vendor's own enable script |
 | 32, 33, 34, 35 | CGE3, CGE5, CGE4, CGE2 | 1 | 100G-class; one serves the front QSFP28 |
-| 3 | CGE0 | 1 | 100G-class, unused in the enable set |
+| 3 | CGE0 | 1 | 100G-class → **a GEARBOX** (board.soc quad 0); not in the enable set |
 | **2, 24, 25, 26** | **XLGE11, XLGE17, XLGE13, XLGE10** | 0 | **40G internal links to the DP Octeons** |
 | 0 | CPU | 0 | the CMIC CPU port |
 | 17 | RCY | 0 | recycle |
-| 20 | ILKN4 | 0 | Interlaken — not usable here, CN73XX has no ILK |
+| 20 | ILKN4 | 0 | Interlaken **NIF on 12 fabric lanes** — see the correction below |
 | 4, 5, 8, 9 | XE36–XE39 | 0 | 10G, not in the front-panel enable set |
 
 20 XE lines up exactly with 16 SFP+ plus 4 RJ45, and the XLGE ports being the
@@ -391,3 +391,67 @@ pin, not an I2C register.
 `Software Port BitMap 0x000...0` -- it tracked every `lb=` transition within the
 250 ms poll. That display is cosmetic on this chip family; do not build theories
 on it (I did, twice).
+
+
+---
+
+# Corrections, 2026-09-05
+
+Three claims above were wrong or incomplete. All three were settled by reading the vendor files
+on the CP (`/usr/share/broadcom`, used in place and never packaged), not by inference.
+
+## ILKN4 is a fabric NIF, not an external-lookup link
+
+"not usable here, CN73XX has no ILK" reasoned from the wrong premise. `config.bcm` says
+
+    use_fabric_links_for_ilkn_nif_ilkn4.BCM88650=1
+    ilkn_num_lanes_4.BCM88650=12
+    ilkn_lanes_20=0x000fff
+
+so ILKN4 is a **network interface on 12 FABRIC lanes**, not a look-aside link to an external
+lookup engine. `custom_feature_kbp_recovery_enable=0` and the absence of any ELK/KBP property
+confirm no lookup device is fitted, but that was never what ILKN4 was for here. Whether it is
+*usable* is still open: no `bcm88375_board.soc` quad comment maps any connector to it, and it is
+absent from `enable_fp_ports.c`.
+
+## CGE0 (port 3) goes to a Gearbox
+
+`bcm88375_board.soc` names it four times: "CGE0 (quad 0, to Gearbox)". That also explains the
+one oddity in the table — port 3 is the ONLY `in=ETH` port, which is exactly what you would
+expect if whatever sits behind the gearbox speaks plain Ethernet rather than Broadcom TM.
+What is behind it is still unknown; the RJ45s are on quad 8, so it is not those.
+
+## HSCI is 100G Ethernet on CGE1 — not Interlaken, not pure L1
+
+Both alternative readings are refuted by the vendor's own code:
+
+* `phy_tx_settings.c` has `hsci_port_list[] = { 12 }` — exactly one HSCI port, and ILKN (port 20)
+  is in no such list.
+* `serdes_if_type_12=CAUI`, `phy_an_fec_12=1`, and `hsci_settings[]` enabling
+  `FORWARD_ERROR_CORRECTION_CL91`. CAUI and Clause 91 RS-FEC are 100G **Ethernet**; Interlaken
+  uses neither.
+* `tm_port_header_type_in_12=TM`. A pure L1 link has no header type, because nothing parses it.
+
+The useful fact underneath: `in=TM` means ingress traffic must already carry a Broadcom TM
+header, so the peer has to be another chassis that knows the format — not an arbitrary Ethernet
+neighbour. That is the shape of the CP/MP/DP internal links, not of the `RAW` faceplate data
+ports, and it is why HSCI belongs to the device's HA configuration rather than to the security
+policy.
+
+## Complete quad map, from board.soc's own comments
+
+| quad | goes to | | quad | goes to |
+|---|---|---|---|---|
+| 0 | **Gearbox** (CGE0) | | 9 | Cavium + Broadwell (XE36-39) |
+| 1 | **HSCI** (CGE1) | | 10 | DP2 (XLGE10) |
+| 2 | front 23 QSFP28 | | 11, 12 | **N/C** |
+| 3 | front 22 QSFP28 | | 13 | DP1 (XLGE13) |
+| 4 | front 24 QSFP28 | | 14 | SFP+ (see the 13-16/17-20 conflict) |
+| 5 | front 21 QSFP28 | | 15 | **N/C** |
+| 6 | front 5-8 SFP+ | | 16 | SFP+ (see the same conflict) |
+| 7 | front 9-12 SFP+ | | 17 | DP0 (XLGE17) |
+| 8 | front 1-4 RJ45 | | | |
+
+Note quads 2-5 here are board.soc's *polarity* comments, which disagree with `config.bcm`'s
+declaration order on which CGE serves which QSFP28 cage. That conflict is recorded in
+`ffn_bcmports.QSFP_CONFLICT` and is still unresolved — measure it, do not guess.

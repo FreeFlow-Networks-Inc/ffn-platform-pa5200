@@ -61,7 +61,7 @@ PORTS = {
     0:  ("CPU",    0, 0,  "RAW", "RAW",      CPU,     "chip CPU port"),
     1:  ("XE24",   0, 1,  "RAW", "RAW_DSA",  FRONT,   ""),
     2:  ("XLGE11", 0, 2,  "RAW", "RAW_DSA",  UNKNOWN, "40G, links up; second 40G, not yet identified"),
-    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  UNKNOWN, "the ONLY in=ETH port, and NOT in the vendor front-panel list"),
+    3:  ("CGE0",   1, 3,  "ETH", "DSA_RAW",  UNKNOWN, "quad 0 -> a GEARBOX per board.soc; the ONLY in=ETH port, which fits -- whatever is behind the gearbox speaks plain Ethernet. What that is, is still unknown"),
     4:  ("XE36",   0, 4,  "TM",  "TM",       CP,      "MEASURED: CP eth1 (20 frames sent -> 20 counted)"),
     5:  ("XE37",   0, 5,  "TM",  "TM",       CP,      "MEASURED: CP eth0 (50 frames sent -> 50 counted)"),
     6:  ("XE29",   0, 6,  "RAW", "RAW_DSA",  FRONT,   ""),
@@ -78,7 +78,7 @@ PORTS = {
     17: ("RCY",    0, 17, "TM",  "RAW",      RECYCLE, "recycle port -- why there is no 'xe17' in ps"),
     18: ("XE26",   0, 18, "RAW", "RAW_DSA",  FRONT,   ""),
     19: ("XE27",   0, 19, "RAW", "RAW_DSA",  FRONT,   ""),
-    20: ("ILKN4",  0, 20, "TM",  "TM",       FABRIC,  "Interlaken; no ELK device fitted"),
+    20: ("ILKN4",  0, 20, "TM",  "TM",       FABRIC,  "Interlaken NIF on 12 FABRIC lanes (use_fabric_links_for_ilkn_nif_ilkn4=1) -- a data interface, not an external-lookup link; no faceplate quad maps to it and it is not in the enable list"),
     21: ("XE31",   0, 21, "RAW", "RAW_DSA",  FRONT,   ""),
     22: ("XE30",   0, 22, "RAW", "RAW_DSA",  FRONT,   ""),
     23: ("XE28",   0, 23, "RAW", "RAW_DSA",  FRONT,   ""),
@@ -172,7 +172,21 @@ FACEPLATE = {
     # Interconnect) and neither gives it a faceplate number, so it does not get
     # an ethernet1/N slot -- naming it one would invite an operator to configure
     # the chassis interconnect as a data port.
-    12: ("hsci", "QSFP28", 100, "management"),  # CGE1
+    #
+    # It is neither Interlaken nor a pure L1 link, and the vendor files settle
+    # both readings:
+    #   * hsci_port_list[] in phy_tx_settings.c contains exactly one port -- 12.
+    #     ILKN is port 20 and appears in no such list.
+    #   * serdes_if_type_12=CAUI and the HSCI TX settings turn on CL91 RS-FEC.
+    #     CAUI and Clause 91 are 100G ETHERNET; Interlaken is neither.
+    #   * tm_port_header_type_in_12=TM. A pure L1 link has no header type at
+    #     all, because nothing parses it. This port runs the TM pipeline.
+    # What in=TM does say is that ingress traffic must arrive already carrying a
+    # Broadcom TM header -- so the peer is another chassis that knows the
+    # format, not an arbitrary Ethernet neighbour. That is the shape of the
+    # CP/MP/DP internal links, not of the RAW faceplate data ports, and it is
+    # the real reason this belongs to the device rather than to the policy.
+    12: ("hsci", "QSFP28", 100, "management"),  # CGE1, quad 1
 }
 
 # Conflict 1 -- RESOLVED, recorded so it is not re-litigated.
