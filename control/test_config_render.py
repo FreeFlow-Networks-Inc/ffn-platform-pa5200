@@ -91,6 +91,29 @@ def build_db(path):
             (4, 3, "hidden", None, None, None, None, "any", "deny",
              "", 0, 1, "system", 0, 1, "", "", None, None),  # hidden=1
         ])
+    # -- dlp_rules: the shapes the dataplane can and cannot enforce ---------
+    db.execute("CREATE TABLE dlp_rules (id INTEGER, name TEXT, "
+               "pattern_type TEXT, pattern TEXT, action TEXT, severity TEXT, "
+               "direction TEXT, threshold INTEGER, enabled INTEGER, "
+               "created_at TEXT)")
+    db.executemany(
+        "INSERT INTO dlp_rules VALUES (?,?,?,?,?,?,?,?,?,?)", [
+            (1, "cards",     "credit_card", "",           "block", "high",
+             "egress", 1, 1, ""),
+            (2, "ssn",       "ssn",         "",           "alert", "high",
+             "any",    1, 1, ""),
+            (3, "secret",    "keyword",     "CONFIDENTIAL:X", "block", "med",
+             "egress", 1, 1, ""),
+            # regex has no dataplane implementation and must be REPORTED
+            (4, "any-email", "regex",       "[a-z]+@[a-z]+", "block", "low",
+             "egress", 1, 1, ""),
+            (5, "off",       "credit_card", "",           "block", "high",
+             "egress", 1, 0, ""),            # enabled=0: not published
+            (6, "no-word",   "keyword",     "",           "block", "low",
+             "egress", 1, 1, ""),            # keyword with no keyword
+            (7, "bad-act",   "ssn",         "",           "quarantine", "low",
+             "egress", 1, 1, ""),            # action the DP does not have
+        ])
     db.commit()
     db.close()
 
@@ -128,9 +151,13 @@ def main():
 
     lines, problems = R.render(dbp, xmlp, localp)
     # ethernet1/2 maps to enp11s0f1 which IS in the portmap, so the only
-    # expected problem is the malformed portmap entry.
-    check(len(problems) == 1 and "notanumber" in problems[0],
-          "unexpected problems: %r" % (problems,))
+    # problem the CONFIG itself should produce is the malformed portmap entry.
+    # The DLP fixtures deliberately add more (see the engines section below);
+    # they are matched by content there rather than by counting here, so that
+    # a NEW unexplained problem still fails this check.
+    unexplained = [p for p in problems if "dlp" not in p.lower()]
+    check(len(unexplained) == 1 and "notanumber" in unexplained[0],
+          "unexpected problems: %r" % (unexplained,))
     kv = dict(l.split("=", 1) for l in lines)
 
     # -- routes: the DP's grammar, exactly ---------------------------------
@@ -239,6 +266,33 @@ def main():
     check(R.write_if_changed(outp, lines) is False,
           "identical content must NOT rewrite (it would bump cfgd's version "
           "and force a needless DP push)")
+
+    # -- inline analysis engines -------------------------------------------
+    # Four of the seven fixture rules are enforceable; the other three must be
+    # reported rather than dropped quietly. A rule shown as enabled in the
+    # WebUI while nothing on the wire enforces it is the failure mode this
+    # renderer exists to prevent.
+    check(kv.get("dp.dlp.rule.mgr1") == "credit_card:block:egress:",
+          "credit-card rule not rendered in the DP grammar")
+    check(kv.get("dp.dlp.rule.mgr2") == "ssn:alert:any:",
+          "ssn rule not rendered")
+    check(kv.get("dp.dlp.rule.mgr3") == "keyword:block:egress:CONFIDENTIAL:X",
+          "keyword pattern containing a colon must survive intact: %r"
+          % kv.get("dp.dlp.rule.mgr3"))
+    check("dp.dlp.rule.mgr4" not in kv, "a regex rule must NOT be published")
+    check("dp.dlp.rule.mgr5" not in kv, "a disabled rule must not be published")
+    check("dp.dlp.rule.mgr6" not in kv, "a keyword rule with no keyword")
+    check("dp.dlp.rule.mgr7" not in kv, "an action the DP does not have")
+    check(kv.get("dp.dlp.rules") == "3", "wrong published rule count: %r"
+          % kv.get("dp.dlp.rules"))
+    check(kv.get("dp.engine.dlp.enable") == "1",
+          "the engine must be armed when rules were published")
+    for want in ("pattern_type 'regex'", "a keyword rule needs a keyword",
+                 "action 'quarantine'"):
+        check(any(want in p for p in problems),
+              "unenforceable rule not reported: %s" % want)
+    check(any("match BOTH directions" in p for p in problems),
+          "direction scoping is advisory and must say so")
 
     # -- deterministic ordering -------------------------------------------
     check(lines == sorted(lines), "output is not sorted; version would churn")

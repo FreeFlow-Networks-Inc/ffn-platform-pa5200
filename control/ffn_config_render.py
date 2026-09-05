@@ -381,6 +381,111 @@ def render_policy(out, db, root, portmap, problems, base):
           or "drop")
 
 
+# What the DP's DLP scanner can actually match. Deliberately NOT a superset of
+# the manager's pattern_type column: the dataplane runs this per packet on a
+# forwarding path, so a pattern language with catastrophic backtracking is a
+# denial of service against the forwarder wearing a nicer name. Structural and
+# literal matching only -- see octeon/dpfwd/ffn_dp_engine.h.
+DLP_TYPES = {"keyword", "credit_card", "ssn", "api_key"}
+DLP_ACTIONS = {"alert", "block", "reset"}
+DLP_DIRECTIONS = {"ingress", "egress", "any"}
+
+# ffn_dp_dlp.h: DP_DLP_RULE_MAX and DP_DLP_PAT_MAX. Storage is fixed and inline
+# because the dataplane does not allocate, so a policy that outgrows it must
+# fail loudly HERE -- at config time, where someone is watching -- rather than
+# quietly start dropping rules on the packet path.
+DLP_RULE_MAX = 32
+DLP_PAT_MAX = 63
+
+
+def render_engines(out, db, root, portmap, problems, base):
+    """dlp_rules -> dp.dlp.rule.<id>, and the engine enable that arms them.
+
+        dp.dlp.rule.<id> = <type>:<action>:<direction>:<pattern>
+        dp.engine.dlp.enable = 1
+
+    The engine registers DISABLED, so rules alone change nothing: arming it is
+    a separate, explicit key. That means a config carrying rules but no enable
+    is inert, which is the safe direction for the mistake to fall.
+
+    A rule the dataplane cannot express is REPORTED, not dropped silently.
+    That is the whole point of this function. The manager's pattern_type
+    column defaults to 'regex', and the DP has no regex engine by design --
+    rendering such a rule as something else, or omitting it quietly, would
+    leave an operator looking at a rule in the WebUI marked enabled while
+    nothing on the wire enforces it. Better to publish the rules that work and
+    say plainly which ones did not.
+    """
+    try:
+        rows = db.execute(
+            "SELECT id, name, pattern_type, pattern, action, direction, enabled "
+            "FROM dlp_rules WHERE enabled=1 ORDER BY id").fetchall()
+    except sqlite3.Error:
+        return
+
+    rendered = 0
+    scoped = 0
+    for rid, name, ptype, pattern, action, direction, _en in rows:
+        label = name or ("rule %s" % rid)
+        ptype = (ptype or "").strip().lower()
+        action = (action or "").strip().lower()
+        direction = (direction or "any").strip().lower()
+        pattern = (pattern or "").strip()
+
+        if ptype not in DLP_TYPES:
+            problems.append(
+                "dlp %r: pattern_type %r is not enforceable in the dataplane "
+                "(it matches literally and structurally, never by regex); "
+                "rule NOT published" % (label, ptype))
+            continue
+        if action not in DLP_ACTIONS:
+            problems.append("dlp %r: action %r is not one of %s; rule NOT published"
+                            % (label, action, "/".join(sorted(DLP_ACTIONS))))
+            continue
+        if direction not in DLP_DIRECTIONS:
+            problems.append("dlp %r: direction %r is not one of %s; rule NOT published"
+                            % (label, direction, "/".join(sorted(DLP_DIRECTIONS))))
+            continue
+        if ptype == "keyword" and not pattern:
+            problems.append("dlp %r: a keyword rule needs a keyword; rule NOT published"
+                            % (label,))
+            continue
+        if len(pattern) > DLP_PAT_MAX:
+            problems.append("dlp %r: pattern is %d bytes, the dataplane holds %d; "
+                            "rule NOT published" % (label, len(pattern), DLP_PAT_MAX))
+            continue
+        if rendered >= DLP_RULE_MAX:
+            problems.append("dlp: more than %d enabled rules; %r and any after it "
+                            "were NOT published" % (DLP_RULE_MAX, label))
+            break
+
+        # The pattern runs to the end of the value, so a ':' inside it is fine
+        # and needs no escaping -- the DP splits only the first three fields.
+        _emit(out, "dp.dlp.rule.%s%s" % (MGR_ID, rid),
+              "%s:%s:%s:%s" % (ptype, action, direction, pattern))
+        rendered += 1
+        if direction != "any":
+            scoped += 1
+
+    # Arm the engine only when something is actually armed. Publishing
+    # enable=1 with no rules would put a scanner on the packet path that can
+    # never match, which costs budget on every inspected packet for nothing.
+    _emit(out, "dp.engine.dlp.enable", "1" if rendered else "0")
+    _emit(out, "dp.dlp.rules", rendered)
+
+    # Direction scoping is advisory today: the forwarder passes
+    # DP_DIR_UNKNOWN because nothing it holds answers "is this leaving the
+    # protected network" -- the port table classifies hardware, not trust. A
+    # direction-scoped rule therefore fires in BOTH directions. Said here, at
+    # the place an operator's direction column is turned into config, rather
+    # than only in a C comment they will never read.
+    if scoped:
+        problems.append(
+            "dlp: %d published rule(s) are direction-scoped, but the dataplane "
+            "cannot yet tell ingress from egress, so they match BOTH directions"
+            % scoped)
+
+
 def render_platform(out, db, root, portmap, problems, base):
     """The handful of keys that are simply true of this box."""
     # NOT hardcoded. The curated base already declares all.platform=pa5220
@@ -444,6 +549,7 @@ RENDERERS = (
     # after routers: it derives forwarding from cp.vr.count
     ("forwarding", render_forwarding),
     ("policy", render_policy),
+    ("engines", render_engines),
 )
 
 
