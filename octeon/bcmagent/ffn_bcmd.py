@@ -639,6 +639,126 @@ def op_sys_inventory(chip, req):
                    "nodename": uts.nodename}}
 
 
+def _proc_matching(needle):
+    """PIDs whose cmdline mentions `needle`, read straight from /proc.
+
+    Not `pgrep -f` or `ps | grep`: both match their own command line, which has
+    produced a false "it is running" here more than once. Reading /proc and
+    skipping our own pid cannot do that.
+    """
+    hits = []
+    me = str(os.getpid())
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return hits
+    for pid in names:
+        if not pid.isdigit() or pid == me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                cmd = f.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue          # exited between listdir and open; not an error
+        if needle in cmd:
+            hits.append({"pid": int(pid), "cmd": cmd.strip()[:120]})
+    return hits
+
+
+def _iface_state(name):
+    """operstate/carrier for a CP netdev, or None if it does not exist."""
+    base = "/sys/class/net/%s" % name
+    if not os.path.isdir(base):
+        return None
+    def rd(f):
+        try:
+            with open(os.path.join(base, f)) as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+    return {"operstate": rd("operstate"), "carrier": rd("carrier"),
+            "mtu": rd("mtu")}
+
+
+def op_sys_dpstatus(chip, req):
+    """What the CONTROL PLANE can see about the dataplane.
+
+    This exists because the management plane cannot answer the question. The
+    CN78XX hangs off the CP's PCIe, and it is brought up by writing its PCI
+    `enable` file and mmap'ing its BARs -- no kernel driver ever binds to it --
+    so from the MP there is no driver, no netdev and no signal of any kind. The
+    CP is the only place with evidence, so the CP reports it and the MP asks.
+
+    EVERY FIELD IS POSITIVE EVIDENCE, and none of it is inferred from another.
+    `pci_enabled` says memory decode is on -- which is NOT a boot indicator,
+    because it stays set after whatever set it has gone away. `net` and `agent`
+    are the two things that are only true while something is actually running
+    on the far side. A caller wanting "is the dataplane up" should read
+    `agent`/`net`, not `pci_enabled`, and `summary` says which of those spoke.
+
+    WHAT THIS DELIBERATELY DOES NOT DO: it does not talk to the DP. ffn-dpsh is
+    a single shared shell on the far side and concurrent use wedges it, so a
+    status endpoint -- something polled every few seconds by definition -- must
+    never touch it. Everything here is sysfs and /proc on the CP.
+    """
+    dev = str(req.get("pci") or "0003:03:00.0")
+    base = "/sys/bus/pci/devices/" + dev
+
+    present = os.path.isdir(base)
+    out = {"pci": dev, "present": present}
+    if present:
+        def rd(f):
+            try:
+                with open(os.path.join(base, f)) as fh:
+                    return fh.read().strip()
+            except OSError:
+                return None
+        out["vendor"] = (rd("vendor") or "").replace("0x", "")
+        out["device"] = (rd("device") or "").replace("0x", "")
+        out["pci_enabled"] = (rd("enable") == "1")
+        link = os.path.join(base, "driver")
+        out["driver"] = (os.path.basename(os.path.realpath(link))
+                         if os.path.islink(link) else None)
+        out["runtime_status"] = rd("power/runtime_status")
+
+    # The CP<->DP virtual ethernet. Its presence means something on the CP has
+    # brought the link up; carrier means the far side is answering.
+    net = {}
+    for ifname in ("dpnet0", "ffndp0", "dp0"):
+        st = _iface_state(ifname)
+        if st:
+            net[ifname] = st
+    out["net"] = net
+
+    agents = []
+    for needle in ("ffn_dpnetd", "ffn_dpagent", "dpagent"):
+        for p in _proc_matching(needle):
+            p["match"] = needle
+            agents.append(p)
+    out["agent"] = agents
+
+    # One line an operator or a health check can act on, derived from the
+    # evidence above rather than from a guess. Ordered by how much each thing
+    # actually proves.
+    if not present:
+        out["summary"] = "no dataplane processor on the control plane's bus"
+    elif agents:
+        out["summary"] = "running: %s on the control plane is driving it" % (
+            agents[0]["match"],)
+    elif any(v.get("carrier") == "1" for v in net.values()):
+        out["summary"] = "link up to the dataplane, but no agent on this side"
+    elif out.get("pci_enabled"):
+        out["summary"] = ("present and PCI-enabled, but nothing here is driving "
+                          "it -- enable stays set after a previous bring-up, so "
+                          "this is not evidence that it is running")
+    else:
+        out["summary"] = "present, PCI decode off: never brought up this boot"
+
+    uts = os.uname()
+    out["reported_by"] = {"nodename": uts.nodename, "release": uts.release}
+    return out
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
@@ -646,6 +766,7 @@ OPS = {
     "port.loopback": op_port_loopback,
     "led.status": op_led_status,
     "sys.inventory": op_sys_inventory,
+    "sys.dpstatus": op_sys_dpstatus,
     "raw": op_raw,
 }
 

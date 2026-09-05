@@ -127,6 +127,19 @@ async def port_list(**kw):
     return await call({"op": "port.list"}, **kw)
 
 
+async def dp_status(**kw):
+    """What the control plane can see about the dataplane.
+
+    The management plane cannot answer this itself: the dataplane processor is
+    on the CP's PCIe and is driven with no kernel driver bound, so from the MP
+    there is no driver, no netdev and no signal at all. The CP has the evidence;
+    this is how the MP asks for it. Read-only sysfs and /proc on the far side --
+    it never touches ffn-dpsh, which is single-session.
+    """
+    kw.setdefault("timeout", 10.0)
+    return await call({"op": "sys.dpstatus"}, **kw)
+
+
 async def sys_inventory(**kw):
     """What silicon sits on the CP's PCIe domains.
 

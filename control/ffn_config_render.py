@@ -398,6 +398,78 @@ DLP_RULE_MAX = 32
 DLP_PAT_MAX = 63
 
 
+def render_vsys(out, db, root, portmap, problems, base):
+    """Virtual systems -> the keys the dataplane needs to enforce them.
+
+        dp.vsys.tenant.<id> = <name>
+        dp.vsys.port.<idx>  = <id>
+        dp.vsys.count       = <n>
+
+    WHY THESE TWO KEYS AND NOT MORE. The dataplane does not need to know what a
+    virtual system IS. It needs to know which tenants exist -- so it can plan one
+    SSO group, one QPG entry and one PKI style each -- and which port belongs to
+    which. Everything else about a vsys (zones, rulebases, imports) is enforced
+    through policy.bin, which travels separately as a compiled blob.
+
+    A vsys with NO interfaces imported is still emitted. It is a tenant an
+    operator has created and will assign ports to, and planning its resources
+    now means the assignment does not later have to renumber everyone else's
+    styles -- which, because PCAM can only ADD to a style, could otherwise make
+    a previously valid layout unreachable.
+
+    Ports are emitted by DP INDEX, not by name, for the same reason
+    render_interfaces does it: the index is what the dataplane can act on. An
+    interface with no portmap entry is REPORTED rather than skipped quietly --
+    a port silently left in the wildcard vsys is a tenant boundary that is not
+    being enforced, which is exactly the kind of thing that must not fail
+    silently in a firewall.
+    """
+    if root is None:
+        return
+
+    aliases = _alias_map(root)
+    tenants = []
+    for e in root.findall("./devices/entry/vsys/entry"):
+        name = (e.get("name") or "").strip()
+        m = re.match(r"^vsys([0-9]+)$", name.lower())
+        if not m:
+            problems.append("vsys %r: name is not vsys<N>, so it has no stable "
+                            "numeric id; not published" % name)
+            continue
+        vid = int(m.group(1))
+        # 0 is dp_classify's wildcard -- a tenant with that id would match every
+        # other tenant's traffic. 32 is DP_VSYS_MAX in ffn_dp_vsys.h.
+        if vid < 1 or vid > 32:
+            problems.append("vsys %r: id %d outside 1..32; not published"
+                            % (name, vid))
+            continue
+        tenants.append((vid, name, e))
+
+    if not tenants:
+        return
+
+    for vid, name, e in sorted(tenants):
+        _emit(out, "dp.vsys.tenant.%d" % vid, name)
+        for m in e.findall("./import/network/interface/member"):
+            pan = (m.text or "").strip()
+            if not pan:
+                continue
+            # The vsys import list names interfaces the way an operator does.
+            # Resolve through the same alias map the rest of this file uses, so
+            # a port means the same thing in every key.
+            dev = aliases.get(pan, pan)
+            idx = portmap.get(dev)
+            if idx is None:
+                problems.append(
+                    "vsys %s imports %s, which has no dp.portmap entry -- that "
+                    "port will stay in the wildcard vsys, so its tenant "
+                    "boundary is NOT enforced" % (name, pan))
+                continue
+            _emit(out, "dp.vsys.port.%s" % idx, vid)
+
+    _emit(out, "dp.vsys.count", len(tenants))
+
+
 def render_engines(out, db, root, portmap, problems, base):
     """dlp_rules -> dp.dlp.rule.<id>, and the engine enable that arms them.
 
@@ -549,6 +621,7 @@ RENDERERS = (
     # after routers: it derives forwarding from cp.vr.count
     ("forwarding", render_forwarding),
     ("policy", render_policy),
+    ("vsys", render_vsys),
     ("engines", render_engines),
 )
 
