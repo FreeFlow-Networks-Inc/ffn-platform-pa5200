@@ -157,6 +157,18 @@ async def port_set(port, enable, **kw):
                        "enable": bool(enable)}, **kw)
 
 
+async def port_counters(ports=None, **kw):
+    """Per-port packet counters. `ports` is a list of diag names ("xl24").
+
+    Link state says a port could carry traffic; counters say whether it did.
+    That distinction is the whole diagnostic on this board.
+    """
+    req = {"op": "port.counters"}
+    if ports:
+        req["ports"] = list(ports)
+    return await call(req, **kw)
+
+
 async def port_loopback(port, mode, name=None, **kw):
     req = {"op": "port.loopback", "port": int(port), "mode": mode}
     if name:

@@ -790,11 +790,90 @@ def op_sys_dpstatus(chip, req):
     return out
 
 
+def op_port_counters(chip, req):
+    """Per-port packet counters, as the chip reports them.
+
+    Added instead of enabling --allow-raw. Reading counters is the single most
+    useful diagnostic on this board -- it is how you tell "the link is up" from
+    "frames actually crossed it", which link state alone cannot -- and it needs
+    no write. Turning on the raw escape hatch to get one read would have traded
+    a permanent hole for a diagnostic.
+
+    `show c` prints a TABLE, not name/value pairs, and only for ports with a
+    non-zero counter:
+
+        NIF Ports
+        RX
+        Port ||  snmpIfHCInUcastPkts |  snmpIfInNUcastPkts |  snmpIfInErrors | ...
+        ---------------------------------------------------------------------
+        xl24 ||                 1234 |                   0 |              0 | ...
+        TX
+        Port || ...
+
+    So a quiet chip yields the headers and no rows at all, which is exactly what
+    a freshly re-initialised switch looks like -- counters are cleared by init.
+
+    `output_lines` and `sample` are always returned. An empty result has two
+    very different causes -- nothing to report, or this parser not understanding
+    what was reported -- and a diagnostic that cannot tell them apart is worse
+    than no diagnostic. That distinction caught this function's first parser,
+    which assumed a name/value format the chip does not use.
+
+    Optional `ports`: diag names ("xl24") to filter to.
+    """
+    want = req.get("ports") or []
+    if want and not isinstance(want, list):
+        raise ValueError("ports must be a list of diag names")
+    want = [str(w) for w in want]
+
+    text = chip.run("show c")
+    all_lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+
+    parsed, matched = [], []
+    cols, section = None, None
+    for ln in all_lines:
+        st = ln.strip()
+        up = st.upper()
+        if up in ("RX", "TX"):
+            section = up
+            cols = None
+            continue
+        if st.startswith("Port") and "||" in st:
+            # Header row: the column names are the counter names.
+            _, _, rest = st.partition("||")
+            cols = [c.strip() for c in rest.split("|") if c.strip()]
+            continue
+        if set(st) <= set("- "):
+            continue                      # rule line
+        if "||" not in st or cols is None:
+            continue
+
+        port, _, rest = st.partition("||")
+        port = port.strip()
+        if not port or (want and port not in want):
+            continue
+        vals = [v.strip().replace(",", "") for v in rest.split("|")]
+        matched.append(st)
+        for name, v in zip(cols, vals):
+            if not v or not v.lstrip("-").isdigit():
+                continue
+            n = int(v)
+            if n == 0:
+                continue                  # only non-zero is interesting
+            parsed.append({"port": port, "dir": section or "?",
+                           "counter": name, "value": n})
+
+    return {"ports": want or "all-nonzero", "counters": parsed,
+            "raw": matched[:400], "truncated": len(matched) > 400,
+            "output_lines": len(all_lines), "sample": all_lines[:8]}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
     "port.set": op_port_set,
     "port.loopback": op_port_loopback,
+    "port.counters": op_port_counters,
     "led.status": op_led_status,
     "sys.inventory": op_sys_inventory,
     "sys.dpstatus": op_sys_dpstatus,
