@@ -1,0 +1,83 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 FreeFlow Networks, Inc.
+#
+# Per-interface addressing and MTU, on the control plane.
+#
+# Replaces the MP doing `ip addr flush` / `ip addr add` / `ip link set mtu`
+# itself (ffn_manager.py ~5239-5248). The management plane now only says what it
+# wants; the control plane is what owns interface state.
+#
+# Keys, one set per interface, keyed by the LINUX name (the renderer resolves
+# PAN-OS ethernet1/N -> kernel name before it gets here):
+#
+#     cp.iface.<name>.addr = 10.0.0.1/24,10.0.1.1/24
+#     cp.iface.<name>.mtu  = 9000
+#     cp.iface.<name>.state= up | down
+#
+# CONVERGENT, NOT ADDITIVE: the address list is the complete intended set, so
+# addresses present on the box but absent from config are REMOVED. Anything else
+# means a deleted address never actually goes away, and the box drifts from its
+# own config in a way no amount of re-applying fixes.
+#
+# But it converges by DIFF rather than by flush-and-readd. A flush would drop
+# every address for a moment, and on a router that is a real outage even when
+# the end state is identical -- so an address that is already correct is left
+# strictly alone.
+set -u
+. "$(dirname "$0")/00-common.sh"
+
+for key in $(keys_matching "cp.iface."); do
+	# cp.iface.<name>.<field> -- strip prefix, then take the field off the end.
+	rest=${key#cp.iface.}
+	field=${rest##*.}
+	iface=${rest%.*}
+	[ "$field" = "addr" ] || continue        # drive the loop off .addr only
+	[ -n "$iface" ] || continue
+
+	protected "$iface" && continue           # helper warns; stay quiet here
+	have "$iface" || { warn "no such interface: $iface"; continue; }
+
+	want=$(get "cp.iface.$iface.addr")
+	# Normalise "a,b" -> newline separated for set comparison.
+	want_list=$(echo "$want" | tr ',' '\n' | sed '/^$/d' | sort -u)
+	have_list=$(ip -o -4 addr show dev "$iface" 2>/dev/null \
+		| awk '{print $4}' | sort -u)
+
+	for a in $want_list; do
+		if ! echo "$have_list" | grep -qx "$a"; then
+			safe_ip "$iface" addr add "$a" dev "$iface" && log "$iface += $a"
+		fi
+	done
+	for a in $have_list; do
+		if ! echo "$want_list" | grep -qx "$a"; then
+			safe_ip "$iface" addr del "$a" dev "$iface" && log "$iface -= $a"
+		fi
+	done
+
+	mtu=$(get "cp.iface.$iface.mtu")
+	if [ -n "$mtu" ]; then
+		cur=$(cat "/sys/class/net/$iface/mtu" 2>/dev/null)
+		[ "$cur" = "$mtu" ] || {
+			safe_ip "$iface" link set "$iface" mtu "$mtu" && log "$iface mtu $cur -> $mtu"
+		}
+	fi
+
+	state=$(get "cp.iface.$iface.state")
+	if [ -n "$state" ]; then
+		cur=$(cat "/sys/class/net/$iface/operstate" 2>/dev/null)
+		# Compare against the ADMIN flag, not operstate: a cable-out interface
+		# is admin-up but operstate "down", and comparing the wrong one would
+		# make this hook fight the cable on every single run.
+		if ip link show "$iface" | head -1 | grep -q "state UP\|,UP"; then
+			admin=up
+		else
+			admin=down
+		fi
+		[ "$admin" = "$state" ] || {
+			safe_ip "$iface" link set "$iface" "$state" && log "$iface admin $admin -> $state"
+		}
+	fi
+done
+
+exit 0

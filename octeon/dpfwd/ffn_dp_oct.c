@@ -26,6 +26,7 @@
 #include "ffn_dp_abi.h"
 #include "ffn_dp_oct.h"
 #include "ffn_dp_arp.h"
+#include "ffn_dp_engine.h"
 #include "ffn_dp_bgx.h"
 
 #include <stdio.h>
@@ -270,6 +271,51 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
         t->dport = (uint16_t)((l4[2] << 8) | l4[3]);
         if (t->proto == DP_IPPROTO_TCP && off + ihl + 14 <= len)
             t->tcp_flags = l4[13];
+
+        /* Where the payload starts and ends, for the inline analysis engines.
+         *
+         * END is the subtle half, and the obvious answer is wrong.
+         *
+         * The forwarder transmits the WHOLE captured frame. So the scanners
+         * must see everything that will leave the box, or an attacker simply
+         * understates the IPv4 Total Length -- claim a 40-byte datagram, carry
+         * 1460 bytes of card numbers behind it -- and the engines find nothing
+         * while every one of those bytes goes out on the wire. Trusting the
+         * declared length is an evasion with a one-field cost.
+         *
+         * The reason to look at Total Length at all is the opposite case: a
+         * MAC pads anything under 60 bytes, and feeding that padding to a
+         * scanner is how a run of zeros becomes a finding. That is the only
+         * shortfall worth honouring, so it is the only one honoured -- Total
+         * Length is used to trim the frame ONLY when the frame is at the
+         * 60-byte Ethernet minimum, where padding is the explanation. Above
+         * that, everything captured is scanned, because everything captured is
+         * transmitted.
+         *
+         * START depends on the L4 header length. TCP carries it in the top
+         * nibble of byte 12, in 32-bit words; UDP's is fixed at 8. A data
+         * offset below 5 words is illegal, so it is clamped to the 20-byte
+         * minimum rather than trusted -- an attacker-chosen 0 would otherwise
+         * point the scanners at the TCP header itself. */
+        uint32_t end = len;
+        uint32_t tot = ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
+        if (len <= 60u && tot >= ihl && off + tot < len)
+            end = off + tot;
+
+        uint32_t hlen;
+        if (t->proto == DP_IPPROTO_TCP) {
+            if (off + ihl + 20 > len)
+                return DP_OK;            /* no room for a TCP header */
+            hlen = (uint32_t)(l4[12] >> 4) * 4u;
+            if (hlen < 20u)
+                hlen = 20u;
+        } else {
+            hlen = 8u;
+        }
+        if (off + ihl + hlen < end) {
+            t->pay_off = off + ihl + hlen;
+            t->pay_len = end - t->pay_off;
+        }
     }
     return DP_OK;
 }
@@ -333,6 +379,79 @@ static int dp_l3_resolve(struct dp_ctx *c, const struct dp_tuple *t,
     return out->decision;
 }
 
+/*
+ * Run the inline analysis engines over one packet and turn their verdict into
+ * a forwarding decision.
+ *
+ * Called only for a packet already decided FP_INSPECT_W, and only AFTER
+ * dp_l3_resolve() -- which can turn an INSPECT into a DROP (no route) or a
+ * LOCAL (no neighbour). Scanning before that point would spend the budget on
+ * packets that were never going to be forwarded.
+ *
+ * DIRECTION, and what is not being claimed here.
+ * dp_engine_ctx.direction is a first-class filter in the DLP engine, and this
+ * passes DP_DIR_UNKNOWN. That is deliberate rather than an oversight: the
+ * question a direction-scoped rule asks is "is this leaving the protected
+ * network", and nothing the forwarder holds answers it. The port table's
+ * ffn_dp_port_raw.role classifies hardware (DATA / HA / MGMT / INTERNAL), not
+ * trust, and dp_process is not even given the ingress port. Deriving a
+ * direction from what IS available would be inventing the answer.
+ *
+ * The consequence is real and must be stated: a rule written "egress only"
+ * fires in BOTH directions here, because the DLP engine skips a rule only when
+ * both directions are known and disagree. Until a zone or trust attribute
+ * reaches the port table, direction scoping is advisory.
+ */
+static int dp_inspect(struct dp_ctx *c, const uint8_t *pkt,
+                      const struct dp_tuple *t, struct dp_result *out)
+{
+    struct dp_engine_ctx ec;
+    int v;
+
+    if (!c->engines || t->pay_len == 0)
+        return FP_INSPECT_W;
+
+    memset(&ec, 0, sizeof(ec));
+    ec.payload     = pkt + t->pay_off;
+    ec.payload_len = t->pay_len;
+    ec.direction   = DP_DIR_UNKNOWN;
+    ec.l4_proto    = t->proto;
+    ec.dport       = t->dport;
+
+    c->stat_engine_scanned++;
+    v = dp_engine_scan(c->engines, &ec);
+
+    out->engine_verdict = (uint8_t)v;
+    out->engine_offset  = ec.hit_offset;
+    out->engine_name    = ec.hit_engine;
+    out->engine_rule    = ec.hit_rule;
+
+    if (v == DP_EV_ALERT) {
+        /* Report and pass. An alert that dropped the packet would be a block
+         * under a friendlier name, and an operator who asked for visibility
+         * would get an outage. */
+        c->stat_engine_alert++;
+        return FP_INSPECT_W;
+    }
+    if (v >= DP_EV_BLOCK) {
+        c->stat_engine_block++;
+        /* RESET additionally tears the flow down. The frame that would carry
+         * the RST is not built here: dp_poll_once does not transmit
+         * dp_result.emit today, so the ARP frames the L3 path already builds
+         * are discarded too. Convicting the flow is the half that works; the
+         * RST is the half that needs the emit path wired first. */
+        out->reset = (v >= DP_EV_RESET);
+        return FP_DROP_W;
+    }
+    return FP_INSPECT_W;
+}
+
+void dp_engine_attach(struct dp_ctx *c, struct dp_engine_set *set)
+{
+    if (c)
+        c->engines = set;
+}
+
 int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
                uint8_t vsys, struct dp_result *out)
 {
@@ -380,6 +499,23 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         fe->bytes += len;
         c->stat_cache_hit++;
         out->decision = dp_l3_resolve(c, &t, out);
+        /* Analyse the head of the flow, not just its first packet -- and
+         * budget by packets actually SCANNED, not by packets of the flow. A
+         * TCP handshake plus a few bare ACKs carry no payload at all, so
+         * counting flow packets would burn most of the budget before the first
+         * byte of data arrived. Once a flow is convicted the verdict is
+         * written back, so every later packet drops out of the cache without
+         * scanning. */
+        if (out->decision == FP_INSPECT_W && c->engines && t.pay_len &&
+            fe->scans < DP_ENGINE_FLOW_PKTS) {
+            fe->scans++;
+            out->decision = dp_inspect(c, pkt, &t, out);
+            if (out->decision == FP_DROP_W) {
+                fe->verdict = (out->engine_verdict >= DP_EV_RESET)
+                              ? FP_V_RESET_W : FP_V_DROP_W;
+                fe->flags = (uint8_t)(fe->flags & ~DP_FF_INSPECT);
+            }
+        }
         /* Count the disposition on the cache path too: a firewall must report
          * every forwarded/dropped packet, not only the ones that reached
          * classify(), or the counters undercount steady-state traffic badly. */
@@ -411,15 +547,39 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         fe->egress = egress;
         fe->pkts++;
         fe->bytes += len;
+    } else {
+        c->stat_flow_full++;
+    }
+
+    /* Inline analysis. Ordered after routing, so it never scans a packet that
+     * is about to be dropped for want of a route; after the flow entry exists,
+     * so the per-flow scan budget can be enforced; and before the counter
+     * switch below, which reads `dec` -- a conviction arriving later would be
+     * counted as an inspect while the packet was dropped.
+     *
+     * Requiring `fe` is deliberate. With no flow entry there is nowhere to
+     * keep the budget, so every packet of every flow would be scanned forever
+     * -- and the case where there is no entry is precisely flow-table
+     * exhaustion, which is when the box can least afford it. */
+    if (dec == FP_INSPECT_W && fe && c->engines && t.pay_len &&
+        fe->scans < DP_ENGINE_FLOW_PKTS) {
+        fe->scans++;
+        out->decision = dec = dp_inspect(c, pkt, &t, out);
+    }
+
+    if (fe) {
         switch (dec) {
         case FP_FORWARD_W: fe->verdict = FP_V_ALLOW_W; break;
         case FP_INSPECT_W: fe->verdict = FP_V_ALLOW_W;
                            fe->flags |= DP_FF_INSPECT; break;
-        case FP_DROP_W:    fe->verdict = FP_V_DROP_W; break;
+        /* An engine RESET convicts the flow with FP_V_RESET_W, which the
+         * cache-hit path above turns back into out->reset for every later
+         * packet. Any other drop is a plain FP_V_DROP_W: engine_verdict is 0
+         * unless the engines actually ran. */
+        case FP_DROP_W:    fe->verdict = (out->engine_verdict >= DP_EV_RESET)
+                                         ? FP_V_RESET_W : FP_V_DROP_W; break;
         default:           fe->verdict = FP_V_UNSET_W; break;  /* punt/local: re-evaluate */
         }
-    } else {
-        c->stat_flow_full++;
     }
 
     switch (dec) {

@@ -5,11 +5,31 @@
 applied to the same base** — the 4.9 patches use `add_memory_region`/`boot_mem_map`, which no longer
 exist in `arch/mips`, and the 6.18 patch assumes `memblock_add`.
 
-## Status: BUILDS, NOT YET BOOTED
+## Status: BOOTS ON HARDWARE
 
 Built warning-clean with the kernel.org crosstool GCC 14.4.0 mips64 (big-endian) against
-`linux-6.18.49` + `cavium_octeon_defconfig`. `vmlinux` is 11.3 MB stripped. **It has not been booted
-on hardware.** Do not treat any of the runtime behaviour below as verified until it has.
+`linux-6.18.49` + `cavium_octeon_defconfig`. `vmlinux` is 11.3 MB stripped.
+
+**Booted on hardware (PA-5220 CN73XX control plane).** Verified: 8 CPUs, 8.14 GB, all three
+PCIe roots enumerating (including the BCM88375 at `0001:01:00.0` and the CN78XX dataplane at
+`0003:03:00.0`), NFS root over the PCIe pcnet transport, an OpenWrt userland with `opkg`, and
+`ffn_bcm.ko` + `ffn_bde.ko` loading and reaching the chip. Two runtime defects found after this
+was first written are fixed in tranche 3: `pcie-octeon.c` marked its `map_irq` handlers
+`__init`, so the long-lived `octeon_pcibios_map_irq` pointer dangled and oopsed on the first
+post-boot driver bind; and upstream shares one `next_busno` across PCI domains, which hid the
+FE100 and the dataplane.
+
+**Config is not a free choice.** See `cp-config-fragment` in this directory: `THP=MADVISE` (not
+`_ALWAYS`, which machine-checks at `__update_tlb`) and `PCI_MSI` off (`msi-octeon.c` is CIU-era
+and panics on CIU3). `CONFIG_IKCONFIG` is on so the finished image and the running kernel can be
+checked with `scripts/extract-ikconfig vmlinux` and `zcat /proc/config.gz` rather than trusting
+the tree.
+
+**Still known-bad:** the vendor's statically linked `bcm.user` cannot run on 6.18. With
+`THP=MADVISE` it no longer takes the kernel down, but it dies of `SIGBUS` in `do_ade` during
+static-glibc TLS startup, before issuing a single BDE ioctl. Two separate defects; only the
+first is fixed. BCM/L2 work therefore still runs on the 4.9 CP via the one-shot
+`FFN_CP_KERNEL` override.
 
 ## Why a forward port is cheap here
 

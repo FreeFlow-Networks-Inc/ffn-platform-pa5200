@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 FreeFlow Networks, Inc.
+"""50-fabric -- program the BCM88375 switching fabric from config.
+
+WHY THIS RUNS ON THE CP WHEN THE FABRIC BELONGS TO THE DATAPLANE
+---------------------------------------------------------------
+Under the plane split the forwarding fabric is the dataplane's, so its config
+lives in the `dp.fabric.*` namespace and is authored as dataplane intent. But
+the BCM88375 is physically on the **CP's** PCIe bus -- the DP cannot see it at
+all, and its own PCIe is endpoint-mode facing the CP. So the CP applies it on
+the dataplane's behalf.
+
+That is the same shape as everything else DP-bound: the DP owns the intent, the
+CP is the only one that can reach the hardware. Namespacing it `cp.*` because
+the CP happens to hold the wire would encode a bus topology as an architecture.
+
+Written in python3 (present on the CP) rather than sh because the programming
+path is JSON over a socket, and parsing JSON in busybox sh is a way to get
+subtly wrong answers quietly.
+
+TRANSPORT: ffn-bcmd on 127.1.1.2:8104, which owns the single long-lived
+bcm.user session. Never talk to the chip any other way from here -- the chip is
+single-session and a second bcm.user wedges it.
+
+KEYS
+    dp.fabric.port.<name>.enable = 1|0
+    dp.fabric.vlan.<vid>.ports   = xe5,xe8      (recorded; see NOT YET below)
+    dp.fabric.stp.forward        = xe5,xe8      (recorded; see NOT YET below)
+
+NOT YET APPLIED: VLAN membership and STP state. ffn-bcmd exposes port enable and
+loopback today, not VLAN/STP, so this hook REPORTS those keys as unapplied
+rather than pretending. A hook that silently ignores half its config is worse
+than one that says what it skipped.
+"""
+import json
+import os
+import socket
+import sys
+
+BCMD_HOST = os.getenv("FFN_BCMD_HOST", "127.1.1.2")
+BCMD_PORT = int(os.getenv("FFN_BCMD_PORT", "8104"))
+
+# argv[1] is cp.env -- what run_hooks passes every hook. But the fabric keys are
+# dp.fabric.*, and ffn_cfgagent routes by scope:
+#
+#     cp_lines = cp.* + all.*   -> /etc/ffn/cp.env
+#     dp_lines = dp.* + all.*   -> /etc/ffn/dp.env   (staged here, sent onward)
+#
+# So the fabric config is in dp.env, NOT the file this hook is handed. Reading
+# only argv[1] would find nothing and report "nothing asked of us" forever --
+# a silent no-op that looks like success. Both are read: dp.env for the fabric
+# intent, cp.env for the legacy cp.bcm.* spelling and any CP-scoped override.
+ENVFILE = sys.argv[1] if len(sys.argv) > 1 else "/etc/ffn/cp.env"
+DPENV = os.getenv("FFN_DP_ENV", "/etc/ffn/dp.env")
+
+# Fabric ports that must never be disabled by config.
+#
+# xl2 is the 40G trunk to the DATAPLANE. Disabling it does not "change the
+# fabric", it orphans the dataplane -- the DP has no other path for traffic, and
+# the CP would still look healthy while the box silently stopped forwarding.
+# Exactly the ffnnet0 lesson, one layer down.
+#
+# Override only deliberately, via dp.fabric.protected in the curated base.
+DEFAULT_PROTECTED = {"xl2"}
+
+
+def log(msg):
+    print("  [50-fabric] %s" % msg)
+
+
+def warn(msg):
+    sys.stderr.write("  [50-fabric] WARNING: %s\n" % msg)
+
+
+def read_env(path):
+    out = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+    except OSError as exc:
+        warn("cannot read %s: %s" % (path, exc))
+    return out
+
+
+def call(req, timeout=90.0):
+    """One request to ffn-bcmd. Returns a dict; never raises for I/O."""
+    try:
+        s = socket.create_connection((BCMD_HOST, BCMD_PORT), timeout=10.0)
+        s.settimeout(timeout)
+        f = s.makefile("rwb")
+        f.write((json.dumps(req) + "\n").encode())
+        f.flush()
+        line = f.readline()
+        s.close()
+    except (OSError, socket.timeout) as exc:
+        return {"ok": False, "error": "bcmd unreachable", "detail": str(exc)}
+    if not line:
+        return {"ok": False, "error": "no reply from bcmd"}
+    try:
+        return json.loads(line.decode("utf-8", "replace"))
+    except ValueError as exc:
+        return {"ok": False, "error": "bad reply", "detail": str(exc)}
+
+
+def main():
+    env = read_env(ENVFILE)            # cp.env -- legacy keys, CP-scoped bits
+    dpenv = read_env(DPENV)            # dp.env -- where the fabric intent lives
+    fabric = {k: v for k, v in dpenv.items() if k.startswith("dp.fabric.")}
+    # all.* appears in both files, so an override may be authored either way.
+    env = dict(dpenv, **env)
+
+    # Accept the pre-split spelling so an existing box keeps working, but say so
+    # once: these keys describe the forwarding fabric, which is the dataplane's.
+    legacy = {k: v for k, v in env.items() if k.startswith("cp.bcm.")}
+    if legacy:
+        warn("%d legacy cp.bcm.* key(s) found (%s). The fabric is the "
+             "dataplane's: rename these to dp.fabric.* in the curated base."
+             % (len(legacy), ", ".join(sorted(legacy))))
+
+    if not fabric and not legacy:
+        return 0                       # nothing asked of us; stay silent
+
+    st = call({"op": "status"})
+    if not st.get("ok"):
+        warn("ffn-bcmd not answering (%s); fabric NOT applied"
+             % st.get("error", "?"))
+        return 0                       # never fail the whole apply run
+    if st.get("state") != "ready":
+        # init takes ~150 s. Not an error, just not now -- the agent re-runs
+        # hooks on the next version change, and a retry is cheap.
+        log("chip is '%s', not ready; skipping fabric this cycle" % st.get("state"))
+        return 0
+
+    pl = call({"op": "port.list"})
+    if not pl.get("ok"):
+        warn("cannot read the port table (%s); fabric NOT applied" % pl.get("error"))
+        return 0
+    by_name = {p["name"]: p for p in pl.get("ports", [])}
+
+    protected = set(DEFAULT_PROTECTED)
+    extra = env.get("dp.fabric.protected", "")
+    if extra:
+        protected |= {x.strip() for x in extra.split(",") if x.strip()}
+
+    changed = skipped = 0
+    for key, val in sorted(fabric.items()):
+        rest = key[len("dp.fabric."):]
+
+        if rest.startswith("port.") and rest.endswith(".enable"):
+            name = rest[len("port."):-len(".enable")]
+            want = val not in ("0", "false", "no", "")
+            port = by_name.get(name)
+            if port is None:
+                warn("no such fabric port: %s" % name)
+                continue
+            if name in protected and not want:
+                warn("refusing to disable %s: it is the dataplane trunk "
+                     "(override with dp.fabric.protected)" % name)
+                continue
+            if port["enabled"] == want:
+                continue               # already right
+            r = call({"op": "port.set", "port": port["port"], "enable": want})
+            if r.get("ok"):
+                log("port %s (%d) %s" % (name, port["port"],
+                                         "enabled" if want else "disabled"))
+                changed += 1
+            else:
+                warn("port %s: %s" % (name, r.get("error")))
+
+        elif rest.startswith("vlan.") or rest.startswith("stp."):
+            skipped += 1
+
+        elif rest == "protected":
+            pass                       # consumed above
+
+        else:
+            warn("unrecognised fabric key: %s" % key)
+
+    if skipped:
+        log("%d VLAN/STP key(s) NOT applied: ffn-bcmd exposes port control "
+            "only so far" % skipped)
+    log("%d port change(s)" % changed)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

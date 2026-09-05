@@ -108,7 +108,7 @@
  * "FFN_FE100_BAR2", which was simply wrong and made every LEDUP read look like
  * an FE100 access:
  *
- *   0001:01:00.0/.1  14e4:8375  BCM88375 Qumran-AX -- the switch. BAR0 32K,
+ *   0001:01:00.0/.1  14e4:8375  BCM88375 Qumran-MX -- the switch. BAR0 32K,
  *                               BAR2 8M, and BAR2 is where the CMIC window
  *                               (S-channel, MIIM, LEDUP) lives.
  *   0002:01:00.0     feed:fe1c  FE100 -- the PAN session-offload FPGA, BAR0 1M.

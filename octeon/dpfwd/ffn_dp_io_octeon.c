@@ -14,6 +14,7 @@
  * free both; nothing is ever released twice.
  */
 #include "ffn_dp_io_octeon.h"
+#include "ffn_dp_vsys.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -76,6 +77,12 @@ static int cvmx_hw_work_get(struct oct_ctx *c, struct oct_wqe *w)
     if (!wqe)
         return 0;
     memset(w, 0, sizeof(*w));
+    /* -1, not the memset's 0: with a tenant plan applied, 0 is a real
+     * group number. It happens to be one no tenant owns, so a zero here
+     * would fall back correctly today -- and would start mis-tagging the
+     * moment a plan began at group 0. Say "the chip did not tell us"
+     * explicitly instead of relying on that. */
+    w->sso_group = -1;
     w->hw = wqe;
     w->len = (uint32_t)cvmx_wqe_get_len(wqe);
     w->in_port = (uint16_t)cvmx_wqe_get_port(wqe);
@@ -256,7 +263,21 @@ static int oct_io_rx(void *arg, struct dp_pkt *burst, int max)
 
         burst[n].data = w->data;
         burst[n].len = w->len;
+        /* Prefer what the CHIP decided. With a vsys plan applied, PKI steered
+         * this packet into its tenant's SSO group before any core saw it, so
+         * the group is the tenant -- no table walk, and no way for software to
+         * disagree with the hardware that is actually enforcing the isolation.
+         *
+         * The port's configured vsys remains the fallback for the two cases
+         * where the chip did not decide: a backend that does not report a group
+         * (OCTEON-II), and a group no tenant owns, which is single-vsys
+         * behaviour and correct. */
         burst[n].vsys = c->ports[pidx].vsys;
+        if (c->vsys_plan && w->sso_group >= 0) {
+            uint8_t hw = dp_vsys_of_group(c->vsys_plan, w->sso_group);
+            if (hw != DP_VSYS_WILDCARD)
+                burst[n].vsys = hw;
+        }
         burst[n].decision = 0;
         burst[n].egress = DP_EGRESS_NONE;
         burst[n].cookie = w;                 /* ties the dp_pkt to its WQE */

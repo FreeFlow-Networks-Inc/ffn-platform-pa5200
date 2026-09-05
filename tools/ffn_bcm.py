@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ffn-bcm -- drive the BCM88375 Qumran-AX from the control plane.
+"""ffn-bcm -- drive the BCM88375 Qumran-MX from the control plane.
 
 Uses the CP<->DP transport (tools/ffn_cpdp.py) to reach the Qumran's CMIC window
 at BAR2. No Broadcom BDE and no kernel module: the CMIC is the documented CPU

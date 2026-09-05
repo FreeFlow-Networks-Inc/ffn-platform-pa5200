@@ -19,6 +19,27 @@
 #   * oct-remote is NEVER killed (a D-state op is unkillable; killing leaves the
 #     wedge). If a prior op is genuinely stuck, this aborts rather than piling on.
 set -u
+
+# ---- audit: WHO is resetting the control plane -------------------------------
+# Restarting this unit RESETS the CP.  When that lands mid-work the CP's cores
+# are stopped via stop_this_cpu() and the console prints an NMI-watchdog banner
+# -- indistinguishable from a genuine hardware fault unless the cause is on
+# record.  On 2026-09-03 that ambiguity cost two bcm.user runs and a long
+# misdiagnosis, so every invocation now records its caller.
+{
+  printf 'ffn-octeon-up: START pid=%s at %s\n' "$$" "$(date -Is 2>/dev/null || date)"
+  _p=$PPID
+  for _ in 1 2 3 4 5; do
+    [ -r "/proc/$_p/cmdline" ] || break
+    printf 'ffn-octeon-up:   caller %-7s %s\n' "$_p" \
+      "$(tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null)"
+    _n=$(awk '{print $4}' "/proc/$_p/stat" 2>/dev/null)
+    if [ -z "$_n" ] || [ "$_n" = 0 ] || [ "$_n" = "$_p" ]; then break; fi
+    _p=$_n
+    [ "$_p" = 1 ] && { printf 'ffn-octeon-up:   caller 1       (systemd)\n'; break; }
+  done
+} 2>/dev/null | tee -a /var/log/ffn-octeon-resets.log
+
 cd /opt/ffn-ngfw-v2
 . tools/ffn-octlock.sh
 CL=/var/log/ffn-octeon-console.log
@@ -36,10 +57,17 @@ trap 'octlock_release' EXIT
 # Readiness = the OCTEON's own init banner / NFS-root line appearing in the
 # console log AFTER we start watching. No oct-remote involved.
 console_mark() { wc -l < "$CL" 2>/dev/null || echo 0; }
+# The readiness patterns are per-kernel and BOTH must be here. 'it booted'
+# and 'NFS-root: /sbin/ffn-nfsroot' are what the 4.9 CP prints. The 6.18 CP
+# prints 'FFN-INIT:' and then 'ffn-nfsroot: waiting up to 300s for the MP'
+# instead, so a 4.9-only pattern never fires: the wait times out after 180s,
+# the script exits 1, pcnet-up never runs, and the CP sits waiting for a host
+# end that is never brought up. 'ffn-nfsroot: waiting' is in fact the ideal
+# trigger -- it is printed at exactly the moment the host end is needed.
 booted_since() {
 	local mark="$1"
 	tail -n "+$mark" "$CL" 2>/dev/null | tr -d '\r' \
-		| grep -qE 'it booted|NFS-root: /sbin/ffn-nfsroot'
+		| grep -qE 'it booted|NFS-root: /sbin/ffn-nfsroot|FFN-INIT:|ffn-nfsroot: waiting'
 }
 
 # 1. console broker (single owner of /dev/ttyS1).
@@ -72,6 +100,22 @@ sleep 1
 #    on an already-up OCTEON this simply reboots it cleanly into the same flow.
 MARK=$(console_mark)
 echo "resetting + staging FFN kernel over PCIe (sole oct-remote user)"
+# Stop the host end of pcnet BEFORE the reset. Resetting the OCTEON while
+# ffn_pcnetd is polling its BAR window produced a PCIe Completion-Timeout ->
+# AER storm that took the MP down entirely on 2026-09-02 -- "AER: can't recover
+# (no error_detected callback)" -- and needed a physical power cycle. Nothing is
+# lost by stopping it: pcnet-up.sh below brings it back and reprograms BAR1
+# index 1, which the reset clears regardless.
+systemctl stop ffn-pcnetd 2>/dev/null || true
+for _i in 1 2 3 4 5; do
+	systemctl is-active --quiet ffn-pcnetd || break
+	sleep 1
+done
+if systemctl is-active --quiet ffn-pcnetd; then
+	echo "ABORT: ffn-pcnetd is still active; refusing to reset the OCTEON under a live BAR writer"
+	exit 1
+fi
+echo "host ffn-pcnetd stopped (PCIe CmpltTO/AER hazard)"
 python3 tools/ffn_octctl.py boot --dev 0 --force
 # mem= is REQUIRED. Without it the kernel takes whatever the OCTEON boot
 # descriptor offers, which is ~432 MB of the 8 GB this CP actually has
@@ -83,7 +127,105 @@ python3 tools/ffn_octctl.py boot --dev 0 --force
 # bcm_petra_rx_init fails with Out of memory. 0x30000000 is inside the
 # 0x29400000-0x7fefffff System RAM range, below 4 GB (SBUSDMA host addresses
 # are 32-bit), clear of the rootfs (0x22000000) and transport (0x28/0x29000000).
-python3 tools/ffn_octboot.py --watch 150 --fdt "" --extra "ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M" &
+# --- which CP kernel, and the args that go with it --------------------------
+# 6.18 is preferred, but "bootable" means more than the image existing: a 6.18
+# CP mounts its userland over NFS from the MP, so with no staged CP root it
+# reaches a bare console shell with no tools. The 4.9 image carries its own
+# vendor root and always comes up. So require BOTH a 6.18 image AND a usable
+# CP root before choosing it, and let a one-line file override everything.
+CP_K_CONF=/etc/ffn-ngfw/octeon-kernel
+CP_K_49=/var/lib/ffn-ngfw/octeon/ffn-vmlinux-octeon3
+
+cp_root_present(){
+	for r in /opt/ffn-nfs/cproot-owrt /opt/ffn-cproot-owrt 	         /opt/ffn-nfs/cproot /opt/ffn-cproot; do
+		[ -x "$r/bin/sh" ] && return 0
+	done
+	return 1
+}
+# NO mtime heuristic here on purpose. "Newest 6.18 image" is NOT "good 6.18
+# image": at the time of writing the newest staged one was
+# ffn-vmlinux-6.18.49-msi, which panics on this chip with
+#   Kernel panic - not syncing: request_irq(OCTEON_IRQ_PCI_MSI0) failed
+# because CONFIG_PCI_MSI pulls in CIU-era msi-octeon.c and this is OCTEON III.
+# Picking by date would have panicked every boot. So 6.18 must be named
+# EXPLICITLY, and anything unnamed falls back to the kernel that always works.
+# provision.sh writes the pin once a 6.18 image and a CP root are both staged.
+CP_KERNEL=""
+# One-shot override.  Lets a session boot a different CP kernel WITHOUT editing
+# the persistent pin in $CP_K_CONF, so an unattended reboot still comes up on
+# whatever the operator chose as the default.  Needed because bcm.user cannot
+# run on 6.18 (SIGBUS in do_ade before unaligned emulation is reached) while the
+# BCM/L2 bring-up is proven on 4.9.
+if [ -n "${FFN_CP_KERNEL:-}" ]; then
+	CP_KERNEL=$FFN_CP_KERNEL
+	echo "CP kernel from FFN_CP_KERNEL (one-shot; $CP_K_CONF left untouched): $(basename "$CP_KERNEL")"
+elif [ -r "$CP_K_CONF" ]; then
+	CP_KERNEL=$(sed -n '1{s/[[:space:]]//g;p}' "$CP_K_CONF")
+	if [ -n "$CP_KERNEL" ] && [ ! -s "$CP_KERNEL" ]; then
+		echo "CP kernel pinned in $CP_K_CONF does not exist: $CP_KERNEL"
+		echo "  REFUSING to fall back to 4.9 -- see the note at the 4.9 guard below."
+		exit 1
+	fi
+	[ -n "$CP_KERNEL" ] && echo "CP kernel pinned by $CP_K_CONF: $(basename "$CP_KERNEL")"
+fi
+if [ -n "$CP_KERNEL" ] && ! cp_root_present; then
+	echo "WARNING: $CP_K_CONF pins a 6.18 kernel but no CP root is staged."
+	echo "  6.18 has no userland of its own -- it mounts one over NFS -- so the CP"
+	echo "  will reach a console shell with no tools. Stage one with"
+	echo "  octeon/cproot/ffn-cp-owrt-stage.sh, or fix the pin."
+fi
+# The 4.9 kernel is the VENDOR kernel and is considered too vulnerable to run,
+# so it must never be reached by accident. It used to be the silent fallback for
+# a missing or invalid pin, which meant a corrupt one-line file was enough to
+# boot it. Booting it now takes a deliberate FFN_ALLOW_49=1, and there is no
+# path to it that does not say so out loud.
+case "$CP_KERNEL" in
+*"$(basename "$CP_K_49")"*)
+	if [ "${FFN_ALLOW_49:-0}" != 1 ]; then
+		echo "REFUSING to boot the 4.9 vendor kernel ($CP_KERNEL)."
+		echo "  It is too vulnerable to run. Set FFN_ALLOW_49=1 to override"
+		echo "  deliberately; there is no automatic fallback to it."
+		exit 1
+	fi
+	echo "WARNING: booting the 4.9 VENDOR kernel because FFN_ALLOW_49=1 was set."
+	;;
+esac
+if [ -z "$CP_KERNEL" ]; then
+	echo "No CP kernel: $CP_K_CONF holds no pin and there is no fallback."
+	echo "  Pin a 6.18 kernel, or pass FFN_CP_KERNEL=<path> for a one-shot."
+	exit 1
+fi
+[ -s "$CP_KERNEL" ] || { echo "CP kernel $CP_KERNEL is missing; aborting"; exit 1; }
+# Honour a checksum sidecar if one was staged beside the image.
+if [ -s "$CP_KERNEL.md5" ]; then
+	md5sum "$CP_KERNEL" | grep -q "$(cut -d' ' -f1 < "$CP_KERNEL.md5")" 		|| { echo "CP kernel checksum mismatch against $CP_KERNEL.md5; aborting"; exit 1; }
+	echo "CP kernel checksum verified"
+fi
+# ffn_mem=auto is a 4.9-only knob and is obsolete upstream; 6.18 needs no mem=
+# at all, since nothing clamps max_memory there and it sees all 8 GB.
+# 0x30000000,64M stays in BOTH: it is the BCM88375 BDE DMA pool, and without it
+# the SDK falls back to a 4 MB dma_alloc_coherent and bcm_petra_rx_init fails
+# with Out of memory.
+# The OVERLAY matters as much as the args. ffn_octboot stages an overlay rootfs
+# at 0x22000000 by default and passes ffn_rootfs=/ffn_reserve= for it. The 6.18
+# kernel carries its OWN embedded initramfs, so handing it the 4.9-era overlay
+# on top faults on an unaligned load during init and panics:
+#     do_ade / handle_adel_int
+#     Kernel panic - not syncing: Attempted to kill the idle task!
+# Every working 6.18 boot passed --no-overlay; dropping that when this moved
+# into the service path is what panicked the CP.
+case "$CP_KERNEL" in
+	*6.18*)
+		CP_EXTRA="ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M"
+		CP_OVERLAY_ARG="--no-overlay"
+		;;
+	*)
+		CP_EXTRA="ffn_mem=auto,256M ffn_reserve=0x28000000,1M ffn_reserve=0x29000000,4M ffn_reserve=0x30000000,64M"
+		CP_OVERLAY_ARG=""
+		;;
+esac
+echo "CP boot: $(basename "$CP_KERNEL") ${CP_OVERLAY_ARG:-with overlay}"
+python3 tools/ffn_octboot.py --watch 150 --fdt "" $CP_OVERLAY_ARG --kernel "$CP_KERNEL" --extra "$CP_EXTRA" &
 BOOTW=$!
 
 echo "waiting for the OCTEON init banner on the console ..."

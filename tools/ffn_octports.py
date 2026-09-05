@@ -7,8 +7,9 @@ Measured on the live DP, the GSER (SerDes) lane assignment disproves it:
 
     GSER0  = 0x01  PCIE (endpoint, to the CP)
     GSER4  = 0x14  BGX + BGX_QUAD  -- the ONE 40G link, to BCM xl24
-    GSER5, GSER8..13 = 0x02  ILA (Interlaken)
-    GSER1,2,3,6,7 = 0x00  unassigned
+    GSER5  = 0x02  ILA (Interlaken) -- 4 lanes @ 6.25 Gbaud (LANE_MODE=8)
+    GSER1,2,3,6,7 = 0x00  unassigned (6 and 7 held in reset, PHY_CTL=0x2)
+    GSER8..13     = OCI/CCPI, NOT Interlaken -- see the second correction
 
 No SerDes lanes are routed to BGX0/1/3/4/5, so their MACs are attached to
 nothing. `CMR_RX_LMACS = 4` on those blocks is a RESET DEFAULT, not evidence of
@@ -16,9 +17,25 @@ wiring -- which is exactly the trap the "6 blocks x 4 LMACs = 24" arithmetic
 below falls into. The match with platform.portcount = 24 is a coincidence.
 
 The DP's entire outside connectivity is: PCIe to the CP, one 40G BGX to the
-BCM88375, and seven QLMs of Interlaken (very likely the FE100; the BCM carries
-ILKN4 on port 20, down, "no ELK device"). The front panel is on the BCM -- see
+BCM88375, and ONE 4-lane Interlaken. The front panel is on the BCM -- see
 ffn_bcmports.py.
+
+CORRECTION 2026-09-05: "seven QLMs of Interlaken" was wrong
+-----------------------------------------------------------
+GSER8..13 on a CN78XX are OCI/CCPI -- the multi-socket coherent interconnect --
+not Interlaken. The SDK says so directly: cvmx-qlm.c:1502 `if (qlm >= 8) return
+CVMX_QLM_MODE_OCI;` and cvmx-qlm.c:2766 describes "(8 QLMs + 6 OCI) * 2 nodes".
+ILK on a CN78XX can only use QLM4-7 (cvmx-ilk.h CVMX_ILK_QLM_BASE() = 4;
+cvmx-ilk.c:208 loops `for (qlm = 4; qlm < 8; qlm++)`).
+
+So the DP has exactly ONE Interlaken: GSER5, 4 lanes at 6.25 Gbaud.
+
+And it is NOT the BCM's ILKN4. That link is 12 lanes at 12.5 Gbaud
+(ilkn_num_lanes_4=12, port_init_speed_il=12500) and terminates on the FE100's
+tmi block. Twelve lanes at 12.5G cannot land on four at 6.25G -- the widths and
+the rates both disagree. Where the DP's own Interlaken goes is UNRESOLVED; do
+not assume the FE100 without measuring, which is the mistake this paragraph
+made the first time.
 
 Rule this cost us: the CMR tells you what a block COULD do; only GSER tells you
 whether anything is CONNECTED. Read GSER before enabling any BGX LMAC.

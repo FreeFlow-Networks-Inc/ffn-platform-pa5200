@@ -1,7 +1,7 @@
 /*
  * ffn_bcm_abi.h -- userspace ABI for FFN's OCTEON III BCM control driver.
  *
- * This is the ONLY thing userspace needs to talk to the BCM88375 Qumran-AX on
+ * This is the ONLY thing userspace needs to talk to the BCM88375 Qumran-MX on
  * the PA-5220's dataplane complex. It replaces the /dev/mem path that
  * ffn_cpdpd used during bring-up.
  *

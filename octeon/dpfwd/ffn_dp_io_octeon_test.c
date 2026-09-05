@@ -69,6 +69,12 @@ static int mock_work_get(struct oct_ctx *c, struct oct_wqe *w)
     struct mock_buf *b = &m->bufs[m->next++];
     b->queued = 0;
     memset(w, 0, sizeof(*w));
+    /* -1, not the memset's 0: with a tenant plan applied, 0 is a real
+     * group number. It happens to be one no tenant owns, so a zero here
+     * would fall back correctly today -- and would start mis-tagging the
+     * moment a plan began at group 0. Say "the chip did not tell us"
+     * explicitly instead of relying on that. */
+    w->sso_group = -1;
     w->hw = b;
     w->data = b->data;
     w->len = b->len;

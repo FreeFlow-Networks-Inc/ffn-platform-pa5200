@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * ffn_bcm -- FFN OCTEON III control driver for the BCM88375 (Qumran-AX) CMIC.
+ * ffn_bcm -- FFN OCTEON III control driver for the BCM88375 (Qumran-MX) CMIC.
+ *
+ * Qumran-MX, NOT Qumran-AX: in the Broadcom SDK the BCM88375 is in the Jericho
+ * family and SOC_IS_QAX is FALSE for it, so QAX-specific code paths do not
+ * apply. Earlier FFN comments said Qumran-AX and were wrong.
  *
  * Runs on the PA-5220's dataplane complex: an OCTEON III CN73XX with the
  * Broadcom switch on its own PCIe segment (0001:01:00.0/.1). This driver owns
@@ -435,7 +439,7 @@ static long ffn_bcm_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		info.schan_ops = b->schan_ops;
 		info.schan_errs = b->schan_errs;
 		info.schan_timeouts = b->schan_timeouts;
-		strlcpy(info.pci, pci_name(b->pdev), sizeof(info.pci));
+		strscpy(info.pci, pci_name(b->pdev), sizeof(info.pci));
 		rc = copy_to_user(up, &info, sizeof(info)) ? -EFAULT : 0;
 		break;
 	}
@@ -454,7 +458,10 @@ static const struct file_operations ffn_bcm_fops = {
 	/* Every struct in the ABI is fixed-width with explicit padding, so a
 	 * 32-bit caller sees the same layout and needs no translation. */
 	.compat_ioctl	= ffn_bcm_ioctl,
-	.llseek		= no_llseek,
+	/* No .llseek: no_llseek was removed in 6.12, and leaving this NULL is its
+	 * exact equivalent -- fs/open.c clears FMODE_LSEEK when .llseek is NULL and
+	 * vfs_llseek then returns -ESPIPE. noop_llseek would be WRONG here: it
+	 * accepts seeks instead of rejecting them. */
 };
 
 static struct miscdevice ffn_bcm_misc = {

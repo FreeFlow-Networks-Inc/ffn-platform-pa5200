@@ -1,0 +1,82 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 FreeFlow Networks, Inc.
+#
+# Virtual routers, as Linux VRF devices, on the control plane.
+#
+# Replaces the MP running `ip link add <vr> type vrf table N` + `ip rule add`
+# itself (ffn_manager.py ~5631-5646). A virtual router is a routing construct;
+# under the split it lives with the routers, on the CP.
+#
+# Keys:
+#     cp.vr.<id>.name       = default
+#     cp.vr.<id>.table      = 254
+#     cp.vr.<id>.interfaces = enp11s0f0,enp11s0f1     (enslaved to the VRF)
+#
+# Runs BEFORE 40-routes: a route with "table N" needs the table's VRF to exist,
+# and a route via an interface needs that interface already enslaved, or it
+# lands in the wrong table.
+#
+# NOT DESTRUCTIVE BY DESIGN: this hook creates and enslaves, but never deletes a
+# VRF it does not recognise. Tearing down a VRF drops every route in its table
+# at once, and on a box whose config may be mid-migration that is too violent an
+# answer to "this key is absent". Removal stays a deliberate operator action.
+set -u
+. "$(dirname "$0")/00-common.sh"
+
+# table 254 is the kernel's "main". A VRF must NOT be created for it: doing so
+# would move the default routing table behind a VRF device and strand every
+# ordinary route, including the management path. The manager models the default
+# virtual router with table 254, so this case is normal, not an error.
+MAIN_TABLE=254
+
+for key in $(keys_matching "cp.vr."); do
+	rest=${key#cp.vr.}
+	field=${rest##*.}
+	id=${rest%.*}
+	[ "$field" = "name" ] || continue
+	[ -n "$id" ] || continue
+
+	name=$(get "cp.vr.$id.name")
+	table=$(get "cp.vr.$id.table")
+	[ -n "$name" ] && [ -n "$table" ] || continue
+
+	if [ "$table" = "$MAIN_TABLE" ]; then
+		log "vr '$name' uses the main table ($MAIN_TABLE); no VRF device needed"
+	else
+		if have "$name"; then
+			:
+		else
+			if ip link add "$name" type vrf table "$table" 2>/dev/null; then
+				log "created vrf $name (table $table)"
+			else
+				warn "could not create vrf $name"
+				continue
+			fi
+		fi
+		ip link set "$name" up 2>/dev/null
+
+		# l3mdev rules. Added only if absent -- `ip rule add` is happy to add a
+		# duplicate every run, and a rule table that grows on each apply is a
+		# slow leak that eventually shadows something.
+		ip rule show 2>/dev/null | grep -q "oif $name lookup $table" || \
+			ip rule add oif "$name" table "$table" 2>/dev/null
+		ip rule show 2>/dev/null | grep -q "iif $name lookup $table" || \
+			ip rule add iif "$name" table "$table" 2>/dev/null
+	fi
+
+	# Enslave member interfaces.
+	members=$(get "cp.vr.$id.interfaces")
+	[ -n "$members" ] || continue
+	for m in $(echo "$members" | tr ',' ' '); do
+		[ -n "$m" ] || continue
+		protected "$m" && continue
+		have "$m" || { warn "vr $name: no such interface $m"; continue; }
+		[ "$table" = "$MAIN_TABLE" ] && continue    # nothing to enslave to
+		cur=$(ip -o link show "$m" 2>/dev/null | grep -o "master [^ ]*" | awk '{print $2}')
+		[ "$cur" = "$name" ] && continue
+		safe_ip "$m" link set "$m" master "$name" && log "vr $name += $m"
+	done
+done
+
+exit 0

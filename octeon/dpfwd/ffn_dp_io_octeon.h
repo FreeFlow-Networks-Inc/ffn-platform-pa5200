@@ -41,6 +41,8 @@
 
 #include "ffn_dp_oct.h"
 #include <stdint.h>
+
+struct dp_vsys_plan;
 #include <stdio.h>
 
 #define OCT_MAX_PORTS   8
@@ -83,6 +85,13 @@ struct oct_wqe {
     /* SSO flow tag of the incoming packet, used to keep egress in order when
      * that is enabled. */
     uint32_t flow_tag;
+    /* The SSO group the work arrived in, as read from the WQE. On OCTEON-III
+     * with a vsys plan applied this IS the tenant: PKI put the packet in its
+     * tenant's group at wire speed, so the receive path reads the answer
+     * instead of looking it up. -1 when the backend does not supply it, which
+     * is what makes the port's configured vsys the fallback rather than a
+     * silent zero. */
+    int      sso_group;
 };
 
 /* PKI buffer pointer (PKI_BUFLINK_S), decoded without the SDK so the descriptor
@@ -152,6 +161,11 @@ struct oct_ctx {
      * flow leave in the order they arrived, at the cost of a tag switch each.
      * Off by default -- see cvmx3_hw_pkt_send(). */
     int      ordered_egress;
+    /* The tenant plan, or NULL for a single-vsys box. NULL is not a degraded
+     * mode: with no plan every group maps to the wildcard, which is exactly the
+     * behaviour this forwarder had before tenants existed. */
+    const struct dp_vsys_plan *vsys_plan;
+
     struct oct_wqe inflight[OCT_BURST];     /* current burst */
     int      n_inflight;
 
