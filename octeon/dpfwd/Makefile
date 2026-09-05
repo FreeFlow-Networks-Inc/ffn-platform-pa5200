@@ -84,8 +84,8 @@ test: ffn_dp_oct_test
 	./ffn_dp_oct_test
 
 # runnable dataplane over real Linux interfaces (Linux-only backend)
-ffn_dp_afpacket: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(AFP_SRC) $(AFP_MAIN) $(AFP_HDRS)
-	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(AFP_SRC) $(AFP_MAIN) -o $@
+ffn_dp_afpacket: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(AFP_SRC) $(AFP_MAIN) $(AFP_HDRS)
+	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(AFP_SRC) $(AFP_MAIN) -o $@
 
 # end-to-end forwarding test over veth pairs (needs root)
 veth-test: ffn_dp_afpacket
@@ -105,8 +105,8 @@ else
 OCT_CFLAGS =
 endif
 
-ffn_dp_oct_io_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(OCT_SRC) $(OCT_TEST) $(OCT_HDRS)
-	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(OCT_SRC) $(OCT_TEST) -o $@
+ffn_dp_oct_io_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(OCT_SRC) $(OCT_TEST) $(OCT_HDRS)
+	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(OCT_SRC) $(OCT_TEST) -o $@
 
 oct-test: ffn_dp_oct_io_test
 	./ffn_dp_oct_io_test
@@ -119,8 +119,8 @@ OCT3_SRC  = ffn_dp_io_octeon3.c
 OCT3_TEST = ffn_dp_io_octeon3_test.c
 OCT3_HDRS = $(HDRS) ffn_dp_io_octeon.h ffn_dp_io_octeon3.h ffn_dp_bgx.h
 
-ffn_dp_oct3_io_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) $(OCT3_HDRS)
-	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(OCT_SRC) $(OCT3_SRC) \
+ffn_dp_oct3_io_test: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) $(OCT3_HDRS)
+	$(CC) $(CFLAGS) $(OCT_CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) $(OCT_SRC) $(OCT3_SRC) \
 	    $(OCT3_TEST) -o $@
 
 oct3-test: ffn_dp_oct3_io_test
@@ -130,14 +130,14 @@ oct3-test: ffn_dp_oct3_io_test
 # big-endian MIPS64, so the same suite runs there too.
 oct3-qemu: $(SRC) $(OCT_SRC) $(OCT3_SRC) $(OCT3_TEST) $(OCT3_HDRS)
 	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
-	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(OCT_SRC) $(OCT3_SRC) \
+	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(OCT_SRC) $(OCT3_SRC) \
 	    $(OCT3_TEST) -o ffn_dp_oct3_io_test.mips64
 	qemu-mips64 ./ffn_dp_oct3_io_test.mips64
 
 # same backend test, big-endian, as it will run on the real Octeon
 oct-qemu: $(SRC) $(OCT_SRC) $(OCT_TEST) $(OCT_HDRS)
 	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
-	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(OCT_SRC) $(OCT_TEST) \
+	$(MIPS_CC) $(MIPS_CFLAGS) $(OCT_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(OCT_SRC) $(OCT_TEST) \
 	    -o ffn_dp_oct_io_test.mips64
 	qemu-mips64 ./ffn_dp_oct_io_test.mips64
 
@@ -184,12 +184,12 @@ check: test l3-test arp-test engine-test vsys-test oct-test oct3-test
 	@$(MAKE) -s vsys-qemu
 
 # --- cross build for the real target ---
-mips64: $(SRC) $(L3_SRC) $(ENG_SRC) $(TEST_SRC) $(HDRS) $(L3_HDRS)
+mips64: $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(TEST_SRC) $(HDRS) $(L3_HDRS)
 	@command -v $(MIPS_CC) >/dev/null 2>&1 || { \
 	  echo "MISSING $(MIPS_CC)"; \
 	  echo "  Debian/Ubuntu: apt install gcc-mips64-linux-gnuabi64"; \
 	  echo "  (or a Buildroot OCTEON-II toolchain)"; exit 1; }
-	$(MIPS_CC) $(MIPS_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(TEST_SRC) -o ffn_dp_oct_test.mips64
+	$(MIPS_CC) $(MIPS_CFLAGS) $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(TEST_SRC) -o ffn_dp_oct_test.mips64
 	@file ffn_dp_oct_test.mips64
 
 # Same expectations, big-endian: catches any accidental native-endian access.
@@ -216,8 +216,8 @@ clean:
 # interop harness: runs the real DP command loop over an mmap'd file so the
 # Python MP client is tested against actual C code, not a second model of the
 # wire format. Depends on the .o so a stale binary cannot silently pass.
-dp_serve: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) dp_serve.c $(HDRS)
-	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) dp_serve.c -o $@
+dp_serve: ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) dp_serve.c $(HDRS)
+	$(CC) $(CFLAGS) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) $(VSYS_OBJ) dp_serve.c -o $@
 
 interop: dp_serve
 	python3 interop_test.py

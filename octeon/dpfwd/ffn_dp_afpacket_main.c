@@ -22,6 +22,7 @@
 #include "ffn_dp_io_afpacket.h"
 #include "ffn_dp_engine.h"
 #include "ffn_dp_dlp.h"
+#include "ffn_dp_vsys.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -149,6 +150,154 @@ static int load_engines(struct dp_ctx *dp, const char *path)
     return 0;
 }
 
+/*
+ * Virtual systems, read from the same dp.env the control plane delivers.
+ *
+ *     dp.vsys.tenant.<id> = <name>     which tenants exist
+ *     dp.vsys.port.<idx>  = <id>       which port belongs to which tenant
+ *
+ * This is the link that made vsys real rather than decorative. The forwarder
+ * has always carried a per-packet vsys byte, but it came from a single -v
+ * applied to every port, so a second tenant could be created, given a port, and
+ * committed, and its packets still arrived tagged as the first.
+ *
+ * Two things happen with what is parsed here. The per-port assignment is used
+ * when the ports are added, which is what fixes the -v problem on the path that
+ * runs today. The tenant list becomes a dp_vsys_plan -- one SSO group, one QPG
+ * entry and one PKI style each -- which is what the OCTEON backend applies to
+ * the chip so the tenant is decided by PKI at wire speed instead of by
+ * software. On AF_PACKET there is no PKI, so the plan is built, reported and
+ * held: it is what a later oct backend attaches, and building it here means the
+ * two paths cannot disagree about which tenant owns which group.
+ */
+static struct dp_vsys_plan g_vsys_plan;
+static uint8_t g_port_vsys[AFP_MAX_PORTS];
+
+struct vsys_cfg {
+    uint8_t  ids[DP_VSYS_MAX];
+    uint32_t n;
+    int      ports_seen;
+};
+
+static int vsys_add_tenant(struct vsys_cfg *v, long id)
+{
+    uint32_t i;
+
+    if (id < 1 || id > (long)DP_VSYS_MAX)
+        return -1;
+    for (i = 0; i < v->n; i++)
+        if (v->ids[i] == (uint8_t)id)
+            return 0;               /* already known; not an error */
+    if (v->n >= DP_VSYS_MAX)
+        return -1;
+    v->ids[v->n++] = (uint8_t)id;
+    return 0;
+}
+
+/* Parse the vsys keys out of a dp.env. Returns 0, or -1 if the file names
+ * something it cannot express -- which is refused rather than partly applied,
+ * because a tenant boundary that is half configured is not a boundary. */
+static int load_vsys(const char *path, struct vsys_cfg *v)
+{
+    FILE *f = fopen(path, "r");
+    char line[512];
+    int bad = 0;
+
+    memset(v, 0, sizeof(*v));
+    memset(g_port_vsys, 0, sizeof(g_port_vsys));
+    if (!f) {
+        fprintf(stderr, "vsys: cannot read %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *eq, *nl, *key, *val;
+        long a, b;
+
+        if (line[0] == '#' || line[0] == '\n')
+            continue;
+        nl = strchr(line, '\n');
+        if (nl)
+            *nl = '\0';
+        eq = strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        key = line;
+        val = eq + 1;
+
+        if (strncmp(key, "dp.vsys.tenant.", 15) == 0) {
+            a = strtol(key + 15, NULL, 10);
+            if (vsys_add_tenant(v, a) != 0) {
+                fprintf(stderr, "vsys: tenant id %ld is outside 1..%u\n",
+                        a, DP_VSYS_MAX);
+                bad++;
+            }
+        } else if (strncmp(key, "dp.vsys.port.", 13) == 0) {
+            a = strtol(key + 13, NULL, 10);          /* DP port index */
+            b = strtol(val, NULL, 10);               /* tenant id     */
+            if (a < 0 || a >= AFP_MAX_PORTS) {
+                fprintf(stderr, "vsys: port index %ld out of range\n", a);
+                bad++;
+                continue;
+            }
+            if (b < 1 || b > (long)DP_VSYS_MAX) {
+                fprintf(stderr, "vsys: port %ld assigned tenant %ld, "
+                                "outside 1..%u\n", a, b, DP_VSYS_MAX);
+                bad++;
+                continue;
+            }
+            /* A port assigned to a tenant the file never declares would be
+             * tagged with an id that has no hardware resources behind it. Take
+             * it as a declaration too, so the two keys cannot disagree. */
+            if (vsys_add_tenant(v, b) != 0) {
+                bad++;
+                continue;
+            }
+            g_port_vsys[a] = (uint8_t)b;
+            v->ports_seen++;
+        }
+    }
+    fclose(f);
+
+    if (bad) {
+        fprintf(stderr, "vsys: %d bad key(s) in %s; not applying any of it\n",
+                bad, path);
+        return -1;
+    }
+    return 0;
+}
+
+/* Build the hardware plan and report it. Bases start at 8/16/4 rather than 0
+ * because group 0, QPG 0 and style 0 belong to the SDK's own default path, and
+ * a plan starting there would quietly take them over. */
+static int plan_vsys(const struct vsys_cfg *v)
+{
+    uint32_t i;
+    int rc;
+
+    rc = dp_vsys_plan_build(&g_vsys_plan, v->ids, v->n,
+                            &DP_VSYS_LIMITS_CN78XX, 8, 16, 4);
+    if (rc != DP_OK) {
+        fprintf(stderr, "vsys: cannot plan %u tenant(s): %s\n",
+                v->n, dp_strerror(rc));
+        return -1;
+    }
+    if (v->n == 0) {
+        printf("vsys: none configured -- every packet is the wildcard, which is "
+               "single-vsys behaviour\n");
+        return 0;
+    }
+    printf("vsys: %u tenant(s), %d port assignment(s)\n", v->n, v->ports_seen);
+    for (i = 0; i < g_vsys_plan.count; i++) {
+        const struct dp_vsys_res *r = &g_vsys_plan.res[i];
+        printf("  vsys %-3u sso_group=%-4u qpg=%-4u style=%u\n",
+               r->vsys, r->sso_group, r->qpg_offset, r->style);
+    }
+    return 0;
+}
+
+
 int main(int argc, char **argv)
 {
     const char *ifaces[AFP_MAX_PORTS];
@@ -187,15 +336,46 @@ int main(int argc, char **argv)
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
 
+    /* Tenants BEFORE the ports, because a port tenant is decided as it is
+     * added. Parsed from the same dp.env the engines come from: one file the
+     * control plane delivers, not two that can disagree. */
+    struct vsys_cfg vcfg;
+    memset(&vcfg, 0, sizeof(vcfg));
+    if (engpath) {
+        if (load_vsys(engpath, &vcfg) != 0)
+            return 1;
+        if (plan_vsys(&vcfg) != 0)
+            return 1;
+    }
+
     struct afp_ctx io;
     afp_ctx_init(&io, promisc, 100);
     for (int i = 0; i < nif; i++) {
-        int rc = afp_add_port(&io, ifaces[i], vsys);
+        /* The config assigns tenants by DP PORT INDEX, and ports are added in
+         * the order given on the command line, so index i is this port. The
+         * global -v stays the fallback for a port the config does not mention
+         * -- which is every port on a box with no tenants, and is how this
+         * keeps behaving exactly as it did before vsys existed. */
+        uint8_t pv = g_port_vsys[i] ? g_port_vsys[i] : vsys;
+        int rc = afp_add_port(&io, ifaces[i], pv);
         if (rc < 0) {
             fprintf(stderr, "port %s: %s\n", ifaces[i], strerror(-rc));
             return 1;
         }
-        printf("port %d = %s\n", rc, ifaces[i]);
+        if (rc != i) {
+            /* The tenant map is indexed by the position a port was added at.
+             * If the backend ever numbered them differently the assignment
+             * would land on the wrong port silently, so check rather than
+             * assume. */
+            fprintf(stderr, "port %s: got index %d, expected %d -- refusing a"
+                            " tenant map that may be misaligned\n",
+                    ifaces[i], rc, i);
+            return 1;
+        }
+        printf("port %d = %s", rc, ifaces[i]);
+        if (g_port_vsys[i])
+            printf("  vsys %u", g_port_vsys[i]);
+        printf("\n");
     }
 
     struct dp_ctx dp;
