@@ -25,6 +25,15 @@ L3_SRC   = ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_arp.c
 L3_HDRS  = ffn_dp_l3.h ffn_dp_l3_config.h ffn_dp_arp.h
 L3_OBJ   = $(L3_SRC:.c=.o)
 
+# --- inline analysis engines ---
+# The control plane steers where L3 goes; inline analysis lives here. Kept
+# separate from the forwarder so the engine tests link without dragging in the
+# packet-I/O backends -- the scanners are pure functions over a byte range and
+# should be testable as such.
+ENG_SRC  = ffn_dp_engine.c ffn_dp_dlp.c
+ENG_HDRS = ffn_dp_engine.h ffn_dp_dlp.h
+ENG_OBJ  = $(ENG_SRC:.c=.o)
+
 # OCTEON-II: MIPS64 release 2, BIG-endian. Upstream toolchain preferred over the
 # Cavium SDK (licence hygiene -- FFN ships nothing SDK-derived).
 MIPS_CC     ?= mips64-linux-gnuabi64-gcc
@@ -141,7 +150,7 @@ oct3-cvmx:
 	@echo "octeon backends compile clean against $(MODEL)"
 
 # everything that can run without Octeon hardware
-check: test l3-test arp-test oct-test oct3-test
+check: test l3-test arp-test engine-test oct-test oct3-test
 	@echo "--- big-endian ---"
 	@$(MAKE) -s qemu-test
 	@$(MAKE) -s oct-qemu
@@ -170,7 +179,7 @@ clean:
       ffn_dp_oct3_io_test ffn_dp_oct3_io_test.mips64 ffn_dp_l3_test ffn_dp_arp_test \n      ffn_dp_l3_test.mips64 ffn_dp_arp_test.mips64
 	$(RM) -r cvmx-obj
 
-.PHONY: all test l3-test arp-test mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
+.PHONY: all test l3-test arp-test engine-test engine-qemu mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
         oct3-qemu oct3-cvmx l3-qemu arp-qemu check clean
 
 # interop harness: runs the real DP command loop over an mmap'd file so the
@@ -188,6 +197,22 @@ interop: dp_serve
 # invisible to `make check` -- the one command anyone actually runs.
 ffn_dp_l3_test: $(L3_OBJ) ffn_dp_l3_test.c $(L3_HDRS)
 	$(CC) $(CFLAGS) $(L3_OBJ) ffn_dp_l3_test.c -o $@
+
+# Engines. Built and run BOTH natively and big-endian: the scanners walk packet
+# bytes, and "passes on x86" is not evidence for an OCTEON. engine-qemu runs the
+# identical binary under qemu-mips64; that same binary also runs unmodified on
+# the real CP, which is how it was first validated.
+ffn_dp_engine_test: $(ENG_SRC) ffn_dp_engine_test.c $(ENG_HDRS) ffn_dp_oct.h
+	$(CC) $(CFLAGS) -o $@ $(ENG_SRC) ffn_dp_engine_test.c
+
+engine-test: ffn_dp_engine_test
+	./ffn_dp_engine_test
+
+ffn_dp_engine_test.mips: $(ENG_SRC) ffn_dp_engine_test.c $(ENG_HDRS) ffn_dp_oct.h
+	$(MIPS_CC) $(MIPS_CFLAGS) -o $@ $(ENG_SRC) ffn_dp_engine_test.c
+
+engine-qemu: ffn_dp_engine_test.mips
+	qemu-mips64 ./ffn_dp_engine_test.mips
 
 l3-test: ffn_dp_l3_test
 	./ffn_dp_l3_test
