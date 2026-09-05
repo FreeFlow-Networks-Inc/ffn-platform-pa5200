@@ -398,6 +398,20 @@ DLP_RULE_MAX = 32
 DLP_PAT_MAX = 63
 
 
+def _faceplate_module():
+    """The chassis faceplate map, or None when this is not that hardware.
+
+    Imported lazily and never fatally: this renderer has to run on a box with no
+    platform submodule, and a missing one means "software datapath", which is a
+    fact about the host rather than an error.
+    """
+    try:
+        import ffn_bcmports
+        return ffn_bcmports
+    except Exception:
+        return None
+
+
 def render_vsys(out, db, root, portmap, problems, base):
     """Virtual systems -> the keys the dataplane needs to enforce them.
 
@@ -457,6 +471,33 @@ def render_vsys(out, db, root, portmap, problems, base):
             # The vsys import list names interfaces the way an operator does.
             # Resolve through the same alias map the rest of this file uses, so
             # a port means the same thing in every key.
+            # TWO SHAPES, because the two platforms address a port differently.
+            #
+            # On a software datapath every port is a netdev the forwarder opens,
+            # so a tenant is addressed by DP PORT INDEX -- dp.vsys.port.<idx>.
+            #
+            # On a chassis whose faceplate is on a switch ASIC the DP has no
+            # per-faceplate interface at all: it sees a 40G trunk with about
+            # four BGX ports behind it, and the faceplate port a frame came from
+            # arrives in the SOURCE PORT field of the switch's TM header
+            # ([dest16][src16] -- see bcm/ITMH.md). So the tenant has to be keyed
+            # on the BCM LOGICAL PORT, which is what that field carries, and
+            # dp.vsys.port.<idx> cannot express it: there is no DP index for
+            # faceplate port 7 because the DP has no such port.
+            #
+            # Emitting the wrong one would look configured and enforce nothing.
+            bp = _faceplate_module()
+            if bp is not None:
+                lport = bp.port_of_pan_ifname(pan)
+                if lport is None:
+                    problems.append(
+                        "vsys %s imports %s, which is not a faceplate port on "
+                        "this chassis -- no tenant boundary can be enforced for "
+                        "it" % (name, pan))
+                    continue
+                _emit(out, "dp.vsys.fport.%s" % lport, vid)
+                continue
+
             dev = aliases.get(pan, pan)
             idx = portmap.get(dev)
             if idx is None:
