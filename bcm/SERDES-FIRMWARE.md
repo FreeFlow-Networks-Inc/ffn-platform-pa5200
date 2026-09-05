@@ -1,6 +1,10 @@
 # The SerDes microcontroller does not start — why no port on this chip links
 
-**Status: root cause identified, not yet fixed. 2026-09-05.**
+**Fixed in practice; root cause narrowed but not closed. 2026-09-05.**
+
+*Revised after review: section 3 originally argued the microcode download was
+NOT corrupt. That was wrong, and the reasoning error is documented rather than
+quietly deleted. The fix and the measurements were never in question.*
 
 Every port on the BCM88375 reads `down` under our own OpenBCM 6.5.26 build. Not
 just the 40G links to the dataplane — every port, including the 10G links to the
@@ -61,39 +65,77 @@ pm4x10.c[4580] _pm4x10_port_attach_resume_fw_load Operation failed
    -> jer_nif.c[3695] -> bcm_petra_port_probe -> bcm_petra_init
 ```
 
-**3. The microcode bytes in RAM are correct — so it is not a corrupt download.**
+**3. The microcode in PMD RAM does NOT match — the download is corrupt.**
 
-This was the first hypothesis and it is wrong, which matters because it is the
-obvious one. In `tsce.c:3337`:
+*This section previously said the opposite, and was wrong. Corrected 2026-09-05
+after review; the error and how it was made are kept below because the mistake
+is instructive.*
+
+`tsce.c` has two verification paths, selected by `TSCE_PMD_CRC_UCODE`:
 
 ```c
 #ifndef TSCE_PMD_CRC_UCODE
-    /* next we need to check if the load is correct or not */
-    if (eagle_tsc_ucode_load_verify(&core_copy.access, (uint8_t *) &tsce_ucode, tsce_ucode_len)) {
-        ... return PHYMOD_E_INIT;
-    }
+    /* byte-for-byte read-back against the source array */
+    if (eagle_tsc_ucode_load_verify(&core_copy.access, (uint8_t *) &tsce_ucode, tsce_ucode_len)) { ... }
 #endif
-```
-
-`TSCE_PMD_CRC_UCODE` is defined nowhere in the tree, so that byte-for-byte
-read-back comparison runs on **every** init — including the ones that succeed.
-The image in PMD RAM matches `tsce_ucode` exactly.
-
-What the verify *flag* adds, a few lines later, is the only other thing:
-
-```c
-    eagle_uc_active_set(&core_copy.access, 1);   /* uc active */
-    eagle_uc_reset(&core_copy.access, 1);        /* release uc reset */
-    /* we need to wait at least 10ms for the uc to settle */
-    /* PHYMOD_USLEEP(10000); */                  <-- commented out upstream
+...
     if (PHYMOD_CORE_INIT_F_FIRMWARE_LOAD_VERIFY_GET(init_config)) {
-        eagle_tsc_poll_uc_dsc_ready_for_cmd_equals_1(&phy_access_copy.access, 1);
+#ifndef TSCE_PMD_CRC_UCODE
+        eagle_tsc_poll_uc_dsc_ready_for_cmd_equals_1(...);   /* return value DISCARDED */
+#else
+        PHYMOD_IF_ERR_RETURN(
+                eagle_tsc_ucode_crc_verify(&core_copy.access, tsce_ucode_len, tsce_ucode_crc));
+#endif
     }
 ```
 
-So: **correct microcode, uC released from reset, and it never becomes ready.**
-The poll that fails here is the same one that times out in `phy diag dsc`. Two
-independent paths agree.
+**`TSCE_PMD_CRC_UCODE` is defined**, as `1`, at `tsce.c:65` — in the .c file
+itself. So the `#ifndef` blocks are compiled OUT and the `#else` is live:
+
+* the byte-for-byte `eagle_tsc_ucode_load_verify` **never runs**;
+* what `0x102` enables is `eagle_tsc_ucode_crc_verify`, wrapped in
+  `PHYMOD_IF_ERR_RETURN`, and **that** is what fails init.
+
+So the evidence says the microcode CRC does not match. The download IS corrupt,
+and the DW8051 executes garbage — which is consistent with every observation and
+with `0x1` (a completely different transfer path, MDIO rather than PRAM/UCMEM)
+working.
+
+**How the wrong conclusion was reached, because the method matters:** the
+original check was
+
+    grep -rn 'TSCE_PMD_CRC_UCODE' --include=*.mk --include=Make* --include=*.h .
+
+`--include` filters that omit `*.c` cannot find a `#define` in a `.c` file. The
+grep returned nothing, "not defined" was recorded as established, and a whole
+section was built on it. A search that can only confirm one answer is not
+evidence for the other.
+
+## What is NOT the cause
+
+**Host endianness.** The External path is the only firmware route with a
+host-endian byte shuffle — `_portmod_dma_buf_alloc` (portmod_common.c:434)
+selects between `arr_pos_be[3][16]` and `arr_pos_le[3][16]` on an `endian`
+argument that reaches it from `portmod_sys_get_endian` →
+`soc_cm_get_endian` → `CMVEC(unit).big_endian_other` →
+`bde->pci_bus_features()`, i.e. from **FFN's own ffn_bde**. Getting that wrong
+on a big-endian host would scramble the microcode exactly as observed.
+
+It is not wrong. Measured on the running module:
+
+    be_pio 1   be_packet 1   be_other 1
+
+`be_other=1` selects `arr_pos_be`, which is correct for this host. Checked
+because it was a good hypothesis, and recorded because "we checked and it was
+fine" is worth as much as a finding — it stops the next person re-deriving it.
+
+That leaves the transfer itself: `data_swap`
+(`portmod_ucode_buf_order_reversed`, set unconditionally for the Jericho pm4x10
+path at `jer_nif.c:1301`) indexes those tables, and the UCMEM write path runs
+over the S-channel through the PAXB hardware byte-swap this platform needs. One
+of those two is the remaining suspect. **Not yet established** —
+`eagle_tsc_ucode_crc_verify` returning failure says the bytes are wrong, not
+which stage made them wrong.
 
 ## Why nobody noticed
 
@@ -138,25 +180,53 @@ of the diagnosis rather than a counterexample to it.
 | TX FIR never applied | `jer.soc:237` does run `cint phy_tx_settings.c`, and the log says `PAN: all ports tuned, FEC enabled on CAUI ports` |
 | ports excluded from linkscan | linkscan bitmap `0x…edfffe` omits only ports 0, 17 and 20; 24/25/26 are all scanned |
 | pause configured differently on the DP ports | real, and intentional: `gryphon_llfc.c` sets TX LLFC on a bitmap that excludes 3/24/25/26 and RX LLFC on one that includes them. Explains the `RX` vs `TX RX` column in `ps`. Not a link cause |
-| corrupt microcode download | `eagle_tsc_ucode_load_verify` runs unconditionally and passes |
-| nothing fitted behind xl24/25/26 | not yet ruled out, but cannot explain ports 8/9, which linked under the vendor build |
+| ~~corrupt microcode download~~ | **NOT ruled out — this was wrong.** That verify is compiled out (`TSCE_PMD_CRC_UCODE` is defined); see section 3 |
+| nothing fitted behind xl24/25/26 | **resolved**: with the fix, xl24 came up and xl25/xl26 stayed down. Port 24 is the populated one (vendor labels it DP1) |
+| host endianness in the ucode DMA shuffle | measured: `be_other=1` on the running ffn_bde, which selects the big-endian table. Correct |
+
+## Status
+
+**Fixed in practice, not at the root.** `load_firmware.BCM88650=0x1` (Internal /
+MDIO load) makes the microcontroller start and the ports link; it is carried as
+an FFN override in `octeon/bcmagent/ffn-bcm-overrides.conf`. The PRAM/UCMEM path
+the vendor ships is still broken in our build and is avoided, not repaired.
 
 ## Where to look next
 
-The uC is released but does not run, on every quad. In order of likelihood:
+The CRC verify says the bytes that reached PMD RAM are wrong. It does not say
+which stage made them wrong, and only two stages are left:
 
-1. **uC clock.** The `dsc` header prints `COM_CLK` and `PLL_LOCK` columns and we
-   have never read a value for either. If the PMD common clock is not running,
-   nothing else matters.
-2. **`eagle_uc_active_set` / `eagle_uc_reset` not landing.** These are ordinary
-   register writes, but this platform already needed a byte-order fix
-   (`BAR0+0x2030 = 0x01010101`) before the S-channel worked at all. A write that
-   reads back correctly is not proof the *field* landed where the PMD expects it.
-3. **The commented-out 10 ms settle.** Upstream removed the delay and left the
-   poll to cover it — but with verify off there is neither a delay nor a poll,
-   and core init proceeds to lane map, polarity and PLL config while the uC is
-   still booting. This cannot be the whole story (the poll fails even when
-   enabled, so time alone does not fix it) but it may compound it.
+1. **`data_swap`.** `jer_nif.c:1301` sets `PORTMOD_USER_ACCESS_FW_LOAD_REVERSE`
+   unconditionally for the pm4x10 path, so `_portmod_dma_buf_alloc` gets
+   `portmod_ucode_buf_order_reversed`. That value indexes `arr_pos_be[3][16]`.
+   Dumping the first 16 bytes it produces and comparing against `tsce_ucode`
+   would settle it in one run.
+2. **The UCMEM write path.** The bytes go out over the S-channel through the
+   PAXB hardware byte-swap this platform needs (`BAR0+0x2030 = 0x01010101`,
+   see [[ffn-bcm-paxb-byte-order]]). A swap that is right for 32-bit register
+   access is not automatically right for a wide-memory write.
 
-Measure before changing anything: the useful next reading is the uC control and
-clock registers directly, not another init.
+**The cheap decisive experiment, not yet run:** `load_firmware` is per-quad
+addressable — `soc_property_suffix_num_get(unit, quad, spn_LOAD_FIRMWARE,
+"quad", ...)` at `jer_nif.c:1325` — so `load_firmware_quad<N>` can put ONE quad
+on the PRAM path while the rest use MDIO. That isolates the failure to a single
+quad's worth of state and makes a corrupt-vs-correct comparison possible on a
+live chip without taking every port down.
+
+Two things NOT worth chasing first, and why:
+
+* **The uC clock.** A `0x2` init completes cleanly and `phy diag dsc` shows
+  `COM_CLK 156.25MHz` and `PLL_LOCK 1` once the microcode is good. The clock and
+  PLL are not gated on the microcontroller running.
+* **A race on the commented-out 10 ms settle.** With verify off there is neither
+  a delay nor a poll after `eagle_uc_reset`, which looked suspicious. But the
+  poll fails even when enabled, so time alone does not fix it.
+
+## A methodological note
+
+Two claims in the first version of this document were wrong, and both failed the
+same way: a search that could only confirm one answer was treated as evidence
+for the other. `--include` filters that excluded `.c` files "proved"
+`TSCE_PMD_CRC_UCODE` undefined. The fix in both cases was cheap — run the search
+that could falsify it. The empirical result (`0x1` works, `0x2` does not, ports
+come up) was never in doubt; only the explanation was.
