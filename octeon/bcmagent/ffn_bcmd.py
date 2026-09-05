@@ -79,10 +79,14 @@ DEF_CFG = "/tmp/bcmcfg"
 # bcm.user's prompt. Unit 0 is the only unit on this board.
 PROMPT = b"BCM.0>"
 
-# A full init is ~150 s cold (DDR SHMOO) and ~50 s warm, because the DRAM tuning
-# is reused once runningConfig.soc exists. 600 s is a generous ceiling that still
-# fails rather than hanging forever.
-INIT_TIMEOUT = 600.0
+# A warm init is ~50 s (the DRAM tuning is reused once runningConfig.soc
+# exists) and a cold one is far longer: octeon/BCM88375-PORTS.md records a
+# MEASURED ~700 s to reach the prompt, most of it DDR SHMOO. The old 600 s
+# ceiling was below that, so a genuine cold start timed out and latched
+# state=dead -- and the daemon deliberately never re-inits, because a re-init
+# resets the switch. 900 s still fails rather than hanging forever, and is
+# above the number anyone has actually measured.
+INIT_TIMEOUT = 900.0
 CMD_TIMEOUT = 60.0
 
 # The vendor's own front-panel list, from enable_fp_ports.c in the config dir.
@@ -513,12 +517,111 @@ def op_raw(chip, req):
     return {"cmd": cmd, "output": chip.run(cmd, timeout=float(req.get("timeout", CMD_TIMEOUT)))}
 
 
+def _pci_read(dev, name, default=""):
+    try:
+        with open("/sys/bus/pci/devices/%s/%s" % (dev, name)) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+# The silicon on the CP's PCIe domains, by (vendor, device). The MP cannot see
+# any of it: these parts hang off the CN73XX's own root complexes, so `lspci` on
+# the x86 host lists the CP and stops there. That is why the management plane
+# reported "no dataplane" on a box whose dataplane was sitting right here.
+#
+# kind is what the WebUI groups by. The FE100 is called an ASIC rather than an
+# FPGA because that is what it is -- Palo Alto's own front-end part, PCI vendor
+# 0xfeed -- and labelling it FPGA in an inventory would be a guess dressed as a
+# fact. It is listed alongside the accelerators because that is where an
+# operator looks for it.
+KNOWN_PCI = {
+    ("14e4", "8375"): ("switch",  "Broadcom BCM88375 (Qumran-MX) packet processor"),
+    ("feed", "fe1c"): ("asic",    "Palo Alto FE100 front-end ASIC"),
+    ("177d", "0095"): ("npu",     "Cavium OCTEON III CN78XX (dataplane, 40 cores)"),
+    ("177d", "9700"): ("npu",     "Cavium OCTEON III CN73XX (control plane)"),
+    # 177d:9700 appears three more times as PCI class 0604 -- those are the
+    # CN73XX's own root-complex bridges, one per domain, not three CPs. The
+    # class check below reclassifies them, because reporting the processor this
+    # code is running on as four separate NPUs is exactly the kind of inventory
+    # error that sends someone looking for hardware that is not there.
+    ("10b5", "8606"): ("bridge",  "PLX PEX 8606 PCIe switch"),
+    ("13a8", "0354"): ("serial",  "Exar XR17V354 quad UART"),
+}
+
+
+def op_sys_inventory(chip, req):
+    """What silicon is on the CP's PCIe domains, and whether a driver holds it.
+
+    Deliberately does NOT touch the chip session. It reads sysfs and nothing
+    else, so it answers while bcm.user is still initialising, and it answers
+    after the session has died -- which is exactly when someone needs to know
+    what hardware is actually present. Making it depend on the pty would make
+    the inventory unavailable in every case where it matters most.
+    """
+    devices = []
+    try:
+        names = sorted(os.listdir("/sys/bus/pci/devices"))
+    except OSError as exc:
+        return {"devices": [], "error": "cannot enumerate PCI: %s" % exc}
+
+    for dev in names:
+        vend = _pci_read(dev, "vendor").replace("0x", "").lower()
+        devid = _pci_read(dev, "device").replace("0x", "").lower()
+        kind, desc = KNOWN_PCI.get((vend, devid), (None, None))
+        if kind is None:
+            continue
+        klass = _pci_read(dev, "class")
+        if klass.startswith("0x0604"):
+            # A bridge is a bridge whatever its vendor id says it is.
+            if kind == "npu":
+                desc = desc.split(" (")[0] + " root complex"
+            kind = "bridge"
+        driver = None
+        try:
+            driver = os.path.basename(
+                os.path.realpath("/sys/bus/pci/devices/%s/driver" % dev))
+        except OSError:
+            driver = None
+        if driver and not os.path.exists("/sys/bus/pci/devices/%s/driver" % dev):
+            driver = None
+        bars = []
+        try:
+            with open("/sys/bus/pci/devices/%s/resource" % dev) as f:
+                for i, ln in enumerate(f.read().splitlines()):
+                    parts = ln.split()
+                    if len(parts) >= 2:
+                        st, en = int(parts[0], 16), int(parts[1], 16)
+                        if en > st:
+                            bars.append({"bar": i, "bytes": en - st + 1})
+        except (OSError, ValueError):
+            pass
+        devices.append({
+            "pci": dev,
+            "vendor": vend,
+            "device": devid,
+            "kind": kind,
+            "description": desc,
+            "driver": driver,
+            "bars": bars,
+            "class": klass,
+        })
+
+    # The kernel this is running on, so the MP can tell a live CP from a cached
+    # answer without a second round trip.
+    uts = os.uname()
+    return {"devices": devices, "count": len(devices),
+            "cp": {"machine": uts.machine, "release": uts.release,
+                   "nodename": uts.nodename}}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
     "port.set": op_port_set,
     "port.loopback": op_port_loopback,
     "led.status": op_led_status,
+    "sys.inventory": op_sys_inventory,
     "raw": op_raw,
 }
 

@@ -104,6 +104,146 @@ PORTS = {
 VENDOR_FRONT_PANEL = [28, 13, 14, 15, 16, 1, 18, 19, 6, 21, 22, 23,
                       7, 11, 36, 27, 10, 29, 30, 31, 32, 33, 34, 35, 12]
 
+# ---------------------------------------------------------------------------
+# Faceplate map: which CONNECTOR on the front of the chassis each logical port
+# serves. This is what an operator reads off the metal, and therefore what the
+# WebUI and ffn-cli must name interfaces by.
+#
+# VENDOR_FRONT_PANEL above says WHICH ports are on the faceplate. It does not
+# say WHERE, and the order it is written in is the vendor enable script's, not
+# the faceplate's. Two vendor files carry the position information, both on the
+# CP under /usr/share/broadcom (read in place, never packaged):
+#
+#   config.bcm            `ucode_port_<logical>=<PANNAME>:core_<c>.<ch>` grouped
+#                         by connector type, and its own comments state the
+#                         lines within each group are in FACEPLATE order --
+#                         "connected to front panel SFP+ ports in MIXED UP order
+#                         as shown (XE25, XE24, XE26, XE27, XE31, etc.)".
+#   bcm88375_board.soc    per-quad SerDes comments that name faceplate numbers.
+#
+# Where they agree, that is what is below. Where they do not, see the two
+# conflicts recorded underneath -- neither is resolved by guessing.
+#
+# port -> (faceplate label, connector type, nominal Gb/s)
+FACEPLATE = {
+    # RJ45, ports 1-4. config.bcm: "connected to front panel RJ45 ports in
+    # SEQUENTIAL order as shown (XE32, XE33, XE34, XE35)". board.soc agrees
+    # ("XE32-35 (quad 8, to front panel ports 1-4 RJ45)").
+    28: ("1",  "RJ45", 10),   # XE32
+    13: ("2",  "RJ45", 10),   # XE33
+    14: ("3",  "RJ45", 10),   # XE34
+    15: ("4",  "RJ45", 10),   # XE35
+
+    # SFP+, ports 5-20, in config.bcm's declaration order. board.soc's LANE-MAP
+    # comments agree quad for quad; its POLARITY comments do not -- see below.
+    16: ("5",  "SFP+", 10),   # XE25
+    1:  ("6",  "SFP+", 10),   # XE24
+    18: ("7",  "SFP+", 10),   # XE26
+    19: ("8",  "SFP+", 10),   # XE27
+    21: ("9",  "SFP+", 10),   # XE31
+    6:  ("10", "SFP+", 10),   # XE29
+    23: ("11", "SFP+", 10),   # XE28
+    22: ("12", "SFP+", 10),   # XE30
+    7:  ("13", "SFP+", 10),   # XE64
+    11: ("14", "SFP+", 10),   # XE65
+    36: ("15", "SFP+", 10),   # XE66
+    27: ("16", "SFP+", 10),   # XE67
+    10: ("17", "SFP+", 10),   # XE57
+    29: ("18", "SFP+", 10),   # XE56
+    30: ("19", "SFP+", 10),   # XE59
+    31: ("20", "SFP+", 10),   # XE58
+
+    # QSFP28, ports 21-24, in config.bcm's declaration order. CONTESTED --
+    # board.soc numbers these differently. See QSFP_CONFLICT below.
+    32: ("21", "QSFP28", 100),   # CGE3
+    33: ("22", "QSFP28", 100),   # CGE5
+    34: ("23", "QSFP28", 100),   # CGE4
+    35: ("24", "QSFP28", 100),   # CGE2
+
+    # Not a numbered data connector. Both files call it HSCI (High Speed Chassis
+    # Interconnect) and neither gives it a faceplate number, so it does not get
+    # an ethernet1/N slot -- naming it one would invite an operator to configure
+    # the chassis interconnect as a data port.
+    12: ("hsci", "QSFP28", 100),  # CGE1
+}
+
+# Conflict 1 -- RESOLVED, recorded so it is not re-litigated.
+# bcm88375_board.soc contradicts ITSELF on the last two SFP+ quads: its Rx/Tx
+# POLARITY comments say "XE56-59 (quad 14, to front panel ports 13-16)" and
+# "XE64-67 (quad 16, to front panel ports 17-20)", while its LANE-MAP comments
+# in the same file say the exact reverse. config.bcm's declaration order agrees
+# with the LANE-MAP pair, so the POLARITY pair is the erroneous one: two
+# independent readings against one. The map above follows the majority.
+#
+# Conflict 2 -- NOT RESOLVED. Do not guess, measure.
+# The four QSFP28 cages are assigned differently by the two files:
+#     config.bcm order:    CGE3, CGE5, CGE4, CGE2  ->  21, 22, 23, 24
+#     board.soc comments:  CGE5->21, CGE3->22, CGE2->23, CGE4->24
+# The map above follows config.bcm, because config.bcm is the file the chip is
+# actually configured from, its comment ties list order to faceplate order
+# explicitly, and board.soc has already been shown (conflict 1) to carry at
+# least one wrong comment pair. That is a tie-break, not a measurement.
+# To settle it: put a QSFP28 loopback in ONE known cage and read back which
+# logical port reports link. One module, one reading, done.
+QSFP_CONFLICT = {32: "22", 33: "21", 34: "24", 35: "23"}   # board.soc's reading
+
+
+def faceplate_label(port):
+    """Faceplate label for a logical port, or None if it is not on the front.
+
+    A label, not a number: port 12 is labelled "hsci" because that is what the
+    chassis and both vendor files call it.
+    """
+    ent = FACEPLATE.get(port)
+    return ent[0] if ent else None
+
+
+def pan_ifname(port):
+    """PAN-OS-style interface name for a faceplate port, or None.
+
+    ethernet1/N where N is the FACEPLATE number, so ethernet1/1 is the leftmost
+    RJ45 and an operator can match the name to the metal without a lookup
+    table. The logical port number is deliberately not used: logical 28 is
+    faceplate 1, and naming it ethernet1/28 would be a name only the chip
+    understands.
+
+    HSCI returns "hsci" rather than an ethernet1/N slot -- see FACEPLATE.
+    """
+    label = faceplate_label(port)
+    if label is None:
+        return None
+    if not label.isdigit():
+        return label
+    return "ethernet1/%s" % label
+
+
+def port_of_pan_ifname(name):
+    """Reverse of pan_ifname(). None if the name names no faceplate port."""
+    for port in FACEPLATE:
+        if pan_ifname(port) == name:
+            return port
+    return None
+
+
+def faceplate_ports():
+    """Logical ports that terminate on the front of the chassis, in faceplate
+    order (numbered connectors first, then the named ones)."""
+    def key(p):
+        label = FACEPLATE[p][0]
+        return (0, int(label)) if label.isdigit() else (1, label)
+    return sorted(FACEPLATE, key=key)
+
+
+# Consistency: every faceplate port must be a port the vendor's own enable list
+# calls a front-panel port, and vice versa. A drift between the two means one of
+# them has been edited without the other, and the WebUI would then either offer
+# a port that cannot be enabled or hide one that can.
+assert set(FACEPLATE) == set(VENDOR_FRONT_PANEL), (
+    "FACEPLATE and VENDOR_FRONT_PANEL disagree: %r"
+    % (set(FACEPLATE) ^ set(VENDOR_FRONT_PANEL),))
+assert len(set(f[0] for f in FACEPLATE.values())) == len(FACEPLATE),     "duplicate faceplate label"
+
+
 # Connected pairs, found by disabling one end and watching the other drop.
 #
 # "Connected", not "cabled": these ports were enabled for the first time in the

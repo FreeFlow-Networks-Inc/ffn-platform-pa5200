@@ -127,6 +127,18 @@ async def port_list(**kw):
     return await call({"op": "port.list"}, **kw)
 
 
+async def sys_inventory(**kw):
+    """What silicon sits on the CP's PCIe domains.
+
+    Answers regardless of the chip session's state -- the daemon reads sysfs for
+    this and never touches the pty -- so it is the one query that still works
+    when bcm.user is initialising or has died. A shorter timeout than the chip
+    ops because nothing here can legitimately take a minute.
+    """
+    kw.setdefault("timeout", 10.0)
+    return await call({"op": "sys.inventory"}, **kw)
+
+
 async def port_set(port, enable, **kw):
     return await call({"op": "port.set", "port": int(port),
                        "enable": bool(enable)}, **kw)

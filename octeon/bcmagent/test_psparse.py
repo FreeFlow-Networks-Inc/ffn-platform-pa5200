@@ -119,6 +119,40 @@ def main():
     check(stripped == "row one\nrow two",
           "_strip returned %r" % (stripped,))
 
+    # The faceplate list is written down TWICE: here in ffn_bcmd.FACEPLATE, so
+    # port.list can mark faceplate ports without shelling out, and again in
+    # ffn_bcmports.VENDOR_FRONT_PANEL, which is the port table proper. Two
+    # copies of a hardware fact drift, and the one that drifts is always the
+    # copy nobody is looking at -- the daemon would then either hide a port
+    # that can be enabled or offer one that cannot. Nothing enforced their
+    # agreement, so this does.
+    try:
+        import os as _os
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        sys.path.insert(0, _os.path.normpath(_os.path.join(_here, "..", "..")))
+        import ffn_bcmports
+    except ImportError:
+        ffn_bcmports = None
+        print("  (skipped: ffn_bcmports not importable from here)")
+    if ffn_bcmports is not None:
+        check(sorted(ffn_bcmd.FACEPLATE) == sorted(ffn_bcmports.VENDOR_FRONT_PANEL),
+              "ffn_bcmd.FACEPLATE and ffn_bcmports.VENDOR_FRONT_PANEL disagree: %r"
+              % (set(ffn_bcmd.FACEPLATE) ^ set(ffn_bcmports.VENDOR_FRONT_PANEL),))
+        # And every faceplate port must have a connector position, or the WebUI
+        # has a port it can list but cannot name.
+        check(sorted(ffn_bcmports.FACEPLATE) == sorted(ffn_bcmd.FACEPLATE),
+              "the faceplate POSITION map does not cover the same ports")
+        names = [ffn_bcmports.pan_ifname(p) for p in ffn_bcmports.faceplate_ports()]
+        check(len(set(names)) == len(names) and all(names),
+              "faceplate ports do not map to distinct interface names")
+
+    # The PCI inventory op must not depend on the chip session: it is the one
+    # query that has to answer while bcm.user is initialising or dead.
+    import inspect as _inspect
+    src = _inspect.getsource(ffn_bcmd.op_sys_inventory)
+    check("chip." not in src,
+          "op_sys_inventory touches the chip session; it must read sysfs only")
+
     if fails:
         print("FAIL (%d)" % len(fails))
         for f in fails:
