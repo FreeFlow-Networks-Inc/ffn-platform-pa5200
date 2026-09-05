@@ -597,10 +597,16 @@ def op_sys_inventory(chip, req):
         # so its driver link is permanently empty and says nothing at all about
         # whether anything is running on it. Note this is not a boot indicator
         # either: it stays 1 after whatever enabled it has gone away.
+        # Only the six real BARs. sysfs `resource` has 13 rows: 0-5 are the
+        # BARs, 6 is the expansion ROM, and 7-12 are a bridge's forwarding
+        # windows. Reporting those as BARs makes a two-BAR device look like it
+        # has five, which is the kind of detail someone later trusts.
         bars = []
         try:
             with open("/sys/bus/pci/devices/%s/resource" % dev) as f:
                 for i, ln in enumerate(f.read().splitlines()):
+                    if i > 5:
+                        break
                     parts = ln.split()
                     if len(parts) >= 2:
                         st, en = int(parts[0], 16), int(parts[1], 16)

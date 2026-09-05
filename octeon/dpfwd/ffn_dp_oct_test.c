@@ -653,6 +653,18 @@ int main(void)
     chk(dp_parse(pkt, len, 1, &pl) == DP_OK && pl.pay_len == clean_n,
         "an illegal TCP data offset is clamped to the 20-byte minimum");
 
+    /* EVASION: understate IPv4 Total Length and carry data behind it. The
+     * forwarder transmits the whole captured frame either way, so a scanner
+     * that stopped at the declared length would see nothing while every byte
+     * went out on the wire. */
+    len = mkpkt_data(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                     40010, 80, 0, leak, leak_n);
+    pkt[14 + 2] = 0x00; pkt[14 + 3] = 40;      /* claim a bare 40-byte datagram */
+    chk(dp_parse(pkt, len, 1, &pl) == DP_OK && pl.pay_len == leak_n &&
+        memcmp(pkt + pl.pay_off, leak, leak_n) == 0,
+        "an understated IPv4 Total Length does not hide payload from the engines");
+
+
     /* With no engine set attached the forwarder must behave exactly as before.
      * This is the assertion that says linking the engines in changed nothing by
      * itself; enabling them is a separate, explicit act. */

@@ -274,14 +274,23 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
 
         /* Where the payload starts and ends, for the inline analysis engines.
          *
-         * END is the subtle half. `len` is what the wire handed us, and a
-         * frame shorter than 60 bytes was PADDED to that minimum by the
-         * sender's MAC. Feeding the padding to a scanner as if it were payload
-         * is how a run of zeros becomes a "match" -- so prefer the IPv4 Total
-         * Length, which describes the datagram rather than the frame. Trust it
-         * only when it is plausible: at least the IP header, and inside the
-         * bytes we actually captured. A truncated capture or a bogus header
-         * therefore falls back to `len`, which is always safe to read.
+         * END is the subtle half, and the obvious answer is wrong.
+         *
+         * The forwarder transmits the WHOLE captured frame. So the scanners
+         * must see everything that will leave the box, or an attacker simply
+         * understates the IPv4 Total Length -- claim a 40-byte datagram, carry
+         * 1460 bytes of card numbers behind it -- and the engines find nothing
+         * while every one of those bytes goes out on the wire. Trusting the
+         * declared length is an evasion with a one-field cost.
+         *
+         * The reason to look at Total Length at all is the opposite case: a
+         * MAC pads anything under 60 bytes, and feeding that padding to a
+         * scanner is how a run of zeros becomes a finding. That is the only
+         * shortfall worth honouring, so it is the only one honoured -- Total
+         * Length is used to trim the frame ONLY when the frame is at the
+         * 60-byte Ethernet minimum, where padding is the explanation. Above
+         * that, everything captured is scanned, because everything captured is
+         * transmitted.
          *
          * START depends on the L4 header length. TCP carries it in the top
          * nibble of byte 12, in 32-bit words; UDP's is fixed at 8. A data
@@ -290,7 +299,7 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
          * point the scanners at the TCP header itself. */
         uint32_t end = len;
         uint32_t tot = ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
-        if (tot >= ihl && off + tot <= len)
+        if (len <= 60u && tot >= ihl && off + tot < len)
             end = off + tot;
 
         uint32_t hlen;
