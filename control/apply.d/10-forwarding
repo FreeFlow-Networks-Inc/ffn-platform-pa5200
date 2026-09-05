@@ -15,6 +15,21 @@
 set -u
 . "$(dirname "$0")/00-common.sh"
 
+# The loopback must be UP before anything else is worth doing.
+#
+# Found down on this CP, and the symptom is nasty: a connection to ANY local
+# address is delivered via lo regardless of which interface owns the address, so
+# with lo down the CP cannot reach its own services at all. ffn-bcmd was
+# listening on 127.1.1.2:8104 and answering the MP perfectly, while a hook on
+# the CP itself timed out connecting to exactly that address -- which reads like
+# a daemon fault rather than a routing one.
+#
+# lo is in FFN_PROTECTED, which guards against flush/down. Bringing it UP is the
+# opposite and is never harmful, so it is done directly rather than via safe_ip.
+if ! ip link show lo 2>/dev/null | grep -q ",UP"; then
+	ip link set lo up 2>/dev/null && log "loopback was DOWN; brought up"
+fi
+
 apply_sysctl() {
 	_k="$1"; _want="$2"
 	[ -n "$_want" ] || return 0
