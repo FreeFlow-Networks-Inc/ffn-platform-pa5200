@@ -124,47 +124,55 @@ VENDOR_FRONT_PANEL = [28, 13, 14, 15, 16, 1, 18, 19, 6, 21, 22, 23,
 # Where they agree, that is what is below. Where they do not, see the two
 # conflicts recorded underneath -- neither is resolved by guessing.
 #
-# port -> (faceplate label, connector type, nominal Gb/s)
+# port -> (faceplate label, connector type, nominal Gb/s, plane)
+#
+# `plane` is the half that is easy to get wrong. A connector being on the front
+# of the chassis does not make it a firewall interface: HSCI is the HA DATA
+# link -- HA2/HA3, session sync and, in active/active, packet forwarding
+# between peers -- so it belongs to the device's high-availability
+# configuration, not to the security policy. Listing it beside the data ports
+# invited an operator to put it in a zone, and ffn_dp_abi.h already refuses to
+# bridge a port in that role, so the config would have done nothing at all.
 FACEPLATE = {
     # RJ45, ports 1-4. config.bcm: "connected to front panel RJ45 ports in
     # SEQUENTIAL order as shown (XE32, XE33, XE34, XE35)". board.soc agrees
     # ("XE32-35 (quad 8, to front panel ports 1-4 RJ45)").
-    28: ("1",  "RJ45", 10),   # XE32
-    13: ("2",  "RJ45", 10),   # XE33
-    14: ("3",  "RJ45", 10),   # XE34
-    15: ("4",  "RJ45", 10),   # XE35
+    28: ("1",  "RJ45", 10, "data"),   # XE32
+    13: ("2",  "RJ45", 10, "data"),   # XE33
+    14: ("3",  "RJ45", 10, "data"),   # XE34
+    15: ("4",  "RJ45", 10, "data"),   # XE35
 
     # SFP+, ports 5-20, in config.bcm's declaration order. board.soc's LANE-MAP
     # comments agree quad for quad; its POLARITY comments do not -- see below.
-    16: ("5",  "SFP+", 10),   # XE25
-    1:  ("6",  "SFP+", 10),   # XE24
-    18: ("7",  "SFP+", 10),   # XE26
-    19: ("8",  "SFP+", 10),   # XE27
-    21: ("9",  "SFP+", 10),   # XE31
-    6:  ("10", "SFP+", 10),   # XE29
-    23: ("11", "SFP+", 10),   # XE28
-    22: ("12", "SFP+", 10),   # XE30
-    7:  ("13", "SFP+", 10),   # XE64
-    11: ("14", "SFP+", 10),   # XE65
-    36: ("15", "SFP+", 10),   # XE66
-    27: ("16", "SFP+", 10),   # XE67
-    10: ("17", "SFP+", 10),   # XE57
-    29: ("18", "SFP+", 10),   # XE56
-    30: ("19", "SFP+", 10),   # XE59
-    31: ("20", "SFP+", 10),   # XE58
+    16: ("5",  "SFP+", 10, "data"),   # XE25
+    1:  ("6",  "SFP+", 10, "data"),   # XE24
+    18: ("7",  "SFP+", 10, "data"),   # XE26
+    19: ("8",  "SFP+", 10, "data"),   # XE27
+    21: ("9",  "SFP+", 10, "data"),   # XE31
+    6:  ("10", "SFP+", 10, "data"),   # XE29
+    23: ("11", "SFP+", 10, "data"),   # XE28
+    22: ("12", "SFP+", 10, "data"),   # XE30
+    7:  ("13", "SFP+", 10, "data"),   # XE64
+    11: ("14", "SFP+", 10, "data"),   # XE65
+    36: ("15", "SFP+", 10, "data"),   # XE66
+    27: ("16", "SFP+", 10, "data"),   # XE67
+    10: ("17", "SFP+", 10, "data"),   # XE57
+    29: ("18", "SFP+", 10, "data"),   # XE56
+    30: ("19", "SFP+", 10, "data"),   # XE59
+    31: ("20", "SFP+", 10, "data"),   # XE58
 
     # QSFP28, ports 21-24, in config.bcm's declaration order. CONTESTED --
     # board.soc numbers these differently. See QSFP_CONFLICT below.
-    32: ("21", "QSFP28", 100),   # CGE3
-    33: ("22", "QSFP28", 100),   # CGE5
-    34: ("23", "QSFP28", 100),   # CGE4
-    35: ("24", "QSFP28", 100),   # CGE2
+    32: ("21", "QSFP28", 100, "data"),   # CGE3
+    33: ("22", "QSFP28", 100, "data"),   # CGE5
+    34: ("23", "QSFP28", 100, "data"),   # CGE4
+    35: ("24", "QSFP28", 100, "data"),   # CGE2
 
     # Not a numbered data connector. Both files call it HSCI (High Speed Chassis
     # Interconnect) and neither gives it a faceplate number, so it does not get
     # an ethernet1/N slot -- naming it one would invite an operator to configure
     # the chassis interconnect as a data port.
-    12: ("hsci", "QSFP28", 100),  # CGE1
+    12: ("hsci", "QSFP28", 100, "management"),  # CGE1
 }
 
 # Conflict 1 -- RESOLVED, recorded so it is not re-litigated.
@@ -186,6 +194,18 @@ FACEPLATE = {
 # To settle it: put a QSFP28 loopback in ONE known cage and read back which
 # logical port reports link. One module, one reading, done.
 QSFP_CONFLICT = {32: "22", 33: "21", 34: "24", 35: "23"}   # board.soc's reading
+
+
+# The planes a faceplate connector can belong to.
+PLANE_DATA = "data"              # a firewall interface: traffic under policy
+PLANE_MGMT = "management"        # the device's own plumbing (today: the HA link)
+
+
+def plane_of(port):
+    """Which plane a faceplate connector serves, or None if it is not on the
+    front of the chassis."""
+    ent = FACEPLATE.get(port)
+    return ent[3] if ent else None
 
 
 def faceplate_label(port):
@@ -225,13 +245,19 @@ def port_of_pan_ifname(name):
     return None
 
 
-def faceplate_ports():
+def faceplate_ports(plane=None):
     """Logical ports that terminate on the front of the chassis, in faceplate
-    order (numbered connectors first, then the named ones)."""
+    order (numbered connectors first, then the named ones).
+
+    Pass a plane for only that plane's connectors: PLANE_DATA is the firewall's
+    interface list, PLANE_MGMT is the device's own. Callers that want the whole
+    faceplate -- a physical inventory -- pass nothing.
+    """
     def key(p):
         label = FACEPLATE[p][0]
         return (0, int(label)) if label.isdigit() else (1, label)
-    return sorted(FACEPLATE, key=key)
+    ports = [p for p in FACEPLATE if plane is None or FACEPLATE[p][3] == plane]
+    return sorted(ports, key=key)
 
 
 # Consistency: every faceplate port must be a port the vendor's own enable list
@@ -242,6 +268,8 @@ assert set(FACEPLATE) == set(VENDOR_FRONT_PANEL), (
     "FACEPLATE and VENDOR_FRONT_PANEL disagree: %r"
     % (set(FACEPLATE) ^ set(VENDOR_FRONT_PANEL),))
 assert len(set(f[0] for f in FACEPLATE.values())) == len(FACEPLATE),     "duplicate faceplate label"
+assert all(f[3] in (PLANE_DATA, PLANE_MGMT) for f in FACEPLATE.values()), \
+    "faceplate entry with an unknown plane"
 
 
 # Connected pairs, found by disabling one end and watching the other drop.
