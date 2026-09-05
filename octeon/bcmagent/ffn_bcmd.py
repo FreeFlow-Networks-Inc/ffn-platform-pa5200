@@ -211,10 +211,18 @@ class Chip(object):
                 self.state = "dead"
                 self.init_errors.append(str(exc))
                 self.log("init failed: %s" % exc)
+                # SAVE THE TRANSCRIPT HERE ESPECIALLY. A chip that dies during
+                # init is the case this log was written for, and it was the one
+                # case that skipped it: the write only happened on the success
+                # path, so the run you most wanted to read left nothing behind.
+                self._save_init_log(self._buf.decode("utf-8", "replace"),
+                                    failed=True)
                 return
             except Exception as exc:                       # pragma: no cover
                 self.state = "dead"
                 self.init_errors.append("init error: %r" % (exc,))
+                self._save_init_log(self._buf.decode("utf-8", "replace"),
+                                    failed=True)
                 return
 
         self.banner = text[-8000:]
@@ -225,7 +233,7 @@ class Chip(object):
         self.log("ready after %.1fs chip=%s rev=%s"
                  % (self.ready_at - self.started, self.chip, self.rev))
 
-    def _save_init_log(self, text):
+    def _save_init_log(self, text, failed=False):
         """Keep the WHOLE init transcript, because the tail of it is the least
         useful part.
 
@@ -242,12 +250,21 @@ class Chip(object):
         """
         try:
             tmp = self.init_log_path + ".tmp"
-            with open(tmp, "w") as f:
+            # encoding and errors are BOTH explicit. bcm.user's pty output
+            # carries control bytes and occasional invalid UTF-8; under a POSIX
+            # locale the default encoding is ASCII and this raised
+            # UnicodeEncodeError -- on the init thread, which then died leaving
+            # a healthy chip reporting state=init forever.
+            with open(tmp, "w", encoding="utf-8", errors="replace") as f:
+                if failed:
+                    f.write("*** THIS INIT FAILED -- transcript ends where it "
+                            "stopped, not at a prompt ***\n")
                 f.write(text)
             os.replace(tmp, self.init_log_path)
-        except OSError as exc:
-            # Never fatal: losing the log must not stop a chip that came up.
-            self.log("could not write init log: %s" % exc)
+        except Exception as exc:
+            # Never fatal, and never only OSError: losing the log must not stop
+            # a chip that came up, and must not kill the thread that reports it.
+            self.log("could not write init log: %r" % (exc,))
 
     def _scrape_banner(self, text):
         """Pull the facts worth reporting out of the init transcript.
@@ -897,13 +914,18 @@ def op_port_counters(chip, req):
 # The port names the diag shell uses. Anything reaching chip.run() is a command
 # line, so a name is checked against this shape before it is interpolated -- a
 # "port" of `xl24; write ...` would otherwise be a write on a read-only op.
-_PORT_NAME_RE = re.compile(r"^(xe|xl|ce|il|cd|rcy|cpu)[0-9]{0,3}$")
+# {1,3} not {0,3}: a bare "xe" is not a port, and the diag shell treats a
+# type prefix with no number as "every port of that type" -- so a request for
+# one port would silently fan out across the chip.
+_PORT_NAME_RE = re.compile(r"\A(xe|xl|ce|il|cd)[0-9]{1,3}\Z|\A(rcy|cpu)[0-9]{0,3}\Z")
 
 # Read-only `phy diag` subcommands. Deliberately a whitelist and not a
 # blocklist: `phy raw`, `phy set` and the eyescan variants all write, and a
 # blocklist would let a newly-added writing subcommand through by default.
-_PHY_DIAG_OK = ("dsc", "state", "topology", "link", "cfg", "config", "ber",
-                "log", "counters")
+# Only what this SDK actually implements. The longer list this started as was
+# aspirational: unknown subcommands make `phy diag` print usage text, which
+# parses to nothing and is reported as a successful call returning no data.
+_PHY_DIAG_OK = ("dsc", "state", "config")
 
 
 def op_port_phy(chip, req):
@@ -939,46 +961,107 @@ def op_port_phy(chip, req):
         raise ValueError("what must be one of %s, got %r"
                          % (", ".join(_PHY_DIAG_OK), what))
 
-    cmd = "phy diag %s %s" % (name, what)
-    text = chip.run(cmd, timeout=float(req.get("timeout", CMD_TIMEOUT)))
+    # The timeout is NOT caller-controlled. chip.run() writes a command and then
+    # reads until the prompt; a short timeout returns while the chip is still
+    # printing, and every later reply is then off by one command until the
+    # daemon is restarted. One client passing timeout=1 would wedge the session
+    # for everyone. `dsc` legitimately takes a few seconds, so it gets its own
+    # fixed, generous allowance.
+    text = chip.run("phy diag %s %s" % (name, what), timeout=max(CMD_TIMEOUT, 60.0))
     lines = [l.rstrip() for l in text.splitlines() if l.strip()]
 
-    # Pull the two facts that decide the question above out of whatever shape
-    # the SDK printed, and keep the full text regardless. Field names differ
-    # between SerDes generations, so match loosely and report `null` -- an
-    # unparsed field must not read as a measured "no".
-    sig = lock = None
-    for l in lines:
-        low = l.lower()
-        if sig is None and ("sig_det" in low or "signal detect" in low
-                            or "sigdet" in low):
-            sig = _phy_bits(l)
-        if lock is None and "lock" in low and "clock" not in low:
-            lock = _phy_bits(l)
+    core = _dsc_core(lines)
+    lanes = _dsc_lanes(lines)
 
-    return {"port": name, "what": what, "cmd": cmd,
-            "signal_detect": sig, "lock": lock,
+    # The one fact worth leading with. A dead SerDes microcontroller cannot do
+    # RX adaptation, so no port can link -- and it looks identical to a cable
+    # fault from every other diagnostic on this box.
+    uc = None
+    if core and "UC_ATV" in core:
+        uc = (core["UC_ATV"] == "1")
+
+    return {"port": name, "what": what, "cmd": "phy diag %s %s" % (name, what),
+            "uc_running": uc,
+            "core": core, "lanes": lanes,
+            "polling_timeout": any("ERR_CODE_POLLING_TIMEOUT" in l for l in lines),
             "output_lines": len(lines), "output": lines[:60],
             "truncated": len(lines) > 60}
 
 
-def _phy_bits(line):
-    """The per-lane values on a `phy diag` line, as a list of ints.
+def _dsc_core(lines):
+    """The CORE state row of `phy diag <port> dsc`, as a dict.
 
-    SerDes lines are `name : 1 1 0 0` or `name=0x3` depending on generation.
-    Returns None rather than a default when neither shape is present, because
-    "not parsed" and "measured zero" must not look alike.
+    The output is a column-aligned header/value pair:
+
+        CORE RST_ST  PLL_PWDN  UC_ATV   COM_CLK   UCODE_VER  AFE_VER  ...
+        00    0,00      0        1     156.25MHz   D10F_13     0x00   ...
+
+    Values are NOT one whitespace token each -- RST_ST is `0,00` and AVG_TMON is
+    `(10) 44C` -- so splitting both lines and zipping them silently pairs the
+    wrong things. Each value token is instead assigned to the header whose
+    column span its centre is nearest, which is what column alignment actually
+    means. A value more than half a field away from every header is dropped
+    rather than guessed at.
     """
-    _, _, rest = line.partition(":")
-    if not rest:
-        _, _, rest = line.partition("=")
-    if not rest:
+    hdr = val = None
+    for i, l in enumerate(lines):
+        if l.strip().startswith("CORE ") and "UC_ATV" in l:
+            hdr = l
+            val = lines[i + 1] if i + 1 < len(lines) else ""
+            break
+    if hdr is None or not val.strip():
         return None
-    toks = rest.replace(",", " ").split()
+
+    spans = []
+    for m in re.finditer(r"\S+", hdr):
+        spans.append((m.group(0), (m.start() + m.end()) / 2.0))
+    out = {}
+    for m in re.finditer(r"\S+", val):
+        c = (m.start() + m.end()) / 2.0
+        name, dist = None, None
+        for nm, hc in spans:
+            d = abs(hc - c)
+            if dist is None or d < dist:
+                name, dist = nm, d
+        # 6 characters is about half the narrowest field here. Beyond that the
+        # association is a guess, and a guessed UC_ATV is worse than none.
+        if name is not None and dist <= 6 and name not in out:
+            out[name] = m.group(0)
+    return out or None
+
+
+def _dsc_lanes(lines):
+    """Per-lane SD (signal detect) and LCK from the `dsc` lane table.
+
+    Rows look like
+
+        LN (CDRxN  , UC_CFG,RST,STP)  SD LCK RXPPM CLK90 ...
+         0 (OSx1   , 0x0200,   0, 0)  0   0    20    31  ...
+
+    Anchored on the parenthesised group rather than on column positions: the
+    group has a fixed shape, and the two whitespace tokens after its closing
+    paren are SD and LCK by the header's own ordering. Column arithmetic would
+    have to cope with the commas inside the group.
+    """
     out = []
-    for t in toks:
+    started = False
+    for l in lines:
+        s = l.strip()
+        if s.startswith("LN ") and "SD" in s and "LCK" in s:
+            started = True
+            continue
+        if not started:
+            continue
+        m = re.match(r"^\s*(\d+)\s*\([^)]*\)\s+(\S+)\s+(\S+)", l)
+        if not m:
+            # The table ends at the first line that is not a lane row.
+            if out:
+                break
+            continue
         try:
-            out.append(int(t, 16) if t.lower().startswith("0x") else int(t))
+            out.append({"lane": int(m.group(1)),
+                        "signal_detect": int(m.group(2), 0),
+                        "lock": int(m.group(3), 0)})
         except ValueError:
             continue
     return out or None

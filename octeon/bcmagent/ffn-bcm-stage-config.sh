@@ -86,6 +86,22 @@ if [ "$(readlink -f "$VENDOR" 2>/dev/null || echo "$VENDOR")" = \
 	exit 1
 fi
 
+# A --dst that is not absolute is resolved against whatever directory this
+# happens to run from. `--dst bcmcfg` from inside the vendor tree would copy
+# the vendor firmware into itself -- modifying the one thing this script
+# promises never to touch. Require an absolute path rather than guess.
+case "$DST" in
+	/*) ;;
+	*) echo "--dst must be an absolute path, got: $DST" >&2; exit 1 ;;
+esac
+
+# `while read` drops a final line with no trailing newline, so an override
+# written without one was silently ignored while the script still exited 0.
+# Read from a normalised copy instead of trusting the file to end tidily.
+OVERRIDES_N="$(mktemp 2>/dev/null || echo /tmp/ffn-ovr.$$)"
+trap 'rm -f "$OVERRIDES_N"' EXIT INT TERM
+awk '{print}' "$OVERRIDES" > "$OVERRIDES_N" || exit 1
+
 echo "vendor    : $VENDOR"
 echo "dest      : $DST"
 echo "overrides : $OVERRIDES"
@@ -129,7 +145,10 @@ while IFS= read -r line; do
 	# is a real way to rewrite the wrong property.
 	kre="$(echo "$key" | sed 's|[.[]|\\&|g')"
 
-	cur="$(grep "^${kre}=" "$CFG" 2>/dev/null | tail -1)"
+	# Tolerate the spacing the vendor file actually uses. Matching only
+	# `^key=` treats a live `key = value` line as absent, appends a second
+	# definition, and leaves which one wins up to the SDK's parse order.
+	cur="$(grep -E "^[[:space:]]*${kre}[[:space:]]*=" "$CFG" 2>/dev/null | tail -1)"
 	cur="${cur#*=}"
 	if [ "$cur" = "$val" ]; then
 		echo "  ok      $key=$val"
@@ -139,7 +158,7 @@ while IFS= read -r line; do
 	if [ -n "$cur" ]; then
 		echo "  CHANGE  $key: $cur -> $val"
 		[ "$DRYRUN" -eq 1 ] || \
-			sed -i "s|^${kre}=.*|${key}=${val}|" "$CFG" || exit 1
+			sed -i "s|^[[:space:]]*${kre}[[:space:]]*=.*|${key}=${val}|" 				"$CFG" || exit 1
 	else
 		echo "  ADD     $key=$val"
 		[ "$DRYRUN" -eq 1 ] || {
@@ -147,11 +166,20 @@ while IFS= read -r line; do
 				"$key" "$val" >> "$CFG" || exit 1
 		}
 	fi
-done < "$OVERRIDES"
+done < "$OVERRIDES_N"
 
 # Verify what we claim to have done, rather than trusting sed's exit status --
 # a mistyped key would otherwise report CHANGE and alter nothing.
-if [ "$DRYRUN" -eq 0 ] && [ "$changed" -gt 0 ]; then
+# ALWAYS, not only when something changed. The first version ran this only for
+# changed>0, which meant: run once over a config.bcm with a duplicated key, get
+# "VERIFY FAILED ... appears 2 time(s)" and exit 1 with the tree already
+# mutated; run the identical command again, and because `tail -1` now sees the
+# wanted value nothing is counted as changed, verification is skipped entirely,
+# and it exits 0 reporting success -- with the duplicate still there and the SDK
+# free to use whichever line it parses last. A checker that only runs when you
+# already believe you changed something cannot catch the state you are in when
+# you were wrong.
+if [ "$DRYRUN" -eq 0 ]; then
 	bad=0
 	while IFS= read -r line; do
 		line="${line%%#*}"
@@ -166,7 +194,7 @@ if [ "$DRYRUN" -eq 0 ] && [ "$changed" -gt 0 ]; then
 			echo "  VERIFY FAILED: $key=$val appears $got time(s)" >&2
 			bad=$((bad + 1))
 		fi
-	done < "$OVERRIDES"
+	done < "$OVERRIDES_N"
 	[ "$bad" -eq 0 ] || exit 1
 fi
 
