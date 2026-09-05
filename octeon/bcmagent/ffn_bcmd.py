@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import select
 import signal
 import socket
@@ -737,11 +738,41 @@ def op_sys_dpstatus(chip, req):
             agents.append(p)
     out["agent"] = agents
 
+    # The mailbox the DP's own agent publishes into. This is the ONLY positive
+    # evidence when the dataplane is up but nothing on the control plane is
+    # holding a session open -- which is the normal state right after a boot,
+    # because the CP-side network daemon is a separate step. Without it this
+    # reported a demonstrably-alive dataplane as idle, which is exactly the kind
+    # of false negative that sends someone re-booting working hardware.
+    #
+    # `--status` is a read of the mailbox header, not a shell session: dpboot8
+    # polls it in a loop while waiting for the agent, so it is safe to call from
+    # something polled. The single-session rule applies to the SHELL, and this
+    # never opens one.
+    mbox = {"queried": False}
+    try:
+        r = subprocess.run(["/usr/local/bin/ffn-dpsh", "--status"],
+                           capture_output=True, text=True, timeout=8)
+        line = (r.stdout or r.stderr or "").strip()
+        mbox["queried"] = True
+        mbox["raw"] = line.splitlines()[0][:120] if line else ""
+        mbox["agent_up"] = ("up=1" in line)
+        m = re.search(r"agent v(\d+)", line)
+        if m:
+            mbox["agent_version"] = int(m.group(1))
+    except Exception as exc:
+        mbox["error"] = str(exc)[:120]
+    out["mailbox"] = mbox
+
     # One line an operator or a health check can act on, derived from the
     # evidence above rather than from a guess. Ordered by how much each thing
     # actually proves.
     if not present:
         out["summary"] = "no dataplane processor on the control plane's bus"
+    elif mbox.get("agent_up"):
+        out["summary"] = ("running: the dataplane agent is answering on the "
+                          "mailbox" + (" (v%d)" % mbox["agent_version"]
+                                       if mbox.get("agent_version") else ""))
     elif agents:
         out["summary"] = "running: %s on the control plane is driving it" % (
             agents[0]["match"],)

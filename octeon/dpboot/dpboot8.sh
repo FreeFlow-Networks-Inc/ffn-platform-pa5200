@@ -1,4 +1,18 @@
 #!/bin/bash
+# Re-exec under bash if we were started by something else.
+#
+# This script uses bash array slicing (${@:2}) in OCT(), and /bin/sh on the
+# control plane is busybox ash, which expands that to NOTHING -- silently. The
+# symptom is not a syntax error: every vendor tool gets invoked with a mangled
+# name and no arguments, so oct-remote-boot prints its usage text and returns
+# 255, oct-remote-load says "Failed to parse the address", and the boot fails
+# four steps in with nothing pointing at the cause. Running it as
+# `sh dpboot8.sh` costs half an hour of debugging the wrong thing, so make the
+# shebang non-optional.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec /bin/bash "$0" "$@"
+fi
+
 # dpboot8 -- boot the CN78XX dataplane from a CP running FFN's own 6.18 kernel.
 #
 # dpboot6/7 and ffn-dp-full-bringup.sh all assume the 4.9 CP inside the vendor
