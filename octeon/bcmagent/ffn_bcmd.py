@@ -139,10 +139,11 @@ class Chip(object):
         dead   -- the process exited or the pty closed; no recovery attempted
     """
 
-    def __init__(self, bcm_path, cfg_dir, log=None):
+    def __init__(self, bcm_path, cfg_dir, log=None, init_log_path=None):
         self.bcm_path = bcm_path
         self.cfg_dir = cfg_dir
         self.log = log or (lambda *a: None)
+        self.init_log_path = init_log_path or "/tmp/ffn-bcm-init.log"
 
         self.state = "init"
         self.pid = None
@@ -217,11 +218,36 @@ class Chip(object):
                 return
 
         self.banner = text[-8000:]
+        self._save_init_log(text)
         self._scrape_banner(text)
         self.ready_at = now()
         self.state = "ready"
         self.log("ready after %.1fs chip=%s rev=%s"
                  % (self.ready_at - self.started, self.chip, self.rev))
+
+    def _save_init_log(self, text):
+        """Keep the WHOLE init transcript, because the tail of it is the least
+        useful part.
+
+        Bringing this chip up prints for half a minute -- BDE attach, DDR
+        shmoo, SerDes and PMD bring-up, every jer.soc line -- and all of it was
+        being dropped on the floor except the last 8 KB kept for the banner
+        scrape. The messages worth having are near the START: firmware
+        downloads, PLL lock, per-lane SerDes results. By the time the prompt
+        appears they have long since scrolled out of an 8 KB window.
+
+        Written to a file rather than held in memory because it outlives the
+        daemon: when bcm.user dies during init there is no process left to ask,
+        and the transcript is the only account of how far it got.
+        """
+        try:
+            tmp = self.init_log_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(text)
+            os.replace(tmp, self.init_log_path)
+        except OSError as exc:
+            # Never fatal: losing the log must not stop a chip that came up.
+            self.log("could not write init log: %s" % exc)
 
     def _scrape_banner(self, text):
         """Pull the facts worth reporting out of the init transcript.
@@ -868,12 +894,161 @@ def op_port_counters(chip, req):
             "output_lines": len(all_lines), "sample": all_lines[:8]}
 
 
+# The port names the diag shell uses. Anything reaching chip.run() is a command
+# line, so a name is checked against this shape before it is interpolated -- a
+# "port" of `xl24; write ...` would otherwise be a write on a read-only op.
+_PORT_NAME_RE = re.compile(r"^(xe|xl|ce|il|cd|rcy|cpu)[0-9]{0,3}$")
+
+# Read-only `phy diag` subcommands. Deliberately a whitelist and not a
+# blocklist: `phy raw`, `phy set` and the eyescan variants all write, and a
+# blocklist would let a newly-added writing subcommand through by default.
+_PHY_DIAG_OK = ("dsc", "state", "topology", "link", "cfg", "config", "ber",
+                "log", "counters")
+
+
+def op_port_phy(chip, req):
+    """SerDes state for one port: is there LIGHT ON THE WIRE, and does it lock?
+
+    `port.list` answers "is the link up", which on a dark link is the same
+    answer for every possible cause -- far side off, far side transmitting into
+    a different lane order, PCS mismatch, or nothing fitted to that footprint at
+    all. `phy diag <port> dsc` separates them, because signal-detect and PMD
+    lock are measured per lane at the receiver:
+
+      no signal detect  ->  the far side is not transmitting to THIS port,
+                            which on a soldered internal trace usually means
+                            nothing is fitted at the other end of it
+      signal, no lock   ->  the far side IS transmitting; rate, lane map,
+                            polarity or FEC disagree
+      lock, link down   ->  PMD is fine; the disagreement is above it (PCS,
+                            MAC, or the port is not being scanned)
+
+    That distinction is the whole reason this exists. Three internal 40G ports
+    on this board read `down` identically, and only one of them can have a
+    processor fitted behind it -- link state alone cannot say which.
+
+    Read-only, and whitelisted rather than routed through --allow-raw, for the
+    same reason `port.counters` is: an escape hatch opened for one diagnostic
+    stays open for everything.
+    """
+    name = str(req.get("port") or "").strip()
+    if not _PORT_NAME_RE.match(name):
+        raise ValueError("port must be a diag name like 'xl24', got %r" % name)
+    what = str(req.get("what") or "dsc").strip().lower()
+    if what not in _PHY_DIAG_OK:
+        raise ValueError("what must be one of %s, got %r"
+                         % (", ".join(_PHY_DIAG_OK), what))
+
+    cmd = "phy diag %s %s" % (name, what)
+    text = chip.run(cmd, timeout=float(req.get("timeout", CMD_TIMEOUT)))
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+
+    # Pull the two facts that decide the question above out of whatever shape
+    # the SDK printed, and keep the full text regardless. Field names differ
+    # between SerDes generations, so match loosely and report `null` -- an
+    # unparsed field must not read as a measured "no".
+    sig = lock = None
+    for l in lines:
+        low = l.lower()
+        if sig is None and ("sig_det" in low or "signal detect" in low
+                            or "sigdet" in low):
+            sig = _phy_bits(l)
+        if lock is None and "lock" in low and "clock" not in low:
+            lock = _phy_bits(l)
+
+    return {"port": name, "what": what, "cmd": cmd,
+            "signal_detect": sig, "lock": lock,
+            "output_lines": len(lines), "output": lines[:60],
+            "truncated": len(lines) > 60}
+
+
+def _phy_bits(line):
+    """The per-lane values on a `phy diag` line, as a list of ints.
+
+    SerDes lines are `name : 1 1 0 0` or `name=0x3` depending on generation.
+    Returns None rather than a default when neither shape is present, because
+    "not parsed" and "measured zero" must not look alike.
+    """
+    _, _, rest = line.partition(":")
+    if not rest:
+        _, _, rest = line.partition("=")
+    if not rest:
+        return None
+    toks = rest.replace(",", " ").split()
+    out = []
+    for t in toks:
+        try:
+            out.append(int(t, 16) if t.lower().startswith("0x") else int(t))
+        except ValueError:
+            continue
+    return out or None
+
+
+def op_sys_linkscan(chip, req):
+    """The chip's own view of which ports it is scanning.
+
+    A port left out of linkscan never reports link no matter what the SerDes is
+    doing, so this rules that cause in or out before any SerDes measurement is
+    worth taking. Read-only: `linkscan` with no argument prints, it does not set.
+    """
+    text = chip.run("linkscan")
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+    return {"output_lines": len(lines), "output": lines[:40]}
+
+
+def op_sys_initlog(chip, req):
+    """The chip's whole bring-up transcript, kept from the last init.
+
+    Every question about why a port behaves the way it does is answered
+    somewhere in these thirty seconds, and until this existed the only part
+    reachable at runtime was the 8 KB the banner scrape happened to keep -- the
+    tail, which is jer.soc's closing lines and nothing about the SerDes.
+
+    `grep` is a plain case-insensitive substring, not a regex. A caller looking
+    for `phy diag`'s bracket-heavy output would otherwise have to escape it, and
+    an operator debugging a dark link should not have to think about regex
+    syntax; matched lines are returned with their line numbers so the caller can
+    ask for the surrounding region by `start`.
+    """
+    path = getattr(chip, "init_log_path", "/tmp/ffn-bcm-init.log")
+    try:
+        with open(path, "r", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as exc:
+        return {"path": path, "available": False, "reason": str(exc),
+                "lines": [], "total_lines": 0}
+
+    needle = str(req.get("grep") or "").lower()
+    limit = int(req.get("limit") or 120)
+    limit = max(1, min(limit, 4000))
+
+    if needle:
+        hits = [{"n": i + 1, "text": l.rstrip()}
+                for i, l in enumerate(lines) if needle in l.lower()]
+        return {"path": path, "available": True, "grep": needle,
+                "total_lines": len(lines), "matches": len(hits),
+                "lines": hits[:limit], "truncated": len(hits) > limit}
+
+    start = int(req.get("start") or 0)
+    if start < 0:
+        start = max(0, len(lines) + start)          # negative = from the end
+    sel = lines[start:start + limit]
+    return {"path": path, "available": True, "total_lines": len(lines),
+            "start": start,
+            "lines": [{"n": start + i + 1, "text": l.rstrip()}
+                      for i, l in enumerate(sel)],
+            "truncated": start + limit < len(lines)}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
     "port.set": op_port_set,
     "port.loopback": op_port_loopback,
     "port.counters": op_port_counters,
+    "port.phy": op_port_phy,
+    "sys.linkscan": op_sys_linkscan,
+    "sys.initlog": op_sys_initlog,
     "led.status": op_led_status,
     "sys.inventory": op_sys_inventory,
     "sys.dpstatus": op_sys_dpstatus,
@@ -955,6 +1130,8 @@ def main():
     ap.add_argument("--port", type=int, default=DEF_PORT)
     ap.add_argument("--bcm", default=DEF_BCM, help="path to bcm.user")
     ap.add_argument("--cfg", default=DEF_CFG, help="config dir (holds config.bcm)")
+    ap.add_argument("--init-log", default="/tmp/ffn-bcm-init.log",
+                    help="where to keep the chip's bring-up transcript")
     ap.add_argument("--allow-raw", action="store_true",
                     help="enable the raw op -- effectively a shell on the ASIC")
     ap.add_argument("--no-chip", action="store_true",
@@ -968,7 +1145,8 @@ def main():
         sys.stderr.write("ffn-bcmd: " + " ".join(str(x) for x in a) + "\n")
         sys.stderr.flush()
 
-    chip = Chip(args.bcm, args.cfg, log=log)
+    chip = Chip(args.bcm, args.cfg, log=log,
+                init_log_path=args.init_log)
     if args.no_chip:
         chip.state = "dead"
         chip.init_errors.append("--no-chip: bcm.user was not started")
