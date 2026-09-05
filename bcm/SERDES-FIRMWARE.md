@@ -65,6 +65,41 @@ pm4x10.c[4580] _pm4x10_port_attach_resume_fw_load Operation failed
    -> jer_nif.c[3695] -> bcm_petra_port_probe -> bcm_petra_init
 ```
 
+**...but this is NOT independent confirmation, and it may not even mean what it
+looks like.** Added after a second review round.
+
+`eagle_tsc_ucode_crc_verify` issues its command through
+`eagle_tsc_pmd_uc_cmd_with_data`, which *begins* with
+`eagle_tsc_poll_uc_dsc_ready_for_cmd_equals_1(pa, 1)` — the same
+ready-for-command poll on the same register that `phy diag dsc` uses. So
+evidence 1 and evidence 2 are **one measurement reported twice**, not two paths
+agreeing. An earlier draft of this document claimed they were independent. They
+are not.
+
+Worse, that `1` is a timeout in **milliseconds**, and the sequence just above it
+is:
+
+```c
+    eagle_uc_reset(&core_copy.access, 1);   /* release uc reset */
+    /* we need to wait at least 10ms for the uc to settle */
+    /* PHYMOD_USLEEP(10000); */             <-- commented out upstream
+```
+
+A healthy DW8051 is not necessarily ready 1 ms after its reset is released with
+the settle delay removed. **The `0x102` failure is therefore also consistent
+with a pure timing race, and on its own proves nothing.** An earlier draft
+dismissed the settle-delay hypothesis with "the poll fails even when enabled, so
+time alone does not fix it" — which is circular: it used evidence 2 to rule out
+the very defect that could explain evidence 2.
+
+What still carries the conclusion is evidence 1 **on its own**: `phy diag dsc`
+run *minutes* after a completed init, with the microcontroller having had all
+the time it could want, still read `ready_for_cmd = 0` and returned no
+`UCODE_VER`, `COM_CLK` or `PLL_LOCK` at all. And after the fix, that same 1 ms
+poll on that same register succeeds and returns real values. A race does not
+explain a uC that is still not ready minutes later, nor one that becomes ready
+purely because the microcode was delivered a different way.
+
 **3. The microcode in PMD RAM does NOT match — the download is corrupt.**
 
 *This section previously said the opposite, and was wrong. Corrected 2026-09-05
@@ -183,6 +218,36 @@ of the diagnosis rather than a counterexample to it.
 | ~~corrupt microcode download~~ | **NOT ruled out — this was wrong.** That verify is compiled out (`TSCE_PMD_CRC_UCODE` is defined); see section 3 |
 | nothing fitted behind xl24/25/26 | **resolved**: with the fix, xl24 came up and xl25/xl26 stayed down. Port 24 is the populated one (vendor labels it DP1) |
 | host endianness in the ucode DMA shuffle | measured: `be_other=1` on the running ffn_bde, which selects the big-endian table. Correct |
+
+
+## The override is chip-wide, not TSCE-only
+
+`load_firmware.BCM88650` is read at **three** places in `jer_nif.c`, and the
+base key is the fallback for all of them:
+
+| site | macro | what it covers |
+|---|---|---|
+| `jer_nif.c:1325` | PM4x10 / **TSCE** | the 10G and 40G macros — what this document is about |
+| `jer_nif.c:1127` | PM4x25 / **TSCF** (Falcon) | the CAUI/100G macros, including `ce12` (HSCI) |
+| `jer_nif.c:3453` | **fabric** | and `if (fw_load_method_fabric == phymodFirmwareLoadMethodExternal)` additionally enables a **broadcast** firmware download, which `0x1` turns off |
+
+So `0x1` moves every SerDes macro on the die to MDIO loading and disables the
+fabric broadcast optimisation. Two consequences worth writing down:
+
+* some of the ~8.5 s extra init is the **lost broadcast download**, not just
+  slow MDIO — so that number is not a clean measure of MDIO's cost;
+* a future 100G or fabric-lane problem will not obviously connect to a property
+  documented as a TSCE fix. It is one property with a chip-wide blast radius.
+
+TSCF has its own `#define TSCF_PMD_CRC_UCODE 1` (`tscf.c:63`), so the same
+dead-`#ifndef` confusion that produced the original wrong conclusion applies
+there too.
+
+**If the blast radius ever needs narrowing:** the property is per-quad
+addressable (`load_firmware_quad<N>`, `jer_nif.c:1325`) and per-block
+(`load_firmware_fabric`), so TSCE quads can be moved to MDIO while TSCF and the
+fabric stay on External. Not done, because the ports currently work and changing
+it costs a test cycle on a live chip.
 
 ## Status
 
