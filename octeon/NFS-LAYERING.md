@@ -98,14 +98,66 @@ against the same mirror once the DP has a route.
 The squashfs container is little-endian, which is not a mismatch: squashfs 4.0 is
 little-endian by specification and the kernel byte-swaps.
 
+## Layer 3: the DP mounts it  (`../dproot/ffn-dp-nfsroot.sh`)
+
+`../dpnet2/ffn-dpnet-up6.sh` brings up the CP↔DP virtual ethernet
+(127.1.2.1 ↔ 127.1.2.2 — pure userspace, one static binary serving both ends
+via `--role cp` / `--role dp`, no kernel module). Then the DP mounts and runs:
+
+```
+dp-nfsroot: CP<->DP link up
+dp-nfsroot: /opt/dproot is exported
+dp-nfsroot: mounted 127.1.2.1:/opt/dproot on the DP at /mnt/dproot
+dp-nfsroot: chroot works: Linux mips64
+dp-nfsroot: release: 24.10.4
+```
+
+and inside it:
+
+```
+Linux (none) 6.18.49-00006-gf6d0533138e7-dirty SMP PREEMPT mips64 GNU/Linux
+DISTRIB_ID='OpenWrt'   DISTRIB_RELEASE='24.10.4'
+65 binaries in /usr/bin
+```
+
+That is the DP's own kernel running an OpenWrt userspace binary out of a
+filesystem served by the CP, which is itself served by the MP.
+
+### Two failures that name the wrong thing
+
+**"not found" on a file that is plainly there.** Executing from the mount
+without chroot gives `sh: /mnt/dproot/bin/busybox: not found`. The missing
+thing is the ELF interpreter: OpenWrt links against
+`/lib/ld-musl-mips64-sf.so.1`, and from the initramfs root that path resolves
+into the initramfs, which has no musl. "not found" naming an existing file
+almost always means the interpreter.
+
+**opkg cannot take its lock** — `Could not create lock file
+/var/lock/opkg.lock`, which reads like a permissions or read-only-root fault. A
+squashfs root ships no runtime state and OpenWrt's preinit never runs in a
+chroot, so the directory simply did not exist. The script creates the runtime
+directories in the export, and bind-mounts the DP's own `/proc`, `/sys` and
+`/dev` into the chroot — those are per-machine while the export is shared, and
+without `/proc` anything reading `/proc/self` fails obscurely.
+
+### chroot, not switch_root
+
+The DP's kernel booted on the initramfs and the dataplane, agent and mailbox all
+run from it — including `ffn-dpsh`, which is the only way the DP is reachable at
+all. `switch_root` would discard that. chroot gives the full userspace to work
+that wants it while leaving the control path intact.
+
+A real `switch_root` belongs in the DP's boot sequence — `root=/dev/nfs
+nfsroot=127.1.2.1:/opt/dproot` plus `ip=` on the kernel command line — not in a
+live session.
+
+`nolock` is on every mount here deliberately: the CP's own root uses it, and
+lockd across two nested NFS re-exports is not something to inherit by accident.
+
 ## What is still missing
 
-**A network path between CP and DP.** Layer 2 serves; nothing has mounted it
-from the DP yet, because the DP has no address. `ffn_dpnet` (CP<->DP virtual
-ethernet over PCIe, 127.1.2.x) is the remaining piece, and it is the
-prerequisite for the DP side of this — not an optimisation of it.
-
-Once the DP has an address, it needs `root=/dev/nfs nfsroot=127.1.2.1:/opt/dproot`
-plus `ip=` on its kernel command line, or a mount from its initramfs. Note
-`nolock` on every mount here: the CP's own root uses it, and lockd across two
-nested re-exports is not something to inherit by accident.
+**A route from the DP to the MP's package mirror.** `opkg` inside the chroot
+cannot reach `127.1.1.1:8080` until the DP has a default route via 127.1.2.1 and
+the CP forwards. Until then packages are added on the MP, into
+`/opt/ffn-cproot-owrt/opt/dproot`, where they appear on the DP immediately —
+which is the same property that made this design worth building.
