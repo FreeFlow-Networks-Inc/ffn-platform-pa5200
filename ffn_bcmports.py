@@ -99,8 +99,8 @@ PORTS = {
     31: ("XE58",   0, 31, "RAW", "RAW_DSA",  FRONT,   ""),
     32: ("CGE3",   1, 32, "RAW", "RAW_DSA",  FRONT,   "QSFP28 cage. MEASURED 100G-CAPABLE IN SILICON: its SerDes core reports VCO_RATE 25.750GHz with PLL_LOCK=1, which is the 100GBASE-R lane rate (25.78125 Gbps x 4). These four sit on TSCF/PM4x25 macros (UCODE_VER D10B_23, AFE_VER 0xb2) -- a different SerDes family from the 40G XLAUI ports 24-26, which are TSCE/PM4x10 at VCO 10.250GHz. So any 40G-only limit on this SKU was software, not this chip. `!ena` with port_init_speed_32=-1, never brought up: see bcm/ffn_bcm_qsfp.c"),
     33: ("CGE5",   1, 33, "RAW", "RAW_DSA",  FRONT,   ""),
-    34: ("CGE4",   1, 34, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 35 (medium unknown)"),
-    35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 34 (medium unknown)"),
+    34: ("CGE4",   1, 34, "RAW", "RAW_DSA",  FRONT,   "MEASURED UP AT 100G to port 35 over the cable between them, via bcm/ffn_bcm_qsfp.c: enable + autoneg off + speed_set(100000), all rv=0, link=1 both ends. That is a trained link, so 100G on this box is settled as fact rather than inferred from serdes_if_type. SerDes reports `falcon_tsc`, laneMask 0xF, VCO 25.750GHz -- 4 lanes x 25.78 Gbps"),
+    35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED UP AT 100G to port 34 (see 34)"),
     36: ("XE66",   0, 36, "RAW", "RAW_DSA",  FRONT,   ""),
 }
 

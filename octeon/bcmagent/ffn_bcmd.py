@@ -1200,7 +1200,7 @@ _CINT_SCRIPTS = {
     "ffn_bcm_fpchain.c":   "MP -> port 16 -> [faceplate cable] -> port 7 -> port 24 -> DP",
     "ffn_bcm_l2.c":        "L2 bridging via tm_port_header_type=ETH",
     "ffn_bcm_qsfp.c":      "the four QSFP28 cages (32-35): enable + speed, "
-                           "trying 40G then 100G on the cabled 34/35 pair",
+                           "trying 100G then 40G on the cabled 34/35 pair",
     # Vendor diagnostics that ship in the config tree.
     "enable_fp_ports.c":   "vendor: enable all 25 front-panel ports",
     "phy_tx_settings.c":   "vendor: re-apply SerDes TX FIR",
