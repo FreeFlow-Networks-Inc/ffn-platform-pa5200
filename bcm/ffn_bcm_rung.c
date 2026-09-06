@@ -35,6 +35,61 @@
  * property read at init and cint runs long afterwards.
  *
  * Do not name a variable "unit"; cint predefines it.
+ *
+ * ---------------------------------------------------------------------------
+ * IT FORWARDS ONE BURST PER ATTACH, NOT CONTINUOUSLY. Measured 2026-09-06, and
+ * it revises what every recipe in this directory claims. ffn_bcm_voq.c carries
+ * the correction too, as do ffn_bcm_chain.c and ffn_bcm_fpchain.c.
+ *
+ *   200 broadcast frames from the MP into port 8:
+ *     port 8  RX +200
+ *     port 24 TX +26      then FROZEN for minutes while port 8 kept counting
+ *     error counters      none, anywhere
+ *
+ * THE FRAMES WERE QUEUED, NOT DROPPED. Re-running this recipe moved port 24 TX
+ * +205 while port 8 took only +2, so a fresh attach released the backlog. A
+ * second 200-frame burst then gave port 8 +200 and port 24 +0.
+ *
+ * SO ALWAYS SEND A SECOND BURST. One burst that drains proves the attach
+ * happened; it cannot tell a one-shot grant from a running credit loop. The
+ * original 300-frame measurement in ffn_bcm_voq.c fit inside a single grant,
+ * and no second burst was ever sent -- which is how this went unnoticed.
+ *
+ * THREE EXPLANATIONS RULED OUT, so nobody spends the time again:
+ *
+ *   1. NOT link-level pause, though it looks exactly like it. Port 24 is the
+ *      ONLY linked port with pause RX enabled and TX disabled -- `ps` shows
+ *      `TX RX` for ports 2, 8, 9, 34, 35 and a bare `RX` for 24 -- which reads
+ *      just like the dataplane asserting flow control and never releasing it.
+ *      It is not: pause would not have let the +205 flush through.
+ *
+ *   2. NOT the parent gport. Attaching to the per-TC HR scheduling element
+ *      instead -- E2E PORT TC gport, subtype 13, resolved with
+ *      bcm_cosq_gport_handle_get(bcmCosqGportTypeSched) -- forwards NOTHING on
+ *      either burst. The subtype-5 E2E PORT gport used below is correct, and
+ *      the SDK's own TM FAP setup uses that same encoding.
+ *
+ *      Two traps found proving that: handle_get answers only for TC 0 and TC 1
+ *      on this port (BCM_E_PARAM for 2..7) and it DOES NOT WRITE out_gport on
+ *      failure -- so a loop attaching unconditionally re-parents six queues
+ *      onto TC 1's element, and attach returns 0 for every one of them.
+ *
+ *   3. NOT a shaper rate. See FFN_RATE_RULED_OUT below for the read-back:
+ *      connectors come up UNLIMITED, not zero.
+ *
+ * STILL UNEXPLAINED, and this is where to pick it up. The remaining suspects
+ * are the credit-return path itself rather than anything shaped: the VOQ's own
+ * credit state (only the CONNECTOR's rate was read back, never the VOQ's), and
+ * bcmCosqControlBandwidthBurstMax, which is a separate control from rate.
+ *
+ * TESTING THIS NEEDS A CLEAN CHIP. These recipes are NOT idempotent -- the
+ * daemon's cint session keeps its variables between cint.run calls, so each run
+ * prints "identifier redeclared" for every declaration AND allocates a fresh
+ * VOQ and connector, leaking the previous pair. The measurements above were
+ * taken across several runs, so the chip carried leaked pairs and the six stale
+ * TC-1 attaches from suspect 2. Restart ffn-bcmd first (see
+ * octeon/bcmagent/ffn-bcmd-ctl.sh; it re-initialises the chip, and the
+ * front-panel links must be brought back up afterwards), then run this ONCE.
  */
 
 int u = 0;
@@ -109,96 +164,48 @@ print rv_egr;
 
 print "FFN_ATTACH";
 /*
- * THE CALL THAT MAKES TRAFFIC MOVE.
+ * THE CALL THAT MAKES TRAFFIC MOVE -- ONCE. Necessary, not sufficient; see the
+ * one-shot finding in the header.
  *
  * Creating the connector and binding it to the VOQ is not enough: the
  * connector is a scheduling node and needs a PARENT in the E2E hierarchy.
- * Unparented it is never scheduled, so no credits are generated and the VOQ
- * never drains. Measured on this silicon: before this call, enqueue 300 and
- * dequeue 0; after it, dequeue 300 and port 24 TX 300.
+ * Unparented it is never scheduled at all. Measured on this silicon: before
+ * this call, enqueue 300 and dequeue 0; after it, dequeue 300 and port 24
+ * TX 300.
+ *
+ * That 300-frame measurement is exactly the trap. It is real, and it means
+ * only that ONE burst drained -- every subsequent burst forwards nothing until
+ * this call is made again. Do not read it as proof of a working credit loop.
  *
  * bcm_cosq_gport_attach_get returns BCM_E_UNAVAIL here, so the attachment
- * cannot be read back -- verify with traffic, not with a getter.
+ * cannot be read back -- verify with a SECOND burst of traffic, never with a
+ * getter and never with one burst.
  */
 int rv_attach;
 rv_attach = bcm_cosq_gport_attach(u, e2e_port, connector, 0);
 print rv_attach;
 
-print "FFN_RATE";
+print "FFN_RATE_RULED_OUT";
 /*
- * A CANDIDATE FIX FOR THE ONE-SHOT BEHAVIOUR BELOW. NOT YET VERIFIED -- read
- * the whole comment before believing it, and re-test from a freshly
- * initialised chip.
+ * NO RATE CALLS HERE, DELIBERATELY. A shaper with rate 0 would explain the
+ * one-shot behaviour in the header exactly -- it passes a burst allowance and never
+ * replenishes, and a fresh attach resets the bucket -- so rate was the
+ * candidate fix, and it is WRONG. Read back off the live chip with
+ * bcm_cosq_gport_bandwidth_get:
  *
- * The theory: a connector is a shaped scheduling node, so parenting it is
- * necessary but not sufficient -- it also needs a RATE. With the rate left at
- * its default the node has a burst allowance and no replenishment, so it
- * passes one burst and then stops for good. That is not a stall; it is a
- * shaper doing exactly what a zero rate asks of it. The SDK's own TM FAP setup
- * sets a rate and a max burst on the connector for this reason.
+ *   E2E port  0x78a00018   kbits_sec_max = 40000768     (a real 40G rate)
+ *   connector 0xc4000010   kbits_sec_max = 0xFFFFFFFF   (UNLIMITED)
+ *   connector 0xc4000020   kbits_sec_max = 0xFFFFFFFF   (UNLIMITED)
  *
- * WHY IT IS UNVERIFIED. All three calls below returned 0 on silicon and
- * forwarding did NOT resume -- but that measurement is worthless, because by
- * the time it was taken the chip's scheduling state had been polluted by the
- * attempts described under "NOT the parent gport": six connector queues
- * re-parented onto TC 1's scheduling element, never undone, plus four leaked
- * VOQ/connector pairs from repeated runs of this file. A clean test needs an
- * ffn-bcmd restart first, which re-initialises the chip -- see
- * octeon/bcmagent/ffn-bcmd-ctl.sh, and note that the front-panel links have to
- * be brought back up afterwards.
+ * Connectors come up UNLIMITED, not zero. Nothing is being shaped, so nothing
+ * is being starved by a shaper. ffn_bcm_voq.c had already recorded the E2E
+ * port's 42 Gbit/s, which should have been read before this was theorised.
  *
- * So the state of knowledge is: the one-shot behaviour is real and measured,
- * the two explanations below are ruled out, and this is the next thing to try.
- *
- * MEASURED, because this file previously claimed the opposite. 200 broadcast
- * frames from the MP: BCM port 8 RX +200, BCM port 24 TX +26, no error counter
- * anywhere, and port 24 then frozen for minutes while port 8 kept counting.
- * The frames were not lost -- re-running this recipe moved port 24 TX +205
- * while port 8 took only +2, so the backlog came out when a fresh attach reset
- * the burst bucket. A second 200-frame burst then gave port 8 +200 and port 24
- * +0. One grant per attach.
- *
- * WHY THE ORIGINAL MEASUREMENT LOOKED CONVINCING. ffn_bcm_voq.c recorded
- * "enqueue 300 / dequeue 300, port 24 TX 300" and concluded, in its own words,
- * that "the credit loop is internal once the connector is parented." Three
- * hundred frames fit inside a single burst allowance. One burst that drains
- * proves the attach happened; it cannot tell a one-shot grant from a running
- * credit loop, and no second burst was ever sent. ffn_bcm_voq.c and
- * ffn_bcm_chain.c still have this defect.
- *
- * TWO THINGS THAT ARE NOT THE CAUSE, both checked so nobody re-checks them:
- *
- *   * NOT link-level pause. Port 24 is the one linked port with pause RX
- *     enabled and TX disabled (`ps` shows `TX RX` for 2, 8, 9, 34, 35 and bare
- *     `RX` for 24), which looks like the dataplane asserting flow control and
- *     never releasing it. Pause would not have let the +205 flush through.
- *   * NOT the parent gport. Attaching to the per-TC HR scheduling element
- *     instead -- built from an E2E PORT TC gport, subtype 13, and resolved with
- *     bcm_cosq_gport_handle_get(bcmCosqGportTypeSched) -- forwards NOTHING at
- *     all, on either burst. The E2E PORT gport used above, subtype 5, is
- *     correct, and the SDK's own TM FAP setup uses that same encoding.
- *     Incidentally, handle_get answers only for TC 0 and TC 1 on this port and
- *     returns BCM_E_PARAM for TC 2..7, and it does not write out_gport on
- *     failure -- so a loop that attaches unconditionally re-parents six queues
- *     onto TC 1's element and gets rv 0 for every one of them.
- *
- * Rate is the link rate: this connector feeds a 40G port and there is no
- * reason to shape below it. Burst is the SDK's own default scale.
+ * A version of this file did briefly call bcm_cosq_gport_bandwidth_set on the
+ * connector and the E2E port. It returned 0, changed nothing about the
+ * forwarding behaviour, and on one connector (0xc4000030) it made things
+ * marginally worse by replacing UNLIMITED with 40000000. Do not re-add it.
  */
-int rate_kbps = 40000000;   /* 40 Gbps, in kbit/s -- the DP link's line rate */
-int max_burst = 3000;
-
-int rv_bw_e2e;
-rv_bw_e2e = bcm_cosq_gport_bandwidth_set(u, e2e_port, 0, 0, rate_kbps, 0);
-print rv_bw_e2e;
-
-int rv_bw_conn;
-rv_bw_conn = bcm_cosq_gport_bandwidth_set(u, connector, 0, 0, rate_kbps, 0);
-print rv_bw_conn;
-
-int rv_burst;
-rv_burst = bcm_cosq_control_set(u, connector, 0, bcmCosqControlBandwidthBurstMax, max_burst);
-print rv_burst;
 
 print "FFN_FORCE_FORWARD";
 /*
