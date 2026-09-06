@@ -97,7 +97,7 @@ PORTS = {
     29: ("XE56",   0, 29, "RAW", "RAW_DSA",  FRONT,   ""),
     30: ("XE59",   0, 30, "RAW", "RAW_DSA",  FRONT,   ""),
     31: ("XE58",   0, 31, "RAW", "RAW_DSA",  FRONT,   ""),
-    32: ("CGE3",   1, 32, "RAW", "RAW_DSA",  FRONT,   "QSFP28 cage. serdes_if_type_32=CAUI -- 100G, NOT 40G. `!ena` with port_init_speed_32=-1, so never brought up: see bcm/ffn_bcm_qsfp.c"),
+    32: ("CGE3",   1, 32, "RAW", "RAW_DSA",  FRONT,   "QSFP28 cage. MEASURED 100G-CAPABLE IN SILICON: its SerDes core reports VCO_RATE 25.750GHz with PLL_LOCK=1, which is the 100GBASE-R lane rate (25.78125 Gbps x 4). These four sit on TSCF/PM4x25 macros (UCODE_VER D10B_23, AFE_VER 0xb2) -- a different SerDes family from the 40G XLAUI ports 24-26, which are TSCE/PM4x10 at VCO 10.250GHz. So any 40G-only limit on this SKU was software, not this chip. `!ena` with port_init_speed_32=-1, never brought up: see bcm/ffn_bcm_qsfp.c"),
     33: ("CGE5",   1, 33, "RAW", "RAW_DSA",  FRONT,   ""),
     34: ("CGE4",   1, 34, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 35 (medium unknown)"),
     35: ("CGE2",   1, 35, "RAW", "RAW_DSA",  FRONT,   "MEASURED: connected to port 34 (medium unknown)"),
