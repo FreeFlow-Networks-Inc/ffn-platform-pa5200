@@ -1258,6 +1258,75 @@ def op_cint_run(chip, req):
             "truncated": len(lines) > 300}
 
 
+def op_phy_mdio(chip, req):
+    """Clause-45 MDIO read on the switch's external bus, by ADDRESS.
+
+    THIS REACHES A PHY THAT NO PORT OWNS, which is the whole point. Every other
+    PHY path in this daemon goes through a port, and the SDK attaches no driver
+    to the four RJ45 ports -- `phy info` shows only their internal TSCE4. So
+    until now there was no way to ask whether the external copper PHY is even
+    alive. `phy raw c45` addresses the bus directly and does not care what the
+    port layer believes.
+
+    Arguments are INTEGERS, validated and range-checked before formatting. The
+    diag shell takes a command line, so a string argument here would be an
+    injection; there is no string to inject when the only things interpolated
+    are three bounded numbers.
+
+    READ ONLY. Writing to a PHY is how it gets configured and how it gets
+    bricked, and a read is enough to answer the question this exists for. A
+    write path belongs behind its own explicit gate when there is a bring-up
+    sequence worth running.
+    """
+    def _num(name, lo, hi):
+        v = req.get(name)
+        if v is None:
+            raise ValueError("%s is required" % name)
+        try:
+            v = int(v, 0) if isinstance(v, str) else int(v)
+        except (TypeError, ValueError):
+            raise ValueError("%s must be an integer, got %r" % (name, v))
+        if not lo <= v <= hi:
+            raise ValueError("%s must be %d..%d, got %d" % (name, lo, hi, v))
+        return v
+
+    addr = _num("addr", 0, 0x1f)      # MDIO port address, 5 bits
+    devad = _num("devad", 0, 0x1f)    # clause-45 device address, 5 bits
+    reg = _num("reg", 0, 0xffff)      # 16-bit register within that device
+    bus = _num("bus", 0, 15) if req.get("bus") is not None else 0
+
+    # THE BUS NUMBER IS ENCODED INTO THE PHY ID, IN TWO SPLIT FIELDS.
+    # phyctrl.h:1081-1087:
+    #     PHY_ID_BUS_NUM(id) = ((id & 0x300) >> 6) | ((id & 0x60) >> 5)
+    # so the low two bits of the bus live at [6:5] and the high two at [9:8],
+    # with the PHY address in [4:0]. Scanning 0..31 therefore only ever probes
+    # BUS 0 -- which reads back 0xffff everywhere on this board and looks
+    # exactly like a dead bus, when it is simply the wrong one.
+    phy_id = (((bus & 0x3) << 5) | (((bus >> 2) & 0x3) << 8) | addr)
+
+    cmd = "phy raw c45 0x%x 0x%x 0x%x" % (phy_id, devad, reg)
+    text = chip.run(cmd, timeout=float(req.get("timeout", 30)))
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+
+    # The shell prints the value in its own format; pull the last hex number on
+    # a line that is not an error, and report the raw text regardless so an
+    # unparsed reply is visible rather than silently becoming None.
+    value = None
+    for l in lines:
+        if "error" in l.lower() or "usage" in l.lower():
+            continue
+        m = re.findall(r"0x([0-9a-fA-F]{1,8})", l)
+        if m:
+            value = int(m[-1], 16)
+
+    return {"addr": addr, "bus": bus, "phy_id": phy_id,
+            "devad": devad, "reg": reg, "cmd": cmd,
+            "value": value,
+            "failed": any("error" in l.lower() or "usage" in l.lower()
+                          for l in lines),
+            "output": lines[:20]}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
@@ -1265,6 +1334,7 @@ OPS = {
     "port.loopback": op_port_loopback,
     "port.counters": op_port_counters,
     "port.phy": op_port_phy,
+    "phy.mdio": op_phy_mdio,
     "sys.linkscan": op_sys_linkscan,
     "sys.initlog": op_sys_initlog,
     "sys.show": op_sys_show,
