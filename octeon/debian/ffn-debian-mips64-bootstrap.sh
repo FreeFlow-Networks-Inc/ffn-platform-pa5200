@@ -189,6 +189,22 @@ fi
 # EXECUTED -- DH_VERBOSE=1 prints every command -- rather than to reason harder
 # about what should have happened.
 #
+# AND THEN THE ERROR CHANGED, which is how you know a step landed:
+#
+#   no dependency information found for .../debian/libc6/.../libc.so.6
+#
+# A different complaint entirely. The file is now found; what it lacks is shlibs
+# or symbols METADATA, because libc6 has not been assembled into a registered
+# .deb at the moment libc6-dev is packaged. Natively libc6 is already installed
+# and its metadata is in /var/lib/dpkg; in a staged cross-build it is a
+# directory of files and nothing more.
+#
+# `-- --ignore-missing-info` downgrades exactly that to a warning, which is the
+# documented option for the case. It costs nothing real: the resulting
+# dependency on libc6 comes from glibc's own control file either way. The `--`
+# matters -- without it the option is consumed by dh_shlibdeps instead of being
+# passed through to dpkg-shlibdeps.
+#
 # dh_shlibdeps takes colon-separated directories in one -l. If the glob matches
 # nothing the shell passes the pattern through unchanged, naming a directory
 # that does not exist -- harmless, and no worse than the empty list.
@@ -201,7 +217,7 @@ import io, sys
 p = sys.argv[1]
 lines = io.open(p, encoding="utf-8", errors="surrogateescape").read().splitlines(True)
 sed = ("	drop_privs sed -i '/^\tdh_shlibdeps -p[$](curpass)/ "
-       "s|$| -l$$(echo $(CURDIR)/debian/libc6/usr/lib/*):$(CURDIR)/debian/libc6/usr/lib64|' "
+       "s|$| -l$$(echo $(CURDIR)/debian/libc6/usr/lib/*):$(CURDIR)/debian/libc6/usr/lib64 -- --ignore-missing-info|' "
        "debian/rules.d/debhelper.mk
 ")
 fix = ['	echo "patching glibc: dh_shlibdeps has no -l path for libc6-dev"
