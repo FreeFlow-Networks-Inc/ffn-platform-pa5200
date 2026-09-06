@@ -34,12 +34,32 @@ for stage 7 as originally planned.
 | 3 | linux headers | **done** — `linux-libc-dev-mips64-cross` |
 | 4 | glibc stage1 (headers + crt) | **blocked, then fixed** — see below |
 | 5 | gcc stage2 | **done** — `gcc-16-mips64-linux-gnuabi64`, `cpp-16`, `libgcc-16-dev` |
-| 6 | glibc | retrying with the fix |
+| 6 | glibc | **done** — `libc6_2.43-5_mips64.deb` |
 | 7 | gcc stage3 | |
 | 8 | base system (~1000 source packages) | |
 
 Ten packages built before the stall, including the first genuinely
 target-architecture one: `binutils-for-host_2.47-4_mips64.deb`.
+
+## glibc built — and it is the right architecture
+
+The decisive check, on a real target binary rather than the linker's default:
+
+```
+usr/lib/mips64-linux-gnuabi64/libc.so.6
+  ELF 64-bit MSB shared object, MIPS, MIPS64 rel2, interpreter /lib64/ld.so
+usr/lib/mips64-linux-gnuabi64/ld.so.1
+  ELF 64-bit MSB shared object, MIPS, MIPS64 rel2
+```
+
+**MSB** is big-endian. This is the same signature as the hardware's own
+binaries — `/opt/dproot/bin/busybox: ELF 64-bit MSB executable, MIPS, MIPS64
+rel2`, and the vendor libraries' `elf64-tradbigmips` — so a Debian C library now
+exists for this platform's ABI.
+
+A toolchain that *targets* an architecture proves less than a C library built
+*for* it: the toolchain check (`ld --print-output-format`) confirms intent, this
+confirms output.
 
 ## The first real porting bug: glibc's stamp path
 
