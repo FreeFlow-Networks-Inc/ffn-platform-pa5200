@@ -123,14 +123,24 @@ consistent, and it is the strongest evidence obtainable without a write, but
 ### Some faceplate state is not on I2C at all
 
 The same function's other branch does not touch I2C. It reads
-`0xFF80000107000880` — `CVMX_GPIO_RX_DAT` — via `__cvmx_gpio_read`, and shifts
-out a per-port bit (5, 2, 7, 15, ... depending on port). So part of the faceplate
-presence state is wired straight to OCTEON GPIO.
+`CVMX_GPIO_RX_DAT` via `__cvmx_gpio_read` and shifts out a per-port bit — lines
+2, 5, 7, 14 and 15. So part of the faceplate presence state is wired straight to
+OCTEON GPIO, needing no muxes and no writes.
 
-That path needs no muxes and no writes, but it is not reachable yet either:
-this kernel exposes no `gpiochip` (no `/sys/class/gpio`), despite the device tree
-carrying `gpio-controller@1070000000800`. Enabling the OCTEON GPIO driver is a
-cheaper and lower-risk win than the mux work.
+**That path is now open — see `../gpio/README.md`.** Two corrections to what this
+file first said about it:
+
+- The address is `0x8001070000000880`, not `0xFF80000107000880`. The constant is
+  assembled across four instructions (`lui`/`ori`/`dsll32`/`ori`) and the
+  intermediate value is not the address; the result is XKPHYS-uncached plus
+  physical `0x1070000000880`, which is the GPIO block base `0x1070000000800`
+  plus the driver's `RX_DAT` offset of `0x80`. Same register either way, but the
+  wrong number is not worth keeping.
+- "This kernel exposes no gpiochip" was right about the symptom and wrong about
+  the cause. `/sys/class/gpio` is absent because `GPIO_SYSFS` is off; the modern
+  interface is `/dev/gpiochip*`. `CONFIG_GPIO_OCTEON=y` was already set and
+  nothing needed enabling — the driver simply never bound, because the DT says
+  `cavium,octeon-7890-gpio` and upstream matches only `-3860-`.
 
 ## Probing policy
 
