@@ -141,6 +141,61 @@ PYFIX
 		|| { say "patched bootstrap.sh does not parse -- reverting"; exit 5; }
 fi
 
+# --- 2c. patch rebootstrap: glibc's dh_shlibdeps search path ----------------
+# debian/rules.d/debhelper.mk:95 derives its library search path from the LAST
+# dash-separated word of the package name:
+#
+#   dh_shlibdeps -p$(curpass)
+#     $(foreach path,$($(lastword $(subst -, ,$(curpass)))_slibdir),-l/usr$(path))
+#
+# For curpass=libc6-dev that word is "dev", so it looks up `dev_slibdir`, which
+# does not exist -- the -l list is EMPTY BY CONSTRUCTION. (It works for the
+# multilib passes: libc6-mipsn32 yields mipsn32_slibdir, which mips64.mk
+# defines.) Natively that is harmless because libc is installed system-wide. In
+# a staged cross-bootstrap nothing is installed, and packaging libc6-dev dies:
+#
+#   dpkg-shlibdeps: error: cannot find library libc.so.6 needed by
+#     debian/libc6-dev/usr/lib/mips64-linux-gnuabi64/audit/sotruss-lib.so
+#     (ELF format: 'elf64-tradbigmips' abi: 'ELF:64:b:mips:0')
+#
+# dpkg has the architecture right -- elf64-tradbigmips -- it just cannot find
+# the file. Which was built moments earlier and is sitting in debian/libc6/.
+#
+# So point it at whatever is actually there, with $(wildcard) rather than a
+# hardcoded path or another derived variable name. The `*` covers any multiarch
+# tuple, and it expands to nothing when the files are absent, so a native build
+# is unaffected.
+if grep -q 'libc6/usr/lib64/ld.so.1' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
+	say "rebootstrap already carries the shlibdeps fix"
+else
+	say "patching rebootstrap's patch_glibc() for the dh_shlibdeps search path"
+	sudo python3 - "$CHROOT/root/rebootstrap/bootstrap.sh" <<'PYSHLIB'
+import io, sys
+p = sys.argv[1]
+lines = io.open(p, encoding="utf-8", errors="surrogateescape").read().splitlines(True)
+sed = ("	drop_privs sed -i '/^\tdh_shlibdeps -p[$](curpass)/ "
+       "s|$| $(addprefix -l,$(dir $(wildcard debian/libc6/usr/lib/*/libc.so.6 "
+       "debian/libc6/usr/lib64/ld.so.1)))|' debian/rules.d/debhelper.mk
+")
+fix = ['	echo "patching glibc: dh_shlibdeps has no -l path for libc6-dev"
+', sed]
+for i, l in enumerate(lines):
+    if l.startswith("patch_glibc()"):
+        j = i + 1
+        while j < len(lines) and "regenerate_control" not in lines[j]:
+            j += 1
+        if j >= len(lines):
+            sys.exit("no regenerate_control inside patch_glibc()")
+        lines[j + 1:j + 1] = fix
+        break
+else:
+    sys.exit("patch_glibc() not found")
+io.open(p, "w", encoding="utf-8", errors="surrogateescape", newline="").writelines(lines)
+print("  debian-mips64: shlibdeps fix inserted")
+PYSHLIB
+	sudo sh -c "bash -n '$CHROOT/root/rebootstrap/bootstrap.sh'" 		|| { say "patched bootstrap.sh does not parse"; exit 5; }
+fi
+
 # --- 3. run it ------------------------------------------------------------
 # SETTINGS GO AS ARGUMENTS, NOT AS ENVIRONMENT VARIABLES. bootstrap.sh does
 #
