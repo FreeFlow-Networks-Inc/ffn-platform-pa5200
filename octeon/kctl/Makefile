@@ -18,6 +18,7 @@
 obj-m += ffn_bcm.o
 obj-m += ffn_bde.o
 obj-m += ffn_mdio.o
+obj-m += ffn_octeon_info.o
 
 SDK   ?= /mnt/clones/sdk51/OCTEON-SDK
 KDIR  ?= /mnt/clones/kbuild
