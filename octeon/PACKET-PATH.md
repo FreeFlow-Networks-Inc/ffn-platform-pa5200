@@ -1,6 +1,7 @@
 # The packet path after L1 — what blocks FPA, and three ways round it
 
-**Status: L1 done, packet path not started. Measured 2026-09-05.**
+**Status 2026-09-06: FPA3 (own code) and PKI + SSO (imported) work. PKO3 is
+blocked, measured twice.**
 
 The 40G dataplane link is up ([[BGX]] — `xl24` up, `rcv_lnk=1`, `blk_lock=1`).
 Nothing can cross it: the dataplane has no FPA pools, no PKI (receive) and no
@@ -114,3 +115,74 @@ receive count would prove traffic crosses the link** — before any of FPA, PKI 
 PKO3 exists. It needs only a forwarding decision on the BCM toward port 24,
 which this platform has done before (see `bcm/` notes on
 `tm_port_header_type=ETH`).
+
+---
+
+# Update 2026-09-06: PKI and SSO in, PKO3 out
+
+## PKI imported cleanly — and the reason is worth knowing
+
+`cvmx-pki.h` needs only `cvmx.h`, `cvmx-pki-defs.h`, `cvmx-fpa3.h` and the two
+helper headers, **and does not include `cvmx-wqe.h`**. So there is no
+API-header generation conflict and the ordinary import pattern applies. 5 errors
+to 0. Same for `cvmx-sso-resources.c`, which needed nothing at all.
+
+46 `cvmx_pki` symbols and 5 `cvmx_sso` symbols in vmlinux, and — the part that
+matters — **the code runs**: `PKI_SFT_RST[BUSY]=0`, and the style and QPG
+allocators allocate/free/reallocate to the same index. See `ffn_pki.c`.
+
+Two spellings went into the compat header: `CVMX_BITFIELD_FIELD` (the
+endian-aware bitfield macro upstream never had), and `enum cvmx_pki_layer_type`
+with its value macros, verbatim from SDK `cvmx-wqe.h:129-181`.
+
+## A generation name collision, resolved
+
+PKO3's registers live only in the SDK's `cvmx-pko-defs.h`, so that was swapped
+(allowed — `*-defs.h` carry no linkage). It broke upstream `cvmx-pko.c`: **both
+generations use the identifier `cvmx_pko_status_t`**, upstream for a return-code
+*enum*, the SDK for a register *union* — and `cvmx-pko3.c` needs the union while
+`cvmx-pko.c` needs the enum. The legacy enum was renamed to
+`cvmx_pko_legacy_status_t`, because it is dead on a CN78XX and its whole user
+set is six lines of OCTEON I/II code here.
+
+## PKO3 is blocked on cvmx-wqe.h, and this was measured twice
+
+PKO3 needs the OCTEON III work-queue-entry types — `cvmx_wqe_78xx_t`,
+`cvmx_buf_ptr_pki_t`, `cvmx_pki_wqe_word2_t`. They are **not separable**: they
+are woven through the whole 1912-line SDK `cvmx-wqe.h`, which also redefines
+`cvmx_wqe_t` itself. Lifting them the way the layer-type enum was lifted is not
+possible.
+
+| attempt | result |
+|---|---|
+| swap `cvmx-wqe.h` alone | 407 errors. Looked encouraging — all from 3 headers, one apparent failing TU. Adding the compat include there let the build get *further* and the count rose to **762** across five more upstream files. The first number was small only because the build stopped early. |
+| swap it **plus** compat includes in all 20 upstream executive sources, one pass | **441 errors**, still dominated (106x) by `OCTEON_FEATURE_CN78XX_WQE` — *a compat spelling, in files that now include the compat header* |
+
+That second result is the structural answer. Upstream sources include
+`<asm/octeon/octeon.h>`, which drags in `cvmx-wqe.h` **before** the compat header
+can be placed — and the compat header must come *after* `cvmx.h`. **There is no
+include order that satisfies both.** The closure then widens further
+(`cvmx_pow_tag_type_t`, `struct cvmx_wqe`) into `cvmx-pow.h`.
+
+Both attempts reverted; tree builds clean, 0 errors, 0 undefined. The PKO3
+sources are imported and left out of `obj-y`.
+
+### What is left for PKO3
+
+**Own-code the descriptor path**, as was done for FPA3. That is now the
+recommended route rather than one of three: the generation import has been tried
+properly, in one pass, and the obstacle is structural rather than a matter of
+effort. PKO3's send path is a descriptor format plus LMTDMA/IOBDMA stores
+against `cvmx-pko-defs.h`, which is already the SDK's in this tree.
+
+## Where the packet path stands
+
+| piece | state |
+|---|---|
+| FPA3 buffers | **own code, works on silicon** (selftest passes) |
+| PKI receive classification | **imported, links, runs** |
+| SSO | **imported, links** |
+| PKO3 transmit | **blocked** — own-code it |
+
+Receive is nearly assembled. Transmit is the gap.
+
