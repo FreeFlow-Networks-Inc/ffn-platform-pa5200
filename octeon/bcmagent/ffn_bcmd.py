@@ -1188,9 +1188,11 @@ def op_sys_show(chip, req):
 _CINT_SCRIPTS = {
     # FFN's own, in ffn-platform-pa5200/bcm/
     "ffn_bcm_rung.c":      "MP port 8 -> VOQ -> port 24 -> the dataplane",
+    "ffn_bcm_fplink.c":    "light faceplate ports 16/7 (eth1/5 <-> eth1/13): enable + speed",
     "ffn_bcm_voq.c":       "CP port 5 -> VOQ -> port 24 (the original, proven)",
     "ffn_bcm_faceplate.c": "enable the 25 faceplate ports and force-forward them",
     "ffn_bcm_chain.c":     "multi-destination version of the VOQ recipe",
+    "ffn_bcm_fpchain.c":   "MP -> port 16 -> [faceplate cable] -> port 7 -> port 24 -> DP",
     "ffn_bcm_l2.c":        "L2 bridging via tm_port_header_type=ETH",
     # Vendor diagnostics that ship in the config tree.
     "enable_fp_ports.c":   "vendor: enable all 25 front-panel ports",
@@ -1241,7 +1243,12 @@ def op_cint_run(chip, req):
 
     return {"script": name, "purpose": _CINT_SCRIPTS[name], "path": path,
             "markers": markers,
-            "completed": bool(markers) and markers[-1] == "FFN_DONE",
+            # Any marker ENDING in DONE, not the literal "FFN_DONE": recipes
+            # name their own final marker (FFN_DONE, FFN_CHAIN_DONE), and
+            # hardcoding one made a fully successful chain report completed
+            # false. A completion check that is wrong about success is worse
+            # than none, because it gets believed in both directions.
+            "completed": bool(markers) and markers[-1].endswith("DONE"),
             "output_lines": len(lines), "output": lines[:300],
             "truncated": len(lines) > 300}
 
