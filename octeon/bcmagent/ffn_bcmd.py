@@ -1134,6 +1134,10 @@ _SHOW_CMDS = {
     "multicast": "multicast show",
     "field":     "fp show",
     # Port and link state.
+    # Which PHY driver, if any, the SDK attached to each port. This is how you
+    # tell "the driver is in the binary" from "the driver is attached to the
+    # port" -- two different things, and only the second makes a link possible.
+    "phyinfo":   "phy info",
     "ports":     "ps",
     "linkscan":  "linkscan",
     "counters":  "show c",
