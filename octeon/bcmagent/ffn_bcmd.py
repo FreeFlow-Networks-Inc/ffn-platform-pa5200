@@ -975,10 +975,13 @@ def op_port_phy(chip, req):
 
     # The one fact worth leading with. A dead SerDes microcontroller cannot do
     # RX adaptation, so no port can link -- and it looks identical to a cable
-    # fault from every other diagnostic on this box.
+    # fault from every other diagnostic on this box. Compared through
+    # _dsc_int() because UC_ATV is a status bit and so can carry the change
+    # marker: a literal "1" == "1" reports a running uC as dead the moment the
+    # chip prints "1*".
     uc = None
     if core and "UC_ATV" in core:
-        uc = (core["UC_ATV"] == "1")
+        uc = (_dsc_int(core["UC_ATV"]) == 1)
 
     return {"port": name, "what": what, "cmd": "phy diag %s %s" % (name, what),
             "uc_running": uc,
@@ -988,82 +991,186 @@ def op_port_phy(chip, req):
             "truncated": len(lines) > 60}
 
 
+def _dsc_columns(line):
+    """One line of a `phy diag ... dsc` table as [(text, start, end)] cells.
+
+    Two things stop a plain `line.split()` from working, and both show up in
+    the header as well as in the data, which is what makes them tractable:
+
+      * a parenthesised group is ONE cell even though it contains spaces and
+        commas -- `(CDRxN      , UC_CFG,RST,STP)` in the header, and the
+        `(OSx1       , 0x040c,   0, 0)` printed under it;
+      * a comma-separated list is printed with each comma attached to the
+        element on its LEFT (`47, 10,  1,  2, -1,  0`), so a cell ending in a
+        comma is unfinished and continues into the next one.
+
+    The comma rule is what makes the cells come out one-for-one with the header
+    fields. Without it `DFE(1,2,3,4,5,6)`'s six numbers arrive as six separate
+    cells and every field to their right is off by five.
+    """
+    cells, i, n = [], 0, len(line)
+    while i < n:
+        if line[i].isspace():
+            i += 1
+            continue
+        start, depth = i, 0
+        while i < n:
+            c = line[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                if depth:
+                    depth -= 1
+            elif c.isspace() and depth == 0:
+                break
+            i += 1
+        if cells and cells[-1][0].endswith(","):
+            cells[-1][0] += line[start:i]        # continuation of a comma list
+            cells[-1][2] = i
+        else:
+            cells.append([line[start:i], start, i])
+    return [(t, s, e) for t, s, e in cells]
+
+
+def _dsc_row(hdr, val):
+    """{field name: value} for one column-aligned header/value pair.
+
+    The names come from whatever header the chip just printed, and each value
+    cell is assigned to the field whose columns it overlaps -- NOT to a fixed
+    position. This same `dsc` table is printed by three different dump
+    functions on this board: tsce_phy_pmd_info_dump for the TSCE cores,
+    tscf_phy_pmd_info_dump for the TSCF/falcon ones behind the 100G cages, and
+    falcon_phy_pmd_info_dump for the ILKN port. They do not agree on their
+    columns. TSCE prints one `RST_ST` where TSCF prints `RST` and `ST`
+    separately; TSCF has an `M1mV` column TSCE has not; TSCE's `DFE(...)`
+    carries seven sub-values plus two extra SLICER columns where TSCF's carries
+    six. Anything counting columns parses one family and misreads the other.
+
+    Assignment walks left to right and never goes back, because cells and
+    fields are in the same order by construction. That is what stops a value
+    wider than its own header column -- DFE's six numbers run on under TXPPM --
+    from stealing the next field. A field that collects more than one cell has
+    them joined with a space: the core row's AVG_TMON really is two words,
+    `(11) 66C`, the raw temperature index and what it decodes to.
+    """
+    fields, cells = _dsc_columns(hdr), _dsc_columns(val)
+    if not fields or not cells:
+        return None
+    buckets = [[] for _ in fields]
+    lo = 0
+    for text, s, e in cells:
+        best, best_score = lo, None
+        for k in range(lo, len(fields)):
+            _, hs, he = fields[k]
+            overlap = min(e, he) - max(s, hs)
+            # Prefer a field whose columns the cell actually overlaps; failing
+            # that, the nearest one to the right of where we have got to.
+            score = (0 if overlap > 0 else 1, max(0, -overlap))
+            if best_score is None or score < best_score:
+                best, best_score = k, score
+        buckets[best].append(text)
+        lo = best
+    out = {}
+    for (name, _s, _e), got in zip(fields, buckets):
+        if got:
+            out[re.sub(r"\s+", "", name)] = " ".join(got)
+    return out or None
+
+
+# A status bit the SDK has seen CHANGE since the previous read is printed with
+# a trailing '*': `1*` means "set now, and it has not been steady". The flag is
+# sticky and reading clears it, so it is there on the FIRST look at a port that
+# has just linked or flapped and gone by the second look. That makes it real
+# information -- on a link that keeps dropping it is the only thing that says
+# so -- but it must never reach int().
+_DSC_CHANGED = "*"
+
+
+def _dsc_flag(value):
+    """(text with the change marker removed, whether it was there)."""
+    if value is None:
+        return None, False
+    text = value.rstrip(_DSC_CHANGED)
+    return text, text != value
+
+
+def _dsc_int(value):
+    """A dsc cell as an int, ignoring any change marker; None if it is not one."""
+    text, _changed = _dsc_flag(value)
+    if not text:
+        return None
+    try:
+        return int(text, 0)
+    except ValueError:
+        return None
+
+
 def _dsc_core(lines):
     """The CORE state row of `phy diag <port> dsc`, as a dict.
 
-    The output is a column-aligned header/value pair:
+    The output is a column-aligned header/value pair. TSCE prints
 
         CORE RST_ST  PLL_PWDN  UC_ATV   COM_CLK   UCODE_VER  AFE_VER  ...
         00    0,00      0        1     156.25MHz   D10F_13     0x00   ...
 
-    Values are NOT one whitespace token each -- RST_ST is `0,00` and AVG_TMON is
-    `(10) 44C` -- so splitting both lines and zipping them silently pairs the
-    wrong things. Each value token is instead assigned to the header whose
-    column span its centre is nearest, which is what column alignment actually
-    means. A value more than half a field away from every header is dropped
-    rather than guessed at.
+    where TSCF splits RST_ST into two columns and adds API_VER, so the field
+    names are read off the header rather than assumed. Values are not one
+    whitespace token each either -- RST_ST is `0,00`, AVG_TMON is `(11) 66C`
+    and PLL_DIV is `(07) 165` -- so splitting both lines and zipping them
+    pairs the wrong things.
     """
-    hdr = val = None
     for i, l in enumerate(lines):
         if l.strip().startswith("CORE ") and "UC_ATV" in l:
-            hdr = l
             val = lines[i + 1] if i + 1 < len(lines) else ""
-            break
-    if hdr is None or not val.strip():
-        return None
-
-    spans = []
-    for m in re.finditer(r"\S+", hdr):
-        spans.append((m.group(0), (m.start() + m.end()) / 2.0))
-    out = {}
-    for m in re.finditer(r"\S+", val):
-        c = (m.start() + m.end()) / 2.0
-        name, dist = None, None
-        for nm, hc in spans:
-            d = abs(hc - c)
-            if dist is None or d < dist:
-                name, dist = nm, d
-        # 6 characters is about half the narrowest field here. Beyond that the
-        # association is a guess, and a guessed UC_ATV is worse than none.
-        if name is not None and dist <= 6 and name not in out:
-            out[name] = m.group(0)
-    return out or None
+            return _dsc_row(l, val) if val.strip() else None
+    return None
 
 
 def _dsc_lanes(lines):
-    """Per-lane SD (signal detect) and LCK from the `dsc` lane table.
+    """Per-lane PMD state from the `dsc` lane table, one dict per lane.
 
     Rows look like
 
         LN (CDRxN  , UC_CFG,RST,STP)  SD LCK RXPPM CLK90 ...
          0 (OSx1   , 0x0200,   0, 0)  0   0    20    31  ...
 
-    Anchored on the parenthesised group rather than on column positions: the
-    group has a fixed shape, and the two whitespace tokens after its closing
-    paren are SD and LCK by the header's own ordering. Column arithmetic would
-    have to cope with the commas inside the group.
+    SD (signal detect) and LCK are lifted out as `signal_detect` and `lock`
+    because they are what the caller came for; every other column the chip
+    printed is returned under `fields` by its own header name, which is where
+    the eye measurements, the DFE taps and LINK_TIME live.
+
+    A lane whose SD or LCK carries the change marker also gets
+    `signal_detect_changed` / `lock_changed`. Losing those to a ValueError is
+    what used to drop the entire table on precisely the ports worth looking at:
+    the marker is set on the first read after a port links, so `lanes` came
+    back null for every port that had just come up -- and for no other.
     """
     out = []
-    started = False
+    hdr = None
     for l in lines:
         s = l.strip()
         if s.startswith("LN ") and "SD" in s and "LCK" in s:
-            started = True
+            hdr = l
             continue
-        if not started:
+        if hdr is None:
             continue
-        m = re.match(r"^\s*(\d+)\s*\([^)]*\)\s+(\S+)\s+(\S+)", l)
-        if not m:
+        if not re.match(r"^\s*\d+\s*\(", l):
             # The table ends at the first line that is not a lane row.
             if out:
                 break
             continue
-        try:
-            out.append({"lane": int(m.group(1)),
-                        "signal_detect": int(m.group(2), 0),
-                        "lock": int(m.group(3), 0)})
-        except ValueError:
+        row = _dsc_row(hdr, l)
+        lane = _dsc_int(row.get("LN")) if row else None
+        if lane is None:
             continue
+        sd, sd_changed = _dsc_flag(row.get("SD"))
+        lck, lck_changed = _dsc_flag(row.get("LCK"))
+        out.append({"lane": lane,
+                    "signal_detect": _dsc_int(sd),
+                    "lock": _dsc_int(lck),
+                    "signal_detect_changed": sd_changed,
+                    "lock_changed": lck_changed,
+                    "fields": row})
     return out or None
 
 
