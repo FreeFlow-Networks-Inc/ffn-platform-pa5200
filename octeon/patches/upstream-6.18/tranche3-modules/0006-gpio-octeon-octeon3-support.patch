@@ -1,0 +1,117 @@
+--- a/drivers/gpio/gpio-octeon.c
++++ b/drivers/gpio/gpio-octeon.c
+@@ -11,6 +11,7 @@
+ #include <linux/module.h>
+ #include <linux/gpio/driver.h>
+ #include <linux/io.h>
++#include <linux/of.h>
+ 
+ #include <asm/octeon/octeon.h>
+ #include <asm/octeon/cvmx-gpio-defs.h>
+@@ -19,11 +20,48 @@
+ #define TX_SET 0x88
+ #define TX_CLEAR 0x90
+ /*
++ * Where the per-line configuration registers live differs by generation, and
++ * the difference is not a detail: get it wrong and every direction change
++ * writes to the wrong address. On the OCTEON III part this driver newly
++ * supports, a write aimed at GPIO_BIT_CFG lands somewhere undefined instead,
++ * so the pin silently keeps whatever direction it already had.
++ */
++struct octeon_gpio_variant {
++	bool cfg_split;		/* config split across two ranges */
++	unsigned int cfg_base;	/* base offset when it is not split */
++};
++
++/* CN3xxx/CN5xxx/CN6xxx: BIT_CFG0..15 at +0x00, XBIT_CFG16.. at +0x100. */
++static const struct octeon_gpio_variant octeon_gpio_legacy = {
++	.cfg_split = true,
++};
++
++/*
++ * OCTEON III (CN73XX, CNF75XX, CN78XX): one flat array at +0x100 for every
++ * line, confirmed against CVMX_GPIO_BIT_CFGX, which returns
++ * 0x0001070000000900 + (offset & 31) * 8 against a block base of
++ * 0x0001070000000800. RX_DAT/TX_SET/TX_CLR are unchanged at +0x80/+0x88/+0x90.
++ */
++static const struct octeon_gpio_variant octeon_gpio_octeon3 = {
++	.cfg_split = false,
++	.cfg_base = 0x100,
++};
++
++struct octeon_gpio {
++	struct gpio_chip chip;
++	u64 register_base;
++	const struct octeon_gpio_variant *variant;
++};
++
++/*
+  * The address offset of the GPIO configuration register for a given
+  * line.
+  */
+-static unsigned int bit_cfg_reg(unsigned int offset)
++static unsigned int bit_cfg_reg(struct octeon_gpio *gpio, unsigned int offset)
+ {
++	if (!gpio->variant->cfg_split)
++		return gpio->variant->cfg_base + 8 * offset;
++
+ 	/*
+ 	 * The register stride is 8, with a discontinuity after the
+ 	 * first 16.
+@@ -34,16 +72,11 @@
+ 		return 8 * (offset - 16) + 0x100;
+ }
+ 
+-struct octeon_gpio {
+-	struct gpio_chip chip;
+-	u64 register_base;
+-};
+-
+ static int octeon_gpio_dir_in(struct gpio_chip *chip, unsigned offset)
+ {
+ 	struct octeon_gpio *gpio = gpiochip_get_data(chip);
+ 
+-	cvmx_write_csr(gpio->register_base + bit_cfg_reg(offset), 0);
++	cvmx_write_csr(gpio->register_base + bit_cfg_reg(gpio, offset), 0);
+ 	return 0;
+ }
+ 
+@@ -69,7 +102,7 @@
+ 	cfgx.u64 = 0;
+ 	cfgx.s.tx_oe = 1;
+ 
+-	cvmx_write_csr(gpio->register_base + bit_cfg_reg(offset), cfgx.u64);
++	cvmx_write_csr(gpio->register_base + bit_cfg_reg(gpio, offset), cfgx.u64);
+ 	return 0;
+ }
+ 
+@@ -97,6 +130,10 @@
+ 	if (IS_ERR(reg_base))
+ 		return PTR_ERR(reg_base);
+ 
++	gpio->variant = of_device_get_match_data(&pdev->dev);
++	if (!gpio->variant)
++		return -EINVAL;
++
+ 	gpio->register_base = (u64)reg_base;
+ 	pdev->dev.platform_data = chip;
+ 	chip->label = "octeon-gpio";
+@@ -120,6 +157,18 @@
+ static const struct of_device_id octeon_gpio_match[] = {
+ 	{
+ 		.compatible = "cavium,octeon-3860-gpio",
++		.data = &octeon_gpio_legacy,
++	},
++	{
++		/*
++		 * OCTEON III describes this block as -7890-, and boards built
++		 * on it say so in their device tree, so a 3860-only table never
++		 * matches: the driver registers, the platform device appears,
++		 * and nothing binds -- with no error, because a device nobody
++		 * claims is not an error. i2c-octeon already lists both.
++		 */
++		.compatible = "cavium,octeon-7890-gpio",
++		.data = &octeon_gpio_octeon3,
+ 	},
+ 	{},
+ };
