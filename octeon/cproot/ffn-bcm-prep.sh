@@ -24,7 +24,8 @@ lsmod | grep -q "^ffn_bcm" || insmod /lib/modules/ffn_bcm.ko || { say "ffn_bcm i
 # version banner reports "DMA pool size: 67108864", and ffn-bcm-sdk.sh on the
 # 4.9 path passes exactly these. The range is the ffn_reserve=0x30000000,64M
 # already on the CP boot line (see tools/ffn-octeon-up.sh CP_EXTRA).
-lsmod | grep -q "^ffn_bde" || insmod /lib/modules/ffn_bde.ko dma_phys=0x30000000 dma_mb=64 \n  || { say "ffn_bde insmod FAILED"; exit 3; }
+lsmod | grep -q "^ffn_bde" || insmod /lib/modules/ffn_bde.ko dma_phys=0x30000000 dma_mb=64 \
+  || { say "ffn_bde insmod FAILED"; exit 3; }
 say "modules: $(lsmod | awk 'NR>1{print $1}' | tr '\n' ' ')"
 
 [ -c /dev/linux-kernel-bde ] || mknod /dev/linux-kernel-bde c 127 0
