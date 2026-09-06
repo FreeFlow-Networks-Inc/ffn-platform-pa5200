@@ -243,3 +243,72 @@ differently, `cvmx_user_app_init()` is where it will show up.
 So the open question moved from "can PKO3 be expressed at all" to "does our own
 kernel publish what the SDK's userspace runtime expects". That is a much smaller
 and much better-defined problem.
+
+# Update 2026-09-06 (later still): it builds, deploys, and initialises on silicon
+
+The dataplane now runs on the DP as an OCTEON userspace application. Measured,
+on the live 40-core CN7885:
+
+```
+CVMX_SHARED: 0x10210000-0x102f0000
+Active coremask =  node 0: 0xffffffffff
+ffn-dp-octeon: backend cvmx (octeon-ii and octeon-iii)
+  port 0 = ipd 2560  vsys 1
+cvmx3_hw_init: no PKO3 queue for ipd_port 2560
+```
+
+Read that from the top: the CVMX shared region is mapped, **the per-core fork
+barrier completed across all 40 cores**, `cvmx_user_app_init()` returned,
+`cvmx_helper_initialize_packet_io_global()` and `_local()` both returned
+success — each of those would have named itself on failure — and
+`oct_add_port()` accepted the 40G port. One call fails.
+
+## The three things that had to be true first
+
+None of them announced itself. Each presented as a different symptom.
+
+**1. `/proc/octeon_info`.** `cvmx_sysinfo_linux_userspace_initialize()` calls
+`exit(-1)` if it cannot open that file. Our 6.18 kernel does not publish it;
+the SDK's 3.10 does. `octeon/kctl/ffn_octeon_info.c` formats it out of
+`octeon_bootinfo`, which the kernel already has and exports.
+
+**2. User XKPHYS access.** Every CSR access in a LINUX_USER build is an inline
+`ld`/`sd` at an XKPHYS address, so without it the first register read is a
+SIGSEGV with no message. `octeon/kctl/ffn_xkphys.c` sets
+`CvmMemCtl[xkmemenau,xkioenau]` on every core.
+
+**3. `CVMX_SHARED` — and this one is the trap.** It expands to
+`__attribute__((cvmx_shared))`, an attribute that exists ONLY in Cavium's
+patched gcc 4.7. Mainline gcc ignores an unknown attribute with a warning, so
+every shared variable silently became per-process. `cvmx_user_app_init()` then
+forks one process per core and spins on a `CVMX_SHARED` counter:
+
+```c
+while (cvmx_atomic_get32(&pending_fork))     /* cvmx-app-init-linux.c:387 */
+```
+
+Unshared, that never reaches zero. Measured outcome: 40 processes, four minutes
+of CPU each, load average 25, and **not one line of output** — nothing had
+failed, so nothing was reported. `compat/ffn_musl_compat.h` redefines the
+attribute NAME to a real section attribute, which the SDK's own linker script
+already gathers. `build-octeon-app.sh` checks the section is non-empty and
+refuses to ship a binary where it is not, because that failure is invisible.
+
+## What is left: one call
+
+`cvmx_pko3_get_queue_base(0xa00)` returns < 0 — the helper assigned no PKO3
+descriptor queue to BGX2, which is the 40G. That is consistent with what the
+kernel BGX work already found once: `cvmx_helper_ports_on_interface()` reporting
+zero ports for BGX leaves the whole layer inert, and the packet-io helper only
+allocates queues for interfaces it believes have ports.
+
+So the remaining work is interface enumeration for BGX2 inside the helper's
+view, not anything about PKO3 descriptors — those are own-coded, checked against
+the SDK's own enums at compile time, and never reached yet.
+
+## Correction to the row above
+
+The table earlier in this file lists PKO3 transmit as "blocked — own-code it".
+Both halves were wrong: it is not blocked, and the descriptor path was already
+own-coded. See the previous update for why the measurement that produced that
+conclusion did not mean what it appeared to.

@@ -73,6 +73,7 @@
  * this path on a live CN78XX.
  */
 #include "ffn_dp_io_octeon3.h"
+#include <stdio.h>
 #include "ffn_dp_vsys.h"
 
 #include <stdint.h>
@@ -178,36 +179,56 @@ static int cvmx3_check_ptr_layout(void)
            FFN_PKI_PTR_ADDR(probe.u64)    == 0x3FF00000055ULL;
 }
 
+/* Every failure below used to return a bare DP_ERR_NOMEM, so six unrelated
+ * causes all surfaced as "dp_init: out of memory" -- which named the wrong
+ * problem in all six cases and the right one in none. On real hardware that is
+ * the difference between a five-minute fix and an afternoon: the first live run
+ * failed here and the message said nothing about which check it was.
+ *
+ * The return value stays DP_ERR_NOMEM so callers are unchanged; what is added
+ * is saying WHICH step failed, on stderr, once per core.
+ */
+static int cvmx3_fail(const char *what)
+{
+    fprintf(stderr, "cvmx3_hw_init: %s failed\n", what);
+    return DP_ERR_NOMEM;
+}
+
+#define CVMX3_FAIL(what) return cvmx3_fail(what)
+
 static int cvmx3_hw_init(struct oct_ctx *c)
 {
     int i;
 
     if (!cvmx3_check_ptr_layout())
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("packet-pointer layout check");
 
     if (cvmx_user_app_init() != 0)
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("cvmx_user_app_init");
 
     /* Refuse to drive PKI/SSO/PKO3 on a part that does not have them. Selecting
      * the wrong backend means writing the wrong blocks, which is worse than not
      * starting. */
     if (!octeon_has_feature(OCTEON_FEATURE_CN78XX_WQE))
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("OCTEON_FEATURE_CN78XX_WQE (wrong part for this backend)");
 
     if (cvmx_is_init_core()) {
         if (cvmx_helper_initialize_packet_io_global() != 0)
-            return DP_ERR_NOMEM;
+            CVMX3_FAIL("cvmx_helper_initialize_packet_io_global");
     }
     if (cvmx_helper_initialize_packet_io_local() != 0)
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("cvmx_helper_initialize_packet_io_local");
 
     /* The output queue is a PKO3 descriptor queue, and only the SDK knows which
      * DQ the helper assigned to each IPD port. Whatever the caller put in
      * `pko_queue` is a guess; this is the answer. */
     for (i = 0; i < c->nports; i++) {
         int dq = cvmx_pko3_get_queue_base(c->ports[i].ipd_port);
-        if (dq < 0)
+        if (dq < 0) {
+            fprintf(stderr, "cvmx3_hw_init: no PKO3 queue for ipd_port %d\n",
+                    c->ports[i].ipd_port);
             return DP_ERR_NOMEM;
+        }
         c->ports[i].pko_queue = dq;
     }
 
