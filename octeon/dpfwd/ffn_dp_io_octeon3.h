@@ -20,6 +20,7 @@
 
 #include "ffn_dp_io_octeon.h"
 #include <stdint.h>
+#include <stdio.h>
 
 /* PKO_SEND_*_S sub-command codes.
  *
@@ -89,6 +90,12 @@ struct pko3_desc {
  * does not fit the header field). On refusal nothing usable is produced and the
  * caller must not issue. */
 int oct3_build_desc(struct pko3_desc *d, const struct oct_wqe *w, int keep_data);
+
+/* Print what the SDK helper believes about every interface: mode, port count,
+ * ipd_port and PKO3 descriptor queue. Read-only; safe on a live dataplane.
+ * A missing PKO3 queue is a symptom of a zero-port interface, so this is
+ * the first thing to look at when cvmx3_hw_init reports one. */
+void cvmx3_probe_interfaces(FILE *f);
 
 
 struct dp_vsys_plan;

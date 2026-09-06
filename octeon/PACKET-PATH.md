@@ -186,3 +186,129 @@ against `cvmx-pko-defs.h`, which is already the SDK's in this tree.
 
 Receive is nearly assembled. Transmit is the gap.
 
+
+# Update 2026-09-06 (later): "PKO3 is blocked" was too broad
+
+The table above says PKO3 transmit is **blocked**. That conclusion is narrower
+than it was written, and the difference decides the whole approach.
+
+Everything measured above — 407 errors, then 762, then 441 — came from importing
+the SDK's cvmx sources **into the Linux kernel tree**. That failure is real and
+the diagnosis holds: upstream sources include `<asm/octeon/octeon.h>`, which
+drags in the kernel's own `cvmx-wqe.h` before a compat header can be placed, and
+the compat header must come after `cvmx.h`. There is no include order that
+satisfies both.
+
+But that is a statement about **building cvmx inside a kernel tree**, not about
+PKO3. Built the SDK's own way — standalone, against the SDK's headers, no kernel
+headers in the include path — there is no conflict, because there is no second
+`cvmx-wqe.h` to collide with. Measured:
+
+    make oct3-cvmx SDK=/mnt/clones/sdk51/OCTEON-SDK MODEL=OCTEON_CN78XX
+    ...
+    CVMX-CC ffn_dp_io_octeon3.c
+    CVMX-CC ffn_dp_bgx_octeon3.c
+    octeon backends compile clean against OCTEON_CN78XX
+
+`ffn_dp_io_octeon3.c` is the PKI + SSO + PKO3 backend, and it compiles — calls to
+`cvmx_helper_initialize_packet_io_global()`, `cvmx_pko3_get_queue_base()` and
+`cvmx_pko3_xmit_link_buf()` included.
+
+## What that changes
+
+The forwarder should be built as an **OCTEON userspace application** linked
+against the SDK's libcvmx, not as kernel code. `cvmx3_hw_init()` already calls
+`cvmx_user_app_init()`, which is the SDK's Linux-userspace entry point — the code
+was written for this model. The executive is BSD-3, so it can ship.
+
+Own-coding the PKO3 descriptor path is therefore **not** the outstanding task. It
+is already own-coded in `ffn_dp_io_octeon3.c`, with compile-time assertions tying
+`PKO3_SUBDC3_LINK`, `PKO3_SUBDC3_GATHER` and `PKO3_SUBDC4_FREE` to the SDK's own
+`CVMX_PKO_SENDSUBDC_*` enums so a format drift breaks the build rather than the
+wire.
+
+## What is actually left, and where the risk now sits
+
+1. **Build libcvmx for CN78XX.** There is no prebuilt `libcvmx*.a` in the tree;
+   the SDK's example Makefiles build the executive objects they need.
+2. **Link the forwarder against it and run it on the DP's 6.18 Linux.**
+
+Step 2 is the real unknown, and it is not PKO3. `cvmx_user_app_init()` wants
+`/dev/mem` and a shm/hugetlb mount, which are ordinary. What is not ordinary is
+that the SDK's userspace CVMX expects bootmem and named-block information the way
+the SDK's OWN kernel publishes it — `/proc/octeon_info` — and the DP runs FFN's
+6.18 kernel, not the SDK's 3.10. If that interface is absent or shaped
+differently, `cvmx_user_app_init()` is where it will show up.
+
+So the open question moved from "can PKO3 be expressed at all" to "does our own
+kernel publish what the SDK's userspace runtime expects". That is a much smaller
+and much better-defined problem.
+
+# Update 2026-09-06 (later still): it builds, deploys, and initialises on silicon
+
+The dataplane now runs on the DP as an OCTEON userspace application. Measured,
+on the live 40-core CN7885:
+
+```
+CVMX_SHARED: 0x10210000-0x102f0000
+Active coremask =  node 0: 0xffffffffff
+ffn-dp-octeon: backend cvmx (octeon-ii and octeon-iii)
+  port 0 = ipd 2560  vsys 1
+cvmx3_hw_init: no PKO3 queue for ipd_port 2560
+```
+
+Read that from the top: the CVMX shared region is mapped, **the per-core fork
+barrier completed across all 40 cores**, `cvmx_user_app_init()` returned,
+`cvmx_helper_initialize_packet_io_global()` and `_local()` both returned
+success — each of those would have named itself on failure — and
+`oct_add_port()` accepted the 40G port. One call fails.
+
+## The three things that had to be true first
+
+None of them announced itself. Each presented as a different symptom.
+
+**1. `/proc/octeon_info`.** `cvmx_sysinfo_linux_userspace_initialize()` calls
+`exit(-1)` if it cannot open that file. Our 6.18 kernel does not publish it;
+the SDK's 3.10 does. `octeon/kctl/ffn_octeon_info.c` formats it out of
+`octeon_bootinfo`, which the kernel already has and exports.
+
+**2. User XKPHYS access.** Every CSR access in a LINUX_USER build is an inline
+`ld`/`sd` at an XKPHYS address, so without it the first register read is a
+SIGSEGV with no message. `octeon/kctl/ffn_xkphys.c` sets
+`CvmMemCtl[xkmemenau,xkioenau]` on every core.
+
+**3. `CVMX_SHARED` — and this one is the trap.** It expands to
+`__attribute__((cvmx_shared))`, an attribute that exists ONLY in Cavium's
+patched gcc 4.7. Mainline gcc ignores an unknown attribute with a warning, so
+every shared variable silently became per-process. `cvmx_user_app_init()` then
+forks one process per core and spins on a `CVMX_SHARED` counter:
+
+```c
+while (cvmx_atomic_get32(&pending_fork))     /* cvmx-app-init-linux.c:387 */
+```
+
+Unshared, that never reaches zero. Measured outcome: 40 processes, four minutes
+of CPU each, load average 25, and **not one line of output** — nothing had
+failed, so nothing was reported. `compat/ffn_musl_compat.h` redefines the
+attribute NAME to a real section attribute, which the SDK's own linker script
+already gathers. `build-octeon-app.sh` checks the section is non-empty and
+refuses to ship a binary where it is not, because that failure is invisible.
+
+## What is left: one call
+
+`cvmx_pko3_get_queue_base(0xa00)` returns < 0 — the helper assigned no PKO3
+descriptor queue to BGX2, which is the 40G. That is consistent with what the
+kernel BGX work already found once: `cvmx_helper_ports_on_interface()` reporting
+zero ports for BGX leaves the whole layer inert, and the packet-io helper only
+allocates queues for interfaces it believes have ports.
+
+So the remaining work is interface enumeration for BGX2 inside the helper's
+view, not anything about PKO3 descriptors — those are own-coded, checked against
+the SDK's own enums at compile time, and never reached yet.
+
+## Correction to the row above
+
+The table earlier in this file lists PKO3 transmit as "blocked — own-code it".
+Both halves were wrong: it is not blocked, and the descriptor path was already
+own-coded. See the previous update for why the measurement that produced that
+conclusion did not mean what it appeared to.

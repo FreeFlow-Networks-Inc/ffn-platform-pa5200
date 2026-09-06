@@ -20,8 +20,17 @@
 set -u
 
 BCMD=/usr/local/ffn/ffn_bcmd.py
-BCM=/usr/local/ffn/bcm.user.hwswap
-CFG=/tmp/bcmcfg
+# Overridable, because a hardcoded path here is a quiet way to swap the chip's
+# firmware out from under a running system: `restart` would stop a daemon using
+# one bcm.user and start a different one, with no diagnostic and no obvious
+# symptom until some feature that only exists in the other build is missing.
+# That nearly happened -- bcm.user.8481 was running while this said .hwswap.
+#
+# The default is the 8481 build: same tree as .hwswap plus INCLUDE_PHY_8481,
+# which adds the phy8481 driver and its firmware (about 2 MB larger, consistent
+# with phy8481.o + phy8481_firmware.o). Set FFN_BCM_USER to pin a different one.
+BCM=${FFN_BCM_USER:-/usr/local/ffn/bcm.user.8481}
+CFG=${FFN_BCM_CFG:-/tmp/bcmcfg}
 LOG=/tmp/bcmd.log
 PORT=8104
 
@@ -79,6 +88,9 @@ start() {
 	[ -x "$BCM" ] || { echo "  bcm.user not executable: $BCM"; return 2; }
 	[ -d "$CFG" ] || { echo "  config dir missing: $CFG (run ffn-bcm-prep.sh)"; return 2; }
 	cd /tmp || return 2
+	# Say which binary, every time. The whole point of the override above is
+	# that WHICH bcm.user is running matters and is otherwise invisible.
+	echo "  starting with $BCM ($(stat -c %s "$BCM" 2>/dev/null) bytes)"
 	setsid python3 "$BCMD" --bcm "$BCM" --cfg "$CFG" \
 		> /tmp/bcmd.out 2> "$LOG" < /dev/null &
 	sleep 5

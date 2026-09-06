@@ -73,6 +73,8 @@
  * this path on a live CN78XX.
  */
 #include "ffn_dp_io_octeon3.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include "ffn_dp_vsys.h"
 
 #include <stdint.h>
@@ -178,36 +180,101 @@ static int cvmx3_check_ptr_layout(void)
            FFN_PKI_PTR_ADDR(probe.u64)    == 0x3FF00000055ULL;
 }
 
+/* Every failure below used to return a bare DP_ERR_NOMEM, so six unrelated
+ * causes all surfaced as "dp_init: out of memory" -- which named the wrong
+ * problem in all six cases and the right one in none. On real hardware that is
+ * the difference between a five-minute fix and an afternoon: the first live run
+ * failed here and the message said nothing about which check it was.
+ *
+ * The return value stays DP_ERR_NOMEM so callers are unchanged; what is added
+ * is saying WHICH step failed, on stderr, once per core.
+ */
+/* Set FFN_DP_TRACE=1 to narrate hardware init on stderr. Off by default: this
+ * runs once per core, so on a 40-core part it is 40 copies of every line. */
+static int cvmx3_trace_on(void)
+{
+    const char *e = getenv("FFN_DP_TRACE");
+
+    return e && *e && *e != '0';
+}
+
+#define cvmx3_trace cvmx3_trace_on()
+
+static int cvmx3_fail(const char *what)
+{
+    fprintf(stderr, "cvmx3_hw_init: %s failed\n", what);
+    return DP_ERR_NOMEM;
+}
+
+#define CVMX3_FAIL(what) return cvmx3_fail(what)
+
 static int cvmx3_hw_init(struct oct_ctx *c)
 {
     int i;
 
     if (!cvmx3_check_ptr_layout())
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("packet-pointer layout check");
 
     if (cvmx_user_app_init() != 0)
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("cvmx_user_app_init");
 
     /* Refuse to drive PKI/SSO/PKO3 on a part that does not have them. Selecting
      * the wrong backend means writing the wrong blocks, which is worse than not
      * starting. */
     if (!octeon_has_feature(OCTEON_FEATURE_CN78XX_WQE))
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("OCTEON_FEATURE_CN78XX_WQE (wrong part for this backend)");
 
     if (cvmx_is_init_core()) {
         if (cvmx_helper_initialize_packet_io_global() != 0)
-            return DP_ERR_NOMEM;
+            CVMX3_FAIL("cvmx_helper_initialize_packet_io_global");
     }
+
+    /*
+     * BARRIER, AND IT IS NOT OPTIONAL.
+     *
+     * Only the init core runs the global setup above, and that setup is what
+     * populates the PKO3 descriptor-queue table: cvmx_helper_pko3_init_interface()
+     * writes dq_table[i].dq_count for each interface that has ports, and
+     * cvmx_pko3_get_queue_base() returns -1 while that count is zero.
+     *
+     * Without this barrier the other 39 cores walk straight past the `if` into
+     * the queue lookup below and read the table before the init core has filled
+     * it in. They then fail with "no PKO3 queue for ipd_port 2560" -- naming a
+     * port that is perfectly fine, on an interface the probe shows as XLAUI
+     * with 1 port. Measured exactly that way: the interface enumerates
+     * correctly and the lookup fails anyway, which sends you looking at BGX
+     * when the bug is here.
+     *
+     * It is also a race, so it would not fail every time or on every core --
+     * the worst kind to leave in.
+     */
+    /* Traced on stderr, which is unbuffered. A barrier that does not complete
+     * is indistinguishable from a hang anywhere earlier unless you can see the
+     * cores arrive at it, and only the init core's side is otherwise visible. */
+    if (cvmx3_trace)
+        fprintf(stderr, "cvmx3: core %u at packet-io barrier%s\n",
+                (unsigned)cvmx_get_core_num(),
+                cvmx_is_init_core() ? " (init core, global setup done)" : "");
+
+    cvmx_coremask_barrier_sync(&cvmx_sysinfo_get()->core_mask);
+
+    if (cvmx3_trace)
+        fprintf(stderr, "cvmx3: core %u past barrier\n",
+                (unsigned)cvmx_get_core_num());
+
     if (cvmx_helper_initialize_packet_io_local() != 0)
-        return DP_ERR_NOMEM;
+        CVMX3_FAIL("cvmx_helper_initialize_packet_io_local");
 
     /* The output queue is a PKO3 descriptor queue, and only the SDK knows which
      * DQ the helper assigned to each IPD port. Whatever the caller put in
      * `pko_queue` is a guess; this is the answer. */
     for (i = 0; i < c->nports; i++) {
         int dq = cvmx_pko3_get_queue_base(c->ports[i].ipd_port);
-        if (dq < 0)
+        if (dq < 0) {
+            fprintf(stderr, "cvmx3_hw_init: no PKO3 queue for ipd_port %d\n",
+                    c->ports[i].ipd_port);
             return DP_ERR_NOMEM;
+        }
         c->ports[i].pko_queue = dq;
     }
 
@@ -559,9 +626,65 @@ enum oct_gen oct_detect_gen(void)
     return OCT_GEN_II;
 }
 
+/*
+ * Report what the SDK helper layer believes about each interface.
+ *
+ * This exists because of one failure that took a live run to find and would
+ * have taken several more to explain: cvmx3_hw_init() got all the way through
+ * packet-io init and then died on
+ *
+ *     cvmx_pko3_get_queue_base(0xa00) < 0
+ *
+ * A missing descriptor queue is a SYMPTOM. The helper allocates PKO3 queues
+ * only for interfaces it believes have ports, and it decides that from the
+ * interface mode -- so the question worth answering is not "why no queue" but
+ * "what does the helper think interface 2 IS". Guessing at that from the
+ * outside is how afternoons disappear; this prints it.
+ *
+ * All reads. Safe to run on a live dataplane.
+ */
+void cvmx3_probe_interfaces(FILE *f)
+{
+    int iface;
+    int n = cvmx_helper_get_number_of_interfaces();
+
+    fprintf(f, "interfaces: %d   (ipd_port 0xa00 = iface 2 index 0 on CN78XX)\n", n);
+    fprintf(f, "%-6s %-28s %-6s %-8s %-8s\n",
+            "iface", "mode", "ports", "ipd(0)", "pko_dq");
+
+    for (iface = 0; iface < n; iface++) {
+        int xiface = cvmx_helper_node_interface_to_xiface(0, iface);
+        cvmx_helper_interface_mode_t mode = cvmx_helper_interface_get_mode(xiface);
+        int ports = cvmx_helper_ports_on_interface(xiface);
+        int ipd = -1, dq = -1;
+
+        /* Only ask for an ipd_port/queue if the helper admits to a port.
+         * Asking about index 0 of a zero-port interface is how you get a
+         * confident-looking answer about hardware that the layer has not
+         * configured. */
+        if (ports > 0) {
+            ipd = cvmx_helper_get_ipd_port(xiface, 0);
+            dq = cvmx_pko3_get_queue_base(ipd);
+        }
+
+        fprintf(f, "%-6d %-28s %-6d ", iface,
+                cvmx_helper_interface_mode_to_string(mode), ports);
+        if (ports > 0)
+            fprintf(f, "0x%-6x %-8d\n", ipd, dq);
+        else
+            fprintf(f, "%-8s %-8s\n", "-", "-");
+    }
+    fflush(f);
+}
+
 /* ======================================================================== */
 #else  /* !FFN_HAVE_CVMX ---------------------------------------------------- */
 /* ======================================================================== */
+
+void cvmx3_probe_interfaces(FILE *f)
+{
+    fprintf(f, "built without CVMX: no interfaces to probe\n");
+}
 
 static int  stub3_init(struct oct_ctx *c) { c->available = 0; return DP_ERR_NOMEM; }
 static void stub3_fini(struct oct_ctx *c) { (void)c; }
