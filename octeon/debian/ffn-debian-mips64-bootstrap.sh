@@ -261,13 +261,41 @@ fi
 # mips64 does not have. The classic path builds gcc from source at each stage
 # instead -- slower, and the one that works for a new architecture.
 #
-# MAKEFLAGS stays an environment variable: that one is read by make, not by
-# bootstrap.sh, so it is not subject to the above.
+# NO MAKEFLAGS=-jN. This used to pass MAKEFLAGS=-j$JOBS and that was a mistake
+# which cost a build: readline died with
+#
+#   make[1]: *** No rule to make target 'install'.  Stop.
+#   make: *** [debian/rules:247: install-stamp] Error 2
+#   make: *** Waiting for unfinished jobs....
+#
+# The log proves the race rather than suggesting it: install-stamp failed 157
+# lines BEFORE "touch configure-stamp" appeared. install ran while configure
+# was still going, so build/ existed but had no Makefile in it yet.
+#
+# rebootstrap already decided this. bootstrap.sh line 7:
+#
+#   export DEB_BUILD_OPTIONS="nocheck noddebs parallel=1"
+#
+# parallel=1 is the SUPPORTED way to ask for serial builds and debhelper honours
+# it. A bare MAKEFLAGS in the environment reaches every make including the
+# top-level `make -f debian/rules`, so it overrides that intent for any package
+# whose rules are hand-written rather than dh-driven -- readline's are.
+#
+# Setting DEB_BUILD_OPTIONS=parallel=N here would not help either: line 7
+# assigns it unconditionally and would overwrite anything exported first.
+#
+# Worth being clear about the stake, because -j8 did build 307 packages before
+# this surfaced: a stamp race does not only fail loudly. It can also install a
+# half-built library and stamp it done. On a from-scratch architecture port,
+# where the whole deliverable is a toolchain other things will be built with,
+# a quietly wrong package is far more expensive than a slow build.
+#
+# JOBS is still used for the chroot's own apt/debootstrap work above.
 #
 # Not backgrounded here: this runs for hours and its log is the deliverable, so
 # the caller decides how to run it (nohup, tmux, a systemd unit). Printing the
 # command rather than hiding it also means a failed stage can be re-run by hand.
-CMD="cd /root/rebootstrap && MAKEFLAGS=-j$JOBS ./bootstrap.sh HOST_ARCH=$HOST_ARCH ENABLE_MULTIARCH_GCC=no"
+CMD="cd /root/rebootstrap && ./bootstrap.sh HOST_ARCH=$HOST_ARCH ENABLE_MULTIARCH_GCC=no"
 
 say "ready. The bootstrap itself is long-running; start it with:"
 echo
