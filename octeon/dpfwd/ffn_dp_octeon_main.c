@@ -46,6 +46,7 @@
 #include "ffn_dp_abi.h"
 #include "ffn_dp_oct.h"
 #include "ffn_dp_io_octeon.h"
+#include "ffn_dp_io_octeon3.h"
 
 #define MAX_PORTS 8
 
@@ -60,9 +61,12 @@ static void on_signal(int sig)
 static void usage(const char *me)
 {
 	fprintf(stderr,
-		"usage: %s [-p ipd_port]... [-v vsys] [-d drop|forward|local]\n"
-		"          [-s stats_sec] [-c stop_after_pkts]\n"
+		"usage: %s [--probe] [-p ipd_port]... [-v vsys]\n"
+		"          [-d drop|forward|local] [-s stats_sec] [-c stop_after_pkts]\n"
 		"\n"
+		"  --probe  print what the SDK helper believes about each interface\n"
+		"           (mode, port count, ipd_port, PKO3 queue) and exit. Start\n"
+		"           here: a missing PKO3 queue means a zero-port interface.\n"
 		"  -p N   add a port by IPD port number (repeatable, max %d).\n"
 		"         Port INDEX is the order given, and that index is what a\n"
 		"         policy's `egress` field selects -- not the IPD number.\n"
@@ -83,12 +87,27 @@ int appmain(int argc, const char *argv[])
 	int stats_sec = 5;
 	unsigned long long stop_after = 0;
 	int default_dec = FP_DROP_W;
+	int probe = 0;
 	int i;
+
+	/*
+	 * Line-buffer stdout before anything is printed.
+	 *
+	 * Redirected to a file, stdout is block-buffered, and this program is
+	 * normally stopped with a signal -- so every progress line written before
+	 * the first fflush() is lost, and the log looks as though execution never
+	 * reached them. That cost a debugging round: the app was hanging in a
+	 * known place and the log showed nothing after CVMX's own output, which
+	 * reads exactly like a much earlier failure.
+	 */
+	setvbuf(stdout, NULL, _IOLBF, 0);
 
 	for (i = 1; i < argc; i++) {
 		const char *a = argv[i];
 
-		if (!strcmp(a, "-p") && i + 1 < argc) {
+		if (!strcmp(a, "--probe")) {
+			probe = 1;
+		} else if (!strcmp(a, "-p") && i + 1 < argc) {
 			if (n_ipd >= MAX_PORTS) {
 				fprintf(stderr, "too many ports (max %d)\n", MAX_PORTS);
 				return 1;
@@ -123,6 +142,19 @@ int appmain(int argc, const char *argv[])
 		fprintf(stderr, "built without CVMX: %s\n", oct_backend_name());
 		return 1;
 	}
+
+	/* --probe runs BEFORE the port check, because the whole point of it is to
+	 * find out which ports exist. Requiring -p first would mean guessing the
+	 * answer in order to ask the question.
+	 *
+	 * It still needs the CVMX runtime up, which by this point it is: the SDK
+	 * calls appmain() only after cvmx_user_app_init() has returned.
+	 */
+	if (probe) {
+		cvmx3_probe_interfaces(stdout);
+		return 0;
+	}
+
 	if (n_ipd == 0) {
 		fprintf(stderr, "no ports given; -p is required\n");
 		usage(argv[0]);
