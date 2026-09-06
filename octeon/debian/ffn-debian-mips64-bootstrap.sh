@@ -172,8 +172,22 @@ fi
 # A runtime SHELL glob has no such cache. In a recipe `$$` becomes `$` for the
 # shell, so the expansion happens when the rule executes:
 #
-#   -l$(echo debian/libc6/usr/lib/*):debian/libc6/usr/lib64
-#     -> -ldebian/libc6/usr/lib/mips64-linux-gnuabi64:debian/libc6/usr/lib64
+#   -l$(echo $(CURDIR)/debian/libc6/usr/lib/*):$(CURDIR)/debian/libc6/usr/lib64
+#
+# AND THE PATHS MUST BE ABSOLUTE. With relative ones, dh_shlibdeps makes them
+# absolute by prefixing a bare "/", so the verbose log showed it searching
+#
+#   dpkg-shlibdeps ... -l/debian/libc6/usr/lib/mips64-linux-gnuabi64
+#
+# at the filesystem root, which does not exist -- the flags were present and
+# pointed nowhere, producing a byte-identical error for a third time. $(CURDIR)
+# is make's absolute path to the source tree.
+#
+# THE LESSON is worth more than the fix. Three attempts, identical output every
+# time. Identical output across a changed input means the change is not reaching
+# what fails, and the way to find that out is to read what was ACTUALLY
+# EXECUTED -- DH_VERBOSE=1 prints every command -- rather than to reason harder
+# about what should have happened.
 #
 # dh_shlibdeps takes colon-separated directories in one -l. If the glob matches
 # nothing the shell passes the pattern through unchanged, naming a directory
@@ -187,7 +201,7 @@ import io, sys
 p = sys.argv[1]
 lines = io.open(p, encoding="utf-8", errors="surrogateescape").read().splitlines(True)
 sed = ("	drop_privs sed -i '/^\tdh_shlibdeps -p[$](curpass)/ "
-       "s|$| -l$$(echo debian/libc6/usr/lib/*):debian/libc6/usr/lib64|' "
+       "s|$| -l$$(echo $(CURDIR)/debian/libc6/usr/lib/*):$(CURDIR)/debian/libc6/usr/lib64|' "
        "debian/rules.d/debhelper.mk
 ")
 fix = ['	echo "patching glibc: dh_shlibdeps has no -l path for libc6-dev"
