@@ -34,12 +34,30 @@ for stage 7 as originally planned.
 | 3 | linux headers | **done** — `linux-libc-dev-mips64-cross` |
 | 4 | glibc stage1 (headers + crt) | **blocked, then fixed** — see below |
 | 5 | gcc stage2 | **done** — `gcc-16-mips64-linux-gnuabi64`, `cpp-16`, `libgcc-16-dev` |
-| 6 | glibc | **done** — `libc6_2.43-5_mips64.deb` |
+| 6 | glibc | **done, complete package set** — see below |
 | 7 | gcc stage3 | |
 | 8 | base system (~1000 source packages) | |
 
 Ten packages built before the stall, including the first genuinely
 target-architecture one: `binutils-for-host_2.47-4_mips64.deb`.
+
+## glibc: the full package set, seven mips64 packages
+
+```
+binutils-for-host_2.47-4_mips64.deb
+libc6_2.43-5_mips64.deb
+libc6-dev_2.43-5_mips64.deb
+libc6-dbg_2.43-5_mips64.deb
+libc-bin_2.43-5_mips64.deb
+libc-dev-bin_2.43-5_mips64.deb
+libc-gconv-modules-extra_2.43-5_mips64.deb
+```
+
+That is the hard part of a Debian bootstrap finished. It took **five build
+cycles**, and the breakdown is worth keeping honest: two were genuine Debian
+packaging bugs (below), and two were mine — I reasoned about make globs twice
+instead of reading the `DH_VERBOSE=1` output that showed the answer directly.
+The fifth was the `--ignore-missing-info` case.
 
 ## glibc built — and it is the right architecture
 
