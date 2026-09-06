@@ -186,3 +186,60 @@ against `cvmx-pko-defs.h`, which is already the SDK's in this tree.
 
 Receive is nearly assembled. Transmit is the gap.
 
+
+# Update 2026-09-06 (later): "PKO3 is blocked" was too broad
+
+The table above says PKO3 transmit is **blocked**. That conclusion is narrower
+than it was written, and the difference decides the whole approach.
+
+Everything measured above — 407 errors, then 762, then 441 — came from importing
+the SDK's cvmx sources **into the Linux kernel tree**. That failure is real and
+the diagnosis holds: upstream sources include `<asm/octeon/octeon.h>`, which
+drags in the kernel's own `cvmx-wqe.h` before a compat header can be placed, and
+the compat header must come after `cvmx.h`. There is no include order that
+satisfies both.
+
+But that is a statement about **building cvmx inside a kernel tree**, not about
+PKO3. Built the SDK's own way — standalone, against the SDK's headers, no kernel
+headers in the include path — there is no conflict, because there is no second
+`cvmx-wqe.h` to collide with. Measured:
+
+    make oct3-cvmx SDK=/mnt/clones/sdk51/OCTEON-SDK MODEL=OCTEON_CN78XX
+    ...
+    CVMX-CC ffn_dp_io_octeon3.c
+    CVMX-CC ffn_dp_bgx_octeon3.c
+    octeon backends compile clean against OCTEON_CN78XX
+
+`ffn_dp_io_octeon3.c` is the PKI + SSO + PKO3 backend, and it compiles — calls to
+`cvmx_helper_initialize_packet_io_global()`, `cvmx_pko3_get_queue_base()` and
+`cvmx_pko3_xmit_link_buf()` included.
+
+## What that changes
+
+The forwarder should be built as an **OCTEON userspace application** linked
+against the SDK's libcvmx, not as kernel code. `cvmx3_hw_init()` already calls
+`cvmx_user_app_init()`, which is the SDK's Linux-userspace entry point — the code
+was written for this model. The executive is BSD-3, so it can ship.
+
+Own-coding the PKO3 descriptor path is therefore **not** the outstanding task. It
+is already own-coded in `ffn_dp_io_octeon3.c`, with compile-time assertions tying
+`PKO3_SUBDC3_LINK`, `PKO3_SUBDC3_GATHER` and `PKO3_SUBDC4_FREE` to the SDK's own
+`CVMX_PKO_SENDSUBDC_*` enums so a format drift breaks the build rather than the
+wire.
+
+## What is actually left, and where the risk now sits
+
+1. **Build libcvmx for CN78XX.** There is no prebuilt `libcvmx*.a` in the tree;
+   the SDK's example Makefiles build the executive objects they need.
+2. **Link the forwarder against it and run it on the DP's 6.18 Linux.**
+
+Step 2 is the real unknown, and it is not PKO3. `cvmx_user_app_init()` wants
+`/dev/mem` and a shm/hugetlb mount, which are ordinary. What is not ordinary is
+that the SDK's userspace CVMX expects bootmem and named-block information the way
+the SDK's OWN kernel publishes it — `/proc/octeon_info` — and the DP runs FFN's
+6.18 kernel, not the SDK's 3.10. If that interface is absent or shaped
+differently, `cvmx_user_app_init()` is where it will show up.
+
+So the open question moved from "can PKO3 be expressed at all" to "does our own
+kernel publish what the SDK's userspace runtime expects". That is a much smaller
+and much better-defined problem.
