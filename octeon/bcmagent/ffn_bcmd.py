@@ -1123,6 +1123,129 @@ def op_sys_initlog(chip, req):
             "truncated": start + limit < len(lines)}
 
 
+_SHOW_CMDS = {
+    # Forwarding state. These are the ones that say whether the chip has any
+    # notion of where to send a frame -- which is the whole question once the
+    # links are up and the counters are still zero.
+    "vlan":      "vlan show",
+    "l2":        "l2 show",
+    "trunk":     "trunk show",
+    "stg":       "stg show",
+    "multicast": "multicast show",
+    "field":     "fp show",
+    # Port and link state.
+    "ports":     "ps",
+    "linkscan":  "linkscan",
+    "counters":  "show c",
+    # Chip-level.
+    "unit":      "show unit",
+    "soc":       "show soc",
+    "params":    "config show",
+}
+
+
+def op_sys_show(chip, req):
+    """Run one of a fixed set of read-only diag commands.
+
+    WHY A FIXED SET AND NOT A COMMAND STRING. `raw` already exists for arbitrary
+    commands and is off unless the daemon was started with --allow-raw, because
+    it is the difference between a settings API and a remote root shell on a
+    switch ASIC. This op takes a KEY, not a command, so there is nothing to
+    escape and nothing to inject: the caller cannot express a command that is
+    not in this table.
+
+    WHY THESE COMMANDS. Every link on this chip can be up while every counter
+    reads zero, because a link is not a forwarding decision. `vlan show` and
+    `l2 show` are what distinguish "the chip does not know where to send this"
+    from "the chip is not receiving it" -- and until now there was no way to ask
+    either question without opening the raw escape hatch.
+
+    Output is returned verbatim as lines, with no parsing. A parser here would
+    have to track twelve command formats across SDK versions, and the failure
+    mode of a wrong parser is a confident empty answer -- which on this box has
+    already cost real time once.
+    """
+    what = str(req.get("what") or "").strip().lower()
+    if what not in _SHOW_CMDS:
+        raise ValueError("what must be one of: %s"
+                         % ", ".join(sorted(_SHOW_CMDS)))
+
+    text = chip.run(_SHOW_CMDS[what], timeout=max(CMD_TIMEOUT, 60.0))
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+    limit = int(req.get("limit") or 200)
+    limit = max(1, min(limit, 4000))
+
+    return {"what": what, "cmd": _SHOW_CMDS[what],
+            "output_lines": len(lines),
+            "lines": lines[:limit],
+            "truncated": len(lines) > limit}
+
+
+# FFN-audited cint recipes that cint.run may execute. A NAME LIST, not a path
+# filter: the caller picks from this set and cannot express anything else, so
+# there is no path to escape, no directory to traverse and no script to smuggle
+# in. Adding a recipe here is a deliberate act with a code review attached.
+_CINT_SCRIPTS = {
+    # FFN's own, in ffn-platform-pa5200/bcm/
+    "ffn_bcm_rung.c":      "MP port 8 -> VOQ -> port 24 -> the dataplane",
+    "ffn_bcm_voq.c":       "CP port 5 -> VOQ -> port 24 (the original, proven)",
+    "ffn_bcm_faceplate.c": "enable the 25 faceplate ports and force-forward them",
+    "ffn_bcm_chain.c":     "multi-destination version of the VOQ recipe",
+    "ffn_bcm_l2.c":        "L2 bridging via tm_port_header_type=ETH",
+    # Vendor diagnostics that ship in the config tree.
+    "enable_fp_ports.c":   "vendor: enable all 25 front-panel ports",
+    "phy_tx_settings.c":   "vendor: re-apply SerDes TX FIR",
+}
+
+
+def op_cint_run(chip, req):
+    """Run one FFN-audited cint recipe from the staged config directory.
+
+    WHY THIS IS NOT --allow-raw. The raw op takes a command string and is off by
+    default because it is a remote shell on a switch ASIC. This takes a NAME
+    from a fixed table and nothing else: the file must be one of a handful of
+    reviewed recipes, and it must already exist on disk in the staged config
+    directory. A caller cannot supply code, a path, or a command.
+
+    WHY IT EXISTS AT ALL. This chip forwards nothing as shipped -- it has no
+    queues, because jer.soc builds the E2E scheduler tree while the QUEUES are
+    created at runtime by the vendor dataplane that FFN does not run. Every
+    recipe that makes traffic move is a sequence of BCM API calls, and cint is
+    how those are expressed. Until now the only way to run one was to enable
+    raw, i.e. to trade a permanent hole for one configuration step.
+
+    The full output is returned unparsed. These recipes print their own
+    progress markers (FFN_BASE, FFN_VOQ, FFN_ATTACH, FFN_DONE) with the API
+    return code after each, and the caller wants all of it: a recipe that stops
+    early is diagnosed by WHICH marker was the last one printed.
+    """
+    name = str(req.get("script") or "").strip()
+    if name not in _CINT_SCRIPTS:
+        raise ValueError("script must be one of: %s"
+                         % ", ".join(sorted(_CINT_SCRIPTS)))
+
+    path = os.path.join(chip.cfg_dir, name)
+    if not os.path.isfile(path):
+        raise ValueError("%s is not staged in %s -- copy it there first"
+                         % (name, chip.cfg_dir))
+
+    # A cint recipe can take a while; the VOQ one issues a dozen API calls that
+    # each touch the scheduler hierarchy.
+    text = chip.run("cint %s" % path, timeout=float(req.get("timeout", 180)))
+    lines = [l.rstrip() for l in text.splitlines() if l.strip()]
+
+    # The markers are what say how far it got. Reported separately so a caller
+    # does not have to know each recipe's vocabulary to see that FFN_DONE is
+    # missing.
+    markers = [l for l in lines if l.startswith("FFN_")]
+
+    return {"script": name, "purpose": _CINT_SCRIPTS[name], "path": path,
+            "markers": markers,
+            "completed": bool(markers) and markers[-1] == "FFN_DONE",
+            "output_lines": len(lines), "output": lines[:300],
+            "truncated": len(lines) > 300}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
@@ -1132,6 +1255,8 @@ OPS = {
     "port.phy": op_port_phy,
     "sys.linkscan": op_sys_linkscan,
     "sys.initlog": op_sys_initlog,
+    "sys.show": op_sys_show,
+    "cint.run": op_cint_run,
     "led.status": op_led_status,
     "sys.inventory": op_sys_inventory,
     "sys.dpstatus": op_sys_dpstatus,
