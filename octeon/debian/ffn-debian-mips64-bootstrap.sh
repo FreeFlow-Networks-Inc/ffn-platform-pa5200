@@ -161,10 +161,23 @@ fi
 # dpkg has the architecture right -- elf64-tradbigmips -- it just cannot find
 # the file. Which was built moments earlier and is sitting in debian/libc6/.
 #
-# So point it at whatever is actually there, with $(wildcard) rather than a
-# hardcoded path or another derived variable name. The `*` covers any multiarch
-# tuple, and it expands to nothing when the files are absent, so a native build
-# is unaffected.
+# So point it at what is staged -- but NOT with make's $(wildcard). That was the
+# first attempt and it silently expanded to nothing even though the files were
+# there, because GNU MAKE CACHES $(wildcard) RESULTS PER DIRECTORY for the life
+# of the process: debian/libc6/ is filled during this same run by dh_install,
+# and make had already read the directory while it was empty. The patch applied,
+# the files existed, and the error was byte-identical -- which is what a caching
+# problem looks like from the outside.
+#
+# A runtime SHELL glob has no such cache. In a recipe `$$` becomes `$` for the
+# shell, so the expansion happens when the rule executes:
+#
+#   -l$(echo debian/libc6/usr/lib/*):debian/libc6/usr/lib64
+#     -> -ldebian/libc6/usr/lib/mips64-linux-gnuabi64:debian/libc6/usr/lib64
+#
+# dh_shlibdeps takes colon-separated directories in one -l. If the glob matches
+# nothing the shell passes the pattern through unchanged, naming a directory
+# that does not exist -- harmless, and no worse than the empty list.
 if grep -q 'libc6/usr/lib64/ld.so.1' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
 	say "rebootstrap already carries the shlibdeps fix"
 else
@@ -174,8 +187,8 @@ import io, sys
 p = sys.argv[1]
 lines = io.open(p, encoding="utf-8", errors="surrogateescape").read().splitlines(True)
 sed = ("	drop_privs sed -i '/^\tdh_shlibdeps -p[$](curpass)/ "
-       "s|$| $(addprefix -l,$(dir $(wildcard debian/libc6/usr/lib/*/libc.so.6 "
-       "debian/libc6/usr/lib64/ld.so.1)))|' debian/rules.d/debhelper.mk
+       "s|$| -l$$(echo debian/libc6/usr/lib/*):debian/libc6/usr/lib64|' "
+       "debian/rules.d/debhelper.mk
 ")
 fix = ['	echo "patching glibc: dh_shlibdeps has no -l path for libc6-dev"
 ', sed]
