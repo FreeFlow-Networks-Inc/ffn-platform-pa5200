@@ -1189,6 +1189,7 @@ _CINT_SCRIPTS = {
     # FFN's own, in ffn-platform-pa5200/bcm/
     "ffn_bcm_rung.c":      "MP port 8 -> VOQ -> port 24 -> the dataplane",
     "ffn_bcm_fplink.c":    "light faceplate ports 16/7 (eth1/5 <-> eth1/13): enable + speed",
+    "ffn_bcm_rj45.c":      "try the four RJ45 ports (eth1/1-1/4): enable + speed + autoneg",
     "ffn_bcm_voq.c":       "CP port 5 -> VOQ -> port 24 (the original, proven)",
     "ffn_bcm_faceplate.c": "enable the 25 faceplate ports and force-forward them",
     "ffn_bcm_chain.c":     "multi-destination version of the VOQ recipe",
