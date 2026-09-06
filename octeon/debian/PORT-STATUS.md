@@ -30,7 +30,7 @@ for stage 7 as originally planned.
 | # | stage | state |
 |---|---|---|
 | 1 | binutils | **done** — `binutils-mips64-linux-gnuabi64` |
-| 2 | gcc stage1 (C only, no libc) | in progress |
+| 2 | gcc stage1 (C only, no libc) | **done** |
 | 3 | linux headers | **done** — `linux-libc-dev-mips64-cross` |
 | 4 | glibc stage1 (headers + crt) | **blocked, then fixed** — see below |
 | 5 | gcc stage2 | **done** — `gcc-16-mips64-linux-gnuabi64`, `cpp-16`, `libgcc-16-dev` |
@@ -74,10 +74,21 @@ rebootstrap re-unpacking the source each run. `mips64.mk` was the obvious
 suspect and was *not* the problem — it exists and is structurally identical to
 `mips64el.mk`, differing only in endianness-specific names.
 
-Host-side scaffolding built first and is easy to mistake for progress on the
-target: `build-essential`, `libc6-dev` and `binutils-for-host` are all **amd64**
-packages for the cross build. The first genuinely target-architecture artifact
-was `binutils-mips64-linux-gnuabi64`.
+Host-side scaffolding builds first and is easy to mistake for progress on the
+target. Read the architecture suffix, not the name:
+
+```
+build-essential_12.12+rebootstrap1_amd64.deb        host tooling
+libc6-dev_2.43-5_amd64.deb                          host tooling
+binutils-mips64-linux-gnuabi64_2.47-4_amd64.deb     a CROSS tool, runs on amd64
+cpp-16-mips64-linux-gnuabi64_16.2.0-2_amd64.deb     ditto
+gcc-16-mips64-linux-gnuabi64_16.2.0-2_amd64.deb     ditto
+
+binutils-for-host_2.47-4_mips64.deb                 <- the target architecture
+```
+
+A package *named* `-mips64-linux-gnuabi64` is usually a cross tool built **for
+amd64**; only the `_mips64.deb` suffix means it runs on the target.
 
 ## Watching it
 
