@@ -32,11 +32,47 @@ for stage 7 as originally planned.
 | 1 | binutils | **done** — `binutils-mips64-linux-gnuabi64` |
 | 2 | gcc stage1 (C only, no libc) | in progress |
 | 3 | linux headers | **done** — `linux-libc-dev-mips64-cross` |
-| 4 | glibc stage1 (headers + crt) | |
-| 5 | gcc stage2 | |
-| 6 | glibc | |
+| 4 | glibc stage1 (headers + crt) | **blocked, then fixed** — see below |
+| 5 | gcc stage2 | **done** — `gcc-16-mips64-linux-gnuabi64`, `cpp-16`, `libgcc-16-dev` |
+| 6 | glibc | retrying with the fix |
 | 7 | gcc stage3 | |
 | 8 | base system (~1000 source packages) | |
+
+Ten packages built before the stall, including the first genuinely
+target-architecture one: `binutils-for-host_2.47-4_mips64.deb`.
+
+## The first real porting bug: glibc's stamp path
+
+glibc 2.43-5 failed with
+
+```
+make: *** No rule to make target '.../stamp-dir//build_libc',
+         needed by '.../stamp-dir/build_C.utf8'.  Stop.
+```
+
+The double slash is the whole diagnosis:
+
+```
+debian/rules:42               stamp := $(CURDIR)/stamp-dir/    <- ends in /
+debian/rules.d/build.mk:375   $(stamp)build_C.utf8:      $(stamp)/build_libc
+debian/rules.d/build.mk:379   $(stamp)build_locales-all: $(stamp)/build_libc
+```
+
+Every other reference concatenates directly (`$(stamp)build_foo`) because
+`$(stamp)` already carries the separator. Exactly two lines insert a second
+one, and **make treats `a//b` and `a/b` as different target names** — so the
+prerequisite matches no rule.
+
+**Why Debian never trips over it.** When the stamp *file* already exists, the
+filesystem collapses the double slash, make finds it, and no rule is needed. It
+only fails when make must actually *build* that prerequisite — which is exactly
+the staged cross-bootstrap case, where the libc pass has not run yet. That makes
+it a bug only a new architecture can hit, and worth reporting upstream.
+
+Fixed by a sed inside rebootstrap's own `patch_glibc()` hook, so it survives
+rebootstrap re-unpacking the source each run. `mips64.mk` was the obvious
+suspect and was *not* the problem — it exists and is structurally identical to
+`mips64el.mk`, differing only in endianness-specific names.
 
 Host-side scaffolding built first and is easy to mistake for progress on the
 target: `build-essential`, `libc6-dev` and `binutils-for-host` are all **amd64**

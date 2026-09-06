@@ -84,6 +84,63 @@ else
 		> "$LOGS/clone.log" 2>&1 || { say "clone failed -- see $LOGS/clone.log"; exit 4; }
 fi
 
+# --- 2b. patch rebootstrap: glibc's stamp path -----------------------------
+# Debian's glibc 2.43-5 packaging has a two-line bug that stops a
+# new-architecture bootstrap dead, and it is invisible on a release
+# architecture:
+#
+#   debian/rules:42               stamp := $(CURDIR)/stamp-dir/   <- ends in /
+#   debian/rules.d/build.mk:375   $(stamp)build_C.utf8:      $(stamp)/build_libc
+#   debian/rules.d/build.mk:379   $(stamp)build_locales-all: $(stamp)/build_libc
+#
+# Everything else concatenates directly -- $(stamp)build_foo -- because $(stamp)
+# already carries the separator. Those two insert a second one, so the
+# prerequisite is spelled ".../stamp-dir//build_libc", and make treats "a//b"
+# and "a/b" as DIFFERENT target names:
+#
+#   make: *** No rule to make target '.../stamp-dir//build_libc',
+#            needed by '.../stamp-dir/build_C.utf8'.  Stop.
+#
+# Debian never sees it because when the stamp FILE already exists the
+# filesystem collapses the double slash, make finds it, and no rule is needed.
+# It only fails when make must actually BUILD that prerequisite -- which is
+# precisely the staged cross-bootstrap case, where the libc pass has not run.
+#
+# Applied as a sed inside rebootstrap's own patch_glibc() hook, so it survives
+# rebootstrap re-unpacking the source on every run. sed rather than a context
+# diff: a diff breaks on any upstream edit to build.mk, this substitution is
+# exact and idempotent. Note the SINGLE quotes -- $(stamp) must reach sed
+# literally, and double quotes would have the shell substitute it away.
+if grep -q 'stamp)build_libc' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
+	say "rebootstrap already carries the glibc stamp-path fix"
+else
+	say "patching rebootstrap's patch_glibc() for the glibc stamp path"
+	sudo python3 - "$CHROOT/root/rebootstrap/bootstrap.sh" <<'PYFIX'
+import io, sys
+p = sys.argv[1]
+lines = io.open(p, encoding="utf-8", errors="surrogateescape").read().splitlines(True)
+fix = [
+    '\techo "patching glibc: build.mk stamp prerequisite has a double slash"\n',
+    "\tdrop_privs sed -i 's,$(stamp)/build_libc,$(stamp)build_libc,g' debian/rules.d/build.mk\n",
+]
+for i, l in enumerate(lines):
+    if l.startswith("patch_glibc()"):
+        j = i + 1
+        while j < len(lines) and "regenerate_control" not in lines[j]:
+            j += 1
+        if j >= len(lines):
+            sys.exit("no regenerate_control in patch_glibc()")
+        lines[j + 1:j + 1] = fix
+        break
+else:
+    sys.exit("patch_glibc() not found -- rebootstrap layout changed")
+io.open(p, "w", encoding="utf-8", errors="surrogateescape", newline="").writelines(lines)
+print("  debian-mips64: glibc stamp-path fix inserted")
+PYFIX
+	sudo sh -c "bash -n '$CHROOT/root/rebootstrap/bootstrap.sh'" \
+		|| { say "patched bootstrap.sh does not parse -- reverting"; exit 5; }
+fi
+
 # --- 3. run it ------------------------------------------------------------
 # SETTINGS GO AS ARGUMENTS, NOT AS ENVIRONMENT VARIABLES. bootstrap.sh does
 #
