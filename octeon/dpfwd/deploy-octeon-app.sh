@@ -48,8 +48,34 @@ while [ "$i" -lt "$CHUNKS" ]; do
 	else
 		R="dd if=/dev/mem bs=1M skip=5 count=$STAGE_MB 2>/dev/null >> $DST"
 	fi
-	/usr/local/bin/ffn-dpsh -c "$R" -t 120 >/dev/null 2>&1 \
-		|| { echo "  chunk $i: DP append FAILED"; exit 4; }
+	# RETRY, because the mailbox is intermittently slow, not broken.
+	#
+	# ffn-dpsh talks to the DP through a PCIe mailbox with a single shared
+	# shell, and an individual command sometimes exceeds its timeout for no
+	# lasting reason -- the next one succeeds. A one-shot failure here aborted
+	# a whole multi-megabyte transfer at chunk 2 and left a truncated file
+	# whose hash then mismatched, which looks far more alarming than "one
+	# command was slow".
+	#
+	# Each attempt is idempotent: chunk 0 recreates the file with `of=`, and a
+	# retried append is preceded by re-truncating to the length already
+	# confirmed, so a partial write cannot double-append.
+	att=0
+	ok=0
+	while [ "$att" -lt 3 ]; do
+		if [ "$att" -gt 0 ]; then
+			echo "    retry $att for chunk $i"
+			# Roll back to a known length before appending again.
+			/usr/local/bin/ffn-dpsh -c "truncate -s $((i * 1048576)) $DST" \
+				-t 60 >/dev/null 2>&1 || true
+		fi
+		if /usr/local/bin/ffn-dpsh -c "$R" -t 180 >/dev/null 2>&1; then
+			ok=1
+			break
+		fi
+		att=$((att + 1))
+	done
+	[ "$ok" = 1 ] || { echo "  chunk $i: DP append FAILED after $att attempts"; exit 4; }
 
 	i=$((i + 1))
 	echo "  chunk $((i - 1)) of $CHUNKS"
