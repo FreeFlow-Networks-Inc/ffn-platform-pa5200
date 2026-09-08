@@ -50,7 +50,31 @@ R=$B/sid-host/tmp/repo
 T=${1:-$B/cproot}
 LOG=$B/logs/mmdebstrap-cproot.log
 PORT=8899
-VARIANT=${VARIANT:-required}
+# essential + an explicit apt, NOT a larger variant.
+#
+# Every variant above "essential" pulls apt-utils, because apt-utils is
+# Priority: required -- and apt-utils cannot be satisfied here:
+#
+#     apt        3.3.3+ffn1    <- the indexed candidate
+#     apt-utils  3.3.3         <- pins apt (= 3.3.3) exactly
+#
+# The +ffn1 rebuild is NOT disposable. Its own README says why:
+#
+#     Local MIPS64 BE packaging correction: depend on gpgv instead of sqv.
+#     Upstream APT 3.3.3 already selects its gpgv backend when sqv is absent.
+#     Executable files are unchanged from the source-built MIPS64 package.
+#
+# and that is correct -- sqv (the Sequoia verifier) is absent from the mips64
+# index while gpgv is present, so unmodified apt would be uninstallable. The
+# two packages differ ONLY in that Depends line plus that README; 373 vs 374
+# files, identical control otherwise.
+#
+# apt-utils is not a dependency of apt, so naming apt explicitly gets a working
+# package manager into the root and leaves the unsatisfiable pin alone. Fixing
+# apt-utils properly means rebuilding it (and libapt-pkg7.0) as +ffn1 too; that
+# is a build, not a bootstrap concern.
+VARIANT=${VARIANT:-essential}
+INCLUDE=${INCLUDE:-apt,ca-certificates}
 
 pkill -f "http.server $PORT" 2>/dev/null
 ( cd "$R" && nohup python3 -m http.server "$PORT" --bind 127.0.0.1 \
@@ -70,10 +94,11 @@ DEBIAN="deb [arch=all signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] 
 sudo rm -rf "$T"
 sudo mkdir -p "$T"
 
-echo "building variant=$VARIANT into $T"
+echo "building variant=$VARIANT include=$INCLUDE into $T"
 sudo mmdebstrap \
 	--arch=mips64 \
 	--variant="$VARIANT" \
+	--include="$INCLUDE" \
 	--skip=check/qemu \
 	--verbose \
 	--extract-hook='ln -sfn usr/lib64 "$1/lib64"' \
