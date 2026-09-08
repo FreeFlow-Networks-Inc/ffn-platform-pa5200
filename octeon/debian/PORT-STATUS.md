@@ -1,9 +1,89 @@
 # Debian mips64 (big-endian) port — status
 
-Running. Started 2026-09-06 on the RE VM (8 cores, 30 GB RAM, 149 GB free on
+Started 2026-09-06 on the RE VM (8 cores, 30 GB RAM, 149 GB free on
 `/mnt/clones`), inside a Debian sid amd64 chroot, driven by Debian's own
 `rebootstrap`. See `ffn-debian-mips64-bootstrap.sh` for the recipe and
 `../USERLAND-DISTRO.md` for why this is a port and not an install.
+
+## 2026-09-08: the port now builds its own packages
+
+The bootstrap is finished and the result is self-hosting: a mips64 BE package
+can be built from Debian source, against the port's own libraries, and
+published back into the port's own repo. Counts as measured on the VM, not
+estimated:
+
+| tree | what it is | packages |
+|---|---|---|
+| `sid-host/tmp/repo` | the local mips64 archive | 605 `.deb` files, 596 distinct binaries in the `binary-mips64` index |
+| `buildroot` | the chroot packages are built *in* | 159 (129 `mips64` + 30 `all`) |
+| `cproot` | the root intended for the CP | 68 |
+| `images/rootfs-base` | the verified base image | 81 |
+
+`images/debian-sid-mips64-be-base.tar` is 146 MiB with a recorded SHA-256.
+
+### init needed no building
+
+`/sbin/init` was already satisfied: `systemd-sysv 262~rc1-2` is installed in
+both `cproot` and `images/rootfs-base`, and `/sbin/init` is a symlink to
+`../lib/systemd/systemd`, which is an `ELF 64-bit MSB pie executable, MIPS,
+MIPS64 rel2`. Nothing to compile — it came out of the bootstrap. Worth stating
+plainly because "build init" sounds like work and was not.
+
+### `build-deb-mips64.sh`
+
+The reusable builder. It serves the local repo over HTTP (apt runs *inside* the
+chroot, where a host `file://` path does not resolve), installs build-deps,
+fetches source, runs `dpkg-buildpackage -b`, and publishes the output with the
+`sid-host` chroot's own `reprepro` so the next package can build against it.
+Proven end-to-end on `zip 3.0-16`.
+
+Two things it encodes that cost real time to learn:
+
+* **Build profiles first.** Twice a dependency that looked like it had to be
+  built was optional behind a profile — `libcap-ng`'s bluez dep behind
+  `pkg.libcap-ng.noutils`, and `libselinux`'s *entire* ruby + python3
+  requirement behind `<!nopython> <!noruby>`. Checking for a profile is far
+  cheaper than porting a language runtime. `libselinux` goes from unbuildable
+  to a 7-package job on that basis alone.
+* **`DEB_BUILD_OPTIONS` is space-separated; `DEB_BUILD_PROFILES` is
+  comma-joined only when passed to apt as `-P`.** They are not
+  interchangeable. Comma-joining the former makes dpkg discard the whole
+  string as one bad flag:
+
+  ```
+  dpkg-buildpackage: warning: invalid flag in DEB_BUILD_OPTIONS:
+      nocheck,noddebs,parallel=1
+  ```
+
+  which silently un-sets `nocheck`, so testsuites run anyway. That is how the
+  bug was found, not by reading the manual.
+
+### gcc has no `TARGET_LIBC_PROVIDES_SSP`
+
+The bootstrapped gcc 16 was configured without it, so `-fstack-protector-strong`
+compiles but cannot link: `cannot find -lssp`. Debian's mips64 gcc would
+normally get the guard from glibc.
+
+Worked around with an empty `libssp.a` in
+`/usr/lib/gcc/mips64-linux-gnuabi64/16/`. This is safe *specifically* because
+glibc does provide the symbols — verified by checking the linked binary still
+carries live guard references (`__stack_chk` refs: 2), i.e. the protector is
+real and only the redundant library was missing. It is still a build-host
+workaround, not a fix: a rebuilt gcc should set the define.
+
+### Known-good, and the honest gaps
+
+Built and validated: upstream **OpenSSH 10.5p1** (`sshd`, `ssh`, `ssh-keygen`,
+`scp` in `ssh-build/`), `sshd -t` passing *natively on the CN73XX*.
+
+Not yet in any root: `ip`/`ifconfig`. `iproute2` is a ~12-package chain with no
+profile escapes (`bison` needs `help2man`; `gawk` needs `bison` and
+`locales-all`; `libmnl` needs `doxygen` + `graphviz`; `iptables` needs
+`libmnl-dev` and `libnetfilter-conntrack-dev`; `elfutils` needs `gawk` and
+`bison`). busybox is the cheap substitute for `ip`/`ifconfig` and builds, but
+fails two of its own tests here — "printf understands %s" and "printf handles
+positive numbers for %f". Those are skipped under `nocheck` and deserve a look
+on real hardware, where a big-endian `%f` result would actually mean something.
 
 ## Endianness: CONFIRMED
 
@@ -35,11 +115,13 @@ for stage 7 as originally planned.
 | 4 | glibc stage1 (headers + crt) | **blocked, then fixed** — see below |
 | 5 | gcc stage2 | **done** — `gcc-16-mips64-linux-gnuabi64`, `cpp-16`, `libgcc-16-dev` |
 | 6 | glibc | **done, complete package set** — see below |
-| 7 | gcc stage3 | |
-| 8 | base system (~1000 source packages) | |
+| 7 | gcc stage3 | **done** — native gcc 16.2.0, big-endian `elf64-tradbigmips` |
+| 8 | base system | **done enough to self-host** — 596 mips64 binaries; `build-essential` + `debhelper` installable |
+| 9 | builds its own packages | **done** — see `build-deb-mips64.sh` above |
 
-Ten packages built before the stall, including the first genuinely
-target-architecture one: `binutils-for-host_2.47-4_mips64.deb`.
+Ten packages built before the first stall, including the first genuinely
+target-architecture one: `binutils-for-host_2.47-4_mips64.deb`. The run
+eventually reached 596 distinct mips64 binaries.
 
 ## glibc: the full package set, seven mips64 packages
 
