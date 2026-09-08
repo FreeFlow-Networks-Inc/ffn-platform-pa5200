@@ -295,11 +295,38 @@ fi
 # Not backgrounded here: this runs for hours and its log is the deliverable, so
 # the caller decides how to run it (nohup, tmux, a systemd unit). Printing the
 # command rather than hiding it also means a failed stage can be re-run by hand.
+# THE HOST'S ENVIRONMENT MUST NOT LEAK INTO THE CHROOT. Two builds have now
+# died from exactly that, and they are the same bug wearing different clothes:
+#
+#   MAKEFLAGS=-j8  raced readline's debian/rules against itself, because a bare
+#                  MAKEFLAGS reaches every make including the top-level one and
+#                  overrode rebootstrap's own DEB_BUILD_OPTIONS=parallel=1
+#
+#   LANG           en_US.UTF-8 survives sudo into a chroot that has only C,
+#                  C.utf8 and POSIX. Perl merely warns and falls back, so it
+#                  looked harmless for 114 source packages -- then cyrus-sasl2
+#                  ran sphinx-build, whose setlocale(LC_ALL, "") RAISES:
+#
+#                      locale.Error: unsupported locale setting
+#
+#                  Reproduced directly: `chroot ... env LANG=en_US.UTF-8
+#                  python3 -c 'locale.setlocale(locale.LC_ALL, "")'` fails,
+#                  and the same with LC_ALL=C.UTF-8 succeeds.
+#
+# So the chroot gets an EXPLICIT environment via `env -i` rather than whatever
+# the invoking shell happened to carry. C.UTF-8 is built into glibc and needs
+# no locale generation, which is what makes it the right choice for a build
+# chroot -- en_US.UTF-8 would have to be generated first, and a doc build is
+# not the place to discover it was not.
+#
+# PATH, HOME, TERM and SHELL are passed because the build needs them; TERM=dumb
+# keeps progress meters out of a log that is read with grep.
+CHROOT_ENV="LC_ALL=C.UTF-8 LANG=C.UTF-8 PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root SHELL=/bin/sh TERM=dumb"
 CMD="cd /root/rebootstrap && ./bootstrap.sh HOST_ARCH=$HOST_ARCH ENABLE_MULTIARCH_GCC=no"
 
 say "ready. The bootstrap itself is long-running; start it with:"
 echo
-echo "    sudo chroot $CHROOT /bin/sh -c '$CMD' 2>&1 | tee $LOGS/bootstrap.log"
+echo "    sudo chroot $CHROOT /usr/bin/env -i $CHROOT_ENV /bin/sh -c '$CMD' 2>&1 | tee $LOGS/bootstrap.log"
 echo
 cat <<EOF
 Stages, in the order they must succeed -- each one's failure looks different:
