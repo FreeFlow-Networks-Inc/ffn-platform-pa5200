@@ -142,8 +142,14 @@ fi
 # alone on purpose: it is the tool every package here is built with, and a
 # local divergence in it is a worse thing to own than a cosmetic change to two
 # metadata fields.
+# INSTALLED TO /usr/local/bin, NOT /root/rebootstrap. cross_build_setup calls it
+# through drop_privs -- as the unprivileged buildd user -- and /root is mode 700.
+# The first attempt died with
+#   Can't open perl script "/root/rebootstrap/asciify-control.pl": Permission denied
+# which aborted the whole bootstrap under set -e, 20 minutes in and nowhere near
+# the code that needed the fold.
 if [ -f "$HERE/asciify-control.pl" ]; then
-	sudo install -m755 "$HERE/asciify-control.pl" 		"$CHROOT/root/rebootstrap/asciify-control.pl"
+	sudo install -m755 "$HERE/asciify-control.pl" 		"$CHROOT/usr/local/bin/asciify-control.pl"
 	if grep -q 'asciify-control.pl' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
 		say "rebootstrap already folds Maintainer/Uploaders to ASCII"
 	else
@@ -159,7 +165,7 @@ new = ('	obtain_source_package "$pkg"
 	cd "${pkg}-"*
 '
        '	test -f debian/control && drop_privs perl'
-       ' /root/rebootstrap/asciify-control.pl debian/control
+       ' /usr/local/bin/asciify-control.pl debian/control
 '
        '	hook=`get_hook patch "$pkg"` && "$hook"')
 if new in t:
