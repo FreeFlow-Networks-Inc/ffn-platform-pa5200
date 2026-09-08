@@ -91,8 +91,20 @@ sudo grep -E "^(OpenSSH has been configured|.*Host:|.*Compiler:|.*PAM support:)"
 # dropping ONLY -fzero-call-used-regs compiles. moduli.c also builds fine at
 # -O0/-O1/-O2 without it, so this is not an optimisation-level problem.
 #
-# NOTE this is NOT GCC PR110934, which is what the project notes recorded for
-# "OpenSSH mips64 ICE". Different bug, different trigger.
+# This IS GCC PR110934 -- the same bug the project notes already recorded for
+# "OpenSSH mips64 ICE", not a new one. Same ICE function (int_mode_for_mode),
+# same file (stor-layout.cc, 407 vs 408 -- source drift between gcc versions),
+# same RTL pass (zero_call_used_regs), same triggering flag, same source file.
+# The DP's Buildroot gcc 13.4 hit it at moduli.c:814 / stor-layout.cc:407.
+#
+# The NEWS is that it is STILL LIVE IN GCC 16.2.0. That strengthens the
+# upstreamable point recorded against the DP build: Buildroot already models
+# this class as BR2_TOOLCHAIN_HAS_GCC_BUG_110934 -> --without-hardening, but
+# gates it on "default y if BR2_m68k", so mips64 never trips the guard.
+#
+# Note openssh's configure probes -fzero-call-used-regs with a TRIVIAL function,
+# which compiles fine, so the flag gets enabled and real code breaks the
+# compiler hundreds of steps later. That is why this keeps resurfacing.
 #
 # Everything else in the hardening set is kept. Editing the generated Makefile
 # rather than passing CFLAGS= because configure APPENDS its hardening flags to
