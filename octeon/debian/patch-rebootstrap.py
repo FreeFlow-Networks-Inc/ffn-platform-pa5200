@@ -111,6 +111,36 @@ edit(
 )
 
 
+# --- 3. libcap-ng: drop the bluetooth build-dep via the package's own profile -
+#
+#     builddeps:./:mips64 : Depends: libbluetooth-dev:mips64
+#                           but it is not installable
+#
+# libcap-ng-utils links bluetooth, and libcap-ng's own control already guards
+# that dependency behind a build profile:
+#
+#     libbluetooth-dev <!pkg.libcap-ng.noutils>,
+#
+# rebootstrap was invoking it with "nopython" only, so the guard never engaged
+# and apt was asked for a bluez stack that no part of this bootstrap builds.
+# Nothing needs patching -- the package already offers the switch, it just was
+# not thrown.
+#
+# This is the established idiom here rather than a novelty: the same file
+# already does pkg.util-linux.noverity, pkg.db5.3.notcl,
+# pkg.cyrus-sasl2.nogssapi/noldap/nosql and pkg.sysprof.nogui/nounwind.
+#
+# Cost is libcap-ng-utils (captest, filecap, netcap, pscap, execcap). None is a
+# build-essential or debhelper dependency, which is the only thing this
+# bootstrap has to reach.
+edit(
+    "libcap-ng noutils profile",
+    "pkg.libcap-ng.noutils",
+    "cross_build libcap-ng nopython libcap-ng_1",
+    'cross_build libcap-ng "nopython pkg.libcap-ng.noutils" libcap-ng_1',
+)
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("usage: %s /path/to/bootstrap.sh" % sys.argv[0])
