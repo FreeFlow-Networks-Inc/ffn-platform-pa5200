@@ -68,9 +68,30 @@ fi
 # does not include it.
 inch 'grep -q deb-src /etc/apt/sources.list 2>/dev/null || printf "deb '"$MIRROR"' sid main\ndeb-src '"$MIRROR"' sid main\n" > /etc/apt/sources.list'
 inch 'mkdir -p /proc /sys /dev/pts'
-sudo mount --bind /proc "$CHROOT/proc" 2>/dev/null || true
-sudo mount --bind /sys  "$CHROOT/sys"  2>/dev/null || true
-sudo mount --bind /dev/pts "$CHROOT/dev/pts" 2>/dev/null || true
+
+# Kernel filesystems. This used to be three inline `mount --bind ... 2>/dev/null
+# || true` lines, and that combination cost a build 133 source packages in: /dev
+# itself was never in the list, and a failed mount said nothing. util-linux's
+# build-deps pulled the host systemd, whose postinst then died with
+#
+#     Cannot open '/etc/machine-id' in neither writable nor read-only mode:
+#         Function not implemented
+#
+# an ENOSYS that names nothing useful. ensure-chroot-mounts.sh mounts all of
+# them, VERIFIES each is a non-empty mountpoint, checks that
+# systemd-machine-id-setup actually works, and fails loudly if not -- here,
+# rather than hours into a build.
+#
+# Separate script on purpose: the mounts do not survive a host reboot, and
+# relaunching the bootstrap by hand bypasses anything the wrapper did earlier.
+# That is precisely how the chroot ended up bare.
+if [ -x "$HERE/ensure-chroot-mounts.sh" ]; then
+	say "ensuring chroot kernel mounts"
+	"$HERE/ensure-chroot-mounts.sh" "$CHROOT" \
+		|| { say "chroot mounts are not usable -- see above"; exit 3; }
+else
+	say "WARNING: ensure-chroot-mounts.sh missing; chroot may lack /proc /sys /dev"
+fi
 
 inch 'apt-get update -qq' >/dev/null 2>&1 || { say "apt-get update failed in chroot"; exit 3; }
 say "chroot apt ready: $(inch 'apt-cache policy 2>/dev/null | head -1' || echo '?')"
