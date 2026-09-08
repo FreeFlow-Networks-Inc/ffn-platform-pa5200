@@ -164,11 +164,18 @@ old = '	obtain_source_package "$pkg"
 new = ('	obtain_source_package "$pkg"
 	cd "${pkg}-"*
 '
-       '	test -f debian/control && drop_privs perl'
-       ' /usr/local/bin/asciify-control.pl debian/control
+       '	for _asciify_f in debian/control debian/changelog; do
+'
+       '		if test -f "$_asciify_f"; then
+'
+       '			drop_privs perl /usr/local/bin/asciify-control.pl "$_asciify_f"
+'
+       '		fi
+'
+       '	done
 '
        '	hook=`get_hook patch "$pkg"` && "$hook"')
-if new in t:
+if "_asciify_f" in t:
     print("already patched")
 elif old not in t:
     sys.exit("cross_build_setup anchor not found -- bootstrap.sh changed?")

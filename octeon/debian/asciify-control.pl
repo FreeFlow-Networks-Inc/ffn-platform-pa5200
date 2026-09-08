@@ -30,10 +30,33 @@
 # such package in 114, not the last -- Debian has plenty of maintainers whose
 # names are not ASCII, and ~900 packages remain.
 #
-# SCOPE IS DELIBERATELY NARROW. Only Maintainer and Uploaders, including their
-# continuation lines. Package descriptions legitimately contain non-ASCII and
-# folding those would corrupt real content to fix a parser that never looks at
-# them.
+# TWO PARSE SITES, TWO FILE TYPES. dpkg reads a maintainer name in two places
+# and fails the same way in both:
+#
+#   debian/control     Maintainer: / Uploaders:      -> field_parse_uploaders
+#   debian/changelog   the " -- Name <email>  Date"  -> dpkg-parsechangelog
+#                      trailer
+#
+# The second one surfaced on lmdb after the first was fixed:
+#
+#     dpkg-buildpackage: error: cannot parse maintainer email address
+#         "Ondrej Sury <ondrej@debian.org>" from changelog entry
+#
+# so this handles both, keyed on the file's basename.
+#
+# WHY NOT PATCH dpkg, now that it is clearly systemic. Dpkg::Email::Address is
+# a single choke point and decoding its input there would fix every caller at
+# once -- it is arguably the real bug, since an address grammar should run on
+# characters and not bytes. It is rejected anyway because apt WILL overwrite it:
+# there is direct evidence dpkg was upgraded inside this chroot mid-build (the
+# first cyrus-sasl2 attempt parsed the same field that the second rejected). A
+# fix that a build-dep install silently reverts is worse than none. This fold
+# lives in cross_build_setup, which apt cannot touch.
+#
+# SCOPE IS DELIBERATELY NARROW. In control, only Maintainer and Uploaders with
+# their continuation lines; in changelog, only the trailer. Descriptions and
+# changelog entry bodies legitimately contain non-ASCII, and folding those would
+# corrupt real content to satisfy a parser that never reads it.
 #
 # Diacritics are stripped via NFD decomposition rather than deleted, so Ondřej
 # Surý becomes Ondrej Sury and not Ondej Sur. Anything still non-ASCII after
@@ -48,11 +71,17 @@ open my $in, '<:raw', $file or die "$file: $!\n";
 my @lines = <$in>;
 close $in;
 
+my $is_changelog = $file =~ m{(?:^|/)changelog$};
 my $in_field = 0;
 my $changed  = 0;
 
 for my $l (@lines) {
-    if ($l =~ /^(?:Maintainer|Uploaders):/i) {
+    if ($is_changelog) {
+        # Only the trailer carries the maintainer:
+        #   " -- Name <email>  Thu, 01 Jan 2026 00:00:00 +0000"
+        # Entry bodies are prose and are left exactly as written.
+        $in_field = $l =~ /^ -- /;
+    } elsif ($l =~ /^(?:Maintainer|Uploaders):/i) {
         $in_field = 1;
     } elsif ($in_field && $l =~ /^\s/) {
         # continuation of the field above
