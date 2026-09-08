@@ -111,6 +111,69 @@ fi
 # diff: a diff breaks on any upstream edit to build.mk, this substitution is
 # exact and idempotent. Note the SINGLE quotes -- $(stamp) must reach sed
 # literally, and double quotes would have the shell substitute it away.
+# --- dpkg cannot parse a non-ASCII maintainer name -------------------------
+#
+# dpkg 1.23.8 hands Dpkg::Email::AddressList undecoded bytes, so any package
+# whose Maintainer or Uploaders carries a non-ASCII name fails to build:
+#
+#   dpkg-source: error: cannot parse Uploaders field value
+#                       "Ondrej Sury <ondrej@debian.org>"   [with the real accents]
+#
+# Established by bisection rather than guessed:
+#
+#   ASCII name                  PARSE OK
+#   UTF-8 name                  FAIL
+#   UTF-8 name + trailing comma FAIL
+#   ASCII name + trailing comma PARSE OK    <- the comma is tolerated
+#
+# and the mechanism, by handing the parser both forms of one string:
+#
+#   raw UTF-8 bytes             FAIL
+#   decoded characters          PARSE OK
+#
+# Not architecture-specific -- it fails identically on amd64 -- and NOT caused
+# by the build environment: byte-identical failure with the host's inherited
+# LANG and with an explicit LC_ALL=C.UTF-8. cyrus-sasl2 was where it surfaced,
+# after 114 source packages had already gone by.
+#
+# Folded generically in cross_build_setup, not per package. Debian has plenty
+# of maintainers whose names are not ASCII and there are ~900 packages left, so
+# a patch_<pkg> hook per occurrence would just defer this. dpkg itself is left
+# alone on purpose: it is the tool every package here is built with, and a
+# local divergence in it is a worse thing to own than a cosmetic change to two
+# metadata fields.
+if [ -f "$HERE/asciify-control.pl" ]; then
+	sudo install -m755 "$HERE/asciify-control.pl" 		"$CHROOT/root/rebootstrap/asciify-control.pl"
+	if grep -q 'asciify-control.pl' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
+		say "rebootstrap already folds Maintainer/Uploaders to ASCII"
+	else
+		say "patching cross_build_setup to fold Maintainer/Uploaders to ASCII"
+		sudo python3 - "$CHROOT/root/rebootstrap/bootstrap.sh" <<'PYASCII'
+import io, sys
+p = sys.argv[1]
+t = io.open(p, encoding="utf-8", errors="surrogateescape").read()
+old = '	obtain_source_package "$pkg"
+	cd "${pkg}-"*
+	hook=`get_hook patch "$pkg"` && "$hook"'
+new = ('	obtain_source_package "$pkg"
+	cd "${pkg}-"*
+'
+       '	test -f debian/control && drop_privs perl'
+       ' /root/rebootstrap/asciify-control.pl debian/control
+'
+       '	hook=`get_hook patch "$pkg"` && "$hook"')
+if new in t:
+    print("already patched")
+elif old not in t:
+    sys.exit("cross_build_setup anchor not found -- bootstrap.sh changed?")
+else:
+    io.open(p, "w", encoding="utf-8", errors="surrogateescape",
+            newline="").write(t.replace(old, new, 1))
+    print("cross_build_setup now folds Maintainer/Uploaders")
+PYASCII
+	fi
+fi
+
 if grep -q 'stamp)build_libc' "$CHROOT/root/rebootstrap/bootstrap.sh" 2>/dev/null; then
 	say "rebootstrap already carries the glibc stamp-path fix"
 else
