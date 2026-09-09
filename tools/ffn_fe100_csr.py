@@ -117,6 +117,12 @@ def parse(path):
                 "rstval": rst,
                 "fields": fields[foff:foff + fnum],
             })
+    if len(regs) != EXPECT_REGS or len(fields) != EXPECT_FIELDS:
+        raise ValueError('unexpected CSR table layout; refusing to emit a partial map')
+    for reg in regs:
+        for field in reg['fields']:
+            if not field['name'] or not 0 <= field['lsb'] <= field['msb'] <= 31:
+                raise ValueError('invalid field descriptor in %s' % reg['name'])
     return regs, fields
 
 

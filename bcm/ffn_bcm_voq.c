@@ -4,10 +4,34 @@
  * Run as:  cint /tmp/ffn_bcm_voq.c   from the vendor bcm.user diag shell,
  * which FFN reaches through its own BDE (see octeon/kctl/FFN-BDE.md).
  *
- * PROVEN END TO END:
+ * PROVEN END TO END -- FOR ONE BURST ONLY. SEE THE CORRECTION BELOW.
  *   CP eth0 -> port 5 -> VOQ 4 -> E2E scheduler -> port 24 -> 40G -> DP eth0
  *   BCM port 5 RX 300, port 24 TX 300 with 0 errors, IQM enqueue 300 /
  *   dequeue 300, and the DP counts rx_packets 300 / rx_errors 0.
+ *
+ * ---------------------------------------------------------------------------
+ * CORRECTION, 2026-09-06. THAT MEASUREMENT DOES NOT MEAN WHAT IT SAYS, and the
+ * conclusion drawn from it below -- "the credit loop is internal once the
+ * connector is parented" -- is wrong.
+ *
+ * This setup forwards ONE BURST PER bcm_cosq_gport_attach and then stops for
+ * good. Measured on the port-8 variant of this same recipe (ffn_bcm_rung.c,
+ * structurally identical): 200 frames in gave port 24 TX +26, then a permanent
+ * freeze. Re-running the recipe moved port 24 TX +205 on only +2 new arrivals,
+ * so the backlog had been QUEUED, not dropped, and a fresh attach released it.
+ * A second 200-frame burst gave +200 in and +0 out.
+ *
+ * The 300 frames above fit inside a single grant. ONE BURST THAT DRAINS PROVES
+ * ONLY THAT THE ATTACH HAPPENED -- it cannot distinguish a one-shot grant from
+ * a running credit loop. No second burst was ever sent here.
+ *
+ * ffn_bcm_rung.c carries the full write-up: what the symptom looks like, the
+ * two explanations that are ruled out (link pause, and the per-TC HR scheduler
+ * as the attach parent), and an UNVERIFIED candidate fix -- a rate and max
+ * burst on the connector, which is what the SDK's own TM FAP setup does and is
+ * the natural cause of a one-shot grant. Read that file before trusting this
+ * one, and note the recipes here are not idempotent: cint keeps its variables
+ * between runs, so each run leaks a VOQ and a connector.
  *
  * The chip forwards nothing as shipped because it has no queues at all:
  * jer.soc builds the E2E scheduler tree, but the QUEUES are created at
@@ -39,7 +63,9 @@
  * packet fail enqueue with "queue not valid".
  *
  * The fabric is NOT involved: fabric_connect_mode=SINGLE_FAP, zero fabric
- * links, and the credit loop is internal once the connector is parented.
+ * links. The claim that used to end this sentence -- that the credit loop is
+ * internal once the connector is parented -- is WRONG; see the correction at
+ * the top. Parenting gets one burst out, not a running loop.
  *
  * Do not name a variable "unit"; cint predefines it.
  */

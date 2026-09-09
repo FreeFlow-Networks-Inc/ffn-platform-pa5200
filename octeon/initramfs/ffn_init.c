@@ -1,6 +1,37 @@
 /*
  * FFN Octeon initramfs init -- freestanding, MIPS64 N64, no libc.
  *
+ * ###################################################################
+ * # THE DP's AGENT BRANCH IS RECONSTRUCTED HERE, NOT INHERITED.     #
+ * # If you touch the branch order in _start(), read this first.     #
+ * ###################################################################
+ *
+ * The DP's previously deployed init was 13313 bytes, built with Cavium SDK
+ * gcc 4.7.0, and its source was never committed -- every ffn_init.c on disk
+ * was the same 9491-byte version with no agent branch at all. Building from
+ * one of those and booting it gives a DP that comes up cleanly on 40 cores
+ * and is COMPLETELY UNREACHABLE, because /sbin/ffn_dpagent2 -- the mailbox
+ * agent that ffn-dpsh talks to, and the DP's only control channel -- never
+ * starts. That is not hypothetical; it happened, and recovery was a reboot on
+ * the previously staged kernel.
+ *
+ * A strings diff against the deployed binary showed the gap was exactly three
+ * strings, so the branch is reconstructed below with those bytes preserved.
+ *
+ * TWO DELIBERATE DIFFERENCES FROM THE DEPLOYED SHAPE:
+ *
+ *   - the agent is supervised in a CHILD, not a for(;;) in pid 1, and
+ *   - it starts BEFORE the nfsroot branch.
+ *
+ * Both are forced by the CP: its ffn_dpnetd will not start until it can read
+ * the agent's magic 0x46464e4450534832 at BAR offset 0x400000, so nothing can
+ * mount anything until the agent is live. Order is agent -> dpnet -> mount ->
+ * switch. In the deployed binary the nfsroot branch came FIRST and looped
+ * forever (offsets 9848 then 9992), which is why simply adding
+ * /sbin/ffn-nfsroot to the DP initramfs was enough to strand it.
+ *
+ * See octeon/DP-NFSROOT.md.
+ *
  * Why no libc: the vendor busybox in this initramfs has NO shell applet at all
  * (no sh, no ash, no hush), so a "#!/bin/sh" init could never run -- the kernel
  * exec'd it, busybox printed "sh: applet not found" and exited 1, which the
@@ -23,6 +54,19 @@
 #define NR_socket	5040
 #define NR_uname	5061
 #define NR_mount	5160
+#define NR_chdir	5078
+#define NR_chroot	5156
+
+/* MS_MOVE from include/uapi/linux/mount.h. chdir/chroot/MS_MOVE were all
+ * read out of the 6.18.49 tree rather than remembered; every number that
+ * was already here (read 5000, write 5001, mount 5160, fork 5056,
+ * execve 5057, wait4 5059, exit_group 5205) matches that header exactly,
+ * which is what makes the two new ones trustworthy. */
+#define MS_MOVE		8192
+
+/* Written by /sbin/ffn-nfsroot once it has a validated root mounted and
+ * wants PID 1 to switch into it. */
+#define SWITCH_FLAG	"/ffn-switch-root"
 #define NR_getdents64	5308
 #define NR_dup2		5032
 #define NR_fork		5056
@@ -299,6 +343,52 @@ static int have(const char *path)
  * Run the overlay shell on the console. The child gets the console on fds
  * 0/1/2 explicitly -- bash misbehaves if it inherits something else.
  */
+/*
+ * Become the new root. THIS IS PID 1's JOB AND NOBODY ELSE'S.
+ *
+ * Two constraints force this shape:
+ *
+ *  1. pivot_root(2) CANNOT be used here. The initramfs is rootfs --
+ *     /proc/mounts on the DP reads "rootfs / rootfs" -- and rootfs's
+ *     mount has no parent, which is the documented EINVAL case for
+ *     pivot_root. switch_root exists for exactly this situation, and its
+ *     semantics are MS_MOVE onto / followed by chroot. That is this.
+ *
+ *  2. busybox switch_root refuses unless it is PID 1, and
+ *     /sbin/ffn-nfsroot runs under run_shell(), which forks. So the
+ *     script does everything that can fail -- bring up the transport,
+ *     mount, validate -- and leaves only this step to us.
+ *
+ * On any failure we simply return; the caller loops back into the script,
+ * which drops to a console. A boot must never lose its shell.
+ *
+ * The script binds the old root in at <newroot>/oldroot first, because
+ * MS_MOVE detaches the old root mount. Without that bind the initramfs --
+ * and with it ffn_dpnetd, the transport the new root is served over --
+ * would be unreachable for any future restart.
+ */
+static void switch_root_to(const char *newroot)
+{
+	out("FFN> switch_root -> ");
+	out(newroot);
+	out("\n");
+
+	if (sys5(NR_chdir, (long)newroot, 0, 0, 0, 0) < 0) {
+		out("FFN>   chdir failed; staying on the initramfs\n");
+		return;
+	}
+	if (sys5(NR_mount, (long)".", (long)"/", 0, MS_MOVE, 0) < 0) {
+		out("FFN>   MS_MOVE onto / failed; staying on the initramfs\n");
+		return;
+	}
+	if (sys5(NR_chroot, (long)".", 0, 0, 0, 0) < 0) {
+		out("FFN>   chroot failed; / is moved but not entered\n");
+		return;
+	}
+	sys5(NR_chdir, (long)"/", 0, 0, 0, 0);
+	out("FFN> / IS NOW THE NFS ROOT (initramfs at /oldroot)\n");
+}
+
 static void run_shell(const char *path)
 {
 	static char *argv[2];
@@ -327,6 +417,32 @@ static void run_shell(const char *path)
 		return;
 	}
 	sys5(NR_wait4, pid, 0, 0, 0, 0);
+}
+
+/*
+ * Run a service under a restart loop in a CHILD, so pid 1 is free to carry
+ * on. run_shell() itself forks and waits, so the child blocks on the
+ * grandchild and we return immediately.
+ *
+ * The deployed init supervises the agent with a for(;;) in pid 1 instead,
+ * which is why nothing after that branch ever ran.
+ *
+ * argv/envp inside run_shell() are function statics, but the fork gives the
+ * child its own copy, so the parent's later calls cannot race with it.
+ */
+static void supervise_forever(const char *path, const char *diedmsg)
+{
+	long pid = sys5(NR_fork, 0, 0, 0, 0, 0);
+
+	if (pid == 0) {
+		for (;;) {
+			run_shell(path);
+			out(diedmsg);
+			nap(2);
+		}
+	}
+	if (pid < 0)
+		out("    fork failed\n");
 }
 
 void _start(void)
@@ -387,14 +503,70 @@ void _start(void)
 	 * both survives a not-yet-up transport and re-runs it when the chrooted
 	 * shell exits. That is why it is preferred over the bare shell below.
 	 */
+	/*
+	 * THE SESSION AGENT FIRST, AND IN A CHILD.
+	 *
+	 * ffn_dpagent2 is the DP's ONLY control channel (ffn-dpsh on the CP
+	 * talks to it through the mailbox at phys 0x400000). Two reasons it
+	 * has to come first and must not block:
+	 *
+	 *  - The CP's ffn_dpnetd refuses to start until it can read this
+	 *    agent's magic 0x46464e4450534832 at BAR offset 0x400000 -- its
+	 *    window canary. No agent means no CP<->DP link, and no link means
+	 *    the NFS root below can never be mounted. Order: agent -> dpnet
+	 *    -> mount -> switch.
+	 *
+	 *  - Supervising it with a for(;;) here, as the deployed init does,
+	 *    means nothing after this point ever runs.
+	 *
+	 * The child keeps this root after pid 1 switches, since chroot()
+	 * affects only the caller and its future children. That is wanted: the
+	 * control channel stays on the initramfs, so a bad export cannot take
+	 * ffn-dpsh down with it.
+	 */
+	if (have("/sbin/ffn_dpagent2")) {
+		out("FFN> DP session agent: /sbin/ffn_dpagent2 (mailbox at phys 0x400000; use ffn-dpsh on the CP)\n");
+		supervise_forever("/sbin/ffn_dpagent2",
+				  "FFN> ffn_dpagent2 returned; restarting it\n");
+		nap(2);   /* let it publish the mailbox magic before we go on */
+	}
+
+	/*
+	 * If the initramfs carries the NFS-root flow, run it ONCE and fall
+	 * through. NOT in a loop.
+	 *
+	 * The script brings up the CP<->DP transport, mounts the root the CP
+	 * re-exports, validates it, and writes SWITCH_FLAG. We then do the
+	 * part only pid 1 may do. Everything after this point is the boot
+	 * flow that already worked, and it MUST still run: the DP's mailbox
+	 * agent (ffn_dpagent2) comes up through it, and that agent is the
+	 * only way the DP is reachable at all. An earlier version of this
+	 * branch looped forever, which would have silently traded the
+	 * control channel for a root filesystem.
+	 *
+	 * A failure therefore costs nothing: the script exits non-zero, no
+	 * flag is written, and the DP boots exactly as it does without it.
+	 */
 	if (have("/sbin/ffn-nfsroot")) {
-		out("FFN> NFS-root: /sbin/ffn-nfsroot "
-		    "(pcnet -> mount MP rootfs -> chroot)\n\n");
-		for (;;) {
-			run_shell("/sbin/ffn-nfsroot");
-			out("\nFFN> ffn-nfsroot returned; restarting it\n");
-			nap(2);
+		out("FFN> NFS-root: running /sbin/ffn-nfsroot\n\n");
+		run_shell("/sbin/ffn-nfsroot");
+		if (have(SWITCH_FLAG)) {
+			if (have("/newroot/etc/ffn-systemd-root") &&
+			    have("/sbin/ffn-systemd-handoff")) {
+				char *args[] = { "/sbin/ffn-systemd-handoff", "/newroot", 0 };
+				char *env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "TERM=vt100", 0 };
+				sys2(NR_dup2, cfd, 0);
+				sys2(NR_dup2, cfd, 1);
+				sys2(NR_dup2, cfd, 2);
+				out("FFN> handing PID 1 to Debian systemd\n");
+				sys3(NR_execve, args[0], args, env);
+				out("FFN> handoff exec failed; retaining recovery root\n");
+			} else {
+				switch_root_to("/newroot");
+			}
 		}
+		else
+			out("FFN> no root staged; continuing on the initramfs\n");
 	}
 
 	/*

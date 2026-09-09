@@ -1,0 +1,16 @@
+[Unit]
+Description=PA-5220 Broadcom switch control
+After=network.target ffn-dp-boot.service
+ConditionPathIsMountPoint=/opt/ffn-compat
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/sbin/ffn-bcm-debian.sh prepare
+ExecStart=/usr/local/sbin/ffn-bcm-debian.sh run
+# Hardware reinitialization must be deliberate, never a restart loop.
+Restart=no
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

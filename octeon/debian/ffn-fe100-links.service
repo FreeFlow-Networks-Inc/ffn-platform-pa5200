@@ -1,0 +1,15 @@
+[Unit]
+Description=FFN FE100 gearbox, Ethernet and Interlaken links
+Requires=ffn-copper.service
+After=ffn-copper.service
+PartOf=ffn-bcmd.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/sbin/ffn-fe100-links.sh
+ExecStopPost=/bin/sh -c 'echo 0 > /sys/module/ffn_mdioctl/parameters/allow_gearbox_writes'
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

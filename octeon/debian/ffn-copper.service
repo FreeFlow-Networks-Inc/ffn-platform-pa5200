@@ -1,0 +1,14 @@
+[Unit]
+Description=PA-5220 BCM84848 copper PHY firmware and link initialization
+Requires=ffn-front-ports.service
+After=ffn-front-ports.service
+PartOf=ffn-bcmd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ffn-copper-init.sh
+RemainAfterExit=yes
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

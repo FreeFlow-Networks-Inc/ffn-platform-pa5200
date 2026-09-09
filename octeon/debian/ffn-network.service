@@ -1,0 +1,13 @@
+[Unit]
+Description=FFN isolated L2 switching and L3 routing stack
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_network.py apply
+ExecStop=/usr/bin/python3 /usr/local/sbin/ffn_network.py stop
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

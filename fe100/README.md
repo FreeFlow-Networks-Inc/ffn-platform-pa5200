@@ -111,9 +111,19 @@ gearbox) and port 20 (ILKN4, 12 lanes over fabric quads 2/3/4). The vendor's own
 `config.bcm` comment on the Interlaken lane order — "the FE100 guys swap on
 their side" — is what identifies port 20's far end as this part.
 
-## Not done
+## Update: 9 September 2026
 
-Bring-up, parser table load (`/etc/fe-parser.json`, decoded by
-`pan_fe100_parser_cjson_decode`), portmap and SPM configuration, and any
-datapath function. Writing is implemented but gated behind `--allow-write`,
-because writing is both how this chip gets configured and how it gets wedged.
+Gearbox, NIF and TMI initialization now succeed on the PA-5220. BCM reports
+both FE100 physical links up. See [measured bring-up and startup](LINK-BRINGUP-20260909.md).
+The earlier missing-runtime discussion above is historical; native Debian
+can run the owner's selected routines through the bounded FFN adapters.
+
+## Packet forwarding update
+
+Owner-derived SPM mapping and a scoped LIF SYSPORT rule now return 3,000
+checked IPv4/UDP payloads through NIF, the packet pipeline, TMI and BCM to
+the MP, with loopback off and no missing, duplicate or corrupt payloads.
+LIF hits and ingress exception code zero confirm the selected forwarding.
+The MP probe temporarily enables rx-all for the FE100 message envelope.
+DP reception, firewall policy/offload and automatic packet-table startup
+remain unfinished. See [packet-path evidence](PACKET-PATH-20260909.md).

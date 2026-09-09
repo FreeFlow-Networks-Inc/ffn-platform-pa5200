@@ -1,0 +1,9 @@
+[Unit]
+Description=PA-5220 four-port commissioning fabric (requires prepared BCM/FE tables)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_fabric.py mp
+TimeoutStopSec=30
+# Deliberately not enabled at boot: hardware queue/table replay is not complete.

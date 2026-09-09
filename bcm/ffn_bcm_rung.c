@@ -35,6 +35,84 @@
  * property read at init and cint runs long afterwards.
  *
  * Do not name a variable "unit"; cint predefines it.
+ *
+ * ---------------------------------------------------------------------------
+ * EACH RUN OF THIS RECIPE FLUSHES THE BACKLOG, THEN FORWARDING STOPS.
+ * Established 2026-09-06 on a chip freshly re-initialised for the purpose, so
+ * none of it is an artefact of accumulated state. An earlier version of this
+ * comment said "one burst per attach"; that was measured on a chip carrying
+ * configuration from previous sessions and it is WRONG in two ways -- the
+ * attach is not the trigger, and on a clean chip the first run forwards
+ * nothing at all.
+ *
+ * ON A CLEAN CHIP, ports 2, 8, 9 and 24 come up by themselves and the counters
+ * start at zero. Then:
+ *
+ *   run this recipe once, then send 200 frames:  port 8 +204, port 24 +0
+ *   send another 200:                            port 8 +203, port 24 +0
+ *   run the recipe AGAIN:                        port 24 +395   <- the backlog
+ *
+ * So the frames are QUEUED, never dropped -- no error counter moves anywhere,
+ * and `show c`'s whole TX section stays empty until a run releases them.
+ *
+ * WHAT THE TRIGGER IS NOT. Both remaining calls were isolated and neither
+ * flushes a thing, each returning rv 0 on a connector confirmed to exist:
+ *
+ *   bcm_cosq_gport_attach on the existing connector   rv 0, port 24 +0
+ *   bcm_port_force_forward_set(u, 8, 24, 1)           rv 0, port 24 +0
+ *
+ * That leaves the creation of the queue objects themselves -- a new VOQ, a new
+ * connector, and the two connection_set calls -- as what actually drains the
+ * queue. Which fits a VOQ that gets an initial credit allocation and no
+ * replenishment, though that last step is inference and is not measured.
+ *
+ * WATCH OUT: CONNECTOR GPORTS ARE REUSED. A connector observed as 0xc4000020
+ * was later "Entry not found" (BCM_E_NOT_FOUND) from attach, and the next run
+ * allocated 0xc4000020 again. They are freed between runs, so a gport captured
+ * from an earlier run is not safe to use later -- read it back from the run you
+ * are about to act on.
+ *
+ * THREE EXPLANATIONS RULED OUT, so nobody spends the time again:
+ *
+ *   1. NOT link-level pause, though it looks exactly like it. Port 24 is the
+ *      ONLY linked port with pause RX enabled and TX disabled -- `ps` shows
+ *      `TX RX` for ports 2, 8, 9, 34, 35 and a bare `RX` for 24 -- which reads
+ *      just like the dataplane asserting flow control and never releasing it.
+ *      It is not: pause would not have let a backlog flush through.
+ *
+ *   2. NOT the parent gport. Attaching to the per-TC HR scheduling element
+ *      instead -- E2E PORT TC gport, subtype 13, resolved with
+ *      bcm_cosq_gport_handle_get(bcmCosqGportTypeSched) -- forwards NOTHING on
+ *      either burst. The subtype-5 E2E PORT gport used below is correct, and
+ *      the SDK's own TM FAP setup uses that same encoding.
+ *
+ *      Two traps found proving that: handle_get answers only for TC 0 and TC 1
+ *      on this port (BCM_E_PARAM for 2..7) and it DOES NOT WRITE out_gport on
+ *      failure -- so a loop attaching unconditionally re-parents six queues
+ *      onto TC 1's element, and attach returns 0 for every one of them.
+ *
+ *   3. NOT a shaper rate. See FFN_RATE_RULED_OUT below for the read-back:
+ *      connectors come up UNLIMITED, not zero.
+ *
+ * AND ONE AVENUE THAT IS CLOSED. bcmCosqControlBandwidthBurstMax (2) and
+ * bcmCosqControlFlowControlState (55) are the natural things to inspect next --
+ * a finite burst with no replenishment IS a one-shot grant, and a queue parked
+ * flow-controlled IS a stall. Neither is readable here. bcm_cosq_control_get
+ * returns BCM_E_PARAM "Invalid type" for both, on the VOQ and on the connector
+ * alike, so whatever the SDK's TM FAP example sets BurstMax on, it is not these
+ * gports. Anything further needs register-level access, not the cosq API.
+ *
+ * THESE RECIPES ARE NOT IDEMPOTENT. The daemon's cint session keeps its
+ * variables between cint.run calls, so each run prints "identifier redeclared"
+ * for every declaration and allocates a fresh VOQ and connector. Zero redeclare
+ * warnings is a reliable signal that the cint state is genuinely fresh, which
+ * is worth checking before trusting any measurement here.
+ *
+ * TO GET A CLEAN CHIP: sh octeon/bcmagent/ffn-bcmd-ctl.sh restart on the CP,
+ * then poll {"op":"status"} until state is "ready" -- about 30 s warm. Ports 2,
+ * 8, 9 and 24 come back up on their own; the 100G pair 34/35 does not, and
+ * needs ffn_bcm_qsfp.c re-run if it is wanted. The staged config in /tmp/bcmcfg
+ * survives, so the port 8 RAW override is still in force afterwards.
  */
 
 int u = 0;
@@ -109,20 +187,48 @@ print rv_egr;
 
 print "FFN_ATTACH";
 /*
- * THE CALL THAT MAKES TRAFFIC MOVE.
+ * THE CALL THAT MAKES TRAFFIC MOVE -- ONCE. Necessary, not sufficient; see the
+ * one-shot finding in the header.
  *
  * Creating the connector and binding it to the VOQ is not enough: the
  * connector is a scheduling node and needs a PARENT in the E2E hierarchy.
- * Unparented it is never scheduled, so no credits are generated and the VOQ
- * never drains. Measured on this silicon: before this call, enqueue 300 and
- * dequeue 0; after it, dequeue 300 and port 24 TX 300.
+ * Unparented it is never scheduled at all. Measured on this silicon: before
+ * this call, enqueue 300 and dequeue 0; after it, dequeue 300 and port 24
+ * TX 300.
+ *
+ * That 300-frame measurement is exactly the trap. It is real, and it means
+ * only that ONE burst drained -- every subsequent burst forwards nothing until
+ * this call is made again. Do not read it as proof of a working credit loop.
  *
  * bcm_cosq_gport_attach_get returns BCM_E_UNAVAIL here, so the attachment
- * cannot be read back -- verify with traffic, not with a getter.
+ * cannot be read back -- verify with a SECOND burst of traffic, never with a
+ * getter and never with one burst.
  */
 int rv_attach;
 rv_attach = bcm_cosq_gport_attach(u, e2e_port, connector, 0);
 print rv_attach;
+
+print "FFN_RATE_RULED_OUT";
+/*
+ * NO RATE CALLS HERE, DELIBERATELY. A shaper with rate 0 would explain the
+ * one-shot behaviour in the header exactly -- it passes a burst allowance and never
+ * replenishes, and a fresh attach resets the bucket -- so rate was the
+ * candidate fix, and it is WRONG. Read back off the live chip with
+ * bcm_cosq_gport_bandwidth_get:
+ *
+ *   E2E port  0x78a00018   kbits_sec_max = 40000768     (a real 40G rate)
+ *   connector 0xc4000010   kbits_sec_max = 0xFFFFFFFF   (UNLIMITED)
+ *   connector 0xc4000020   kbits_sec_max = 0xFFFFFFFF   (UNLIMITED)
+ *
+ * Connectors come up UNLIMITED, not zero. Nothing is being shaped, so nothing
+ * is being starved by a shaper. ffn_bcm_voq.c had already recorded the E2E
+ * port's 42 Gbit/s, which should have been read before this was theorised.
+ *
+ * A version of this file did briefly call bcm_cosq_gport_bandwidth_set on the
+ * connector and the E2E port. It returned 0, changed nothing about the
+ * forwarding behaviour, and on one connector (0xc4000030) it made things
+ * marginally worse by replacing UNLIMITED with 40000000. Do not re-add it.
+ */
 
 print "FFN_FORCE_FORWARD";
 /*

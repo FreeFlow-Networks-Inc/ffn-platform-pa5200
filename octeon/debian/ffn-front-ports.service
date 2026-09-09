@@ -1,0 +1,14 @@
+[Unit]
+Description=PA-5220 front-panel port initialization
+Requires=ffn-bcmd.service
+After=ffn-bcmd.service
+PartOf=ffn-bcmd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn-front-ports.py
+RemainAfterExit=yes
+TimeoutStartSec=1100
+
+[Install]
+WantedBy=multi-user.target

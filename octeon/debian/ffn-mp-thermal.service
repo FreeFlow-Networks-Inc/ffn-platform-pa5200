@@ -1,0 +1,11 @@
+[Unit]
+Description=MP CPU temperatures for PA-5220 fan governor
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_mp_thermal.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

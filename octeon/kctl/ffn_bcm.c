@@ -73,9 +73,10 @@
 #define CMIC_LEDUP0_CLK_DIV	0x2005c
 #define CMIC_LEDUP0_DATA_RAM	0x20400		/* 256 B, 4-byte stride */
 #define CMIC_LEDUP0_PROG_RAM	0x20800		/* 256 B, 4-byte stride */
-#define CMIC_LEDUP_STRIDE	0x1000		/* LEDUP1 = +0x1000, ... */
+#define CMIC_LEDUP1_OFFSET	0x1000
+#define CMIC_LEDUP2_OFFSET	0x9000	/* Jericho LEDUP2 is at 0x29000 */
 #define CMIC_LEDUP_EN		BIT(0)
-#define CMIC_LEDUP_UNITS	4
+#define CMIC_LEDUP_UNITS	3
 
 static unsigned int schan_spins = 20000;
 module_param(schan_spins, uint, 0644);
@@ -274,7 +275,8 @@ static int ledup_base(struct ffn_bcm *b, u32 unit, u32 reg, u32 *out)
 
 	if (unit >= CMIC_LEDUP_UNITS)
 		return -EINVAL;
-	off = reg + unit * CMIC_LEDUP_STRIDE;
+	off = reg + (unit == 2 ? CMIC_LEDUP2_OFFSET :
+		     unit == 1 ? CMIC_LEDUP1_OFFSET : 0);
 	if (off + 4 > b->cmic_len)
 		return -ERANGE;
 	*out = off;

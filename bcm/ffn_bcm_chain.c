@@ -14,6 +14,23 @@
  * scheduled, gets no credits, and the VOQ fills and stalls; that one call is
  * the difference between dequeue 0 and dequeue N.
  *
+ * CORRECTION, 2026-09-06: THE ATTACH GRANTS CREDIT ONCE, NOT CONTINUOUSLY.
+ * The claim just above -- that the attach is the difference between dequeue 0
+ * and dequeue N -- is true only for the FIRST burst. Measured on the port-8
+ * variant of this same queue setup (ffn_bcm_rung.c): 200 frames in gave port 24
+ * TX +26 and then a permanent freeze; re-running the recipe moved +205 on only
+ * +2 new arrivals, so the backlog had been queued rather than dropped; a second
+ * 200-frame burst gave +200 in and +0 out.
+ *
+ * ALWAYS VERIFY WITH A SECOND BURST. One burst that drains proves the attach
+ * happened and nothing more. ffn_bcm_rung.c has the full write-up, including
+ * three explanations ruled out (link pause, the per-TC HR scheduler as attach
+ * parent, and a shaper rate -- connectors read back UNLIMITED) and what is left
+ * to try. Read it before trusting the queue setup in this file.
+ *
+ * Also: these recipes are NOT idempotent. cint keeps its variables between
+ * cint.run calls, so every re-run leaks a VOQ and a connector.
+ *
  * e2e gport = COSQ type 30 << 26 | E2E_PORT subtype 5 << 21 | port.
  */
 int u = 0;

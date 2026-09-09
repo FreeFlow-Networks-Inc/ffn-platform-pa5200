@@ -1,0 +1,12 @@
+[Unit]
+Description=FFN Debian dataplane boot
+Requires=ffn-cp-nfs.service
+After=ffn-cp-nfs.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/libexec/ffn-dp-boot.sh
+TimeoutStartSec=360
+# The MP requests this after CP SSH is ready. No independent auto-start can
+# race the MP's kernel staging or another DP boot.

@@ -1,0 +1,19 @@
+{
+  "script": "ffn_bcm_forward_test.c",
+  "purpose": "lab: eight-queue MP/front-port return path; run once per BCM initialization",
+  "path": "/tmp/bcmcfg/ffn_bcm_forward_test.c",
+  "markers": [
+    "FFN_AN_ADVERT_SET front=23 mask=0x5000008 rv=0",
+    "FFN_AN_ADVERT_SET front=24 mask=0x5000008 rv=0",
+    "FFN_DONE"
+  ],
+  "completed": true,
+  "output_lines": 3,
+  "output": [
+    "FFN_AN_ADVERT_SET front=23 mask=0x5000008 rv=0",
+    "FFN_AN_ADVERT_SET front=24 mask=0x5000008 rv=0",
+    "FFN_DONE"
+  ],
+  "truncated": false,
+  "ok": true
+}

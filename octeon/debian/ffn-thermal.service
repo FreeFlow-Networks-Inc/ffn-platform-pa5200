@@ -1,0 +1,16 @@
+[Unit]
+Description=PA-5220 thermal monitoring and fan governor
+After=ffn-management-i2c.service
+Requires=ffn-management-i2c.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_thermal.py run
+ExecStopPost=/usr/bin/python3 /usr/local/sbin/ffn_thermal.py full
+WatchdogSec=20
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

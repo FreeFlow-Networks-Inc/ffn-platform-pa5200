@@ -1,0 +1,28 @@
+=== MP direct management of CP ===
+running
+active
+ffn-cp-debian
+6.18.49-ffn-debian-cp-dirty
+127.1.1.1:/opt/ffn-cproot-debian-20260909 nfs
+CPU cores: 8
+Packages: 94
+PASS: BE n64, SQLite, threads, decimal, OpenSSL 3.6.4 25 Aug 2026
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+
+0 loaded units listed.
+active
+active
+active
+=== DP management through CP ===
+running
+active
+ffn-dp-debian
+6.18.49-ffn-debian-dp+
+127.1.2.1:/opt/dproot-debian-20260909 nfs
+CPU cores: 40
+Packages: 94
+PASS: BE n64, SQLite, threads, decimal, OpenSSL 3.6.4 25 Aug 2026
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+
+0 loaded units listed.
+PASS: both PA-5220 processors booted Debian; direct MP-to-CP management verified.
