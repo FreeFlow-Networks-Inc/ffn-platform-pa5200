@@ -2,32 +2,35 @@
  * FFN Octeon initramfs init -- freestanding, MIPS64 N64, no libc.
  *
  * ###################################################################
- * # THIS IS NOT THE SOURCE OF THE DP's DEPLOYED init. DO NOT BUILD  #
- * # IT FOR THE DP AND SHIP IT.                                      #
+ * # THE DP's AGENT BRANCH IS RECONSTRUCTED HERE, NOT INHERITED.     #
+ * # If you touch the branch order in _start(), read this first.     #
  * ###################################################################
  *
- * The init running on the DP is 13313 bytes and starts /sbin/ffn_dpagent2 --
- * the mailbox agent that is the DP's ONLY control channel. This file has no
- * agent branch at all and builds to ~11.4 KB. Every copy of ffn_init.c on
- * disk is the same 9491-byte pre-agent version; the DP's real source was
- * never committed and the binary is the only artifact.
+ * The DP's previously deployed init was 13313 bytes, built with Cavium SDK
+ * gcc 4.7.0, and its source was never committed -- every ffn_init.c on disk
+ * was the same 9491-byte version with no agent branch at all. Building from
+ * one of those and booting it gives a DP that comes up cleanly on 40 cores
+ * and is COMPLETELY UNREACHABLE, because /sbin/ffn_dpagent2 -- the mailbox
+ * agent that ffn-dpsh talks to, and the DP's only control channel -- never
+ * starts. That is not hypothetical; it happened, and recovery was a reboot on
+ * the previously staged kernel.
  *
- * Building this and booting the DP on it produces a DP that comes up cleanly
- * with 40 cores and is completely unreachable. That is not hypothetical --
- * it happened, and recovery was a reboot on the previous kernel. The agent
- * branch has to be reconstructed here FIRST. Its strings give the shape:
+ * A strings diff against the deployed binary showed the gap was exactly three
+ * strings, so the branch is reconstructed below with those bytes preserved.
  *
- *     FFN> DP session agent: /sbin/ffn_dpagent2 (mailbox at phys 0x400000;
- *          use ffn-dpsh on the CP)
- *     FFN> ffn_dpagent2 returned; restarting it
+ * TWO DELIBERATE DIFFERENCES FROM THE DEPLOYED SHAPE:
  *
- * and in the deployed binary it sits AFTER the nfsroot branch (offsets 9848
- * then 9992), which is why merely adding /sbin/ffn-nfsroot to the DP
- * initramfs is enough to strand the DP: the nfsroot branch loops forever and
- * the agent never starts. See octeon/DP-NFSROOT.md.
+ *   - the agent is supervised in a CHILD, not a for(;;) in pid 1, and
+ *   - it starts BEFORE the nfsroot branch.
  *
- * switch_root_to() below is correct and verified, but it is only reachable
- * once the above is resolved.
+ * Both are forced by the CP: its ffn_dpnetd will not start until it can read
+ * the agent's magic 0x46464e4450534832 at BAR offset 0x400000, so nothing can
+ * mount anything until the agent is live. Order is agent -> dpnet -> mount ->
+ * switch. In the deployed binary the nfsroot branch came FIRST and looped
+ * forever (offsets 9848 then 9992), which is why simply adding
+ * /sbin/ffn-nfsroot to the DP initramfs was enough to strand it.
+ *
+ * See octeon/DP-NFSROOT.md.
  *
  * Why no libc: the vendor busybox in this initramfs has NO shell applet at all
  * (no sh, no ash, no hush), so a "#!/bin/sh" init could never run -- the kernel
@@ -416,6 +419,32 @@ static void run_shell(const char *path)
 	sys5(NR_wait4, pid, 0, 0, 0, 0);
 }
 
+/*
+ * Run a service under a restart loop in a CHILD, so pid 1 is free to carry
+ * on. run_shell() itself forks and waits, so the child blocks on the
+ * grandchild and we return immediately.
+ *
+ * The deployed init supervises the agent with a for(;;) in pid 1 instead,
+ * which is why nothing after that branch ever ran.
+ *
+ * argv/envp inside run_shell() are function statics, but the fork gives the
+ * child its own copy, so the parent's later calls cannot race with it.
+ */
+static void supervise_forever(const char *path, const char *diedmsg)
+{
+	long pid = sys5(NR_fork, 0, 0, 0, 0, 0);
+
+	if (pid == 0) {
+		for (;;) {
+			run_shell(path);
+			out(diedmsg);
+			nap(2);
+		}
+	}
+	if (pid < 0)
+		out("    fork failed\n");
+}
+
 void _start(void)
 {
 	struct utsname u;
@@ -474,6 +503,34 @@ void _start(void)
 	 * both survives a not-yet-up transport and re-runs it when the chrooted
 	 * shell exits. That is why it is preferred over the bare shell below.
 	 */
+	/*
+	 * THE SESSION AGENT FIRST, AND IN A CHILD.
+	 *
+	 * ffn_dpagent2 is the DP's ONLY control channel (ffn-dpsh on the CP
+	 * talks to it through the mailbox at phys 0x400000). Two reasons it
+	 * has to come first and must not block:
+	 *
+	 *  - The CP's ffn_dpnetd refuses to start until it can read this
+	 *    agent's magic 0x46464e4450534832 at BAR offset 0x400000 -- its
+	 *    window canary. No agent means no CP<->DP link, and no link means
+	 *    the NFS root below can never be mounted. Order: agent -> dpnet
+	 *    -> mount -> switch.
+	 *
+	 *  - Supervising it with a for(;;) here, as the deployed init does,
+	 *    means nothing after this point ever runs.
+	 *
+	 * The child keeps this root after pid 1 switches, since chroot()
+	 * affects only the caller and its future children. That is wanted: the
+	 * control channel stays on the initramfs, so a bad export cannot take
+	 * ffn-dpsh down with it.
+	 */
+	if (have("/sbin/ffn_dpagent2")) {
+		out("FFN> DP session agent: /sbin/ffn_dpagent2 (mailbox at phys 0x400000; use ffn-dpsh on the CP)\n");
+		supervise_forever("/sbin/ffn_dpagent2",
+				  "FFN> ffn_dpagent2 returned; restarting it\n");
+		nap(2);   /* let it publish the mailbox magic before we go on */
+	}
+
 	/*
 	 * If the initramfs carries the NFS-root flow, run it ONCE and fall
 	 * through. NOT in a loop.

@@ -121,6 +121,17 @@ ok=0
 i=0
 while [ "$i" -lt "$WAIT" ]; do
 	if ping -c 1 -W 1 "$CPADDR" >/dev/null 2>&1; then ok=1; break; fi
+	# Restart the daemon if it gave up. Its --wait is 30s but ours is
+	# longer, and the CP end cannot come up until the session agent has
+	# published the mailbox magic -- so on a cold boot the daemon can
+	# legitimately time out once before the CP is ready. Without this the
+	# ping loop spins for the full window against a dead local end and
+	# then reports "CP never answered", blaming the wrong side.
+	if ! pidof ffn_dpnetd >/dev/null 2>&1; then
+		say "  dpnetd exited; restarting it (${i}s elapsed)"
+		setsid "$DPNETD" --role dp -v --wait 30 \
+			>>/tmp/dpnetd-dp.log 2>&1 </dev/null &
+	fi
 	i=$((i + 1))
 	sleep 1
 done
