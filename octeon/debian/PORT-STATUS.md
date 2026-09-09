@@ -5,6 +5,19 @@ Started 2026-09-06 on the RE VM (8 cores, 30 GB RAM, 149 GB free on
 `rebootstrap`. See `ffn-debian-mips64-bootstrap.sh` for the recipe and
 `../USERLAND-DISTRO.md` for why this is a port and not an install.
 
+## 2026-09-09: Debian hardware sessions on both planes
+
+**Update:** both processors have subsequently booted Debian/systemd on the
+PA-5220 with zero failed units. The MP directly manages the CP with `ffn-cp`.
+See [BOOT-AND-MANAGEMENT.md](BOOT-AND-MANAGEMENT.md) for current boot artifacts,
+service sequencing and recovery. Deployed roots now contain 94 packages.
+
+See [PLANE-DEVELOPMENT.md](PLANE-DEVELOPMENT.md) for the latest measured state.
+Both CP and DP now pass real SSH login and Debian runtime tests from separate
+91-package candidate roots. Both systemd-capable kernel candidates are built
+and staged with matching modules, but have not been boot-tested. The active
+boot roots remain OpenWrt; PID 1 and production service integration remain.
+
 ## 2026-09-08: the port now builds its own packages
 
 The bootstrap is finished and the result is self-hosting: a mips64 BE package
@@ -191,8 +204,10 @@ busybox fails two of its own tests here — "printf understands %s" and
 big-endian `%f` result deserves a look on real hardware, where it would
 actually mean something.
 
-**The remaining blocker for booting the CP on this root is `nfs-common`, not
-`ip`.** The CP roots over NFS, so without it the root cannot mount itself.
+The initramfs already has an NFS mount helper, so `nfs-common` is not a
+prerequisite for that initial mount. Full Debian boot also requires a
+systemd-capable kernel, PID 1 handoff, and transport/NFS service integration;
+see the 2026-09-09 update above.
 
 ## Endianness: CONFIRMED
 

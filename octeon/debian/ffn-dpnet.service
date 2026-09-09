@@ -1,0 +1,10 @@
+[Unit]
+Description=FFN CP-to-DP transport from RAM
+After=ffn-cp-nfs.service
+[Service]
+Type=simple
+ExecStart=/run/ffn-dp/ffn_dpnetd --role cp -v
+Restart=on-failure
+RestartSec=3
+# Started by ffn-dp-boot after the recovery agent has published its mailbox.
+# Never enable independently: it must be stopped during vendor boot operations.

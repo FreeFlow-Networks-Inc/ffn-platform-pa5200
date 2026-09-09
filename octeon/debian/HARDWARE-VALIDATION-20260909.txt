@@ -1,0 +1,14 @@
+=== CP ===
+forky/sid
+6.18.49-dirty
+ip utility, iproute2-7.2.0, libbpf 1.7.0
+PASS: BE n64, Python 3.14.7 OpenSSL 3.6.4 25 Aug 2026 SQLite, threads, decimal
+ok 1.250000
+PASS: Debian hardware chroot; this is not a PID 1 boot test
+=== DP (through the CP) ===
+forky/sid
+6.18.49-00007-g616977ba1b11
+ip utility, iproute2-7.2.0, libbpf 1.7.0
+PASS: BE n64, Python 3.14.7 OpenSSL 3.6.4 25 Aug 2026 SQLite, threads, decimal
+ok 1.250000
+PASS: Debian hardware chroot; this is not a PID 1 boot test

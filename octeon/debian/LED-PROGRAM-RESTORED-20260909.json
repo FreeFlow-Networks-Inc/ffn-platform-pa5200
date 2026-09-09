@@ -1,0 +1,42 @@
+{
+  "script": "ffn_bcm_forward_test.c",
+  "purpose": "lab: eight-queue MP/front-port return path; run once per BCM initialization",
+  "path": "/tmp/bcmcfg/ffn_bcm_forward_test.c",
+  "markers": [
+    "FFN_DONE"
+  ],
+  "completed": true,
+  "output_lines": 28,
+  "output": [
+    "LED: LED0 Micro-controller is ON (PC=0x24 State=SLEEP); auto updating is ON.",
+    "LED: LED1 Micro-controller is ON (PC=0x24 State=SLEEP); auto updating is ON.",
+    "LED: LED2 Micro-controller is ON (PC=0x24 State=SLEEP); auto updating is ON.",
+    "CMIC_LEDUP0_CTRL.CMIC0[0x20000]=0x20b: <LEDUP_EN=1,FIELD_4_9=0x20,",
+    "   FIELD_1_3=5>",
+    "CMIC_LEDUP1_CTRL.CMIC0[0x21000]=0x28b: <LEDUP_EN=1,FIELD_4_9=0x28,",
+    "   FIELD_1_3=5>",
+    "CMIC_LEDUP2_CTRL.CMIC0[0x29000]=0x28b: <LEDUP_EN=1,FIELD_4_9=0x28,",
+    "   FIELD_1_3=5>",
+    "CMIC_LEDUP0_CLK_DIV.CMIC0[0x2005c]=0x48: <LEDCLK_HALF_PERIOD=0x48>",
+    "CMIC_LEDUP1_CLK_DIV.CMIC0[0x2105c]=0x48: <LEDCLK_HALF_PERIOD=0x48>",
+    "CMIC_LEDUP2_CLK_DIV.CMIC0[0x2905c]=0x48: <LEDCLK_HALF_PERIOD=0x48>",
+    " 02 15 67 35 02 01 67 35 02 0d 67 35 02 01 67 35",
+    " 02 09 67 35 02 01 67 35 02 11 67 35 02 05 67 35",
+    " 86 e0 3a 08 28 32 00 32 01 b7 97 75 46 16 e0 ca",
+    " 06 70 46 77 42 67 3b 75 42 77 24 12 a0 f8 15 1a",
+    " 00 57 32 0e 87 57 32 0f 87 57",
+    " 02 02 67 35 02 01 67 35 02 03 67 35 02 04 67 35",
+    " 02 06 67 35 02 08 67 35 02 07 67 35 02 05 67 35",
+    " 86 e0 3a 08 28 32 00 32 01 b7 97 75 46 16 e0 ca",
+    " 06 70 46 77 42 67 3b 75 42 77 24 12 a0 f8 15 1a",
+    " 00 57 32 0e 87 57 32 0f 87 57",
+    " 02 09 67 35 02 0a 67 35 02 0b 67 35 02 0c 67 35",
+    " 02 1d 67 35 02 21 67 35 02 25 67 35 02 29 67 35",
+    " 86 e0 3a 08 28 32 00 32 01 b7 97 75 46 16 e0 ca",
+    " 06 70 46 77 42 67 3b 75 42 77 24 12 a0 f8 15 1a",
+    " 00 57 32 0e 87 57 32 0f 87 57",
+    "FFN_DONE"
+  ],
+  "truncated": false,
+  "ok": true
+}

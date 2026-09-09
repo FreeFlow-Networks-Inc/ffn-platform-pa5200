@@ -1,0 +1,9 @@
+#!/bin/sh
+# MP entry point. All hardware accesses execute locally on the CP.
+set -eu
+case "${1:-status}" in
+  status) exec /usr/local/sbin/ffn-cp 'python3 /usr/local/sbin/ffn_thermal.py status' ;;
+  auto) exec /usr/local/sbin/ffn-cp 'systemctl start ffn-thermal.service; systemctl is-active ffn-thermal.service' ;;
+  full) exec /usr/local/sbin/ffn-cp 'systemctl stop ffn-thermal.service; python3 /usr/local/sbin/ffn_thermal.py full' ;;
+  *) echo 'usage: ffn-thermal [status|auto|full]' >&2; exit 2 ;;
+esac

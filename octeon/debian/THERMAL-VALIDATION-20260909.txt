@@ -1,0 +1,183 @@
+{
+  "temperatures": [
+    {
+      "name": "NB FE100",
+      "celsius": 41.5,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "NB Cavium",
+      "celsius": 40.0,
+      "ramp_start": 65,
+      "maximum": 85
+    },
+    {
+      "name": "NB front",
+      "celsius": 38.5,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "NB BCM",
+      "celsius": 35.0,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "CP core",
+      "celsius": 51,
+      "ramp_start": 65,
+      "maximum": 85
+    },
+    {
+      "name": "BCM core",
+      "celsius": 50,
+      "ramp_start": 70,
+      "maximum": 85
+    },
+    {
+      "name": "FE100 core",
+      "celsius": 38,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "CE front",
+      "celsius": 30.5,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "CE DP area",
+      "celsius": 32.5,
+      "ramp_start": 50,
+      "maximum": 70
+    },
+    {
+      "name": "CE rear",
+      "celsius": 33.0,
+      "ramp_start": 50,
+      "maximum": 85
+    },
+    {
+      "name": "CE DP0/CE40",
+      "celsius": 36.0,
+      "ramp_start": 50,
+      "maximum": 75
+    },
+    {
+      "name": "DP0 core",
+      "celsius": 49,
+      "ramp_start": 70,
+      "maximum": 85
+    }
+  ],
+  "fans": [
+    {
+      "bank": 2,
+      "fan": 1,
+      "rpm": 12081,
+      "pwm": 255
+    },
+    {
+      "bank": 2,
+      "fan": 2,
+      "rpm": 11816,
+      "pwm": 255
+    },
+    {
+      "bank": 2,
+      "fan": 3,
+      "rpm": 11816,
+      "pwm": 255
+    },
+    {
+      "bank": 2,
+      "fan": 4,
+      "rpm": 12190,
+      "pwm": 255
+    },
+    {
+      "bank": 1,
+      "fan": 1,
+      "rpm": 11714,
+      "pwm": 255
+    },
+    {
+      "bank": 1,
+      "fan": 2,
+      "rpm": 11489,
+      "pwm": 255
+    },
+    {
+      "bank": 1,
+      "fan": 3,
+      "rpm": 11739,
+      "pwm": 255
+    },
+    {
+      "bank": 1,
+      "fan": 4,
+      "rpm": 11790,
+      "pwm": 255
+    }
+  ],
+  "errors": [],
+  "mp_temperatures": [
+    {
+      "name": "MP Core 4",
+      "celsius": 41.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 1",
+      "celsius": 42.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 5",
+      "celsius": 42.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 2",
+      "celsius": 41.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 6",
+      "celsius": 41.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Package id 0",
+      "celsius": 41.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 3",
+      "celsius": 41.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 7",
+      "celsius": 42.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    },
+    {
+      "name": "MP Core 0",
+      "celsius": 42.0,
+      "maximum": 82.0,
+      "ramp_start": 62.0
+    }
+  ]
+}

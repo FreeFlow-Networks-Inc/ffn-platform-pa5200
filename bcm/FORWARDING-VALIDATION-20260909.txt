@@ -1,0 +1,4 @@
+{"burst": 0, "sent": 1000, "returned": 1000}
+{"burst": 1, "sent": 1000, "returned": 1000}
+{"burst": 2, "sent": 1000, "returned": 1000}
+{"missing": 0, "duplicates": 0, "corrupt": 0, "payload_offsets": {"14": 3000}, "bursts": 3, "count": 1000}

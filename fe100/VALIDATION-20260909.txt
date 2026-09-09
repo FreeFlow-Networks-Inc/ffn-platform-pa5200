@@ -1,0 +1,35 @@
+{
+  "physical_links_up": true,
+  "ports": [
+    {
+      "name": "ce3",
+      "port": 3,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 100000,
+      "faceplate": false,
+      "raw": "       ce3(  3)  up    100G  FD   SW  No   Forward     RX   None   FA   CAUI 16360"
+    },
+    {
+      "name": "il20",
+      "port": 20,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 12500,
+      "faceplate": false,
+      "raw": "      il20( 20)  up   12.5G  FD None  No   Disable          None    D   ILKN     0"
+    }
+  ],
+  "registers": {
+    "nif_pcs": "0x10",
+    "tmi_il": "0x15fff",
+    "tmi_init": "0x10003f",
+    "nif_pll": "0x1",
+    "tmi_pll": "0x1"
+  }
+}
+running
+N
+N

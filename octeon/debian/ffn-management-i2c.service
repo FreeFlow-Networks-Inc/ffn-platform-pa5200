@@ -1,0 +1,10 @@
+[Unit]
+Description=PA-5220 management I2C mux
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /usr/local/sbin/ffn-management-i2c.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

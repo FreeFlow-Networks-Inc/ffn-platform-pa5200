@@ -1,0 +1,12 @@
+#!/bin/sh
+# MP control surface: JSON stdin for patch, JSON stdout for status/results.
+# Uses the existing pinned MP -> CP -> DP management connection.
+set -eu
+case "${1:-status}" in
+    status|patch) action=${1:-status} ;;
+    *) echo 'usage: ffn-network [status|patch] (patch reads JSON stdin)' >&2; exit 2 ;;
+esac
+exec ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \
+    -o 'ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp' \
+    root@127.1.2.2 "python3 /usr/local/sbin/ffn_network.py $action"

@@ -1,0 +1,12 @@
+[Unit]
+Description=FFN DP NFS exports using preserved management userspace
+After=local-fs.target network.target
+ConditionPathExists=/opt/ffn-compat/usr/local/bin/ffn-cp-nfsd.sh
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/sbin/chroot /opt/ffn-compat /usr/local/bin/ffn-cp-nfsd.sh
+TimeoutStartSec=90
+[Install]
+WantedBy=multi-user.target

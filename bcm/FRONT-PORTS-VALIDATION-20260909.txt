@@ -1,0 +1,13 @@
+PASS faceplate 1 BCM 28 link 10000 Mb/s
+PASS faceplate 3 BCM 14 link 10000 Mb/s
+PASS faceplate 5 BCM 16 link 10000 Mb/s
+PASS faceplate 13 BCM 7 link 10000 Mb/s
+PASS faceplate 23 BCM 34 link 40000 Mb/s
+PASS faceplate 24 BCM 35 link 40000 Mb/s
+PASS MDIO bus 0 PHY 16 ID 600d:84f9
+PASS MDIO bus 0 PHY 17 ID 600d:84f9
+PASS MDIO bus 0 PHY 18 ID 600d:84f9
+PASS MDIO bus 0 PHY 19 ID 600d:84f9
+PASS MDIO bus 0 write gate and malformed request rejection
+PASS MDIO bus 1 PHY 0 ID ae02:5290
+PASS MDIO bus 1 write gate and malformed request rejection

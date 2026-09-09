@@ -550,8 +550,21 @@ void _start(void)
 	if (have("/sbin/ffn-nfsroot")) {
 		out("FFN> NFS-root: running /sbin/ffn-nfsroot\n\n");
 		run_shell("/sbin/ffn-nfsroot");
-		if (have(SWITCH_FLAG))
-			switch_root_to("/newroot");
+		if (have(SWITCH_FLAG)) {
+			if (have("/newroot/etc/ffn-systemd-root") &&
+			    have("/sbin/ffn-systemd-handoff")) {
+				char *args[] = { "/sbin/ffn-systemd-handoff", "/newroot", 0 };
+				char *env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "TERM=vt100", 0 };
+				sys2(NR_dup2, cfd, 0);
+				sys2(NR_dup2, cfd, 1);
+				sys2(NR_dup2, cfd, 2);
+				out("FFN> handing PID 1 to Debian systemd\n");
+				sys3(NR_execve, args[0], args, env);
+				out("FFN> handoff exec failed; retaining recovery root\n");
+			} else {
+				switch_root_to("/newroot");
+			}
+		}
 		else
 			out("FFN> no root staged; continuing on the initramfs\n");
 	}

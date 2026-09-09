@@ -183,6 +183,13 @@ mkdir -p "$NEW/$OLD"
 mountpoint -q "$NEW/$OLD" || mount --bind / "$NEW/$OLD" 2>/dev/null
 
 # --- 6. hand the switch to PID 1 ------------------------------------------
+if [ -f "$NEW/etc/ffn-systemd-root" ]; then
+	grep -qw cgroup2 /proc/filesystems || fail "Debian requires cgroup v2"
+	chroot "$NEW" /usr/lib/systemd/systemd --version || fail "systemd runtime failed"
+	chroot "$NEW" /usr/sbin/sshd -t || fail "SSH configuration failed"
+	mkdir -p "$NEW/run"
+	mount -t tmpfs -o mode=755 tmpfs "$NEW/run" || fail "run tmpfs failed"
+fi
 # WHY WE DO NOT DO IT OURSELVES.
 #
 # The switch has to be MS_MOVE of the new root onto / followed by chroot --

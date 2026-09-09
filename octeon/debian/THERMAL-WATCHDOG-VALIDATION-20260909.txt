@@ -1,0 +1,9 @@
+Sep 09 23:09:21 ffn-cp-debian systemd[1]: ffn-thermal.service: Sent signal SIGSTOP to main process 5191 (python3) on client request.
+Sep 09 23:09:39 ffn-cp-debian systemd[1]: ffn-thermal.service: Watchdog timeout (limit 20s)!
+Sep 09 23:09:39 ffn-cp-debian systemd[1]: ffn-thermal.service: Killing process 5191 (python3) with signal SIGABRT.
+Sep 09 23:09:39 ffn-cp-debian systemd[1]: ffn-thermal.service: Main process exited, code=killed, status=6/ABRT
+Sep 09 23:09:44 ffn-cp-debian systemd[1]: ffn-thermal.service: Failed with result 'watchdog'.
+Sep 09 23:09:44 ffn-cp-debian systemd[1]: ffn-thermal.service: Consumed 27.345s CPU time over 3min 51.726s wall clock time, 19.9M memory peak.
+Sep 09 23:09:49 ffn-cp-debian systemd[1]: ffn-thermal.service: Scheduled restart job, restart counter is at 1.
+Sep 09 23:09:49 ffn-cp-debian systemd[1]: Starting ffn-thermal.service - PA-5220 thermal monitoring and fan governor...
+Sep 09 23:09:50 ffn-cp-debian systemd[1]: Started ffn-thermal.service - PA-5220 thermal monitoring and fan governor.

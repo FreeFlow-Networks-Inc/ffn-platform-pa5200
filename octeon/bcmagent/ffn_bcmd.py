@@ -482,8 +482,8 @@ def op_port_set(chip, req):
     """
     port = int(req["port"])
     enable = 1 if req.get("enable", True) else 0
-    script = ("int rv; rv = bcm_port_enable_set(0, %d, %d); "
-              'printf("FFNRV %%d\\n", rv);' % (port, enable))
+    script = ("{ int rv; rv = bcm_port_enable_set(0, %d, %d); "
+              'printf("FFNRV %%d\\n", rv); }' % (port, enable))
     text = chip.run("cint\n" + script + "\nexit;")
     m = re.search(r"FFNRV (-?\d+)", text)
     if not m:
@@ -1297,6 +1297,8 @@ def op_sys_show(chip, req):
 # there is no path to escape, no directory to traverse and no script to smuggle
 # in. Adding a recipe here is a deliberate act with a code review attached.
 _CINT_SCRIPTS = {
+    "ffn_bcm_forward_test.c": "lab: explicit front/NIF/Interlaken test mode; allocate only once per BCM initialization",
+    "ffn_bcm_front_init.c": "PA-5220 front ports: 10G SFP/copper MACs and 40G QSFP, no forwarding changes",
     # FFN's own, in ffn-platform-pa5200/bcm/
     "ffn_bcm_rung.c":      "MP port 8 -> VOQ -> port 24 -> the dataplane",
     "ffn_bcm_fplink.c":    "light faceplate ports 16/7 (eth1/5 <-> eth1/13): enable + speed",
@@ -1362,7 +1364,8 @@ def op_cint_run(chip, req):
             # hardcoding one made a fully successful chain report completed
             # false. A completion check that is wrong about success is worse
             # than none, because it gets believed in both directions.
-            "completed": bool(markers) and markers[-1].endswith("DONE"),
+            "completed": (bool(markers) and markers[-1].endswith("DONE")
+                          and not any("error:" in l.lower() for l in lines)),
             "output_lines": len(lines), "output": lines[:300],
             "truncated": len(lines) > 300}
 

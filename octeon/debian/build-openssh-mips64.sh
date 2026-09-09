@@ -125,7 +125,7 @@ if [ "$rc" != 0 ]; then
 fi
 
 echo "=== what came out ==="
-for b in sshd ssh ssh-keygen scp sftp-server; do
+for b in sshd ssh ssh-keygen scp sftp-server sshd-session sshd-auth; do
 	f=$(sudo find "$SRCDIR" -maxdepth 2 -name "$b" -type f 2>/dev/null | head -1)
 	if [ -n "$f" ]; then
 		printf '  %-12s %s\n' "$b" "$(sudo file -b "$f" | cut -c1-72)"
@@ -134,5 +134,9 @@ for b in sshd ssh ssh-keygen scp sftp-server; do
 	fi
 done
 sudo mkdir -p "$OUT"
-sudo sh -c "cp -a $SRCDIR/sshd $SRCDIR/ssh $SRCDIR/ssh-keygen $SRCDIR/scp $OUT/ 2>/dev/null" || true
+for b in sshd ssh ssh-keygen scp sftp-server sshd-session sshd-auth; do
+	# A successful sshd -t does not prove that a connection can authenticate:
+	# modern OpenSSH execs these separate session/authentication helpers.
+	sudo install -m755 "$SRCDIR/$b" "$OUT/$b" || exit 1
+done
 echo "  copied to ${OUT}"

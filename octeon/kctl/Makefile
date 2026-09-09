@@ -18,6 +18,7 @@
 obj-m += ffn_bcm.o
 obj-m += ffn_bde.o
 obj-m += ffn_mdio.o
+obj-m += ffn_mdioctl.o
 obj-m += ffn_octeon_info.o
 obj-m += ffn_xkphys.o
 
