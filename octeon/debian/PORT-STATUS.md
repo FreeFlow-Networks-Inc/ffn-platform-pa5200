@@ -71,19 +71,60 @@ carries live guard references (`__stack_chk` refs: 2), i.e. the protector is
 real and only the redundant library was missing. It is still a build-host
 workaround, not a fix: a rebuilt gcc should set the define.
 
+### iproute2 and busybox: BUILT
+
+All 12 chain packages built with `build-iproute2-chain.sh`. `iproute2 7.2.0-1`
+ships 21 binaries, every one `ELF 64-bit MSB pie executable, MIPS, MIPS64
+rel2`. Verified by running them, not by listing files:
+
+    ip -V       ip utility, iproute2-7.2.0, libbpf 1.7.0
+    ss -V       ss utility, iproute2-7.2.0
+    tc -V       tc utility, iproute2-7.2.0, libbpf 1.7.0
+    bridge -V   bridge utility, 7.2.0
+    busybox     BusyBox v1.38.0 (Debian 1:1.38.0-3) multi-call binary
+
+`ip -o link` makes real netlink calls. `cproot` is now 84 packages / 277 MB
+with `ip`, `ss`, `tc`, `bridge`, `busybox` and `/sbin/init`, all packages in
+`ii` state and `dpkg --audit` clean. Archive: 596 -> 633 packages.
+
+The chain was much shorter than its dependency lists imply, because 30 of
+iproute2's 44 transitive build-deps were already built. `libelf-dev` being
+present removes `elfutils`, which was the only consumer of `gawk`, which was
+the only consumer of `locales-all` -- a glibc rebuild avoided by measuring
+rather than assuming.
+
+#### Use apt, not `dpkg -i`
+
+`dpkg -i iproute2...deb` leaves the package in state `iU` -- unpacked,
+unconfigured -- because iproute2 Depends on `libcap2-bin` and dpkg does not
+fetch dependencies. All 11 runtime deps were already in the repo. This looks
+like a broken package and is not.
+
+#### busybox provides no `ip` on its own
+
+Debian's `busybox` package installs ONLY `/usr/bin/busybox`: `busybox.install`
+lists the binary, a man page and two initramfs hooks, and the only `.links`
+files in the source belong to `busybox-syslogd`, `udhcpc` and `udhcpd`. There
+are no applet symlinks.
+
+The obvious remedy, `busybox --install -s`, would be **actively harmful on this
+root** -- it symlinks all ~300 applets and would shadow the real coreutils,
+util-linux, findutils and login binaries a Debian root already has. iproute2
+supplies the real `ip`, so busybox stays a fallback invoked as `busybox ip`.
+
 ### Known-good, and the honest gaps
 
 Built and validated: upstream **OpenSSH 10.5p1** (`sshd`, `ssh`, `ssh-keygen`,
 `scp` in `ssh-build/`), `sshd -t` passing *natively on the CN73XX*.
 
-Not yet in any root: `ip`/`ifconfig`. `iproute2` is a ~12-package chain with no
-profile escapes (`bison` needs `help2man`; `gawk` needs `bison` and
-`locales-all`; `libmnl` needs `doxygen` + `graphviz`; `iptables` needs
-`libmnl-dev` and `libnetfilter-conntrack-dev`; `elfutils` needs `gawk` and
-`bison`). busybox is the cheap substitute for `ip`/`ifconfig` and builds, but
-fails two of its own tests here — "printf understands %s" and "printf handles
-positive numbers for %f". Those are skipped under `nocheck` and deserve a look
-on real hardware, where a big-endian `%f` result would actually mean something.
+`iproute2` and `busybox` are now built and installed in `cproot` (above).
+busybox fails two of its own tests here — "printf understands %s" and
+"printf handles positive numbers for %f" — which `nocheck` skips. A
+big-endian `%f` result deserves a look on real hardware, where it would
+actually mean something.
+
+**The remaining blocker for booting the CP on this root is `nfs-common`, not
+`ip`.** The CP roots over NFS, so without it the root cannot mount itself.
 
 ## Endianness: CONFIRMED
 
