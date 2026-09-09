@@ -19,7 +19,19 @@
 set -u
 
 SRC=${1:?usage: build-deb-mips64.sh <source-package> [profiles]}
-PROFILES=${2:-}
+
+# nodoc and nocheck are ALWAYS on, plus whatever the caller adds.
+#
+# nodoc is the single highest-value profile here. Documentation build-deps are
+# where the heavy, irrelevant toolchains live, and they are usually annotated
+# <!nodoc>, e.g. libmnl:
+#
+#   Build-Depends:       debhelper-compat (= 13), libtool, pkgconf
+#   Build-Depends-Indep: doxygen <!nodoc>, graphviz <!nodoc>
+#
+# With nodoc (or --arch-only, below) libmnl needs NOTHING that is not already
+# built. Without it, it wants doxygen and graphviz and looks like a dead end.
+PROFILES="nodoc nocheck${2:+ $2}"
 
 B=/mnt/clones/debian-mips64
 R=$B/sid-host/tmp/repo
@@ -82,13 +94,18 @@ echo "  DEB_BUILD_OPTIONS=$OPTS"
 ch apt-get update -qq 2>&1 | tail -1
 
 echo "--- build-deps ---"
-if [ -n "$PROFARG" ]; then
-	ch apt-get build-dep -y --no-install-recommends "$PROFARG" "$SRC" \
-		>"$T/tmp/bd.log" 2>&1
-else
-	ch apt-get build-dep -y --no-install-recommends "$SRC" \
-		>"$T/tmp/bd.log" 2>&1
-fi
+# --arch-only: install Build-Depends but NOT Build-Depends-Indep.
+#
+# READ THE WHOLE SOURCE RECORD, NOT JUST Build-Depends. Parsing only the
+# Build-Depends field made libmnl look dependency-free when its doxygen and
+# graphviz requirements were sitting in Build-Depends-Indep the whole time --
+# a claim I made and had to retract. "apt-cache showsrc <pkg> | grep ^Build-"
+# shows every field; sed-ing out only Build-Depends hides half the problem.
+#
+# Paired with dpkg-buildpackage -B below, so the arch-independent binaries are
+# never attempted and their build-deps are genuinely not needed.
+ch apt-get build-dep -y --arch-only --no-install-recommends $PROFARG "$SRC" \
+	>"$T/tmp/bd.log" 2>&1
 if [ $? != 0 ]; then
 	echo "  FAILED to install build-deps"
 	sudo grep -aE "Depends:|but it is|^E:" "$T/tmp/bd.log" | head -8 | sed 's/^/    /'
@@ -106,11 +123,17 @@ D=$(sudo sh -c "ls -d $T$WORK/*/ 2>/dev/null | head -1")
 [ -z "$D" ] && { echo "  no source tree"; exit 1; }
 echo "  ${D#$T}"
 
-echo "--- dpkg-buildpackage (binary only, unsigned) ---"
+echo "--- dpkg-buildpackage (arch-specific binaries only) ---"
+# -B not -b : arch-specific binaries ONLY. The arch:all packages of these
+# sources are documentation, and building them would drag in the very
+# Build-Depends-Indep toolchain --arch-only just skipped. Every library the
+# chain actually needs (libmnl-dev, libbpf-dev, libxtables-dev ...) is
+# arch-specific.
+#
 # -r'' : we are root in the chroot and fakeroot is not built for mips64.
 # --no-check-builddeps: apt-get build-dep already did it, and under profiles
 # dpkg's own check can disagree with apt's resolution.
-ch sh -c "cd ${D#$T} && dpkg-buildpackage -b -uc -us -r'' --no-check-builddeps" \
+ch sh -c "cd ${D#$T} && dpkg-buildpackage -B -uc -us -r'' --no-check-builddeps" \
 	>"$LOG" 2>&1
 rc=$?
 echo "  exit=$rc"
