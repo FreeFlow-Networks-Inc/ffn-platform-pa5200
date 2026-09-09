@@ -112,6 +112,74 @@ root** -- it symlinks all ~300 applets and would shadow the real coreutils,
 util-linux, findutils and login binaries a Debian root already has. iproute2
 supplies the real `ip`, so busybox stays a fallback invoked as `busybox ip`.
 
+### CPython 3.14.7: BUILT, and running on the silicon
+
+Upstream CPython, not the Debian package. `build-cpython-mips64.sh`.
+
+    version    3.14.7  (main, Sep 9 2026) [GCC 16.2.0]
+    platform   linux-mips64      machine  mips64
+    byteorder  big               maxsize  9223372036854775807
+    ssl        OpenSSL 3.6.4     sqlite3  3.53.4     zlib 1.3.2
+
+Verified on a Cavium Octeon III V0.3 with **no binfmt registrations and no
+qemu binary on the machine** -- so this is silicon, not emulation:
+
+    struct   native == big-endian: True
+    sqlite   round-trip sum: 6
+    threads  [0, 1, 4, 9, 16, 25, 36, 49]
+    decimal  0.1428571428571428571428571429
+    float    0.30000000000000004
+
+`_decimal` and IEEE-754 float being exactly right is worth stating: both are
+classic big-endian porting casualties.
+
+**The FFN agents import and RUN under it**, not merely compile -- `ffn_bcmd`
+executed its module-level code and produced its own diagnostic
+(`### MISSING bcm.user: ...`), `ffn_cfgagent` imported, and `ffnrun` exited 2
+as an argparse script should. py_compile only parses; importing is what
+exercises a port.
+
+#### Why upstream and not src:python3.14
+
+Its Build-Depends are a wall, and the expensive entries are hard-required
+rather than profile-guarded: `locales-all` (a glibc REBUILD), `tk-dev`
+(tcl + tk + X11), `systemtap-sdt-dev`, plus `python3:any` -- python needs
+python to build. Upstream needs only OpenSSL, zlib, ffi, readline, sqlite3,
+expat, bz2, lzma, ncurses, gdbm and uuid, and **all sixteen were already built
+in this port**. One build instead of a chain, exactly as with OpenSSH.
+
+Extract the pristine `.orig.tar.xz` rather than using `apt-get source`, which
+applies Debian's patch series -- those touch `configure.ac`, making upstream's
+shipped `configure` older than its input so it refuses to run. For OpenSSH the
+answer was `autoreconf`; CPython pins specific autoconf/aclocal versions and
+regenerating with the wrong ones fails less obviously.
+
+`configure` reports `build == host == mips64-unknown-linux-gnuabi64`, i.e. a
+NATIVE build under emulation, so none of the cross-compilation machinery
+(`--with-build-python`, host/target interpreter mismatch) is involved.
+
+#### Three traps in getting it into a root
+
+**Runtime libraries are a separate step from build ones.** The build root had
+the `-dev` packages; the target root had neither those nor their runtime
+counterparts, so python started and then died on the first C extension:
+`ImportError: libsqlite3.so.0`. Checking only the python binary misses most of
+it -- every extension in `lib-dynload` links its own libraries. Seven sonames
+were missing; resolve them by asking dpkg which package owns each, because two
+of the six are t64 variants (`libgdbm6t64`, `libreadline8t64`) and
+`libncursesw6` supplies both `libncursesw` and `libpanelw`.
+
+**A soname-prefix glob misses sqlite.** `libsqlite3.so.0*` matches the symlink
+but NOT the real file, which is `libsqlite3.so.3.53.4` -- soname major 0,
+file version 3.53.4. Every other library here has a filename that starts with
+its soname, so the glob works for them and silently fails for this one.
+
+**Files dropped in by tar are invisible to the loader.** Debian's loader reads
+`/etc/ld.so.cache`, which tar does not update, so the libraries were present
+and still "not found". Run `ldconfig` -- and it has to run on the target, since
+it is a mips64 binary. Installing via apt avoids this because the ldconfig
+trigger runs.
+
 ### Known-good, and the honest gaps
 
 Built and validated: upstream **OpenSSH 10.5p1** (`sshd`, `ssh`, `ssh-keygen`,
