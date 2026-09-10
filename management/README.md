@@ -75,3 +75,21 @@ Rollback on this MP: remove only
 systemd and restart the manager to unload the module. Pre-integration manager
 and HTML copies have `.before-extensions-20260910` suffixes if the generic hooks
 also need reverting. This does not stop forwarding or cooling controllers.
+# Core runtime and page integration
+
+This module requires the core's `runtime_api_version: 1` and `registerPage`
+hooks. Install the updated FFN-NGFW core first, then select this management
+directory through `FFN_PLATFORM_EXTENSION` and restart the manager. The manifest
+declares Device > OCTEON platform. Merely checking out this submodule does not
+enable the page or any probes.
+
+The UI uses `/api/system/runtime`, bound exclusively to this selected module.
+Legacy `/api/pa5200` endpoints remain for existing clients. Both paths use the
+same allowlisted controllers and revision checks. Core object storage is separate
+from OCTEON policy enforcement; no generic host firewall fallback is used here.
+
+Inspection changes now check the live DP revision after persistence, for a bounded
+eight-second observation period. `activation: active` requires a running dataplane
+with the accepted revision and no reload error. Otherwise the response reports
+pending, failed, superseded, or unknown. This observation does not roll back a
+saved policy, retry a write, restart forwarding, or change inspection semantics.

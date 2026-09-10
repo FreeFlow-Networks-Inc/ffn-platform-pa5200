@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const api = window.ffnExtensions.request;
-  const prefix = '/api/pa5200';
+  const prefix = '/api/system/runtime';
   function element(tag, text, parent) {
     const node = document.createElement(tag);
     if (text !== undefined) node.textContent = text;
@@ -58,7 +58,9 @@
       notice.textContent = 'Applying…';
       try {
         const result = await api(prefix + path, {method: 'POST', body: JSON.stringify(payload)});
-        notice.textContent = 'Controller accepted the change. Refresh state to verify activation before another edit.';
+        notice.textContent = result.activation === 'active' ? 'Inspection revision verified active on the OCTEON dataplane.' :
+          result.activation ? 'Inspection activation: ' + result.activation + '. Refresh state before another edit.' :
+          'Controller accepted the change. Refresh state to verify activation before another edit.';
         json(root, result);
         // Existing editors retain their captured revisions and stay disabled.
         root.querySelectorAll('[data-apply]').forEach(b => { b.disabled = true; });
@@ -149,5 +151,5 @@
       catch(e) { output.textContent = e.message; }
     }, !resources.network.available);
   }
-  window.ffnExtensions.register('pa5200', 'PA-5220 controls', render);
+  window.ffnExtensions.registerPage('pa5200', 'controls', render);
 })();

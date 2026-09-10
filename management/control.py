@@ -111,8 +111,38 @@ async def body(request):
         raise HTTPException(422, 'Expected a JSON object')
 
 
-def router(current_user, require_admin, record_audit, controller=None):
-    api = APIRouter(prefix='/api/pa5200', tags=['PA-5220 controls'])
+def runtime_router(current_user, require_admin, record_audit):
+    return router(current_user, require_admin, record_audit, prefix='/api/system/runtime')
+
+
+async def inspection_activation(ctl, result, attempts=10):
+    """Persistence is not activation. Observe the DP's live revision separately."""
+    accepted = result.get('accepted', {})
+    expected = accepted.get('revision')
+    if type(expected) is not int:
+        return dict(result, activation='unknown')
+    deadline = time.monotonic() + 8
+    for attempt in range(attempts):
+        try:
+            observed = await asyncio.wait_for(ctl.run('inspection', 'status'),
+                                             timeout=max(0.01, deadline - time.monotonic()))
+        except (HTTPException, OSError, asyncio.TimeoutError):
+            return dict(result, activation='unknown', expected_revision=expected)
+        runtime = observed.get('runtime') or {}
+        configured = (observed.get('config') or {}).get('revision')
+        if configured != expected:
+            return dict(result, activation='superseded', expected_revision=expected)
+        if runtime.get('reload_error'):
+            return dict(result, activation='failed', expected_revision=expected)
+        if observed.get('running') and runtime.get('revision') == expected:
+            return dict(result, activation='active', expected_revision=expected)
+        if attempt + 1 < attempts:
+            await asyncio.sleep(0.25)
+    return dict(result, activation='pending', expected_revision=expected)
+
+
+def router(current_user, require_admin, record_audit, controller=None, prefix='/api/pa5200'):
+    api = APIRouter(prefix=prefix, tags=['PA-5220 controls'])
     ctl = controller or Controller()
     lock = asyncio.Lock()
 
@@ -129,6 +159,7 @@ def router(current_user, require_admin, record_audit, controller=None):
             'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric'))))
         return {'collected_at': time.time(), 'resources': resources,
                 'can_write': user.get('role') in ('admin', 'superuser'),
+                'provider': 'pa5200', 'cpu_role': 'management',
                 'capabilities': {'ports': ['p1', 'p3', 'p5', 'p13'], 'mtu': 1500,
                     'forwarding': 'software relay', 'hardware_flow_offload': False,
                     'dynamic_routing': 'FRR lab validated; production peer configuration not integrated',
@@ -165,9 +196,13 @@ def router(current_user, require_admin, record_audit, controller=None):
             await record_audit(user['username'], 'pa5200_request', detail)
             try:
                 result = await ctl.run(resource, action, data if resource != 'thermal' else None)
+                if resource == 'inspection':
+                    result = await inspection_activation(ctl, result)
             except HTTPException as e:
                 await record_audit(user['username'], 'pa5200_failed', detail + ' http=%d' % e.status_code)
                 raise
+            if resource == 'inspection':
+                detail += ' activation=' + result['activation']
             await record_audit(user['username'], 'pa5200_completed', detail)
             return result
 

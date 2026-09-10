@@ -21,7 +21,7 @@ async function check(writable) {
     overlay:{available:false,error:'Offline'},
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
   const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
-  const context={window:{ffnExtensions:{request,register:(id,label,fn)=>{ assert.equal(id,'pa5200');render=fn; }}},
+  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');render=fn; }}},
     document:{createElement:tag=>new Node(tag)},Date,JSON,Object};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');
@@ -36,7 +36,7 @@ async function check(writable) {
     parent.all().find(n=>n.textContent==='Apply p1').onclick();
     await new Promise(resolve=>setImmediate(resolve));
     const change=calls.find(c=>c.options);
-    assert.equal(change.path,'/api/pa5200/network/patch');
+    assert.equal(change.path,'/api/system/runtime/network/patch');
     assert.deepEqual(JSON.parse(change.options.body),{revision:9,ports:{p1:{mode:'l2',mtu:1500,vlans:[100],pvid:100}}});
     assert.ok(buttons.every(b=>b.disabled),'stale editors disabled after apply');
   }
