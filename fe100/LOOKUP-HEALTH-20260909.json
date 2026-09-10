@@ -1,0 +1,146 @@
+{
+  "offload_verified": false,
+  "interpretation": "Register samples alone cannot establish functional forwarding. Counter deltas assume no hardware reset during sampling; reads are not atomic. TDI queue values must not be treated as valid occupancy when their clocks are off.",
+  "counter_pairs": {
+    "acl_packets": {
+      "received_delta_mod32": 1,
+      "sent_delta_mod32": 1,
+      "final_balance_mod32": 0
+    },
+    "acl_lookups": {
+      "received_delta_mod32": 0,
+      "sent_delta_mod32": 0,
+      "final_balance_mod32": 0
+    },
+    "tlu_acl_lookups": {
+      "received_delta_mod32": 0,
+      "sent_delta_mod32": 0,
+      "final_balance_mod32": 0
+    },
+    "dfp_packets": {
+      "received_delta_mod32": 1,
+      "sent_delta_mod32": 1,
+      "final_balance_mod32": 0
+    }
+  },
+  "nonempty_queues": [
+    {
+      "register": "tdi_tcam_pipe_fifo_status",
+      "levels": [
+        96,
+        96,
+        96
+      ],
+      "nonempty_all_samples": true
+    },
+    {
+      "register": "tdi_tcam_bist_fifo_status",
+      "levels": [
+        467,
+        467,
+        467
+      ],
+      "nonempty_all_samples": true
+    }
+  ],
+  "mode_faults_or_pauses": [],
+  "flow_control_flags": [
+    {
+      "register": "lif_cr_flow_control_status",
+      "field": "par_lif_pca_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "acl_cr_flow_control_status",
+      "field": "lif_acl_pca_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "dfp_cr_flow_control_status",
+      "field": "acl_dfp_pca_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "dfp_cr_flow_control_status",
+      "field": "flu_dfp_rslt_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "fwd_cr_flow_control_status",
+      "field": "dfp_fwd_pca_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "lif_lkup_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "acl_lkup_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "fwd_lkup_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "qmm_lkup_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "flu_lkup_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "flu_wr_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "tdi_tcam_resp_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "tdi_dram_resp_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tlu_cr_flow_control_status",
+      "field": "flu_status_imp_fc_err",
+      "current": false
+    },
+    {
+      "register": "tdi_cr_flow_control_status",
+      "field": "curr_fc_tcam_req",
+      "current": true
+    },
+    {
+      "register": "tdi_cr_flow_control_status",
+      "field": "sticky_fc_tcam_req",
+      "current": false
+    }
+  ],
+  "external_table_ids": [
+    4,
+    5,
+    6,
+    10
+  ],
+  "lookup_table_location": {
+    "acl_external_sel": 0,
+    "fwd_external_sel": 1
+  },
+  "external_clock_status": {
+    "dram_ddr_clk": 0,
+    "dram_pclk": 0,
+    "tcam_2x_clk": 0,
+    "tcam_1x_clk": 0
+  },
+  "acl_lookup_observed": false
+}

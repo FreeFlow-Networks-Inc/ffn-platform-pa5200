@@ -1,0 +1,12 @@
+[Unit]
+Description=FFN OCTEON SDK AES accelerator
+After=systemd-modules-load.service
+Before=ffn-overlay.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ffn-octeon-crypto.sh
+
+[Install]
+WantedBy=multi-user.target

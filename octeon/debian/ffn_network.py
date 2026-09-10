@@ -30,11 +30,13 @@ def validate_port(name, settings):
         raise ValueError('port settings must be an object')
     if not re.fullmatch(r'p(?:[1-9]|1[0-9]|2[0-4])', name):
         raise ValueError('port name must be p1..p24')
-    if set(settings) - {'mode', 'vlans', 'pvid', 'addresses', 'mtu'}:
+    if set(settings) - {'mode', 'vlans', 'pvid', 'addresses', 'mtu', 'vrf'}:
         raise ValueError('unknown per-port setting')
     mode = settings.get('mode')
     if mode not in ('disabled', 'l2', 'l3'):
         raise ValueError('mode must be disabled, l2 or l3')
+    if 'vrf' in settings and mode != 'l3':
+        raise ValueError('VRF membership requires l3 mode')
     mtu = settings.get('mtu', 1500)
     if type(mtu) is not int or not 1280 <= mtu <= 9000:
         raise ValueError('mtu must be 1280..9000')
@@ -60,19 +62,214 @@ def validate_port(name, settings):
     return settings
 
 def validate(cfg):
-    if set(cfg) != {'revision', 'ports'} or type(cfg['revision']) is not int or cfg['revision'] < 0:
+    if not {'revision', 'ports'} <= set(cfg) or set(cfg)-{'revision', 'ports', 'routes', 'vrfs', 'rules'} or type(cfg['revision']) is not int or cfg['revision'] < 0:
         raise ValueError('configuration requires revision and ports')
     if not isinstance(cfg['ports'], dict):
         raise ValueError('ports must be an object')
+    vrfs = cfg.get('vrfs', {})
+    if not isinstance(vrfs, dict) or len(vrfs) > 64:
+        raise ValueError('vrfs must be an object with at most 64 virtual routers')
+    for name, table in vrfs.items():
+        if (not re.fullmatch(r'vrf-[a-z0-9-]{1,11}', name) or type(table) is not int
+                or not 1000 <= table <= 65535):
+            raise ValueError('VRF names must be vrf-NAME (15 chars max), tables 1000..65535')
+    if len(set(vrfs.values())) != len(vrfs):
+        raise ValueError('VRF table IDs must be unique')
     addresses = set()
     for name, settings in cfg['ports'].items():
         validate_port(name, settings)
+        if 'vrf' in settings and settings['vrf'] not in vrfs:
+            raise ValueError('port references an undefined VRF')
         for address in settings.get('addresses', []):
-            key = str(ipaddress.ip_interface(address).ip)
+            key = (settings.get('vrf'), str(ipaddress.ip_interface(address).ip))
             if key in addresses:
                 raise ValueError('duplicate local IP address')
             addresses.add(key)
+    routes = cfg.get('routes', [])
+    if not isinstance(routes, list) or len(routes) > 1024:
+        raise ValueError('routes must be a list of at most 1024 entries')
+    keys = set()
+    for route in routes:
+        if not isinstance(route, dict) or set(route)-{'dst', 'via', 'dev', 'metric', 'type', 'table', 'nexthops'}:
+            raise ValueError('unknown route setting')
+        destination = ipaddress.ip_network(route.get('dst', ''), strict=True)
+        if str(destination) != route['dst']:
+            raise ValueError('route destination must be a canonical prefix; use /0 for default')
+        metric = route.get('metric', 100)
+        if type(metric) is not int or not 1 <= metric < 4278198272:
+            raise ValueError('route metric must be 1..4278198271')
+        table = route.get('table', 254)
+        if type(table) is not int or (table != 254 and table not in vrfs.values()):
+            raise ValueError('route table must be main (254) or a configured VRF table')
+        key = (table, str(destination), metric)
+        if key in keys:
+            raise ValueError('duplicate route destination and metric')
+        keys.add(key)
+        kind = route.get('type', 'unicast')
+        if 'nexthops' in route:
+            hops = route['nexthops']
+            if kind != 'unicast' or 'dev' in route or 'via' in route or not isinstance(hops, list) or not 2 <= len(hops) <= 16:
+                raise ValueError('ECMP requires 2..16 nexthops and no top-level via/dev')
+            seen = set()
+            for hop in hops:
+                if not isinstance(hop, dict) or set(hop)-{'dev','via','weight'} or 'dev' not in hop:
+                    raise ValueError('invalid ECMP next hop')
+                weight = hop.get('weight', 1)
+                if type(weight) is not int or not 1 <= weight <= 256:
+                    raise ValueError('ECMP weight must be 1..256')
+                identity = (hop['dev'], hop.get('via'))
+                if identity in seen:
+                    raise ValueError('duplicate ECMP next hop')
+                seen.add(identity)
+                single = {k:v for k,v in route.items() if k != 'nexthops'}
+                single.update({k:v for k,v in hop.items() if k != 'weight'})
+                validate({'revision':cfg['revision'], 'ports':cfg['ports'], 'vrfs':vrfs, 'routes':[single]})
+            continue
+        if kind == 'blackhole':
+            if 'via' in route or 'dev' in route:
+                raise ValueError('blackhole routes cannot specify via or dev')
+            continue
+        if kind != 'unicast':
+            raise ValueError('route type must be unicast or blackhole')
+        port = cfg['ports'].get(route.get('dev'), {})
+        if port.get('mode') != 'l3':
+            raise ValueError('route dev must be a configured l3 port')
+        if vrfs.get(port.get('vrf'), 254) != table:
+            raise ValueError('route and egress port must belong to the same virtual router')
+        if 'via' in route:
+            gateway = ipaddress.ip_address(route['via'])
+            if (gateway.version != destination.version or gateway.is_multicast
+                    or gateway.is_unspecified or gateway.is_loopback or (port.get('vrf'), str(gateway)) in addresses):
+                raise ValueError('invalid next-hop address')
+            reachable = gateway.version == 6 and gateway.is_link_local
+            for value in port.get('addresses', []):
+                interface = ipaddress.ip_interface(value)
+                if gateway.version == interface.version and gateway in interface.network:
+                    if gateway.version == 4 and interface.network.prefixlen < 31 and gateway in (
+                            interface.network.network_address, interface.network.broadcast_address):
+                        continue
+                    reachable = True
+            if not reachable:
+                raise ValueError('next hop must be directly reachable on route dev')
+    rules = cfg.get('rules', [])
+    if not isinstance(rules, list) or len(rules) > 256:
+        raise ValueError('rules must be a list of at most 256 source-routing policies')
+    priorities = set()
+    for rule in rules:
+        if not isinstance(rule, dict) or not {'from','iif','table','priority'} <= set(rule) or set(rule)-{'from','to','iif','table','priority'}:
+            raise ValueError('policy requires from, iif, table and priority; optional to')
+        source = ipaddress.ip_network(rule['from'], strict=True)
+        if str(source) != rule['from']:
+            raise ValueError('policy source must be a canonical prefix')
+        if 'to' in rule:
+            target = ipaddress.ip_network(rule['to'], strict=True)
+            if target.version != source.version or str(target) != rule['to']:
+                raise ValueError('policy destination must be canonical and match source family')
+        if cfg['ports'].get(rule['iif'], {}).get('mode') != 'l3':
+            raise ValueError('policy ingress must be a configured l3 port')
+        if type(rule['table']) is not int or rule['table'] not in vrfs.values():
+            raise ValueError('policy table must select a configured virtual router')
+        priority = rule['priority']
+        if type(priority) is not int or not 100 <= priority <= 999 or (source.version, priority) in priorities:
+            raise ValueError('policy priority must be unique per family, in 100..999')
+        priorities.add((source.version, priority))
     return cfg
+
+
+def configure_rule(action, rule):
+    family = '-4' if ipaddress.ip_network(rule['from']).version == 4 else '-6'
+    if action == 'add':
+        existing = json.loads(ip(family, '-j', 'rule', 'show'))
+        if any(r.get('priority') == rule['priority'] for r in existing):
+            raise RuntimeError('policy priority is already occupied')
+    args = [family, 'rule', action, 'priority', str(rule['priority']), 'from', rule['from']]
+    if 'to' in rule:
+        args += ['to', rule['to']]
+    args += ['iif', rule['iif'], 'table', str(rule['table'])]
+    ip(*args)
+
+
+def configure_route(action, route):
+    family = '-4' if ipaddress.ip_network(route['dst']).version == 4 else '-6'
+    args = [family, 'route', action]
+    if route.get('type') == 'blackhole':
+        args.append('blackhole')
+    args.append(route['dst'])
+    if 'via' in route:
+        args += ['via', route['via']]
+    if 'dev' in route:
+        args += ['dev', route['dev']]
+    args += ['metric', str(route.get('metric', 100)), 'proto', 'static']
+    args += ['table', str(route.get('table', 254))]
+    for hop in route.get('nexthops', []):
+        args += ['nexthop']
+        if 'via' in hop:
+            args += ['via', hop['via']]
+        args += ['dev', hop['dev'], 'weight', str(hop.get('weight', 1))]
+    ip(*args)
+
+
+def route_ports(route):
+    return {route.get('dev')} | {h['dev'] for h in route.get('nexthops', [])}
+
+
+def lookup(cfg, request):
+    if not isinstance(request, dict) or set(request)-{'dst','src','vrf'} or 'dst' not in request:
+        raise ValueError('lookup requires dst, with optional src and vrf')
+    destination = ipaddress.ip_address(request['dst'])
+    args = ['-4' if destination.version == 4 else '-6', '-j', 'route', 'get', str(destination)]
+    if 'src' in request:
+        source = ipaddress.ip_address(request['src'])
+        if source.version != destination.version:
+            raise ValueError('lookup addresses must have the same family')
+        args += ['from', str(source)]
+    if 'vrf' in request:
+        if request['vrf'] not in cfg.get('vrfs', {}):
+            raise ValueError('unknown virtual router')
+        args += ['vrf', request['vrf']]
+    return {'lookup': json.loads(ip(*args))}
+
+
+def create_vrf(name, table):
+    for family in ('-4', '-6'):
+        existing = json.loads(ip(family, '-j', 'route', 'show', 'table', 'all'))
+        if any(str(r.get('table')) == str(table) for r in existing):
+            raise RuntimeError('VRF table already contains unmanaged routes')
+    ip('link', 'add', name, 'type', 'vrf', 'table', str(table))
+    installed = []
+    try:
+        ip('link', 'set', name, 'up')
+        # Prevent an unresolved lookup falling through to the main table.
+        for family in ('-4', '-6'):
+            ip(family, 'route', 'add', 'unreachable', 'default', 'table', str(table),
+               'metric', '4278198272', 'proto', 'static')
+            installed.append(family)
+    except BaseException:
+        for family in reversed(installed):
+            ip(family, 'route', 'del', 'unreachable', 'default', 'table', str(table),
+               'metric', '4278198272', 'proto', 'static')
+        ip('link', 'delete', name)
+        raise
+
+
+def delete_vrf(name, table):
+    for family in ('-4', '-6'):
+        for route in json.loads(ip(family, '-j', 'route', 'show', 'table', str(table))):
+            if not (route.get('type') == 'unreachable' and route.get('dst') == 'default'
+                    and route.get('metric') == 4278198272 and route.get('protocol') == 'static'):
+                raise RuntimeError('virtual router still has routes; refusing removal')
+    removed = []
+    try:
+        for family in ('-4', '-6'):
+            ip(family, 'route', 'del', 'unreachable', 'default', 'table', str(table),
+               'metric', '4278198272', 'proto', 'static')
+            removed.append(family)
+        ip('link', 'delete', name)
+    except BaseException:
+        for family in removed:
+            ip(family, 'route', 'add', 'unreachable', 'default', 'table', str(table),
+               'metric', '4278198272', 'proto', 'static')
+        raise
 
 def exists():
     return any(x['name'] == NS for x in json.loads(run('ip', '-j', 'netns', 'list') or '[]'))
@@ -83,7 +280,8 @@ def configure_port(name, settings, create=False):
     ip('link', 'set', name, 'down')
     current = json.loads(ip('-j', 'link', 'show', 'dev', name))[0]
     if 'master' in current:
-        run('ip', 'netns', 'exec', NS, 'bridge', 'vlan', 'del', 'dev', name, 'vid', '1-4094')
+        if current['master'] == 'br-data':
+            run('ip', 'netns', 'exec', NS, 'bridge', 'vlan', 'del', 'dev', name, 'vid', '1-4094')
         ip('link', 'set', name, 'nomaster')
     ip('address', 'flush', 'dev', name)
     ip('link', 'set', name, 'mtu', str(settings.get('mtu', 1500)))
@@ -94,6 +292,8 @@ def configure_port(name, settings, create=False):
             flags = ('pvid', 'untagged') if vlan == settings.get('pvid') else ()
             run('ip', 'netns', 'exec', NS, 'bridge', 'vlan', 'add', 'dev', name, 'vid', str(vlan), *flags)
     elif mode == 'l3':
+        if 'vrf' in settings:
+            ip('link', 'set', name, 'master', settings['vrf'])
         for address in settings.get('addresses', []):
             ip('address', 'add', address, 'dev', name)
     if mode != 'disabled':
@@ -107,6 +307,8 @@ def start(cfg):
         ip('link', 'set', 'lo', 'up')
         ip('link', 'add', 'br-data', 'type', 'bridge', 'vlan_filtering', '1', 'vlan_default_pvid', '0', 'stp_state', '1')
         ip('link', 'set', 'br-data', 'up')
+        for name, table in cfg.get('vrfs', {}).items():
+            create_vrf(name, table)
         for setting in ('net.ipv4.ip_forward=1', 'net.ipv6.conf.all.forwarding=1',
                         'net.ipv4.conf.all.send_redirects=0', 'net.ipv4.conf.default.send_redirects=0'):
             run('ip', 'netns', 'exec', NS, 'python3', '-c',
@@ -114,6 +316,10 @@ def start(cfg):
                 "Path('/proc/sys/'+k.replace('.', '/')).write_text(v+'\\n')", setting)
         for name, settings in cfg['ports'].items():
             configure_port(name, settings, create=True)
+        for route in cfg.get('routes', []):
+            configure_route('add', route)
+        for rule in cfg.get('rules', []):
+            configure_rule('add', rule)
     except BaseException:
         run('ip', 'netns', 'delete', NS)
         raise
@@ -136,13 +342,23 @@ def backend():
     return {'transport': 'TAP; no physical backend attached', 'ports': []}
 
 def patch(cfg, request):
-    if (set(request) != {'revision', 'ports'} or type(request['revision']) is not int
-            or request['revision'] != cfg['revision'] or not isinstance(request['ports'], dict)):
+    if ('revision' not in request or set(request)-{'revision', 'ports', 'routes', 'vrfs', 'rules'}
+            or not ({'ports', 'routes', 'vrfs', 'rules'} & set(request)) or type(request['revision']) is not int
+            or request['revision'] != cfg['revision'] or not isinstance(request.get('ports', {}), dict)):
         raise ValueError('revision conflict or invalid request; fetch status first')
     new = json.loads(json.dumps(cfg))
-    new['ports'].update(request['ports'])
+    new['ports'].update(request.get('ports', {}))
+    if 'routes' in request:
+        new['routes'] = request['routes']
+    if 'vrfs' in request:
+        new['vrfs'] = request['vrfs']
+    if 'rules' in request:
+        new['rules'] = request['rules']
     new['revision'] += 1
     validate(new)
+    old_vrfs, new_vrfs = cfg.get('vrfs', {}), new.get('vrfs', {})
+    if any(name in new_vrfs and new_vrfs[name] != table for name, table in old_vrfs.items()):
+        raise ValueError('remove a virtual router before changing its table ID')
     attachment = backend()
     for number in attachment['ports']:
         settings = new['ports'].get('p%d' % number, {})
@@ -150,15 +366,69 @@ def patch(cfg, request):
             raise ValueError('active fabric currently supports MTU up to 1500')
     if not exists():
         raise RuntimeError('network service is stopped')
-    changed = [p for p in request['ports'] if cfg['ports'].get(p) != new['ports'][p]]
+    changed = [p for p in request.get('ports', {}) if cfg['ports'].get(p) != new['ports'][p]]
+    old_routes, new_routes = cfg.get('routes', []), new.get('routes', [])
+    retained = [r for r in old_routes if r in new_routes]
+    if any(route_ports(r).intersection(changed) for r in retained):
+        raise ValueError('remove dependent routes before reconfiguring their ports')
+    old_rules, new_rules = cfg.get('rules', []), new.get('rules', [])
+    if any(r in new_rules and r['iif'] in changed for r in old_rules):
+        raise ValueError('remove dependent policies before reconfiguring their ingress ports')
+    overlay = Path('/etc/ffn/overlay.json')
+    if overlay.exists():
+        used = {c['underlay'] for c in json.loads(overlay.read_text())['links'].values()}
+        if used.intersection(changed):
+            raise ValueError('remove dependent overlays before reconfiguring their underlay ports')
     applied = []
+    removed_routes, added_routes = [], []
+    added_vrfs, removed_vrfs = [], []
+    added_rules, removed_rules = [], []
     try:
+        for name, table in new_vrfs.items():
+            if name not in old_vrfs:
+                create_vrf(name, table)
+                added_vrfs.append(name)
+        for rule in old_rules:
+            if rule not in new_rules:
+                configure_rule('del', rule)
+                removed_rules.append(rule)
+        for route in old_routes:
+            if route not in new_routes:
+                configure_route('del', route)
+                removed_routes.append(route)
         for name in changed:
             applied.append(name)
             configure_port(name, new['ports'][name], create=name not in cfg['ports'])
+        for route in new_routes:
+            if route not in old_routes:
+                configure_route('add', route)
+                added_routes.append(route)
+        for rule in new_rules:
+            if rule not in old_rules:
+                configure_rule('add', rule)
+                added_rules.append(rule)
+        for name, table in old_vrfs.items():
+            if name not in new_vrfs:
+                delete_vrf(name, table)
+                removed_vrfs.append((name, table))
         save(new)
     except BaseException as original:
         failures = []
+        for rule in reversed(added_rules):
+            try:
+                configure_rule('del', rule)
+            except Exception as error:
+                failures.append(str(error))
+        for name, table in removed_vrfs:
+            try:
+                create_vrf(name, table)
+            except Exception as error:
+                failures.append(str(error))
+        for route in reversed(added_routes):
+            try:
+                configure_route('del', route)
+            except Exception as error:
+                failures.append(str(error))
         for name in reversed(applied):
             try:
                 if name in cfg['ports']:
@@ -167,12 +437,27 @@ def patch(cfg, request):
                     ip('link', 'delete', name)
             except Exception as error:
                 failures.append(str(error))
+        for route in removed_routes:
+            try:
+                configure_route('add', route)
+            except Exception as error:
+                failures.append(str(error))
+        for rule in removed_rules:
+            try:
+                configure_rule('add', rule)
+            except Exception as error:
+                failures.append(str(error))
+        for name in reversed(added_vrfs):
+            try:
+                delete_vrf(name, new_vrfs[name])
+            except Exception as error:
+                failures.append(str(error))
         raise RuntimeError('update failed: %s; rollback errors: %s' % (original, failures)) from original
     return {'revision': new['revision'], 'changed_ports': changed, 'config': new}
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('check', 'apply', 'patch', 'stop', 'status'))
+    p.add_argument('action', choices=('check', 'apply', 'patch', 'stop', 'status', 'lookup'))
     p.add_argument('--config', type=Path, default=STATE)
     args = p.parse_args()
     global_state = args.config
@@ -188,6 +473,9 @@ def main():
         elif args.action == 'patch':
             import sys
             result = patch(cfg, json.load(sys.stdin))
+        elif args.action == 'lookup':
+            import sys
+            result = lookup(cfg, json.load(sys.stdin))
         elif args.action == 'stop':
             if exists():
                 run('ip', 'netns', 'delete', NS)
@@ -197,6 +485,12 @@ def main():
             if result['running']:
                 result['interfaces'] = json.loads(ip('-j', 'address'))
                 result['routes'] = json.loads(ip('-j', 'route'))
+                result['routes6'] = json.loads(ip('-6', '-j', 'route'))
+                result['vrf_routes'] = {name: {'ipv4': json.loads(ip('-4', '-j', 'route', 'show', 'table', str(table))),
+                                              'ipv6': json.loads(ip('-6', '-j', 'route', 'show', 'table', str(table)))}
+                                        for name, table in cfg.get('vrfs', {}).items()}
+                result['rules'] = {'ipv4': json.loads(ip('-4', '-j', 'rule', 'show')),
+                                   'ipv6': json.loads(ip('-6', '-j', 'rule', 'show'))}
         else:
             result = {'validated': True, 'config': cfg}
         print(json.dumps(result, indent=2))

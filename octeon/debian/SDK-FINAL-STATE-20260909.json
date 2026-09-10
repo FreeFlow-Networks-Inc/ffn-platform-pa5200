@@ -1,0 +1,24 @@
+{
+  "kernel": "6.18.49-ffn-debian-dp-virtual+",
+  "crypto": [
+    "name         : gcm(aes)\ndriver       : gcm_base(ctr(aes-ffn-octeon),ghash-generic)\nmodule       : gcm\npriority     : 200\nrefcnt       : 1\nselftest     : passed\ninternal     : no\ntype         : aead\nasync        : no\nblocksize    : 1\nivsize       : 12\nmaxauthsize  : 16\ngeniv        : <none>",
+    "name         : ctr(aes)\ndriver       : ctr(aes-ffn-octeon)\nmodule       : ctr\npriority     : 300\nrefcnt       : 1\nselftest     : passed\ninternal     : no\ntype         : skcipher\nasync        : no\nblocksize    : 1\nmin keysize  : 16\nmax keysize  : 32\nivsize       : 16\nchunksize    : 16\nwalksize     : 16\nstatesize    : 0",
+    "name         : aes\ndriver       : aes-ffn-octeon\nmodule       : ffn_octeon_aes\npriority     : 300\nrefcnt       : 1\nselftest     : passed\ninternal     : no\ntype         : cipher\nblocksize    : 16\nmin keysize  : 16\nmax keysize  : 32"
+  ],
+  "selftest_log": "[  601.323824] ffn-octeon-aes: SDK COP2 AES-128/192/256 encrypt/decrypt self-tests passed",
+  "module_sha256": "1690bee4b3388267229b4c9d5f69e5638fd8787c0b3b473a8d9cc0aa57c4c3ed",
+  "dp_services": [
+    "active",
+    "active",
+    "active"
+  ],
+  "mp_services": [
+    "active",
+    "active"
+  ],
+  "cp_thermal": "active",
+  "overlays": {
+    "revision": 12,
+    "links": {}
+  }
+}

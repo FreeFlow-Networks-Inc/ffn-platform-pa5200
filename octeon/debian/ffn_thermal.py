@@ -14,11 +14,11 @@ import os
 from pathlib import Path
 import signal
 import socket
-import subprocess
 import struct
 import sys
 import time
 from ffn_i2cread import read_regs, Msg, Ioctl, I2C_RDWR
+from ffn_chassis_led import access as chassis_access
 
 MUX = Path('/sys/bus/i2c/devices/1-0073')
 SENSORS = [
@@ -101,6 +101,7 @@ def write_pwm(value):
 
 def sample():
     result = {'temperatures': [], 'fans': [], 'errors': []}
+    result.update(sample_power())
     try:
         mp = json.loads(Path('/run/ffn-mp-thermal.json').read_text())
         if not 0 <= time.time() - mp['received_at'] <= 45:
@@ -153,14 +154,34 @@ def notify(message):
             sock.sendall(message.encode())
 
 
-def leds(s):
+def sample_power():
+    try:
+        status = chassis_access()
+        return {'power_csr': status['power_csr'],
+                'power_supplies': status['power_supplies'], 'power_errors': []}
+    except Exception as e:
+        return {'power_supplies': [], 'power_errors': [str(e)]}
+
+
+def led_policy(s):
     hot = any(t['celsius'] >= t['maximum'] for t in s['temperatures'] + s.get('mp_temperatures', []))
     bad = bool(s['errors'])
-    for name, color in [('fans', 'yellow' if bad else 'green'),
-                        ('temp', 'yellow' if bad or hot else 'green'),
-                        ('alarm', 'yellow' if bad or hot else 'off')]:
-        subprocess.run(['python3', '/usr/local/sbin/ffn_chassis_led.py', name, color],
-                       check=True, stdout=subprocess.DEVNULL, timeout=3)
+    supplies = {p['led']: p for p in s.get('power_supplies', [])}
+    power_bad = bool(s.get('power_errors')) or set(supplies) != {'ps0', 'ps1'}
+    updates = {}
+    for led in ('ps0', 'ps1'):
+        ps = supplies.get(led)
+        healthy = ps and ps['present'] and ps['power_good']
+        updates[led] = 'green' if healthy and not s.get('power_errors') else 'yellow'
+        power_bad = power_bad or not healthy
+    updates.update(fans='yellow' if bad else 'green',
+                   temp='yellow' if bad or hot else 'green',
+                   alarm='yellow' if bad or hot or power_bad else 'off')
+    return updates
+
+
+def leds(s):
+    chassis_access(led_policy(s))
 
 
 def validate_mp(sensors):
@@ -190,7 +211,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if a.action == 'full':
             write_pwm(255)
-            leds({'temperatures': [], 'errors': ['automatic monitoring stopped']})
+            leds(dict(temperatures=[], errors=['automatic monitoring stopped'], **sample_power()))
             return
         def stop(*_):
             raise SystemExit(0)

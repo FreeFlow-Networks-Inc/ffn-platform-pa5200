@@ -38,6 +38,24 @@
     int an_speed;
     bcm_port_ability_t an_ability;
     bcm_port_if_t an_interface;
+    int hw_group = -1;
+    int hw_entry = -1;
+    int hw_stat = -1;
+    int hw_dq1 = -1;
+    int hw_dq2 = -1;
+    int hw_presel = -1;
+    bcm_field_group_config_t hw_group_cfg;
+    bcm_field_presel_set_t hw_presels;
+    bcm_field_data_qualifier_t hw_data;
+    uint8 hw_bytes1[4] = {0x02, 0x52, 0x20, 0xab};
+    uint8 hw_bytes2[4] = {0xcd, 0x91, 0x88, 0xb5};
+    uint8 hw_bytes_mask[4] = {0xff, 0xff, 0xff, 0xff};
+    bcm_field_qset_t hw_qset;
+    bcm_field_aset_t hw_aset;
+    bcm_field_stat_t hw_counter = bcmFieldStatPackets;
+    uint64 hw_packets;
+    bcm_mac_t hw_mac = {0x02, 0x52, 0x20, 0xab, 0xcd, 0x91};
+    bcm_mac_t hw_mask = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     rv = bcm_stk_modid_get(0, &modid);
     for (n = 0; n < (single_front ? 1 : 2) && rv == 0 && (fe100_test < 2 || fe100_test == 4 || single_front); n++) {
         src = n == 0 ? 8 : (fe100_test == 4 ? 20 : (fe100_test ? 3 : 7));
@@ -198,6 +216,111 @@
             if (rv) break;
         }
     }
+    if ((fe100_test == 29 || fe100_test == 34 || fe100_test == 35) && rv == 0) {
+        /* Exact lab flow only: front1, experimental EtherType, synthetic SA.
+         * Redirect directly to front5's existing VOQ. No global SDK reinit.
+         */
+        BCM_FIELD_QSET_INIT(hw_qset);
+        BCM_FIELD_QSET_ADD(hw_qset, bcmFieldQualifyStageIngress);
+        BCM_FIELD_QSET_ADD(hw_qset, bcmFieldQualifyInPort);
+        if (fe100_test == 34 || fe100_test == 35) {
+            /* Owner front ports use RAW ingress. Match source MAC and
+             * EtherType by byte offsets instead of parsed L2 metadata. */
+            bcm_field_data_qualifier_t_init(&hw_data);
+            hw_data.offset_base = bcmFieldDataOffsetBasePacketStart;
+            hw_data.offset = 6;
+            hw_data.length = 4;
+            rv = bcm_field_data_qualifier_create(0, &hw_data);
+            if (rv == 0) {
+                hw_dq1 = hw_data.qual_id;
+                rv = bcm_field_qset_data_qualifier_add(0, &hw_qset, hw_dq1);
+            }
+            bcm_field_data_qualifier_t_init(&hw_data);
+            hw_data.offset_base = bcmFieldDataOffsetBasePacketStart;
+            hw_data.offset = 10;
+            hw_data.length = 4;
+            if (rv == 0) rv = bcm_field_data_qualifier_create(0, &hw_data);
+            if (rv == 0) {
+                hw_dq2 = hw_data.qual_id;
+                rv = bcm_field_qset_data_qualifier_add(0, &hw_qset, hw_dq2);
+            }
+        } else {
+            BCM_FIELD_QSET_ADD(hw_qset, bcmFieldQualifyEtherType);
+            BCM_FIELD_QSET_ADD(hw_qset, bcmFieldQualifySrcMac);
+        }
+        if (fe100_test == 35) {
+            /* SDK TM examples require an explicit TM program preselector. */
+            if (rv == 0 && soc_property_get(0, "field_presel_mgmt_advanced_mode", 0)) rv = -16;
+            if (rv == 0) rv = bcm_field_presel_create(0, &hw_presel);
+            if (rv == 0) rv = bcm_field_qualify_ForwardingType(0, hw_presel | BCM_FIELD_QUALIFY_PRESEL, bcmFieldForwardingTypeTrafficManagement);
+            if (rv == 0) {
+                BCM_FIELD_PRESEL_INIT(hw_presels);
+                BCM_FIELD_PRESEL_ADD(hw_presels, hw_presel);
+                bcm_field_group_config_t_init(&hw_group_cfg);
+                hw_group_cfg.flags = BCM_FIELD_GROUP_CREATE_WITH_PRESELSET;
+                hw_group_cfg.qset = hw_qset;
+                hw_group_cfg.preselset = hw_presels;
+                hw_group_cfg.priority = 20;
+                rv = bcm_field_group_config_create(0, &hw_group_cfg);
+                if (rv == 0) hw_group = hw_group_cfg.group;
+            }
+        } else {
+            if (rv == 0) rv = bcm_field_group_create(0, hw_qset, 20, &hw_group);
+        }
+        if (rv == 0) {
+            BCM_FIELD_ASET_INIT(hw_aset);
+            BCM_FIELD_ASET_ADD(hw_aset, bcmFieldActionRedirect);
+            rv = bcm_field_group_action_set(0, hw_group, hw_aset);
+        }
+        if (rv == 0) rv = bcm_field_entry_create(0, hw_group, &hw_entry);
+        if (rv == 0) rv = bcm_field_qualify_InPort(0, hw_entry, 28, 0xffffffff);
+        if (fe100_test == 34 || fe100_test == 35) {
+            if (rv == 0) rv = bcm_field_qualify_data(0, hw_entry, hw_dq1, hw_bytes1, hw_bytes_mask, 4);
+            if (rv == 0) rv = bcm_field_qualify_data(0, hw_entry, hw_dq2, hw_bytes2, hw_bytes_mask, 4);
+        } else {
+            if (rv == 0) rv = bcm_field_qualify_EtherType(0, hw_entry, 0x88b5, 0xffff);
+            if (rv == 0) rv = bcm_field_qualify_SrcMac(0, hw_entry, hw_mac, hw_mask);
+        }
+        BCM_GPORT_SYSTEM_PORT_ID_SET(dst, 16);
+        if (rv == 0) rv = bcm_field_action_add(0, hw_entry, bcmFieldActionRedirect, 0, dst);
+        if (rv == 0) rv = bcm_field_stat_create(0, hw_group, 1, &hw_counter, &hw_stat);
+        if (rv == -15) {
+            /* Current owner config has no PMF counter processor. Packet-path
+             * evidence is still possible; never claim a flow counter exists. */
+            print "FFN_HW_COUNTER_UNAVAILABLE";
+            hw_stat = -1;
+            rv = 0;
+        }
+        if (rv == 0 && hw_stat >= 0) rv = bcm_field_entry_stat_attach(0, hw_entry, hw_stat);
+        if (rv == 0) rv = bcm_field_entry_install(0, hw_entry);
+        printf("FFN_HW_RULE group=%d entry=%d stat=%d rv=%d\n", hw_group, hw_entry, hw_stat, rv);
+        printf("FFN_HW_DATA dq1=%d dq2=%d\n", hw_dq1, hw_dq2);
+        printf("FFN_HW_PRESEL presel=%d\n", hw_presel);
+        if (rv != 0) {
+            if (hw_entry >= 0) bcm_field_entry_destroy(0, hw_entry);
+            if (hw_stat >= 0) bcm_field_stat_destroy(0, hw_stat);
+            if (hw_group >= 0) bcm_field_group_destroy(0, hw_group);
+            if (hw_dq1 >= 0) bcm_field_data_qualifier_destroy(0, hw_dq1);
+            if (hw_dq2 >= 0) bcm_field_data_qualifier_destroy(0, hw_dq2);
+            if (hw_presel >= 0) bcm_field_presel_destroy(0, hw_presel);
+        }
+    }
+    if (fe100_test == 30 && hw_group >= 0 && hw_entry >= 0) {
+        rv = bcm_field_entry_destroy(0, hw_entry);
+        if (rv == 0 && hw_stat >= 0) rv = bcm_field_stat_destroy(0, hw_stat);
+        if (rv == 0) rv = bcm_field_group_destroy(0, hw_group);
+        if (rv == 0 && hw_dq1 >= 0) rv = bcm_field_data_qualifier_destroy(0, hw_dq1);
+        if (rv == 0 && hw_dq2 >= 0) rv = bcm_field_data_qualifier_destroy(0, hw_dq2);
+        if (rv == 0 && hw_presel >= 0) rv = bcm_field_presel_destroy(0, hw_presel);
+    }
+    if (fe100_test == 31 && hw_stat >= 0) {
+        rv = bcm_field_stat_get(0, hw_stat, bcmFieldStatPackets, &hw_packets);
+        if (rv == 0) print hw_packets;
+    }
+    /* Commissioning only: release/restore front1's pre-PMF force-forward
+     * trap. Restore immediately after the isolated exact-flow test. */
+    if (fe100_test == 32) rv = bcm_port_force_forward_set(0, 28, 3, 0);
+    if (fe100_test == 33) rv = bcm_port_force_forward_set(0, 28, 3, 1);
     if (rv) printf("FFN_FAIL rv=%d\n", rv);
     else print "FFN_DONE";
 }

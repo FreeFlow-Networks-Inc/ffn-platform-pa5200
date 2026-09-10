@@ -1,0 +1,6 @@
+{"test": "ovs-kernel-physical-forwarding", "sent": 300, "ingress_seen": 300, "returned": 300, "missing": 0, "duplicates": 0, "corrupt": 0, "expected_block": false, "capture_errors": [], "passed": true}
+{"test": "ovs-flow-counters", "packets": 300, "passed": true}
+{"test": "tc-hardware-only", "accepted": false, "detail": "RTNETLINK answers: Operation not supported\nWe have an error talking to the kernel", "hardware_offload_verified": false}
+{"test": "ovn-logical-switch-physical-forwarding", "sent": 300, "ingress_seen": 300, "returned": 300, "missing": 0, "duplicates": 0, "corrupt": 0, "expected_block": false, "capture_errors": [], "passed": true}
+{"test": "ovn-single-chassis", "ports_bound": true, "passed": true}
+{"test": "sdn-original-config-restored", "passed": true}

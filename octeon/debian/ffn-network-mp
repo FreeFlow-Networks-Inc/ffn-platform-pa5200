@@ -3,8 +3,8 @@
 # Uses the existing pinned MP -> CP -> DP management connection.
 set -eu
 case "${1:-status}" in
-    status|patch) action=${1:-status} ;;
-    *) echo 'usage: ffn-network [status|patch] (patch reads JSON stdin)' >&2; exit 2 ;;
+    status|patch|lookup) action=${1:-status} ;;
+    *) echo 'usage: ffn-network [status|patch|lookup] (patch/lookup read JSON stdin)' >&2; exit 2 ;;
 esac
 exec ssh -o BatchMode=yes -o ConnectTimeout=10 \
     -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \

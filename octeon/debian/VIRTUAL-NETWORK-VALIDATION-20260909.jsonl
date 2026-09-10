@@ -1,0 +1,7 @@
+{"test": "vxlan", "packets_each_direction": 100, "inner_ip_bytes": 1400, "passed": true}
+{"test": "geneve", "packets_each_direction": 100, "inner_ip_bytes": 1400, "passed": true}
+{"test": "gretap", "packets_each_direction": 100, "inner_ip_bytes": 1400, "passed": true}
+{"test": "gre", "packets_each_direction": 100, "inner_ip_bytes": 1400, "passed": true}
+{"test": "ipip", "packets_each_direction": 100, "inner_ip_bytes": 1400, "passed": true}
+{"test": "macsec-encrypted-traffic", "packets_each_direction": 100, "replay_window": 64, "encrypted_frames": 414, "plaintext_leaks": 0, "passed": true}
+{"test": "macsec", "packets_each_direction": 100, "encrypted_frames": 414, "plaintext_leaks": 0, "wrong_key_rejected": true, "passed": true}

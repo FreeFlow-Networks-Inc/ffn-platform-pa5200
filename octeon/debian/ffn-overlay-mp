@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "${1:-status}" in
+    status|set) action=${1:-status} ;;
+    *) echo 'usage: ffn-overlay [status|set]' >&2; exit 2 ;;
+esac
+exec ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \
+    -o 'ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp' \
+    root@127.1.2.2 "python3 /usr/local/sbin/ffn_overlay.py $action"
