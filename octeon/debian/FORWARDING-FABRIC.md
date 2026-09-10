@@ -37,6 +37,18 @@ Evidence is in `FABRIC-L2-VALIDATION-20260909.txt` and
 `FABRIC-L3-VALIDATION-20260909.txt`. `test-fabric-*.py` require the documented
 test topology and matching port configuration, and are not general probes.
 
+The expanded `test-fabric-matrix.py` passed physical access and tagged VLAN200
+forwarding, MAC learning, VLAN300 isolation, disabled-egress enforcement,
+runtime L2→L3 transitions, IPv4/IPv6 routing and TTL/hop-limit-one rejection.
+It varies frame sizes through MTU 1500 and compares complete returned frames,
+including rewritten MAC addresses, decremented hops and checksums. All 1,200
+expected forwards arrived intact; 660 expected drops had confirmed physical
+ingress and no observed egress. Original settings were restored. Evidence:
+`FABRIC-MATRIX-VALIDATION-20260909.jsonl`.
+
+The DP ingress path now also supports runtime packet inspection through the
+existing C analysis engine. See `INLINE-ANALYSIS.md` for controls and limitations.
+
 ## Runtime
 
 On the MP, `systemctl start/stop ffn-fabric.service` attaches/detaches the
@@ -53,3 +65,27 @@ FE table replay are not yet integrated into a reproducible fabric startup.
 Ports 23/24 have verified links but are not attached to this relay. Complete
 all-port startup, link propagation, overload handling, recovery after BCM
 restart and sustained load testing before treating this as a deployed fabric.
+
+## Basic connectivity and relay recovery, 2026-09-10
+
+Added `--restart` to `test-fabric-matrix.py`. The physical matrix passed
+1,800 expected forwards and 660 expected blocks. This includes one MP relay
+restart in L2 mode and another in L3 mode, with 300 intact forwarded packets
+after each. Port configuration, interface indices and MAC addresses survived
+both restarts. The test waits for transport NIC carrier and bridge convergence
+before validating delivery. This establishes relay restart recovery only;
+it does not establish full appliance reboot or BCM/FE initialization recovery.
+
+Added `test-fabric-host.py` for basic host connectivity through front13 using
+the physical 5--13 cable. ARP and IPv6 neighbor advertisements passed, followed
+by 20 IPv4 and 20 IPv6 echo replies with verified payloads and checksums.
+The test uses dynamic neighbor discovery, rejects preexisting test neighbors,
+and removes only neighbor entries associated with its test MAC afterward.
+It installs no permanent neighbors and leaves port settings unchanged.
+
+Original port settings were restored at revision38: p1/p3 are VLAN100 access
+ports; p5 and p13 retain their respective 198.18.1.0/24 and 198.18.2.0/24
+subnets and IPv6 addresses. Fabric and both thermal services remain active.
+Evidence: `BASIC-CONNECTIVITY-20260910.jsonl` and
+`HOST-CONNECTIVITY-20260910.jsonl`. These remain paced functional tests,
+not throughput or all-port qualification.

@@ -1,0 +1,7 @@
+{"source": "025220abcd91", "sent": 300, "captured_ports": {"1": 300}, "corrupt": 0, "expect_hardware_redirect": true, "rewritten_destination": null, "ipv4": false, "raw_envelopes": [{"marker_offset": 46, "prefix": "10000003", "exception_bytes": "0000", "length": 194, "count": 300}], "passed": false}
+Traceback (most recent call last):
+  File "/usr/local/sbin/test-pmf-offload.py", line 94, in <module>
+    test('025220abcd91', '--rule-installed' in sys.argv)
+  File "/usr/local/sbin/test-pmf-offload.py", line 90, in test
+    assert result['passed'], result
+AssertionError: {'source': '025220abcd91', 'sent': 300, 'captured_ports': {1: 300}, 'corrupt': 0, 'expect_hardware_redirect': True, 'rewritten_destination': None, 'ipv4': False, 'raw_envelopes': [{'marker_offset': 46, 'prefix': '10000003', 'exception_bytes': '0000', 'length': 194, 'count': 300}], 'passed': False}

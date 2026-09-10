@@ -71,5 +71,38 @@ Stopping the MP sender was tested on hardware: the CP reported stale MP
 temperatures and PWM255, then resumed after sender restoration.
 
 This does not establish recovery from a CP kernel hang or power failure,
-nor is it an automatic thermal shutdown implementation. STS, PSU and HA health need integration
+nor is it an automatic thermal shutdown implementation. STS and HA health need integration
 with the corresponding platform services before indicating overall health.
+
+## Automatic power supply indicators (2026-09-10)
+
+The CP governor samples CPLD CSR0x0a every five seconds. Owner reference
+`opt/dpfs/usr/local/lib64/ehmon/cp/libpwrsupply.so` (`5200/cp/ps_monitor.c`)
+has two 112-byte descriptors: left supply #1 uses active-low presence mask
+0x02 and power-good mask 0x30; right supply #2 uses 0x01 and 0x0c.
+The owner's sample routine accepts any asserted bit in the good mask and
+gates power-good with presence. We preserve that behavior; these bits are
+not independently interpreted as AC/DC telemetry.
+
+Left/index 0 controls PS0 (CSR6 bits5:4); right/index 1 controls PS1
+(bits7:6). Present and power-good is green. Missing, not power-good, or
+unreadable status is yellow and raises ALARM. This policy treats loss of
+either supply as degraded redundancy. Physical slot-to-lamp association
+under a single-supply failure still needs a controlled hardware test.
+
+The same governor owns the thermal and PSU ALARM decision, so recovery
+of one fault cannot clear the other. PSU errors are reported separately
+from thermal errors and do not alter fan demand. A shared lock protects
+all LED changes and fan override writes; LED writes verify readback and
+preserve STS/HA. Status includes power_csr, power_supplies, and power_errors
+in `/run/ffn-thermal.json` and `ffn-thermal status` through the MP.
+
+Ten thermal/PSU policy tests pass, covering healthy supplies, each supply
+absent or unpowered, owner partial-mask semantics, unknown reads, recovery,
+and thermal alarm retention. No power-control or reset registers are written.
+
+Live deployment readback: power CSR=0x3c (both present/good), LED CSR6=0x55
+(PS0, PS1, FAN and TMP green), CSR7=0x20 (STS yellow, ALARM/HA off).
+The governor and forwarding service remained active, with no thermal or
+PSU errors. This verifies commanded register state; visual lamp confirmation
+and physical unplug/reinsert behavior have not yet been tested.

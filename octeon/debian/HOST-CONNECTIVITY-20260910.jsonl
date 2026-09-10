@@ -1,0 +1,4 @@
+{"test": "physical-arp-reply", "passed": true}
+{"test": "physical-ndp-reply", "passed": true}
+{"test": "physical-ipv4-echo-dynamic-neighbor", "sent": 20, "replies": 20, "passed": true}
+{"test": "physical-ipv6-echo-dynamic-neighbor", "sent": 20, "replies": 20, "passed": true}

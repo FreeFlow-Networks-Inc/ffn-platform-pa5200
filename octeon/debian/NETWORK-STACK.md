@@ -85,5 +85,6 @@ into the namespace by this installation.
 The VM owner FE100 diagnostic defines LIF forwarding types 2=L2, 3=L3 and
 5=SYSPORT. The preceding FE100 test only established SYSPORT forwarding.
 Linux route/bridge configuration does not program those FE100 offload tables.
-Connecting the packet backend and adding hardware offload remain separate
-work; see `../../fe100/DRIVER-REFERENCE-20260909.md` for the inspected ABI.
+The four-port packet backend is now attached; programming hardware L2/L3
+offload remains separate work. See `../../fe100/DRIVER-REFERENCE-20260909.md`
+for the inspected ABI and `FORWARDING-FABRIC.md` for physical validation.

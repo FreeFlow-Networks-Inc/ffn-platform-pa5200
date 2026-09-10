@@ -51,6 +51,18 @@ ENG_SRC  = ffn_dp_engine.c ffn_dp_dlp.c
 ENG_HDRS = ffn_dp_engine.h ffn_dp_dlp.h
 ENG_OBJ  = $(ENG_SRC:.c=.o)
 
+# Shared adapter for the Debian commissioning fabric. No SDK code is linked.
+libffn-inline.so: ffn_inline_adapter.c $(ENG_SRC) $(HDRS)
+	$(CC) $(CFLAGS) -fPIC -shared ffn_inline_adapter.c $(ENG_SRC) -o $@
+
+libffn-inline.mips64.so: ffn_inline_adapter.c $(ENG_SRC) $(HDRS)
+	$(MIPS_CC) $(filter-out -static,$(MIPS_CFLAGS)) -fPIC -shared ffn_inline_adapter.c $(ENG_SRC) -o $@
+
+inline-test: libffn-inline.so
+	FFN_INLINE_LIB=$(CURDIR)/libffn-inline.so python3 ../debian/test_inline_adapter.py
+
+.PHONY: inline-test
+
 # ENG_OBJ was defined and then referenced by no rule at all: the engine test
 # compiled $(ENG_SRC) directly, so the objects were never built. Now that the
 # forwarder calls dp_engine_scan(), every link line below needs them.
@@ -199,6 +211,7 @@ qemu-test: mips64
 	qemu-mips64 ./ffn_dp_oct_test.mips64
 
 clean:
+	$(RM) libffn-inline.so libffn-inline.mips64.so
 	$(RM) ffn_dp_oct.o $(L3_OBJ) $(ENG_OBJ) \
 	      ffn_dp_oct_test ffn_dp_oct_test.mips64 ffn_dp_afpacket dp_serve \
 	      ffn_dp_oct_io_test ffn_dp_oct_io_test.mips64 \

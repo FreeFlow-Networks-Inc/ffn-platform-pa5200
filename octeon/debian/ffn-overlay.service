@@ -1,0 +1,12 @@
+[Unit]
+Description=FFN managed overlay interfaces
+Requires=ffn-network.service
+After=ffn-network.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_overlay.py apply
+
+[Install]
+WantedBy=multi-user.target

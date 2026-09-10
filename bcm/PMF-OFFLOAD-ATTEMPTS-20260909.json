@@ -1,0 +1,36 @@
+{
+  "rule": {
+    "group": 0,
+    "entry": 0,
+    "stat": -1,
+    "ingress_bcm_port": 28,
+    "ethertype": "0x88b5",
+    "source_mac": "02:52:20:ab:cd:91",
+    "requested_destination_system_port": 16
+  },
+  "create_succeeded": true,
+  "statistics_error": "BCM_E_CONFIG: no counter processor configured",
+  "attempts": [
+    {
+      "front1_force_forward_enabled": true,
+      "sent": 300,
+      "captured_logical_ports": {"1": 300},
+      "expected_logical_port": 13,
+      "passed": false
+    },
+    {
+      "front1_force_forward_enabled": false,
+      "sent": 300,
+      "captured_logical_ports": {},
+      "expected_logical_port": 13,
+      "passed": false
+    }
+  ],
+  "cleanup": {
+    "front1_force_forward_restored": true,
+    "rule_entry_and_group_destroyed": true,
+    "sdk_completion_marker": "FFN_DONE",
+    "subsequent_control_probe_evidence": "PMF-RESTORED-20260909.jsonl"
+  },
+  "hardware_flow_redirect_verified": false
+}

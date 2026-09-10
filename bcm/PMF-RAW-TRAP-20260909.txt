@@ -1,0 +1,7 @@
+{"source": "025220abcd91", "sent": 300, "captured_ports": {"1": 300}, "corrupt": 0, "expect_hardware_redirect": true, "rewritten_destination": null, "passed": false}
+Traceback (most recent call last):
+  File "/usr/local/sbin/test-pmf-offload.py", line 76, in <module>
+    test('025220abcd91', '--rule-installed' in sys.argv)
+  File "/usr/local/sbin/test-pmf-offload.py", line 72, in test
+    assert result['passed'], result
+AssertionError: {'source': '025220abcd91', 'sent': 300, 'captured_ports': {1: 300}, 'corrupt': 0, 'expect_hardware_redirect': True, 'rewritten_destination': None, 'passed': False}

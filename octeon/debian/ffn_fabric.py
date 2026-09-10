@@ -81,13 +81,15 @@ def tap(port):
         os.close(original)
         os.close(target)
 
-def relay(readfd, writefd, endpoints, receive, transmit, seconds):
+def relay(readfd, writefd, endpoints, receive, transmit, seconds, tick=None):
     incoming, outgoing = bytearray(), bytearray()
     counts = collections.Counter()
     deadline = time.monotonic()+seconds if seconds else float('inf')
     os.set_blocking(readfd, False)
     os.set_blocking(writefd, False)
     while time.monotonic() < deadline:
+        if tick:
+            tick()
         ready, writable, _ = select.select([readfd]+list(endpoints), [writefd] if outgoing else [], [], 0.5)
         if writefd in writable:
             try:
@@ -102,8 +104,10 @@ def relay(readfd, writefd, endpoints, receive, transmit, seconds):
             incoming.extend(data)
             for port, frame in unpack(incoming):
                 try:
-                    transmit(port, frame)
-                    counts['to_port_%d' % port] += 1
+                    if transmit(port, frame) is False:
+                        counts['inspection_drop'] += 1
+                    else:
+                        counts['to_port_%d' % port] += 1
                 except OSError as error:
                     if error.errno in (errno.EAGAIN, errno.ENOBUFS):
                         counts['tx_backpressure_drop'] += 1
@@ -131,7 +135,9 @@ def relay(readfd, writefd, endpoints, receive, transmit, seconds):
     print(json.dumps({'fabric_counters': dict(counts)}), file=sys.stderr, flush=True)
 
 def dp(seconds):
+    from ffn_inspection import Inspector
     handles = {}
+    inspector = Inspector()
     state = Path('/run/ffn-fabric.json')
     try:
         with open('/run/ffn-network.lock', 'w') as lock:
@@ -146,9 +152,14 @@ def dp(seconds):
             state.write_text(json.dumps({'pid': os.getpid(), 'ports': list(PORTS), 'transport': 'MP SSH relay', 'max_mtu': 1500}))
         byfd = {fd: port for port, fd in handles.items()}
         print('FABRIC_DP_READY', file=sys.stderr, flush=True)
+        def ingress(port, frame):
+            if not inspector.allow(port, frame):
+                return False
+            return os.write(handles[port], frame)
         relay(0, 1, byfd, lambda fd: (byfd[fd], os.read(fd, 65535)),
-              lambda port, frame: os.write(handles[port], frame), seconds)
+              ingress, seconds, tick=inspector.tick)
     finally:
+        inspector.close()
         for fd in handles.values():
             os.close(fd)
         state.unlink(missing_ok=True)

@@ -1,0 +1,3 @@
+{"index": 31, "fetch_rc": 3, "entry": "00000000000000000000000000000000"}
+{"test": "fe100-direct-nexthop-write-read", "entry": "009500000008007b05ee025220abcdee", "passed": true}
+{"test": "fe100-direct-nexthop-empty-restored", "passed": true}

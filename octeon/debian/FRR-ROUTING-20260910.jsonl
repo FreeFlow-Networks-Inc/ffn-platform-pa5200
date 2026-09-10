@@ -1,0 +1,3 @@
+{"test": "bgp-learned-ipv4-ipv6-routes-and-bidirectional-ping", "echo_requests": 12, "passed": true}
+{"test": "ospf-learned-ipv4-ipv6-routes-and-bidirectional-ping", "echo_requests": 12, "passed": true}
+{"logs": "/var/log/ffn-frr-lab-_na9lba9", "passed": true}

@@ -1,0 +1,5 @@
+{"source": "025220abcd91", "sent": 300, "captured_ports": {}, "corrupt": 0, "expect_hardware_redirect": true, "rewritten_destination": null, "passed": false}
+Traceback (most recent call last):
+  File "<stdin>", line 2, in <module>
+  File "<string>", line 72, in test
+AssertionError: {'source': '025220abcd91', 'sent': 300, 'captured_ports': {}, 'corrupt': 0, 'expect_hardware_redirect': True, 'rewritten_destination': None, 'passed': False}

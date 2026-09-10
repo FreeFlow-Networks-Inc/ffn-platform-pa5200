@@ -1,0 +1,11 @@
+{"index": 31, "fetch_rc": 3, "entry": "00000000000000000000000000000000"}
+{"test": "fe100-direct-nexthop-write-read", "entry": "009100000008000005ee025220abcdee", "passed": true}
+{"test": "fe100-direct-lif-ready", "seconds": 20}
+{"source": "025220abcd91", "sent": 300, "captured_ports": {}, "corrupt": 0, "expect_hardware_redirect": false, "rewritten_destination": "025220abcdee", "passed": false}
+{"test": "fe100-original-lif-restored", "passed": true}
+{"test": "fe100-direct-nexthop-empty-restored", "passed": true}
+Traceback (most recent call last):
+  File "<stdin>", line 8, in <module>
+  File "/usr/local/sbin/test-pmf-offload.py", line 72, in test
+    assert result['passed'], result
+AssertionError: {'source': '025220abcd91', 'sent': 300, 'captured_ports': {}, 'corrupt': 0, 'expect_hardware_redirect': False, 'rewritten_destination': '025220abcdee', 'passed': False}

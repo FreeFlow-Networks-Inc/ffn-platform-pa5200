@@ -25,6 +25,97 @@ class ConfigTests(unittest.TestCase):
             net.patch(self.cfg, {'revision': 6, 'ports': {'p1': {'mode': 'disabled'}}})
         io.assert_not_called()
 
+    def test_static_route_validation(self):
+        self.cfg['routes'] = [{'dst':'0.0.0.0/0','dev':'p3','via':'198.18.1.2'},
+                              {'dst':'2001:db8::/32','type':'blackhole'}]
+        net.validate(self.cfg)
+        for route in ({'dst':'203.0.113.1/24','dev':'p3'},
+                      {'dst':'0.0.0.0/0','dev':'p1'},
+                      {'dst':'0.0.0.0/0','dev':'p3','via':'198.18.9.2'},
+                      {'dst':'0.0.0.0/0','dev':'p3','via':'198.18.1.1'},
+                      {'dst':'0.0.0.0/0','dev':'p3','via':'198.18.1.255'},
+                      {'dst':'::/0','dev':'p3','via':'198.18.1.2'},
+                      {'dst':'::/0','type':'blackhole','dev':'p3'}):
+            self.cfg['routes'] = [route]
+            with self.subTest(route=route), self.assertRaises(ValueError):
+                net.validate(self.cfg)
+
+    def test_route_save_failure_rolls_back(self):
+        route = {'dst':'0.0.0.0/0','dev':'p3','via':'198.18.1.2'}
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'configure_route') as change, patch.object(net,'configure_port') as ports, \
+             patch.object(net,'save',side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(RuntimeError,'rollback errors: \\[\\]'):
+                net.patch(self.cfg,{'revision':7,'routes':[route]})
+        self.assertEqual([c.args for c in change.call_args_list],[('add',route),('del',route)])
+        ports.assert_not_called()
+
+    def test_failed_add_does_not_delete_unmanaged_route(self):
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'configure_route',side_effect=RuntimeError('File exists')) as change:
+            with self.assertRaises(RuntimeError):
+                net.patch(self.cfg,{'revision':7,'routes':[{'dst':'0.0.0.0/0','dev':'p3'}]})
+        self.assertEqual(change.call_count,1)
+
+    def test_route_dependency_protects_port(self):
+        self.cfg['routes'] = [{'dst':'0.0.0.0/0','dev':'p3','via':'198.18.1.2'}]
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'configure_port') as change, self.assertRaises(ValueError):
+            net.patch(self.cfg,{'revision':7,'ports':{'p3':{'mode':'disabled'}}})
+        change.assert_not_called()
+
+    def test_vrf_address_isolation_and_table_validation(self):
+        self.cfg['vrfs'] = {'vrf-blue':1001,'vrf-red':1002}
+        self.cfg['ports'] = {'p1':{'mode':'l3','vrf':'vrf-blue','addresses':['192.0.2.1/24']},
+                             'p3':{'mode':'l3','vrf':'vrf-red','addresses':['192.0.2.1/24']}}
+        self.cfg['routes'] = [{'dst':'0.0.0.0/0','dev':'p1','via':'192.0.2.2','table':1001}]
+        net.validate(self.cfg)
+        self.cfg['routes'][0]['table'] = 1002
+        with self.assertRaisesRegex(ValueError,'same virtual router'):
+            net.validate(self.cfg)
+        self.cfg['routes'] = []
+        self.cfg['ports']['p3']['vrf'] = 'vrf-blue'
+        with self.assertRaisesRegex(ValueError,'duplicate local'):
+            net.validate(self.cfg)
+
+    def test_vrf_failure_does_not_save_configuration(self):
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'create_vrf',side_effect=RuntimeError('not supported')), patch.object(net,'save') as save:
+            with self.assertRaises(RuntimeError):
+                net.patch(self.cfg,{'revision':7,'vrfs':{'vrf-blue':1001}})
+        save.assert_not_called()
+
+    def test_ecmp_next_hop_validation(self):
+        route = {'dst':'0.0.0.0/0','nexthops':[{'dev':'p3','via':'198.18.1.2','weight':1},
+                                              {'dev':'p3','via':'198.18.1.3','weight':2}]}
+        self.cfg['routes'] = [route]
+        net.validate(self.cfg)
+        route['nexthops'][1]['weight'] = 0
+        with self.assertRaises(ValueError): net.validate(self.cfg)
+        route['nexthops'][1]['weight'] = 2
+        route['nexthops'][1]['via'] = '198.18.2.3'
+        with self.assertRaises(ValueError): net.validate(self.cfg)
+
+    def test_policy_validation_and_priority_conflict(self):
+        self.cfg['vrfs'] = {'vrf-blue':1001}
+        rule = {'from':'198.18.1.0/24','iif':'p3','table':1001,'priority':101}
+        self.cfg['rules'] = [rule]
+        net.validate(self.cfg)
+        self.cfg['rules'] = [rule, dict(rule)]
+        with self.assertRaises(ValueError): net.validate(self.cfg)
+        with patch.object(net,'ip',return_value='[{"priority":101}]') as io, self.assertRaises(RuntimeError):
+            net.configure_rule('add',rule)
+        self.assertEqual(io.call_count,1)
+
+    def test_policy_persistence_failure_restores_rule(self):
+        self.cfg['vrfs'] = {'vrf-blue':1001}
+        rule = {'from':'198.18.1.0/24','iif':'p3','table':1001,'priority':101}
+        with patch.object(net,'exists',return_value=True), patch.object(net,'backend',return_value={'ports':[]}), \
+             patch.object(net,'configure_rule') as change, patch.object(net,'save',side_effect=OSError('disk full')):
+            with self.assertRaises(RuntimeError):
+                net.patch(self.cfg,{'revision':7,'rules':[rule]})
+        self.assertEqual([c.args for c in change.call_args_list],[('add',rule),('del',rule)])
+
     def test_only_changed_port(self):
         original = copy.deepcopy(self.cfg)
         with patch.object(net, 'exists', return_value=True), patch.object(net, 'configure_port') as change, patch.object(net, 'save'):
@@ -38,6 +129,15 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'rollback errors: \\[\\]'):
                 net.patch(self.cfg, {'revision': 7, 'ports': {'p1': {'mode': 'disabled'}}})
         self.assertEqual(change.call_args_list[-1].args, ('p1', self.cfg['ports']['p1']))
+
+    def test_active_overlay_protects_underlay(self):
+        with patch.object(net, 'exists', return_value=True), patch.object(net, 'backend', return_value={'ports':[]}), \
+             patch.object(net, 'Path') as path, patch.object(net, 'configure_port') as change:
+            path.return_value.exists.return_value = True
+            path.return_value.read_text.return_value = '{"links":{"ovtest":{"underlay":"p3"}}}'
+            with self.assertRaisesRegex(ValueError, 'dependent overlays'):
+                net.patch(self.cfg, {'revision':7,'ports':{'p3':{'mode':'disabled'}}})
+        change.assert_not_called()
 
 
 if __name__ == '__main__':

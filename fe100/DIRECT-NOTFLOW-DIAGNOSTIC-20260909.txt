@@ -1,0 +1,26 @@
+{"index": 31, "fetch_rc": 3, "entry": "00000000000000000000000000000000"}
+{"test": "fe100-direct-nexthop-write-read", "entry": "009100000008000005ee025220abcdee", "passed": true}
+{"test": "fe100-direct-lif-ready", "seconds": 20}
+{"source": "025220abcd91", "sent": 300, "captured_ports": {}, "corrupt": 0, "expect_hardware_redirect": false, "rewritten_destination": "025220abcdee", "ipv4": false, "raw_envelopes": [{"marker_offset": 46, "prefix": "10000001", "exception_bytes": "0000", "length": 194, "count": 300}], "passed": false}
+{"source": "025220abcd91", "sent": 300, "captured_ports": {}, "corrupt": 0, "expect_hardware_redirect": false, "rewritten_destination": "025220abcdee", "ipv4": true, "raw_envelopes": [{"marker_offset": 74, "prefix": "10000001", "exception_bytes": "0000", "length": 222, "count": 300}], "passed": false}
+{"test": "fe100-original-lif-restored", "passed": true}
+{"test": "fe100-direct-nexthop-empty-restored", "passed": true}
+{
+  "lif_direct_stats_ctr_no_rd_clr": 600,
+  "lif_sysport_stats_ctr_no_rd_clr": 16,
+  "lif_tlu_hit_stats_ctr_no_rd_clr": 616,
+  "lif_cr_par_lif_pca_rx_stats_ctr_no_rd_clr": 616,
+  "lif_cr_tlu_lif_rslt_rx_stats_ctr_no_rd_clr": 616,
+  "lif_cr_lif_acl_pca_tx_stats_ctr_no_rd_clr": 616,
+  "lif_cr_lif_tlu_req_tx_stats_ctr_no_rd_clr": 616,
+  "fwd_cr_dfp_fwd_pca_rx_stats_ctr_no_rd_clr": 616,
+  "fwd_cr_fwd_lef_pca_tx_stats_ctr_no_rd_clr": 616,
+  "fwd_pca_bypass_sta_ctr_no_rd_clr": 616,
+  "prw_cr_par_prw_hdr_rx_stats_ctr_no_rd_clr": 616,
+  "prw_cr_ipq_prw_pyld_rx_stats_ctr_no_rd_clr": 616,
+  "prw_cr_lag_prw_pca_rx_stats_ctr_no_rd_clr": 616,
+  "prw_cr_prw_tmi_pkt_tx_stats_ctr_no_rd_clr": 616,
+  "prw_cr_prw_ipq_req_tx_stats_ctr_no_rd_clr": 616,
+  "prw_ing_ex_code0_stats_ctr_no_rd_clr": 616,
+  "prw_icode0_stats_ctr_no_rd_clr": 616
+}
