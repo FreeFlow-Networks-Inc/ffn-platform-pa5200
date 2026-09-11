@@ -274,3 +274,49 @@ started rather than trusting `$!`.
 in a command that also mentions `http.server` kills the calling shell — exit
 255, twice. Kill by pid, or keep the pattern out of the caller's argv by putting
 it in a script file.
+
+## What the NFS root is actually FOR: deploying to the DP is now a cp(1)
+
+`../dpfwd/deploy-octeon-app.sh` moves a binary to the DP through the PCIe
+mailbox: a 1 MB staging window at 0x500000 (everything above it is the mailbox
+and the dpnet rings), so a ~3.5 MB dataplane goes in four passes of stage / `dd`
+out of `/dev/mem` / append, with per-chunk retries because the mailbox is
+intermittently slow, and a sha256 at the end because the chain
+workstation → MP → CP → DP has a stale-copy trap in the middle that once cost a
+full deploy-and-run cycle — every chunk verified, against the wrong file.
+
+`deploy-octeon-app-nfs.sh` is a `cp` into `/opt/ffn-cproot-owrt/opt/dproot` on
+the MP. Measured on the live appliance, 3.5 MB including the DP computing its
+own sha256 back over two nested NFS hops:
+
+```
+size   : 3500000 bytes
+written.
+checking from the DP...
+  DP sees the same sha256 -- deployed.
+real 0m4.398s
+```
+
+No staging window, no chunk loop, no retry policy, and no intermediate copy to
+go stale — because there is no intermediate copy. It writes `.tmp` and renames,
+so the DP sees either the old binary or the whole new one, never half of
+either; the reader is a different machine and cannot be asked to wait.
+
+**The mailbox version is kept, not deleted.** It is the only route when the DP
+is on its initramfs, which is precisely where a failed nfsroot leaves it by
+design — and that is exactly when you are most likely to be deploying
+something.
+
+## Still missing: the DP has config and no consumer
+
+The config chain reaches the DP — `/etc/ffn/dp.env`, 30 keys, 6 of them
+`dp.l3.*` — and **nothing on the DP reads it**. The process table holds
+`init`, `ffn_dpagent2`, `watchdogd`, busybox and kernel threads; `/sbin` holds
+`ffn-dproot`, `ffn-nfsroot`, `ffn_bcmctl`, `ffn_cpdpd`, `ffn_dpagent{,2}` and
+`ffn_dpnetd`. There is no forwarder binary on the DP at all, so
+`dp_l3_config_apply()` has no caller there and the chain still ends in a void —
+one hop further along than it did, but a void.
+
+Building one needs the mips64 cross toolchain, which is on the lab VM
+(`stephen@192.168.47.129`, unreachable) — and neither the MP nor the CP has a
+compiler. When that is available the deploy step is the `cp` above.
