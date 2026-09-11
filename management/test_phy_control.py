@@ -28,6 +28,24 @@ class PhyTests(unittest.TestCase):
             self.assertEqual(result['activation'],'verified')
             self.assertFalse(bus.writes)
             self.assertEqual(result['data']['saved']['speeds']['17'],'auto')
+    def test_admin_control_preserves_other_bits_and_restores_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gate=Path(temp)/'gate';gate.write_text('N')
+            with patch.object(phy,'STATE',Path(temp)/'state'),patch.object(phy,'GATE',gate):
+                bus=Bus();bus.values[18,30,0x401a]=0x2000
+                for enabled in (False,True):
+                    result=phy.apply(bus,{'revision':phy.inventory(bus)['revision'],'phy':18,'enabled':enabled})
+                    self.assertEqual(result['data']['phys'][2]['enabled'],enabled)
+                    self.assertEqual(bus.values[18,30,0x401a],0x2000|(0 if enabled else 0x80))
+                self.assertTrue(all((p,d,r)==(18,30,0x401a) for p,d,r,v in bus.writes))
+                self.assertEqual(gate.read_text(),'N')
+    def test_mapping_must_be_unique_and_in_range(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'map'
+            with patch.object(phy,'MAPPING',path):
+                for value in ('{"1":17,"2":17}','{"5":16}','{"1":true}'):
+                    path.write_text(value)
+                    with self.assertRaises(ValueError):phy.port_mapping()
     def test_unknown_identity_and_stale_revision_never_write(self):
         with tempfile.TemporaryDirectory() as temp,patch.object(phy,'STATE',Path(temp)/'state'):
             bus=Bus();bus.values[16,1,3]=0

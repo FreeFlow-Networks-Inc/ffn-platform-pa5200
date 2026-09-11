@@ -5,27 +5,39 @@ from pathlib import Path
 from ffn_mdio import Mdio
 GATE=Path('/sys/module/ffn_mdioctl/parameters/allow_writes')
 STATE=Path('/etc/ffn/phy.json')
+MAPPING=Path('/etc/ffn/copper-map.json')
+
+def port_mapping():
+    # Addresses are not physical numbering: the vendor table is pair-swapped.
+    # Only measured mappings belong here or in the local commissioning file.
+    mapping=json.loads(MAPPING.read_text()) if MAPPING.exists() else {'2':17}
+    if (not isinstance(mapping,dict) or any(k not in ('1','2','3','4') or type(v) is not int or v not in range(16,20) for k,v in mapping.items())
+            or len(set(mapping.values()))!=len(mapping)):
+        raise ValueError('Invalid or ambiguous copper faceplate mapping')
+    return mapping
 
 def inventory(bus):
-    ports=[]
+    ports=[];mapping=port_mapping()
     for phy in range(16,20):
         read=lambda dev,reg:bus.transfer(phy,dev,reg)
         ident=[read(1,2),read(1,3)]
         row={'phy':phy,'bus':0,'id':ident,'identified':ident==[0x600d,0x84f9],
-             'faceplate_mapping_verified':phy==17,'interface':'ethernet1/2' if phy==17 else None}
+             'faceplate_mapping_verified':phy in mapping.values(),
+             'interface':next(('ethernet1/'+p for p,a in mapping.items() if a==phy),None)}
         if row['identified']:
             firmware=read(30,0x400f);reset=bool(read(1,0)&0x8000)
             link=read(30,0x400d);an=bool(read(7,0)&0x1000)
+            control=read(30,0x401a)
             ads=[read(7,0xffe4),read(7,0xffe9),read(7,0x20)]
             advertised=[speed for speed,value in [(100,ads[0]&0x100),(1000,ads[1]&0x200),(10000,ads[2]&0x1000)] if value]
-            row.update(firmware=firmware,ready=firmware not in (0,65535) and not reset,autoneg=an,
+            row.update(enabled=not bool(control&0x8080),control_register=control,firmware=firmware,ready=firmware not in (0,65535) and not reset,autoneg=an,
                        link=bool(link&0x20),speed_mbps=(10,100,1000,10000)[(link>>3)&3] if link&0x20 else None,
                        advertised_speeds=advertised,advertisement_registers=ads,
                        configured_speed=str(advertised[0]) if an and len(advertised)==1 else 'auto' if an else 'unmanaged',
                        supported_speeds=[100,1000,10000])
         ports.append(row)
     saved=json.loads(STATE.read_text()) if STATE.exists() else {'speeds':{}}
-    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','advertisement_registers')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
+    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','advertisement_registers','control_register','interface')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
     return {'revision':revision,'phys':ports,'saved':saved,'forwarding_verified':False,
             'warning':'PHY speed selection limits auto-negotiation advertisement. MAC synchronization and physical port mapping must also be commissioned.'}
 
@@ -35,20 +47,29 @@ def persist(value):
     os.replace(temp,STATE)
 
 def apply(bus,request):
-    if (set(request)!={'revision','phy','speed'} or type(request['revision']) is not int or
-            type(request['phy']) is not int or request['phy'] not in range(16,20) or request['speed'] not in ('auto','100','1000','10000')):
-        raise ValueError('Revision, PHY 16..19 and supported speed required')
+    if (not isinstance(request,dict) or set(request)-{'revision','phy','speed','enabled'} or not {'revision','phy'}<=set(request)
+            or not {'speed','enabled'}&set(request) or type(request['revision']) is not int
+            or type(request['phy']) is not int or request['phy'] not in range(16,20)
+            or ('speed' in request and request['speed'] not in ('auto','100','1000','10000'))
+            or ('enabled' in request and type(request['enabled']) is not bool)):
+        raise ValueError('Revision, PHY 16..19 and supported speed or boolean enabled required')
     before=inventory(bus)
     if request['revision']!=before['revision']:raise ValueError('revision conflict; refresh PHY inventory')
     phy=request['phy'];row=before['phys'][phy-16];saved=before['saved']
     if not row.get('ready'):raise ValueError('Identified BCM84848 with running firmware required')
     if saved.get('pending'):raise ValueError('Previous PHY operation unresolved')
-    # Reapplying an identical advertisement must not restart WAN negotiation.
-    expected=[bit if request['speed'] in ('auto',speed) else 0
+    if row['control_register']&0x8000:raise ValueError('PHY is super-isolated; recover firmware before applying port configuration')
+    masks=(0x1e0,0x700,0x1000)
+    expected=[bit if request.get('speed') in ('auto',speed) else 0
               for bit,speed in ((0x100,'100'),(0x200,'1000'),(0x1000,'10000'))]
-    if row['autoneg'] and [v & mask for v,mask in zip(row['advertisement_registers'],(0x1e0,0x700,0x1000))]==expected:
-        saved.setdefault('speeds',{})[str(phy)]=request['speed'];persist(saved)
-        return {'activation':'verified','scope':'phy-advertisement-only','forwarding_verified':False,'data':inventory(bus)}
+    speed_change='speed' in request and (not row['autoneg'] or [v&m for v,m in zip(row['advertisement_registers'],masks)]!=expected)
+    admin_change='enabled' in request and row['enabled']!=request['enabled']
+    def finish():
+        if 'speed' in request:saved.setdefault('speeds',{})[str(phy)]=request['speed']
+        if 'enabled' in request:saved.setdefault('admin',{})[str(phy)]=request['enabled']
+        saved.pop('pending',None);persist(saved)
+        return {'activation':'verified','scope':'phy-control','forwarding_verified':False,'data':inventory(bus)}
+    if not speed_change and not admin_change:return finish()
     saved['pending']=request;persist(saved)
     previous_gate=GATE.read_text()
     try:
@@ -58,19 +79,24 @@ def apply(bus,request):
             while bus.transfer(phy,30,0x400e)&2:
                 if time.monotonic()>=end:raise RuntimeError('PHY firmware busy')
                 time.sleep(.001)
-        for reg,mask,bit,speed in ((0xffe4,0x1e0,0x100,'100'),(0xffe9,0x700,0x200,'1000'),(0x20,0x1000,0x1000,'10000')):
-            handshake();old=bus.transfer(phy,7,reg)
-            value=(old&~mask)|(bit if request['speed'] in ('auto',speed) else 0)
-            bus.transfer(phy,7,reg,value)
-            if bus.transfer(phy,7,reg)!=value:raise RuntimeError('PHY advertisement readback mismatch')
-        handshake()
-        bus.transfer(phy,7,0,bus.transfer(phy,7,0)|0x1200)
-        handshake()
-        after=inventory(bus)
-        if after['phys'][phy-16]['configured_speed']!=request['speed']:raise RuntimeError('PHY setting readback mismatch')
-        saved['speeds'][str(phy)]=request['speed'];saved.pop('pending');persist(saved)
-        return {'activation':'verified','scope':'phy-advertisement-only','forwarding_verified':False,'data':inventory(bus)}
+        if speed_change:
+            for reg,mask,value in zip((0xffe4,0xffe9,0x20),masks,expected):
+                handshake();old=bus.transfer(phy,7,reg);value=(old&~mask)|value
+                bus.transfer(phy,7,reg,value)
+                if bus.transfer(phy,7,reg)!=value:raise RuntimeError('PHY advertisement readback mismatch')
+            handshake();bus.transfer(phy,7,0,bus.transfer(phy,7,0)|0x1200);handshake()
+        if admin_change:
+            # Broadcom phy8481 copper_enable_set: change only XGPH_DISABLE bit 7.
+            handshake();value=bus.transfer(phy,30,0x401a)
+            value=(value&~0x80) if request['enabled'] else (value|0x80)
+            bus.transfer(phy,30,0x401a,value);handshake()
+            if bus.transfer(phy,30,0x401a)!=value:raise RuntimeError('PHY admin readback mismatch')
+        after=inventory(bus)['phys'][phy-16]
+        if ('speed' in request and after['configured_speed']!=request['speed']) or ('enabled' in request and after['enabled']!=request['enabled']):
+            raise RuntimeError('PHY setting readback mismatch')
+        return finish()
     finally:GATE.write_text(previous_gate)
+
 
 if __name__=='__main__':
     try:
@@ -82,15 +108,19 @@ if __name__=='__main__':
                 elif action=='restore':
                     current=inventory(bus)
                     if current['saved'].get('pending'):raise ValueError('Unresolved PHY operation prevents restore')
-                    for address,speed in current['saved']['speeds'].items():
+                    for address,speed in current['saved'].get('speeds',{}).items():
                         apply(bus,{'revision':inventory(bus)['revision'],'phy':int(address),'speed':speed})
+                    for address,enabled in current['saved'].get('admin',{}).items():
+                        apply(bus,{'revision':inventory(bus)['revision'],'phy':int(address),'enabled':enabled})
                     result=inventory(bus)
                 elif action=='resolve':
                     current=inventory(bus);saved=current['saved'];pending=saved.get('pending')
                     if not pending:raise ValueError('No pending operation')
                     observed=current['phys'][pending['phy']-16]
                     if not observed.get('ready') or observed['configured_speed']=='unmanaged':raise ValueError('Observed PHY state cannot be accepted')
-                    saved['speeds'][str(pending['phy'])]=observed['configured_speed'];saved.pop('pending');persist(saved);result=inventory(bus)
+                    if 'speed' in pending:saved.setdefault('speeds',{})[str(pending['phy'])]=observed['configured_speed']
+                    if 'enabled' in pending:saved.setdefault('admin',{})[str(pending['phy'])]=observed['enabled']
+                    saved.pop('pending');persist(saved);result=inventory(bus)
                 elif action=='status':result=inventory(bus)
                 else:raise ValueError('status|set|restore|resolve required')
             finally:bus.close()

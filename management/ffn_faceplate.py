@@ -35,6 +35,29 @@ def save(value):
     finally: os.close(fd)
 
 
+def copper_inventory():
+    import ffn_phy_control as phy
+    with open('/run/lock/ffn-copper.lock','w') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX);bus=phy.Mdio()
+        try:return phy.inventory(bus)
+        finally:bus.close()
+
+
+def copper_apply(port,request):
+    import ffn_phy_control as phy
+    with open('/run/lock/ffn-copper.lock','w') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX);bus=phy.Mdio()
+        try:
+            current=phy.inventory(bus)
+            row=next((p for p in current['phys'] if p.get('interface')==port['name']),None)
+            if not row or row['phy']!=port['phy_address'] or current['revision']!=port['phy_revision']:
+                raise ValueError('Copper state or mapping changed; refresh ports')
+            payload={'revision':current['revision'],'phy':row['phy']}
+            payload.update({k:request[k] for k in ('speed','enabled') if k in request})
+            return phy.apply(bus,payload)
+        finally:bus.close()
+
+
 def observe():
     physical={p['port']:p for p in call({'op':'port.list'})['ports']}
     ports=[]
@@ -51,7 +74,23 @@ def observe():
                 p.update(speed_configuration=True, supported_speeds=link['supported_speeds'], configured_speed=link['configured_speed'])
             except (RuntimeError,ValueError,KeyError,OSError):
                 p['speed_error']='Link control unavailable; BCM link-control update may need activation'
-    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds']) for p in ports]).encode()).hexdigest()[:12],16)
+    try: copper=copper_inventory()
+    except (ImportError,OSError,ValueError,RuntimeError): copper=None
+    for p in ports[:4]:
+        p.update(media='copper',mac_enabled=p['enabled'],mac_link=p['link'],mac_speed_mbps=p['speed_mbps'],
+                 enabled=None,link=None,speed_mbps=None,admin_configuration=False,phy_mapping_verified=False,
+                 speed_error='Copper PHY mapping or controller unavailable',control_scope='copper-phy-and-switch-mac',forwarding_verified=False)
+        phy=next((r for r in copper['phys'] if r.get('interface')==p['name']),None) if copper else None
+        if not phy:continue
+        ready=p['available'] and phy.get('ready',False) and not phy.get('control_register',0)&0x8000
+        p.update(phy_address=phy['phy'],phy_revision=copper['revision'],phy_mapping_verified=True,
+                 phy_enabled=phy.get('enabled'),enabled=bool(p['mac_enabled'] and phy.get('enabled')),
+                 link=phy.get('link'),speed_mbps=phy.get('speed_mbps'),configured_speed=phy.get('configured_speed'),
+                 supported_speeds=phy.get('supported_speeds',[]),admin_configuration=ready,speed_configuration=ready,
+                 phy_pending=bool(copper['saved'].get('pending')),
+                 datapath_link=bool(p['mac_link'] and phy.get('link')))
+        if ready:p.pop('speed_error',None)
+    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled')) for p in ports]).encode()).hexdigest()[:12],16)
     return {'revision':revision,'ports':ports,'capabilities':{'admin_state':True,'speed_configuration':any(p['speed_configuration'] for p in ports),
             'link_is_forwarding':False},'saved':json.loads(STATE.read_text()) if STATE.exists() else {'ports':{}}}
 
@@ -65,16 +104,29 @@ def apply(request):
     if request['revision']!=before['revision']: raise ValueError('revision conflict; refresh ports')
     port=before['ports'][request['port']-1]
     if not port['available']: raise ValueError('port unavailable')
+    if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
+        raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
     if 'speed' in request and (not port.get('speed_configuration') or request['speed'] not in ['auto']+[str(v) for v in port['supported_speeds']]):
         raise ValueError('Requested speed unavailable for this port')
     saved=before['saved']
     if saved.get('pending'): raise ValueError('previous operation unresolved; inspect hardware before retry')
     saved['pending']=request
     save(saved)
-    if 'speed' in request: call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
-    if 'enabled' in request: call({'op':'port.set','port':port['bcm_port'],'enable':request['enabled']})
+    if port.get('media')=='copper':
+        # Disable the MAC before the PHY; enable the PHY before the MAC.
+        # Journal both steps as one faceplate operation; partial failure stays pending.
+        if request.get('enabled') is False:
+            call({'op':'port.set','port':port['bcm_port'],'enable':False})
+        copper_apply(port,request)
+        if request.get('enabled') is True:
+            call({'op':'port.set','port':port['bcm_port'],'enable':True})
+    else:
+        if 'speed' in request: call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
+        if 'enabled' in request: call({'op':'port.set','port':port['bcm_port'],'enable':request['enabled']})
     after=observe()
     actual=after['ports'][request['port']-1]
+    if port.get('media')=='copper' and 'enabled' in request and any(actual.get(k)!=request['enabled'] for k in ('mac_enabled','phy_enabled')):
+        raise RuntimeError('Copper PHY/MAC administrative readback mismatch; operation pending')
     if ('enabled' in request and actual['enabled'] != request['enabled']) or ('speed' in request and actual['configured_speed'] != request['speed']):
         raise RuntimeError('administrative state readback did not match; operation pending')
     if 'enabled' in request: saved['ports'][str(request['port'])]=request['enabled']
@@ -106,6 +158,10 @@ def main():
             if not pending: raise ValueError('no pending operation')
             port=current['ports'][pending['port']-1]
             if not port['available']: raise ValueError('port unavailable')
+            if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
+                raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
+            if port.get('media')=='copper' and 'enabled' in pending and port.get('mac_enabled')!=port.get('phy_enabled'):
+                raise ValueError('PHY and MAC disagree; repair the pending operation before accepting state')
             if 'enabled' in pending: state['ports'][str(pending['port'])]=port['enabled']
             if 'speed' in pending:
                 if port['configured_speed'] is None: raise ValueError('link state unavailable')

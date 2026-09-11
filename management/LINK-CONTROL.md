@@ -76,3 +76,36 @@ startup at boot but not stopped or restarted with BCM. Recovering its service
 skips firmware loading for running PHYs, skips enable/AN restart for already
 enabled PHYs, and restores identical speed advertisements without register writes.
 This preserves existing copper negotiation during service recovery.
+
+
+## Unified copper faceplate controls
+
+The existing MP `faceplate` resource now coordinates the BCM88375 MAC and the
+BCM84848 external PHY for copper ports. WebUI and CLI use the same requests as
+optical ports: `request platform interface ethernet1/2 link-speed auto` or
+100, 1000, 10000. Copper speed selection sets full-duplex auto-negotiation
+advertisement; it is not a forced MAC SerDes rate. Enable/disable coordinates
+both devices (MAC off before PHY off; PHY on before MAC on). Readback must match
+both before success. A partial result remains journaled and blocks further writes.
+PHY firmware busy checks and the kernel write gate protect MDIO mutations.
+
+Physical mapping is separate from the MDIO address. The vendor address array is
+pair-swapped, so consecutive addresses alone are not evidence of panel numbering.
+The current measured mapping is ethernet1/2 to PHY 17. An administrator can store
+additional measured associations in `/etc/ffn/copper-map.json`: an object whose
+keys are physical port numbers 1 through 4 and whose values are distinct integer
+MDIO addresses 16 through 19. For example, the currently established mapping is
+`{"2":17}`. This file replaces the default map; include every verified association.
+Unknown mappings disable copper writes instead of silently controlling a different
+socket. Inventory revisions incorporate mapping and PHY configuration changes.
+
+All four port mappings are covered by controller tests. Live validation reapplied
+port 2's Auto advertisement through the authenticated CLI and MP daemon, leaving
+its 1G external link and advertisement unchanged. Ports 1, 3 and 4 still need a
+physical cable/link correlation before commissioning their mapping on this unit.
+
+The faceplate page reports copper wire speed/link separately from switch-side
+link. A wire link alone does not establish PHY-to-MAC synchronization, a dataplane
+attachment, forwarding, or DHCP service. MAC rate synchronization remains pending.
+The GPIO/PHY bring-up service retains independent lifecycle control; BCM process
+restart must not reset copper firmware or negotiation.
