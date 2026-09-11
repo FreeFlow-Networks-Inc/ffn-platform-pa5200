@@ -30,17 +30,59 @@ if ! ip link show lo 2>/dev/null | grep -q ",UP"; then
 	ip link set lo up 2>/dev/null && log "loopback was DOWN; brought up"
 fi
 
+# Read/write a sysctl WITHOUT depending on the sysctl(8) binary.
+#
+# The Debian CP root has no sysctl -- it lives in procps, which is not
+# installed -- so every setting here warned "could not set" while /proc/sys was
+# perfectly writable. A forwarding hook that silently gives up because a
+# convenience wrapper is missing is worse than one that pokes /proc, and the
+# kernel interface is the stable one: /proc/sys has been there far longer than
+# any given distro's package layout.
+#
+# sysctl is still preferred when present, because it honours
+# /etc/sysctl.d and gives the same answer the operator gets by hand.
+_sysctl_path() {
+	# net.ipv4.ip_forward -> /proc/sys/net/ipv4/ip_forward
+	printf '/proc/sys/%s\n' "$(printf '%s' "$1" | tr '.' '/')"
+}
+
+sysctl_get() {
+	if command -v sysctl >/dev/null 2>&1; then
+		sysctl -n "$1" 2>/dev/null && return 0
+	fi
+	_p=$(_sysctl_path "$1")
+	[ -r "$_p" ] && cat "$_p" 2>/dev/null
+}
+
+sysctl_set() {
+	if command -v sysctl >/dev/null 2>&1; then
+		sysctl -w "$1=$2" >/dev/null 2>&1 && return 0
+	fi
+	_p=$(_sysctl_path "$1")
+	[ -w "$_p" ] || return 1
+	printf '%s\n' "$2" > "$_p" 2>/dev/null
+}
+
 apply_sysctl() {
 	_k="$1"; _want="$2"
 	[ -n "$_want" ] || return 0
-	_have=$(sysctl -n "$_k" 2>/dev/null)
+	_have=$(sysctl_get "$_k")
 	if [ "$_have" = "$_want" ]; then
 		return 0                      # already right; say nothing
 	fi
-	if sysctl -w "$_k=$_want" >/dev/null 2>&1; then
-		log "$_k: $_have -> $_want"
+	if sysctl_set "$_k" "$_want"; then
+		# Read it back. A write to /proc/sys can be accepted and ignored for
+		# a key the running kernel does not implement, and reporting a change
+		# that did not happen is the failure mode this whole hook exists to
+		# avoid.
+		_now=$(sysctl_get "$_k")
+		if [ "$_now" = "$_want" ]; then
+			log "$_k: ${_have:-unset} -> $_want"
+		else
+			warn "$_k accepted $_want but reads back '$_now'"
+		fi
 	else
-		warn "could not set $_k=$_want"
+		warn "could not set $_k=$_want (no sysctl binary and $(_sysctl_path "$_k") not writable)"
 	fi
 }
 

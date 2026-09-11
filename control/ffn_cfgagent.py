@@ -118,15 +118,58 @@ def run_hooks(directory, env_path):
                 sys.stderr.write("hook %s failed: %s\n" % (p, exc))
 
 
+# The mailbox carries a command line, not a file, and it is NOT a bulk
+# transport: it is one shared /bin/sh reached through a 64 KB window, and
+# octeon/dpnet2/DPNET.md records that bulk data through it does not arrive
+# intact. So the push is chunked.
+#
+# These numbers come from a real failure, not from taste. Sending all of a
+# 30-key dp.env as one command produced ~1.5 KB of shell in a single mailbox
+# round trip and timed out:
+#
+#     RuntimeError: no marker within 30s; partial output was: ...
+#
+# with the partial output showing the command truncated mid-line. 400 bytes
+# per chunk is comfortably under whatever the real ceiling is, and 8 commands
+# keeps a chunk readable in a log when one of them fails.
+DP_PUSH_CHUNK_BYTES = 400
+DP_PUSH_CHUNK_CMDS = 8
+DP_PUSH_TIMEOUT = "90"
+
+
+def _chunk(cmds):
+    """Group shell commands into mailbox-sized batches."""
+    batch, size = [], 0
+    for c in cmds:
+        # +2 for the "; " that will join them.
+        if batch and (size + len(c) + 2 > DP_PUSH_CHUNK_BYTES
+                      or len(batch) >= DP_PUSH_CHUNK_CMDS):
+            yield batch
+            batch, size = [], 0
+        batch.append(c)
+        size += len(c) + 2
+    if batch:
+        yield batch
+
+
 def push_to_dp(lines, verbose=False):
     """Store-and-forward the DP's config over the PCIe mailbox.
 
     ffn-dpsh mangles nested quoting, so the file is written a line at a time
     with simple appends rather than one big heredoc. Slower, but it survives
     the quoting rules; correctness beats elegance on a channel this awkward.
+
+    The appends are then sent in CHUNKS, because one command holding every
+    line is bulk data and the mailbox does not carry bulk -- see
+    DP_PUSH_CHUNK_BYTES above for the failure that established that.
+
+    Writes to a .tmp and renames at the end, so a push interrupted halfway
+    leaves the DP's previous dp.env intact rather than a half-file that its
+    apply hook would read as truth.
     """
     if not os.path.exists(DPSH):
         return False
+
     cmds = ["mkdir -p %s" % os.path.dirname(DP_REMOTE),
             "rm -f %s.tmp" % DP_REMOTE]
     for l in lines:
@@ -135,14 +178,37 @@ def push_to_dp(lines, verbose=False):
             continue
         cmds.append("echo '%s' >> %s.tmp" % (l, DP_REMOTE))
     cmds.append("mv %s.tmp %s" % (DP_REMOTE, DP_REMOTE))
+
+    batches = list(_chunk(cmds))
+    devnull = None if verbose else open(os.devnull, "w")
     try:
-        rc = subprocess.call([DPSH, "-c", "; ".join(cmds)],
-                             stdout=None if verbose else open(os.devnull, "w"),
-                             stderr=subprocess.STDOUT)
-        return rc == 0
-    except Exception as exc:
-        sys.stderr.write("dp push failed: %s\n" % exc)
-        return False
+        for i, batch in enumerate(batches, 1):
+            try:
+                # ffn-dpsh is SINGLE-SESSION: one shared /bin/sh on the DP,
+                # and concurrent clients wedge it. These calls are therefore
+                # strictly sequential, never parallelised for speed.
+                rc = subprocess.call(
+                    [DPSH, "-c", "; ".join(batch), "-t", DP_PUSH_TIMEOUT],
+                    stdout=devnull, stderr=subprocess.STDOUT)
+            except Exception as exc:
+                sys.stderr.write("dp push chunk %d/%d raised: %s\n"
+                                 % (i, len(batches), exc))
+                return False
+            if rc != 0:
+                # Name the chunk. A push that fails at chunk 9 of 12 has
+                # already written eight chunks' worth into the .tmp, and
+                # knowing where it stopped is the difference between a
+                # diagnosis and a guess.
+                sys.stderr.write("dp push failed at chunk %d/%d (rc=%d); "
+                                 "%s.tmp left in place, %s untouched\n"
+                                 % (i, len(batches), rc, DP_REMOTE, DP_REMOTE))
+                return False
+            if verbose:
+                sys.stderr.write("  dp push chunk %d/%d ok\n" % (i, len(batches)))
+        return True
+    finally:
+        if devnull is not None:
+            devnull.close()
 
 
 def push_to_dp_if_needed(lines, verbose=False):
