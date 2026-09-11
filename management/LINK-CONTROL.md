@@ -70,3 +70,9 @@ On hardware, management-daemon requests verified an unused SFP port at 1G and
 These checks establish link control, not L2/L3 forwarding or a DHCP lease.
 Saved administrative configuration can differ from current runtime; inspect it
 before replaying configuration following a BCM restart.
+
+Copper initialization has an independent service lifecycle, ordered after front-port
+startup at boot but not stopped or restarted with BCM. Recovering its service
+skips firmware loading for running PHYs, skips enable/AN restart for already
+enabled PHYs, and restores identical speed advertisements without register writes.
+This preserves existing copper negotiation during service recovery.

@@ -21,6 +21,13 @@ class PhyTests(unittest.TestCase):
                 self.assertEqual(gate.read_text(),'N');self.assertFalse(result['forwarding_verified'])
                 self.assertTrue(all(p==16 for p,d,r,v in bus.writes))
                 self.assertFalse(result['data']['saved'].get('pending'))
+    def test_identical_restore_does_not_write_or_restart_negotiation(self):
+        with tempfile.TemporaryDirectory() as temp,patch.object(phy,'STATE',Path(temp)/'state'):
+            bus=Bus();before=phy.inventory(bus)
+            result=phy.apply(bus,{'revision':before['revision'],'phy':17,'speed':'auto'})
+            self.assertEqual(result['activation'],'verified')
+            self.assertFalse(bus.writes)
+            self.assertEqual(result['data']['saved']['speeds']['17'],'auto')
     def test_unknown_identity_and_stale_revision_never_write(self):
         with tempfile.TemporaryDirectory() as temp,patch.object(phy,'STATE',Path(temp)/'state'):
             bus=Bus();bus.values[16,1,3]=0

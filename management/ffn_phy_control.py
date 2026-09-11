@@ -43,6 +43,12 @@ def apply(bus,request):
     phy=request['phy'];row=before['phys'][phy-16];saved=before['saved']
     if not row.get('ready'):raise ValueError('Identified BCM84848 with running firmware required')
     if saved.get('pending'):raise ValueError('Previous PHY operation unresolved')
+    # Reapplying an identical advertisement must not restart WAN negotiation.
+    expected=[bit if request['speed'] in ('auto',speed) else 0
+              for bit,speed in ((0x100,'100'),(0x200,'1000'),(0x1000,'10000'))]
+    if row['autoneg'] and [v & mask for v,mask in zip(row['advertisement_registers'],(0x1e0,0x700,0x1000))]==expected:
+        saved.setdefault('speeds',{})[str(phy)]=request['speed'];persist(saved)
+        return {'activation':'verified','scope':'phy-advertisement-only','forwarding_verified':False,'data':inventory(bus)}
     saved['pending']=request;persist(saved)
     previous_gate=GATE.read_text()
     try:
