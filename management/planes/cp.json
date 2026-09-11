@@ -1,0 +1,39 @@
+{
+  "role": "cp",
+  "peer": [
+    "/usr/bin/ssh",
+    "-F",
+    "/etc/ffn/planes/ssh-dp.conf",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "ffn-dp",
+    "/usr/bin/python3",
+    "/usr/local/lib/ffn/ffn_planed.py",
+    "call",
+    "--socket",
+    "/run/ffn-plane-dp/control.sock"
+  ],
+  "commands": {
+    "nif": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_nif_control.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_nif_control.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_nif_control.py",
+        "apply"
+      ]
+    }
+  }
+}
