@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from control import Controller, router, inspection_activation
+from control import Controller, router, inspection_activation, legacy_router
 
 
 class APITests(unittest.TestCase):
@@ -113,8 +113,24 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
                 await Controller().run('network; reboot','status')
             spawn.assert_not_called()
 
+
+class LegacyTests(unittest.IsolatedAsyncioTestCase):
+    def test_port_write_uses_mp_client(self):
+        async def user(): return {'username':'test','role':'admin'}
+        ctl=AsyncMock()
+        ctl.run.side_effect=[{'revision':4,'ports':[{'port':1,'bcm_port':28}]},{'activation':'verified'}]
+        app=FastAPI()
+        with patch('control.Controller',return_value=ctl):
+            app.include_router(legacy_router(user,lambda u:None,AsyncMock()))
+        with TestClient(app) as client:
+            self.assertTrue(client.post('/api/bcm/port/28/enable',json={'enable':False}).json()['ok'])
+            self.assertEqual(client.post('/api/bcm/port/28/loopback',json={'mode':'mac'}).status_code,503)
+        self.assertEqual(ctl.run.await_args.args,('faceplate','set',{'revision':4,'port':1,'enabled':False}))
+
     async def test_missing_binary_no_spawn(self):
-        with patch('control.os.access',return_value=False), patch('control.asyncio.create_subprocess_exec') as spawn:
+        import types
+        rpc=AsyncMock(side_effect=OSError('missing socket'))
+        with patch.dict('sys.modules',{'ffn_plane_api':types.SimpleNamespace(rpc=rpc)}), patch('control.asyncio.create_subprocess_exec') as spawn:
             with self.assertRaises(HTTPException) as e:
                 await Controller().run('network','status')
             self.assertEqual(e.exception.status_code,503)

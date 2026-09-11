@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+case "${1:-status}" in status|set) action=${1:-status} ;; *) exit 2 ;; esac
+exec ssh -F /etc/ffn-ngfw/ssh-cp.conf -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ConnectTimeout=5 ffn-cp "python3 /usr/local/sbin/ffn_faceplate.py $action"

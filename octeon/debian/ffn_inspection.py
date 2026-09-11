@@ -17,10 +17,11 @@ POLICY = Path('/etc/ffn/inspection.json')
 STATUS = Path('/run/ffn-inspection.json')
 LIBRARY = '/usr/local/lib/libffn-inline.so'
 DEFAULT = {'revision': 0, 'mode': 'off', 'ports': [], 'literal': ''}
+DETECTORS = ('credit_card', 'ssn', 'api_key')
 
 
 def validate(cfg):
-    if not isinstance(cfg, dict) or set(cfg) != set(DEFAULT):
+    if not isinstance(cfg, dict) or set(cfg) not in (set(DEFAULT), set(DEFAULT) | {'detectors'}):
         raise ValueError('expected revision, mode, ports, literal')
     if type(cfg['revision']) is not int or cfg['revision'] < 0:
         raise ValueError('invalid revision')
@@ -33,7 +34,11 @@ def validate(cfg):
     literal = cfg['literal']
     if not isinstance(literal, str) or len(literal) > 63 or any(not 32 <= ord(c) <= 126 for c in literal):
         raise ValueError('literal must contain at most 63 printable ASCII characters')
-    if cfg['mode'] != 'off' and (not literal or not cfg['ports']):
+    detectors = cfg.get('detectors', [])
+    if (not isinstance(detectors, list) or any(d not in DETECTORS for d in detectors)
+            or len(set(detectors)) != len(detectors)):
+        raise ValueError('detectors must be a unique list of credit_card, ssn, api_key')
+    if cfg['mode'] != 'off' and (not (literal or detectors) or not cfg['ports']):
         raise ValueError('enabled policy requires a literal and ports')
     return cfg
 
@@ -60,7 +65,22 @@ def library(path=LIBRARY):
     lib.ffn_inline_destroy.restype = None
     lib.ffn_inline_scan.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint]
     lib.ffn_inline_scan.restype = ctypes.c_int
+    if hasattr(lib, 'ffn_inline_create_profile'):
+        lib.ffn_inline_create_profile.argtypes = [ctypes.c_char_p, ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+        lib.ffn_inline_create_profile.restype = ctypes.c_void_p
     return lib
+
+
+def create_engine(lib, cfg):
+    literal = cfg['literal'].encode('ascii')
+    action = 1 if cfg['mode'] == 'alert' else 2
+    detectors = cfg.get('detectors', [])
+    if detectors:
+        if not hasattr(lib, 'ffn_inline_create_profile'):
+            raise ValueError('Dataplane library does not support these detectors')
+        return lib.ffn_inline_create_profile(literal, len(literal), action,
+                                             sum(1 << DETECTORS.index(d) for d in detectors))
+    return lib.ffn_inline_create(literal, len(literal), action)
 
 
 class Inspector:
@@ -85,8 +105,7 @@ class Inspector:
                 if cfg['mode'] != 'off':
                     if self.lib is None:
                         self.lib = library()
-                    literal = cfg['literal'].encode('ascii')
-                    handle = self.lib.ffn_inline_create(literal, len(literal), 1 if cfg['mode'] == 'alert' else 2)
+                    handle = create_engine(self.lib, cfg)
                     if not handle:
                         raise RuntimeError('engine allocation failed')
                 if self.handle:
@@ -99,6 +118,7 @@ class Inspector:
         atomic(STATUS, {'pid': os.getpid(), 'updated_at': time.time(),
                         'revision': self.cfg['revision'], 'mode': self.cfg['mode'],
                         'ports': self.cfg['ports'], 'counters': dict(self.counts),
+                        'detectors': self.cfg.get('detectors', []), 'execution': 'dataplane-cpu',
                         'reload_error': self.error})
 
     def allow(self, port, frame):
@@ -132,8 +152,7 @@ def main():
             if requested['mode'] != 'off':
                 # Reject unavailable engine before persisting an enabled policy.
                 lib = library()
-                literal = requested['literal'].encode('ascii')
-                h = lib.ffn_inline_create(literal, len(literal), 1 if requested['mode'] == 'alert' else 2)
+                h = create_engine(lib, requested)
                 if not h:
                     raise RuntimeError('engine allocation failed')
                 lib.ffn_inline_destroy(h)

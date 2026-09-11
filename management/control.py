@@ -14,6 +14,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('faceplate', 'status'): ('/usr/local/sbin/ffn-faceplate', 'status'),
+    ('faceplate', 'set'): ('/usr/local/sbin/ffn-faceplate', 'set'),
+    ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
@@ -30,85 +33,51 @@ COMMANDS = {
 LIMIT = 1024 * 1024
 
 
+def legacy_router(current_user, require_admin, record_audit):
+    api = APIRouter(prefix='/api/bcm')
+    ctl = Controller()
+
+    @api.post('/port/{port}/enable')
+    async def enable(port: int, request: Request, user=Depends(current_user)):
+        require_admin(user)
+        data = await body(request)
+        if set(data) != {'enable'} or type(data['enable']) is not bool:
+            raise HTTPException(422, 'Expected boolean enable')
+        observed = await ctl.run('faceplate','status')
+        match = next((p for p in observed['ports'] if p['bcm_port']==port),None)
+        if not match: raise HTTPException(422, 'Only mapped faceplate ports are controllable')
+        await record_audit(user['username'],'faceplate_legacy_request','port=%d'%match['port'])
+        result = await ctl.run('faceplate','set',{'revision':observed['revision'],'port':match['port'],'enabled':data['enable']})
+        return dict(result,ok=True)
+
+    @api.post('/port/{port}/loopback')
+    async def loopback(port: int, user=Depends(current_user)):
+        require_admin(user)
+        raise HTTPException(503,'Loopback has no commissioned MP daemon adapter; direct ASIC bypass is disabled')
+
+    return api
+
+
 class Controller:
     async def run(self, resource, action, payload=None):
-        argv = COMMANDS.get((resource, action))
-        if argv is None:
+        if (resource, action) not in COMMANDS:
             raise HTTPException(404, 'Unknown appliance operation')
-        socket = os.environ.get('FFN_PLANE_SOCKET')
-        if socket and resource == 'network':
-            from ffn_plane_api import rpc
-            request = {'v':1, 'id':str(uuid.uuid4()), 'resource':resource,
-                       'action':'apply' if action == 'patch' else action, 'payload':payload or {}}
-            try:
-                response = await rpc(socket, request)
-            except (OSError, ValueError, asyncio.TimeoutError):
-                raise HTTPException(502, 'Control outcome unknown; query request ID '+request['id'])
-            if not response.get('ok'):
-                raise HTTPException(409 if response.get('state') == 'rejected' else 502,
-                                    'Control '+response.get('state','unknown')+'; request ID '+request['id']+
-                                    '. '+str(response.get('error','Refresh runtime state')))
-            return dict(response['result'], control={'id':request['id'], 'trace':response.get('trace'), 'state':response['state']})
-        if not os.access(argv[0], os.X_OK):
-            raise HTTPException(503, 'Appliance controller is not installed')
-        data = json.dumps(payload, allow_nan=False).encode() if payload is not None else b''
+        from ffn_plane_api import rpc
+        target = os.environ.get('FFN_PLANE_SOCKET', '/run/ffn-plane-mp/control.sock')
+        data = dict(payload or {})
+        operation = 'apply' if action in ('patch','set','auto','full') else action
+        if resource == 'thermal' and operation == 'apply':
+            data = {'revision':0, 'operation':action}
+        request = {'v':1, 'id':str(uuid.uuid4()), 'resource':resource, 'action':operation, 'payload':data}
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, start_new_session=True)
-        except OSError:
-            raise HTTPException(503, 'Appliance controller could not be started')
-
-        async def read(stream):
-            parts, size = [], 0
-            while True:
-                part = await stream.read(65536)
-                if not part:
-                    return b''.join(parts)
-                size += len(part)
-                if size > LIMIT:
-                    raise HTTPException(502, 'Controller response exceeds limit; refresh status')
-                parts.append(part)
-
-        async def exchange():
-            proc.stdin.write(data)
-            await proc.stdin.drain()
-            proc.stdin.close()
-            out, err = await asyncio.gather(read(proc.stdout), read(proc.stderr))
-            await proc.wait()
-            return out, err
-
-        try:
-            out, err = await asyncio.wait_for(exchange(), timeout=90 if payload is not None else 25)
-        except asyncio.TimeoutError:
-            raise HTTPException(504, 'Controller timed out; outcome may be unknown. Refresh status before retrying.')
-        finally:
-            if proc.returncode is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
-        if resource == 'fabric':
-            state = out.decode(errors='replace').strip()
-            if proc.returncode in (0, 3, 4) and state in ('active', 'inactive', 'failed', 'unknown', 'activating', 'deactivating'):
-                return {'state': state, 'running': state == 'active'}
-        if proc.returncode:
-            # Never return traceback, SSH diagnostics or configuration secrets.
-            if b'revision conflict' in err.lower():
-                raise HTTPException(409, 'Configuration changed; reload before applying')
-            if b'ValueError:' in err:
-                raise HTTPException(422, 'Controller rejected configuration; check fields and port dependencies')
-            raise HTTPException(502, 'Controller failed; refresh status before retrying')
-        if resource == 'thermal' and action != 'status':
-            return {'requested_mode': action, 'completed': True}
-        try:
-            result = json.loads(out)
-            if not isinstance(result, dict):
-                raise ValueError()
-            return result
-        except (ValueError, UnicodeError):
-            raise HTTPException(502, 'Controller returned an invalid response')
+            response = await rpc(target, request)
+        except (OSError, ValueError, asyncio.TimeoutError):
+            raise HTTPException(503, 'MP control daemon unavailable or outcome unknown; request ID '+request['id'])
+        if not response.get('ok'):
+            raise HTTPException(409 if response.get('state') == 'rejected' else 502,
+                'MP control '+response.get('state','unknown')+'; request ID '+request['id']+
+                '. '+str(response.get('error','Refresh status')))
+        return dict(response['result'], control={'id':request['id'], 'trace':response.get('trace'), 'state':response['state']})
 
 
 async def body(request):
@@ -171,7 +140,7 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
             except OSError:
                 return resource, {'available': False, 'error': 'Controller unavailable'}
         resources = dict(await asyncio.gather(*(one(r) for r in (
-            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric'))))
+            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric', 'dataplane'))))
         return {'collected_at': time.time(), 'resources': resources,
                 'can_write': user.get('role') in ('admin', 'superuser'),
                 'provider': 'pa5200', 'cpu_role': 'management',
@@ -196,12 +165,12 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
     async def change(resource: str, action: str, request: Request, user=Depends(current_user)):
         require_admin(user)
         if (resource, action) not in {('network', 'patch'), ('overlay', 'set'),
-                ('inspection', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
+                ('inspection', 'set'), ('faceplate', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'faceplate': {'revision','port','enabled'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
-                   'inspection': {'revision', 'mode', 'ports', 'literal'}, 'thermal': set()}[resource]
+                   'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set()}[resource]
         if set(data) - allowed:
             raise HTTPException(422, 'Unknown configuration fields')
         if resource != 'thermal' and (type(data.get('revision')) is not int or data['revision'] < 0):

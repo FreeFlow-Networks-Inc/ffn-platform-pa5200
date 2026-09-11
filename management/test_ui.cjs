@@ -12,25 +12,31 @@ class Node {
   querySelectorAll() { return this.all().filter(n=>n.dataset.apply); }
 }
 async function check(writable) {
-  let render, calls=[];
+  let pages={}, calls=[];
   const good=data=>({available:true,data});
   const snapshot={can_write:writable,collected_at:0, resources:{
+    dataplane:good({state:'ready',arch:'mips64',boot_id:'test-boot',engines:{available:['literal','credit_card']}}),
     chassis:good({power_supplies:[{name:'<script>alert(1)</script>',state:'good'}],leds:{ps0:'green'}}),
     thermal:good({errors:[]}), fabric:good({running:true}),
     network:good({config:{revision:9,ports:{p1:{mode:'l2',vlans:[100],pvid:100}},vrfs:{}}}),
     overlay:{available:false,error:'Offline'},
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
-  const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
-  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');if(label==='controls')render=fn; }}},
-    document:{createElement:tag=>new Node(tag)},Date,JSON,Object};
+  const request=async(path,options)=> {
+    calls.push({path,options});
+    if(path==='/api/auth/me') return {role:writable?'admin':'viewer'};
+    if(path.endsWith('/faceplate')) return {revision:10,saved:{ports:{}},ports:[{port:1,name:'ethernet1/1',available:true,enabled:true,link:false,speed_mbps:10000}]};
+    return options ? {revision:10} : snapshot;
+  };
+  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');pages[label]=fn; }}},
+    document:{createElement:tag=>new Node(tag)},Date,JSON,Object,setTimeout(){}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');
-  const parent=new Node('main'); await render(parent);
+  const parent=new Node('main'); await pages.interfaces(parent);
   assert.equal(calls.length,1);
   const buttons=parent.all().filter(n=>n.dataset.apply);
-  assert.ok(buttons.length>=4);
+  assert.equal(buttons.length,2);
   assert.ok(buttons.every(b=>b.disabled===!writable));
-  assert.ok(parent.all().some(n=>n.textContent.includes('<script>')),'hardware strings remain text');
+  assert.ok(!parent.all().some(n=>n.textContent==='OCTEON dataplane handshake'));
   assert.ok(!parent.all().some(n=>n.tag==='script'));
   if (writable) {
     parent.all().find(n=>n.textContent==='Apply p1').onclick();
@@ -40,5 +46,21 @@ async function check(writable) {
     assert.deepEqual(JSON.parse(change.options.body),{revision:9,ports:{p1:{mode:'l2',mtu:1500,vlans:[100],pvid:100}}});
     assert.ok(buttons.every(b=>b.disabled),'stale editors disabled after apply');
   }
+  await pages.dataplane(parent);
+  assert.ok(parent.all().some(n=>n.textContent.includes('State: ready')));
+  assert.ok(!parent.all().some(n=>n.dataset.apply));
+  await pages.chassis(parent);
+  assert.ok(parent.all().some(n=>n.textContent.includes('<script>')),'hardware strings remain text');
+  await pages.routing(parent);
+  assert.ok(parent.all().some(n=>n.textContent==='Route lookup'));
+  assert.ok(!parent.all().some(n=>n.textContent==='Apply p1'));
+  await pages.inspection(parent);
+  assert.ok(parent.all().some(n=>n.textContent==='Apply inspection policy'));
+  assert.ok(!parent.all().some(n=>n.textContent==='Route lookup'));
+  await pages.nif(parent);
+  assert.ok(parent.all().some(n=>n.textContent==='Faceplate Ports'));
+  const disable=parent.all().find(n=>n.textContent==='Disable');
+  assert.equal(disable.disabled,!writable);
+  assert.ok(parent.all().some(n=>n.textContent==='ethernet1/1'));
 }
 (async()=>{await check(true);await check(false);console.log('PA-5220 UI tests passed');})().catch(e=>{console.error(e);process.exit(1);});
