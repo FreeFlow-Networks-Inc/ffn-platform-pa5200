@@ -14,6 +14,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('faceplate', 'status'): ('/usr/local/sbin/ffn-faceplate', 'status'),
+    ('faceplate', 'set'): ('/usr/local/sbin/ffn-faceplate', 'set'),
     ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
@@ -197,10 +199,10 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
     async def change(resource: str, action: str, request: Request, user=Depends(current_user)):
         require_admin(user)
         if (resource, action) not in {('network', 'patch'), ('overlay', 'set'),
-                ('inspection', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
+                ('inspection', 'set'), ('faceplate', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'faceplate': {'revision','port','enabled'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
                    'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set()}[resource]
         if set(data) - allowed:

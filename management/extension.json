@@ -1,9 +1,10 @@
 {"id":"pa5200","label":"PA-5200 hardware","api_version":1,"runtime_api_version":1,"pages":[
 {"id":"interfaces","label":"Dataplane Interfaces","tab":"network","after":"interfaces"},
-{"id":"nif","label":"NIF Links","tab":"network","after":"interfaces"},
+{"id":"nif","label":"Faceplate Ports","tab":"network","after":"interfaces"},
 {"id":"routing","label":"Dataplane Routing","tab":"network","after":"routing"},
 {"id":"overlay","label":"Dataplane Tunnels","tab":"network","after":"vxlan-tunnels"},
 {"id":"inspection","label":"Dataplane Inspection","tab":"policy","after":"security"},
 {"id":"dataplane","label":"Dataplane Status","tab":"device","after":"dash-hardware"},
 {"id":"chassis","label":"Chassis & Cooling","tab":"device","after":"dash-system"}
 ]}
+

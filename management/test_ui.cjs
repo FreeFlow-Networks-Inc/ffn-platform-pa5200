@@ -21,7 +21,12 @@ async function check(writable) {
     network:good({config:{revision:9,ports:{p1:{mode:'l2',vlans:[100],pvid:100}},vrfs:{}}}),
     overlay:{available:false,error:'Offline'},
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
-  const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
+  const request=async(path,options)=> {
+    calls.push({path,options});
+    if(path==='/api/auth/me') return {role:writable?'admin':'viewer'};
+    if(path.endsWith('/faceplate')) return {revision:10,saved:{ports:{}},ports:[{port:1,name:'ethernet1/1',available:true,enabled:true,link:false,speed_mbps:10000}]};
+    return options ? {revision:10} : snapshot;
+  };
   const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');pages[label]=fn; }}},
     document:{createElement:tag=>new Node(tag)},Date,JSON,Object,setTimeout(){}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
@@ -52,5 +57,10 @@ async function check(writable) {
   await pages.inspection(parent);
   assert.ok(parent.all().some(n=>n.textContent==='Apply inspection policy'));
   assert.ok(!parent.all().some(n=>n.textContent==='Route lookup'));
+  await pages.nif(parent);
+  assert.ok(parent.all().some(n=>n.textContent==='Faceplate Ports'));
+  const disable=parent.all().find(n=>n.textContent==='Disable');
+  assert.equal(disable.disabled,!writable);
+  assert.ok(parent.all().some(n=>n.textContent==='ethernet1/1'));
 }
 (async()=>{await check(true);await check(false);console.log('PA-5220 UI tests passed');})().catch(e=>{console.error(e);process.exit(1);});

@@ -194,10 +194,40 @@
   }
   for (const section of ['dataplane', 'chassis', 'interfaces', 'routing', 'overlay', 'inspection'])
     window.ffnExtensions.registerPage('pa5200', section, parent => render(parent, section));
-  window.ffnExtensions.registerPage('pa5200', 'nif', parent => {
-    if (window.ffnPlanes) return window.ffnPlanes.render(parent, 'nif');
+  async function faceplate(parent) {
     parent.replaceChildren();
-    element('h2', 'NIF Links', parent);
-    element('p', 'NIF control service is not available in this installation.', parent);
-  });
+    const root=element('div',undefined,parent);
+    const header=element('div',undefined,root);header.className='page-header';
+    element('h2','Faceplate Ports',header);
+    const refresh=button(header,'Refresh',()=>faceplate(parent));
+    const message=element('p','Reading faceplate hardware…',root);
+    let data, user;
+    try { [data,user]=await Promise.all([api(prefix+'/faceplate'),api('/api/auth/me')]); }
+    catch(e) { message.textContent=e.message;return; }
+    if (!root.isConnected) return;
+    const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
+    message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
+      'Administrative state controls the physical port. Link and speed are observations; link up does not confirm forwarding.';
+    const table=element('table',undefined,root);table.className='data-table';
+    const headings=element('tr',undefined,element('thead',undefined,table));
+    for(const h of ['Port','Admin','Link','Speed','Action']) element('th',h,headings);
+    const body=element('tbody',undefined,table);
+    for(const port of data.ports) {
+      const row=element('tr',undefined,body);
+      for(const value of [port.name,port.available?(port.enabled?'Enabled':'Disabled'):'Unavailable',
+                         port.link===null?'Unknown':port.link?'Up':'Down',port.speed_mbps?port.speed_mbps+' Mbps':'Unknown'])
+        element('td',value,row);
+      const action=element('td',undefined,row);
+      const b=button(action,port.enabled?'Disable':'Enable',async()=>{
+        root.querySelectorAll('button').forEach(node=>{node.disabled=true;});
+        refresh.disabled=true;message.textContent='Applying and verifying '+port.name+'…';
+        try {
+          const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,enabled:!port.enabled})});
+          if(result.activation!=='verified') throw new Error('Hardware change was not verified');
+          if(root.isConnected) await faceplate(parent);
+        } catch(e) { if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;} }
+      },!writable||!port.available);
+    }
+  }
+  window.ffnExtensions.registerPage('pa5200', 'nif', faceplate);
 })();
