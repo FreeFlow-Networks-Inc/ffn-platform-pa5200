@@ -100,6 +100,8 @@ jobs:
       # own directory.
       - name: config render
         run: cd control && python3 test_config_render.py
+      - name: config agent (DP convergence)
+        run: cd control && python3 test_cfgagent.py
       - name: fe100 lookup health
         run: cd fe100 && python3 test_lookup_health.py
       - name: fe100 parser codec

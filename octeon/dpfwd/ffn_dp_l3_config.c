@@ -35,98 +35,64 @@
 #include <string.h>
 
 #include "ffn_dp_l3_config.h"
+#include "ffn_dp_l3_parse.h"
 
-/* ---- primitive parsers ------------------------------------------------ */
+/* ---- multipath --------------------------------------------------------- */
 
-/* "10.1.2.3" -> host order. Returns 0 on success, -1 on malformed input.
- * Rejects rather than saturating: a typo must not silently become a route. */
-static int parse_ipv4(const char *s, uint32_t *out)
+/* "<prefix> nexthop via <gw> dev <n> nexthop via <gw> dev <n> ..."
+ *
+ * tok[0] is the prefix and has already been parsed; parsing resumes at tok[1],
+ * which the caller has confirmed is "nexthop".
+ *
+ * Each leg needs "dev" and may omit "via" -- a directly connected member, the
+ * same meaning a via-less single path has. The legs are collected first and
+ * the group is created only once every one of them parsed, so a typo in the
+ * third leg does not leave a half-built group in the FIB with two members the
+ * operator never asked for.
+ */
+static int cfg_route_multipath(struct dp_l3 *l3, uint32_t prefix, uint8_t plen,
+                               char **tok, int n, struct dp_l3_config_stats *st)
 {
-    uint32_t v = 0;
-    int octet, i;
+    uint32_t nh[DP_L3_ECMP_MAX];
+    uint16_t eg[DP_L3_ECMP_MAX];
+    int legs = 0, i = 1, group;
 
-    for (i = 0; i < 4; i++) {
-        int digits = 0;
-        octet = 0;
-        if (*s < '0' || *s > '9') return -1;
-        while (*s >= '0' && *s <= '9') {
-            octet = octet * 10 + (*s - '0');
-            if (octet > 255) return -1;
-            s++;
-            if (++digits > 3) return -1;
+    while (i < n) {
+        int have_dev = 0;
+
+        if (strcmp(tok[i], "nexthop") != 0) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
+        i++;
+        if (legs >= (int)DP_L3_ECMP_MAX) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
+        nh[legs] = 0;
+        eg[legs] = 0;
+
+        while (i + 1 < n && strcmp(tok[i], "nexthop") != 0) {
+            if (strcmp(tok[i], "via") == 0) {
+                if (dp_l3_parse_ipv4(tok[i + 1], &nh[legs]) != 0) {
+                    st->errors++; return DP_L3_CFG_ERR_ADDR;
+                }
+            } else if (strcmp(tok[i], "dev") == 0) {
+                if (dp_l3_parse_dev(tok[i + 1], &eg[legs]) != 0) {
+                    st->errors++; return DP_L3_CFG_ERR_SYNTAX;
+                }
+                have_dev = 1;
+            } else {
+                st->errors++; return DP_L3_CFG_ERR_SYNTAX;
+            }
+            i += 2;
         }
-        v = (v << 8) | (uint32_t)octet;
-        if (i < 3) {
-            if (*s != '.') return -1;
-            s++;
-        }
+        if (!have_dev) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
+        legs++;
     }
-    if (*s != '\0') return -1;
-    *out = v;
-    return 0;
-}
+    if (legs < 1) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
 
-/* "10.1.0.0/16" -> prefix (host order) + length. */
-static int parse_prefix(const char *s, uint32_t *ip, uint8_t *len)
-{
-    char buf[64];
-    char *slash;
-    long l;
-
-    if (strlen(s) >= sizeof(buf)) return -1;
-    strcpy(buf, s);
-    slash = strchr(buf, '/');
-    if (!slash) return -1;
-    *slash = '\0';
-
-    if (parse_ipv4(buf, ip) != 0) return -1;
-
-    if (slash[1] == '\0') return -1;
-    l = strtol(slash + 1, &slash, 10);
-    if (*slash != '\0' || l < 0 || l > 32) return -1;
-    *len = (uint8_t)l;
-    return 0;
-}
-
-static int hex_val(int c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-/* "02:aa:bb:cc:dd:ee" -> 6 wire bytes. */
-static int parse_mac(const char *s, uint8_t mac[6])
-{
-    int i;
-    for (i = 0; i < 6; i++) {
-        int hi, lo;
-        hi = hex_val(s[0]); lo = hex_val(s[1]);
-        if (hi < 0 || lo < 0) return -1;
-        mac[i] = (uint8_t)((hi << 4) | lo);
-        s += 2;
-        if (i < 5) {
-            if (*s != ':' && *s != '-') return -1;
-            s++;
-        }
+    group = dp_l3_ecmp_add(l3, nh, eg, (uint8_t)legs);
+    if (group < 0) { st->errors++; return DP_L3_CFG_ERR_APPLY; }
+    if (dp_l3_route_add_ecmp(l3, prefix, plen, (uint16_t)group) != DP_L3_OK) {
+        st->errors++; return DP_L3_CFG_ERR_APPLY;
     }
-    return *s == '\0' ? 0 : -1;
-}
-
-
-/* Split a value into whitespace-separated tokens, in place. */
-static int tokenise(char *s, char **tok, int max)
-{
-    int n = 0;
-    while (*s && n < max) {
-        while (*s == ' ' || *s == '\t') s++;
-        if (!*s) break;
-        tok[n++] = s;
-        while (*s && *s != ' ' && *s != '\t') s++;
-        if (*s) *s++ = '\0';
-    }
-    return n;
+    st->routes++;
+    return DP_L3_CFG_OK;
 }
 
 /* ---- one key = one object --------------------------------------------- */
@@ -134,42 +100,59 @@ static int tokenise(char *s, char **tok, int max)
 int dp_l3_config_line(struct dp_l3 *l3, const char *key, const char *value,
                       struct dp_l3_config_stats *st)
 {
-    char buf[256];
-    char *tok[8];
+    char buf[DP_L3_CFG_MAX_VALUE];
+    char *tok[DP_L3_CFG_MAX_TOK];
     int n, i;
 
     if (strlen(value) >= sizeof(buf)) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
     strcpy(buf, value);
 
-    /* dp.l3.route.<id> = <prefix>/<len> [via <gw>] dev <egress> */
+    /* dp.l3.route.<id> = <prefix>/<len> [via <gw>] dev <egress>
+     *
+     * ...or the multipath form, which is iproute2's and means the same thing
+     * there as it does here:
+     *
+     *   dp.l3.route.<id> = <prefix>/<len> nexthop via <gw> dev <n> \
+     *                                     nexthop via <gw> dev <n>
+     *
+     * dp_l3_ecmp_add() existed with no caller outside the unit tests, so an
+     * operator could not reach ECMP from the config at all. The single-path
+     * form stays exactly as it was: a route with one path must not become a
+     * one-member group, because that is a different object in the FIB and
+     * would change what dp_l3_lookup() returns for existing configs.
+     */
     if (strncmp(key, "dp.l3.route.", 12) == 0) {
         uint32_t prefix = 0, gw = 0;
         uint8_t plen = 0;
-        long dev = -1;
+        int have_dev = 0;
+        uint16_t dev = 0;
 
-        n = tokenise(buf, tok, 8);
+        n = dp_l3_tokenise(buf, tok, DP_L3_CFG_MAX_TOK);
         if (n < 3) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
-        if (parse_prefix(tok[0], &prefix, &plen) != 0) {
+        if (dp_l3_parse_prefix(tok[0], &prefix, &plen) != 0) {
             st->errors++; return DP_L3_CFG_ERR_ADDR;
         }
+
+        if (strcmp(tok[1], "nexthop") == 0)
+            return cfg_route_multipath(l3, prefix, plen, tok, n, st);
+
         for (i = 1; i + 1 < n; i += 2) {
             if (strcmp(tok[i], "via") == 0) {
-                if (parse_ipv4(tok[i + 1], &gw) != 0) {
+                if (dp_l3_parse_ipv4(tok[i + 1], &gw) != 0) {
                     st->errors++; return DP_L3_CFG_ERR_ADDR;
                 }
             } else if (strcmp(tok[i], "dev") == 0) {
-                char *end;
-                dev = strtol(tok[i + 1], &end, 10);
-                if (*end != '\0' || dev < 0 || dev > 0xFFFF) {
+                if (dp_l3_parse_dev(tok[i + 1], &dev) != 0) {
                     st->errors++; return DP_L3_CFG_ERR_SYNTAX;
                 }
+                have_dev = 1;
             } else {
                 st->errors++; return DP_L3_CFG_ERR_SYNTAX;
             }
         }
-        if (dev < 0) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
+        if (!have_dev) { st->errors++; return DP_L3_CFG_ERR_SYNTAX; }
 
-        if (dp_l3_route_add(l3, prefix, plen, gw, (uint16_t)dev) != DP_L3_OK) {
+        if (dp_l3_route_add(l3, prefix, plen, gw, dev) != DP_L3_OK) {
             st->errors++; return DP_L3_CFG_ERR_APPLY;
         }
         st->routes++;
@@ -181,12 +164,12 @@ int dp_l3_config_line(struct dp_l3 *l3, const char *key, const char *value,
         uint32_t ip = 0;
         uint8_t mac[6];
 
-        n = tokenise(buf, tok, 8);
+        n = dp_l3_tokenise(buf, tok, DP_L3_CFG_MAX_TOK);
         if (n != 3 || strcmp(tok[1], "lladdr") != 0) {
             st->errors++; return DP_L3_CFG_ERR_SYNTAX;
         }
-        if (parse_ipv4(tok[0], &ip) != 0) { st->errors++; return DP_L3_CFG_ERR_ADDR; }
-        if (parse_mac(tok[2], mac) != 0)  { st->errors++; return DP_L3_CFG_ERR_ADDR; }
+        if (dp_l3_parse_ipv4(tok[0], &ip) != 0) { st->errors++; return DP_L3_CFG_ERR_ADDR; }
+        if (dp_l3_parse_mac(tok[2], mac) != 0)  { st->errors++; return DP_L3_CFG_ERR_ADDR; }
 
         if (dp_l3_neigh_add(l3, ip, mac) != DP_L3_OK) {
             st->errors++; return DP_L3_CFG_ERR_APPLY;
@@ -206,7 +189,7 @@ int dp_l3_config_line(struct dp_l3 *l3, const char *key, const char *value,
         if (strcmp(end, ".mac") != 0 || dev < 0 || dev > 0xFFFF) {
             st->errors++; return DP_L3_CFG_ERR_SYNTAX;
         }
-        if (parse_mac(buf, mac) != 0) { st->errors++; return DP_L3_CFG_ERR_ADDR; }
+        if (dp_l3_parse_mac(buf, mac) != 0) { st->errors++; return DP_L3_CFG_ERR_ADDR; }
         if (dp_l3_iface_set_mac(l3, (uint16_t)dev, mac) != DP_L3_OK) {
             st->errors++; return DP_L3_CFG_ERR_APPLY;
         }
@@ -223,7 +206,7 @@ int dp_l3_config_line(struct dp_l3 *l3, const char *key, const char *value,
 int dp_l3_config_apply(struct dp_l3 *l3, const char *path,
                        struct dp_l3_config_stats *st)
 {
-    char line[512];
+    char line[DP_L3_CFG_MAX_LINE];
     FILE *fh;
 
     memset(st, 0, sizeof(*st));

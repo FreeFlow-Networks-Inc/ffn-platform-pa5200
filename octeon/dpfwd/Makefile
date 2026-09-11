@@ -26,15 +26,20 @@ HDRS     = ffn_dp_abi.h ffn_dp_oct.h ffn_dp_bgx.h ffn_dp_l3.h ffn_dp_arp.h \
 # ffn_dp_oct.o needs these too. They were absent from every target, which meant
 # the integrated dataplane -- forwarder plus routing -- had never once linked;
 # only the standalone L3 and ARP tests, built by hand, ever compiled this code.
-L3_SRC   = ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_arp.c
-L3_HDRS  = ffn_dp_l3.h ffn_dp_l3_config.h ffn_dp_arp.h
+# ffn_dp_l3_parse.c is pure text -> address with NO dependency on either FIB,
+# which is why it can sit in L3_SRC and still be linked by the v6 targets: the
+# v6 config layer needs the same MAC, token and prefix handling, and a second
+# copy of an address parser is exactly the kind of duplication that ends with
+# the two disagreeing about what a malformed address is.
+L3_SRC   = ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_l3_parse.c ffn_dp_arp.c
+L3_HDRS  = ffn_dp_l3.h ffn_dp_l3_config.h ffn_dp_l3_parse.h ffn_dp_arp.h
 
 # IPv6 is a SEPARATE module, not a widening of the v4 one: the v4 path
 # forwards on silicon today and pushing 128-bit addresses through it would
 # put the working path at risk to add the new one. It links on its own, so
 # the v6 suite cannot be broken by a v4 change or vice versa.
-V6_SRC   = ffn_dp_l3_v6.c
-V6_HDRS  = ffn_dp_l3_v6.h ffn_dp_l3.h
+V6_SRC   = ffn_dp_l3_v6.c ffn_dp_l3_v6_config.c ffn_dp_l3_parse.c
+V6_HDRS  = ffn_dp_l3_v6.h ffn_dp_l3_v6_config.h ffn_dp_l3_config.h            ffn_dp_l3_parse.h ffn_dp_l3.h
 L3_OBJ   = $(L3_SRC:.c=.o)
 
 # --- inline analysis engines ---

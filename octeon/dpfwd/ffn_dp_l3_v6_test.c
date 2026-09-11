@@ -16,6 +16,8 @@
 #include <stdlib.h>
 
 #include "ffn_dp_l3_v6.h"
+#include "ffn_dp_l3_v6_config.h"
+#include "ffn_dp_l3_parse.h"
 
 static int fails;
 
@@ -352,6 +354,266 @@ static void test_capacity(void)
     dp_l3_v6_fini(&v6);
 }
 
+/* ---- text -> address -------------------------------------------------- */
+
+/* IPv6 text parsing is where a config layer quietly goes wrong: every case
+ * below is a way a hand-edited dp.env actually malforms, and each must be
+ * REJECTED rather than silently becoming some other address. A parser that
+ * accepts "1:2:3:4:5:6:7:8:9" by ignoring the tail installs a route to
+ * somewhere nobody asked for. */
+static void test_parse_ipv6(void)
+{
+    static const struct { const char *txt; const char *hex; } good[] = {
+        { "::",                    "00000000000000000000000000000000" },
+        { "::1",                   "00000000000000000000000000000001" },
+        { "1::",                   "00010000000000000000000000000000" },
+        { "2001:db8::1",           "20010db8000000000000000000000001" },
+        { "2001:0db8:0000:0000:0000:0000:0000:0001",
+                                   "20010db8000000000000000000000001" },
+        { "1:2:3:4:5:6:7:8",       "00010002000300040005000600070008" },
+        { "::ffff:192.0.2.1",      "00000000000000000000ffffc0000201" },
+        { "2001:db8::c0a8:1",      "20010db80000000000000000c0a80001" },
+        { "fe80::1",               "fe800000000000000000000000000001" },
+        { "0:0:0:0:0:0:0:0",       "00000000000000000000000000000000" },
+    };
+    static const char *bad[] = {
+        "",            ":",           ":1",          "1:",
+        "1:::2",       "1::2::3",     "12345::",     "1:2:3:4:5:6:7:8:9",
+        "1:2:3:4:5:6:7",              "192.0.2.1",   "::1.2.3.4.5",
+        "1.2.3.4::",   "g::1",        "2001:db8::1:", "::ffff:192.0.2.256",
+        "1::2:",       "::-1",
+    };
+    uint8_t a[16], want[16];
+    size_t i;
+    int j;
+
+    for (i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        CHECK(dp_l3_parse_ipv6(good[i].txt, a) == 0,
+              "must accept %s", good[i].txt);
+        for (j = 0; j < 16; j++) {
+            int hi = good[i].hex[j * 2], lo = good[i].hex[j * 2 + 1];
+            hi = (hi <= '9') ? hi - '0' : (hi | 0x20) - 'a' + 10;
+            lo = (lo <= '9') ? lo - '0' : (lo | 0x20) - 'a' + 10;
+            want[j] = (uint8_t)((hi << 4) | lo);
+        }
+        CHECK(memcmp(a, want, 16) == 0, "%s parsed to the wrong bytes",
+              good[i].txt);
+    }
+    for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
+        CHECK(dp_l3_parse_ipv6(bad[i], a) != 0, "must reject \"%s\"", bad[i]);
+
+    /* Compressed and expanded spellings of one address must be identical. */
+    {
+        uint8_t c[16], e[16];
+        CHECK(dp_l3_parse_ipv6("2001:db8:0:0:0:0:0:5", e) == 0, "expanded");
+        CHECK(dp_l3_parse_ipv6("2001:db8::5", c) == 0, "compressed");
+        CHECK(memcmp(c, e, 16) == 0, "spellings must agree");
+    }
+
+    /* Prefix form. */
+    {
+        uint8_t p[16];
+        uint8_t plen = 0;
+        CHECK(dp_l3_parse_prefix6("2001:db8::/32", p, &plen) == 0, "prefix");
+        CHECK(plen == 32, "plen 32, got %u", plen);
+        CHECK(dp_l3_parse_prefix6("::/0", p, &plen) == 0, "default route");
+        CHECK(plen == 0, "plen 0, got %u", plen);
+        CHECK(dp_l3_parse_prefix6("2001:db8::/128", p, &plen) == 0, "host route");
+        CHECK(dp_l3_parse_prefix6("2001:db8::/129", p, &plen) != 0, "reject /129");
+        CHECK(dp_l3_parse_prefix6("2001:db8::", p, &plen) != 0, "reject no slash");
+        CHECK(dp_l3_parse_prefix6("2001:db8::/", p, &plen) != 0, "reject empty len");
+        CHECK(dp_l3_parse_prefix6("2001:db8::/1x", p, &plen) != 0, "reject junk len");
+    }
+
+    /* The DP addresses interfaces by INDEX. A Linux name is well-formed on the
+     * MP and a syntax error here, which is exactly the trap the renderer
+     * portmap exists to prevent. */
+    {
+        uint16_t d = 0;
+        CHECK(dp_l3_parse_dev("3", &d) == 0 && d == 3, "dev 3");
+        CHECK(dp_l3_parse_dev("0", &d) == 0 && d == 0, "dev 0 is valid");
+        CHECK(dp_l3_parse_dev("65535", &d) == 0, "dev 65535");
+        CHECK(dp_l3_parse_dev("65536", &d) != 0, "reject out of range");
+        CHECK(dp_l3_parse_dev("enp11s0f0", &d) != 0, "reject a Linux name");
+        CHECK(dp_l3_parse_dev("3x", &d) != 0, "reject trailing junk");
+        CHECK(dp_l3_parse_dev("-1", &d) != 0, "reject negative");
+        CHECK(dp_l3_parse_dev(" 3", &d) != 0, "reject leading space");
+    }
+}
+
+/* ---- config -> FIB ----------------------------------------------------- */
+
+static void test_config(void)
+{
+    struct dp_l3_config_stats st;
+    struct dp_l3_v6 v6;
+    struct dp_l3_nh6 nh;
+    uint8_t dst[16];
+    size_t i;
+
+    static const char *badroute[] = {
+        "2001:db8::/32",                      /* no dev at all            */
+        "2001:db8::/129 dev 1",               /* prefix too long          */
+        "2001:db8::/32 dev enp11s0f0",        /* a name, not an index     */
+        "2001:db8::/32 via nonsense dev 1",   /* unparseable gateway      */
+        "2001:db8::/32 wat 1 dev 1",          /* unknown keyword          */
+        "not-an-address dev 1",               /* not an address at all    */
+    };
+
+    memset(&st, 0, sizeof(st));
+    CHECK(dp_l3_v6_init(&v6, 64, 64) == DP_L3_OK, "init");
+
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.1", "2001:db8::/32 dev 3", &st)
+          == DP_L3_CFG_OK, "connected route");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.2",
+                               "::/0 via 2001:db8::1 dev 1", &st)
+          == DP_L3_CFG_OK, "default via a gateway");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.neigh6.1",
+                               "2001:db8::1 lladdr 02:aa:bb:cc:dd:01", &st)
+          == DP_L3_CFG_OK, "neighbour");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.iface6.3.mac",
+                               "02:39:f1:cb:45:00", &st)
+          == DP_L3_CFG_OK, "iface mac");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.iface6.3.ip", "2001:db8:3::1", &st)
+          == DP_L3_CFG_OK, "iface ip");
+    CHECK(st.routes == 2 && st.neigh == 1 && st.ifaces == 2 && st.errors == 0,
+          "routes=%u neigh=%u ifaces=%u errors=%u",
+          st.routes, st.neigh, st.ifaces, st.errors);
+
+    /* Keys belonging to somebody else are SKIPPED, not errors. The relayed
+     * file is the whole config for this node; a DP that refused to start
+     * because the MP added a knob it had not heard of would be worse than one
+     * that ignores it. The v4 L3 keys are the ones that matter here: they are
+     * one character away from ours and must not be mistaken for v6. */
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route.1", "10.1.0.0/16 dev 3", &st)
+          == DP_L3_CFG_SKIP, "a v4 route key is not ours");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.neigh.1",
+                               "10.0.0.1 lladdr 02:aa:bb:cc:dd:ee", &st)
+          == DP_L3_CFG_SKIP, "a v4 neigh key is not ours");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.iface.3.mac", "02:39:f1:cb:45:00", &st)
+          == DP_L3_CFG_SKIP, "a v4 iface key is not ours");
+    CHECK(dp_l3_v6_config_line(&v6, "all.platform", "pa5220", &st)
+          == DP_L3_CFG_SKIP, "all.* is not ours");
+    CHECK(st.errors == 0, "skipping must not raise errors, got %u", st.errors);
+
+    /* The routes actually went in, and resolve. */
+    CHECK(dp_l3_parse_ipv6("2001:db8:5::9", dst) == 0, "dst");
+    CHECK(dp_l3_lookup6(&v6, dst, &nh) == DP_L3_OK, "lookup the /32");
+    CHECK(nh.egress == 3, "egress 3, got %u", nh.egress);
+
+    CHECK(dp_l3_parse_ipv6("2400::1", dst) == 0, "off-prefix dst");
+    CHECK(dp_l3_lookup6(&v6, dst, &nh) == DP_L3_OK, "falls to the default");
+    CHECK(nh.egress == 1, "egress 1, got %u", nh.egress);
+    CHECK(nh.have_mac, "the gateway neighbour was configured");
+    CHECK(nh.mac[0] == 0x02 && nh.mac[5] == 0x01, "gateway mac resolved");
+
+    /* Every malformed route is an error and adds nothing. */
+    {
+        uint32_t before = st.routes;
+        for (i = 0; i < sizeof(badroute) / sizeof(badroute[0]); i++)
+            CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.9", badroute[i], &st)
+                  < 0, "must reject \"%s\"", badroute[i]);
+        CHECK(st.routes == before, "a rejected route must not be installed");
+        CHECK(st.errors == sizeof(badroute) / sizeof(badroute[0]),
+              "every rejection counted: %u", st.errors);
+    }
+
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.neigh6.9",
+                               "2001:db8::2 lladdr 02:aa", &st)
+          < 0, "short mac rejected");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.neigh6.9",
+                               "2001:db8::2 02:aa:bb:cc:dd:ee", &st)
+          < 0, "missing lladdr keyword rejected");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.iface6.3.wat",
+                               "02:aa:bb:cc:dd:ee", &st)
+          < 0, "unknown iface attribute rejected");
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.iface6.x.mac",
+                               "02:aa:bb:cc:dd:ee", &st)
+          < 0, "non-numeric egress rejected");
+
+    dp_l3_v6_fini(&v6);
+}
+
+static void test_config_ecmp(void)
+{
+    struct dp_l3_config_stats st;
+    struct dp_l3_v6 v6;
+    struct dp_l3_nh6 nh;
+    uint8_t dst[16];
+    int seen[2], h, distinct;
+
+    memset(&st, 0, sizeof(st));
+    CHECK(dp_l3_v6_init(&v6, 64, 64) == DP_L3_OK, "init");
+
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.1",
+              "2001:db8::/32 nexthop via 2001:db8::2 dev 11"
+              " nexthop via 2001:db8::3 dev 22", &st)
+          == DP_L3_CFG_OK, "two-leg multipath");
+    CHECK(st.routes == 1 && st.errors == 0, "routes=%u errors=%u",
+          st.routes, st.errors);
+
+    CHECK(dp_l3_parse_ipv6("2001:db8:7::9", dst) == 0, "dst");
+    seen[0] = seen[1] = 0;
+    for (h = 0; h < 512; h++) {
+        CHECK(dp_l3_lookup6_hash(&v6, dst, (uint32_t)h, &nh) == DP_L3_OK, "sweep");
+        if (nh.egress == 11) seen[0] = 1;
+        else if (nh.egress == 22) seen[1] = 1;
+        else CHECK(0, "unexpected egress %u", nh.egress);
+    }
+    distinct = seen[0] + seen[1];
+    CHECK(distinct == 2, "both legs must be reachable, saw %d", distinct);
+
+    /* A leg with no dev is a syntax error, and NOTHING may be installed --
+     * a half-built group holding the legs that happened to parse first is
+     * worse than a rejected line, because it forwards. */
+    {
+        uint32_t before = st.routes;
+        CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.2",
+                  "2001:db8:2::/48 nexthop via 2001:db8::2 dev 11"
+                  " nexthop via 2001:db8::3", &st) < 0, "leg without dev");
+        CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.3",
+                  "2001:db8:3::/48 nexthop via bogus dev 11"
+                  " nexthop via 2001:db8::3 dev 22", &st) < 0, "bad gateway");
+        CHECK(st.routes == before, "nothing installed from a rejected multipath");
+    }
+
+    /* Exactly DP_L3_ECMP_MAX legs is the largest LEGAL multipath and must be
+     * accepted. This is the case that catches a token budget sized to the
+     * maximum instead of past it: with too small a budget the line is cut
+     * mid-leg and rejected as malformed, so "too many legs is rejected" passes
+     * while every large legal route is broken. */
+    {
+        char ok[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(ok + off, "2001:db8:a::/48");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX; i++)
+            off += sprintf(ok + off, " nexthop via 2001:db8::%d dev %d",
+                           i + 2, i + 1);
+        CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.6", ok, &st)
+              == DP_L3_CFG_OK, "DP_L3_ECMP_MAX legs must be ACCEPTED");
+    }
+
+    /* More legs than a group can hold is a rejection, not a truncation. */
+    {
+        char big[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(big + off, "2001:db8:9::/48");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX + 1; i++)
+            off += sprintf(big + off, " nexthop via 2001:db8::%d dev %d",
+                           i + 2, i + 1);
+        CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.4", big, &st) < 0,
+              "more than DP_L3_ECMP_MAX legs must be rejected");
+    }
+
+    /* A single-path route must NOT become a one-member group: that is a
+     * different object in the FIB and would change what lookup returns. */
+    CHECK(dp_l3_v6_config_line(&v6, "dp.l3.route6.5",
+                               "2001:db8:5::/48 via 2001:db8::9 dev 4", &st)
+          == DP_L3_CFG_OK, "plain single path still works");
+
+    dp_l3_v6_fini(&v6);
+}
+
 int main(void)
 {
     printf("ffn_dp_l3_v6_test (%s-endian)\n",
@@ -364,6 +626,9 @@ int main(void)
     test_rewrite(1);          /* again with a VLAN tag in the way */
     test_ecmp();
     test_capacity();
+    test_parse_ipv6();
+    test_config();
+    test_config_ecmp();
 
     if (fails == 0) printf("PASS: all IPv6 L3 tests\n");
     else            printf("FAIL: %d check(s)\n", fails);

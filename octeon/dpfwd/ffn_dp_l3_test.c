@@ -384,6 +384,98 @@ static void test_ecmp(void)
     dp_l3_fini(&l3);
 }
 
+/* Multipath from the config, which is how an operator reaches ECMP at all.
+ *
+ * dp_l3_ecmp_add() had existed since the ECMP work with no caller outside
+ * these tests, so the FIB could do ECMP and no configuration could ask for it.
+ */
+static void test_config_multipath(void)
+{
+    struct dp_l3_config_stats st;
+    struct dp_l3 l3;
+    struct dp_l3_nh nh;
+    int seen[2], h, distinct;
+
+    memset(&st, 0, sizeof(st));
+    CHECK(dp_l3_init(&l3, 64, 64) == DP_L3_OK, "init");
+
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.1",
+              "10.0.0.0/8 nexthop via 172.16.0.1 dev 11"
+              " nexthop via 172.16.0.2 dev 22", &st)
+          == DP_L3_CFG_OK, "two-leg multipath");
+    CHECK(st.routes == 1 && st.errors == 0,
+          "routes=%u errors=%u", st.routes, st.errors);
+
+    seen[0] = seen[1] = 0;
+    for (h = 0; h < 512; h++) {
+        CHECK(dp_l3_lookup_hash(&l3, 0x0A010203u, (uint32_t)h, &nh) == DP_L3_OK,
+              "sweep");
+        if (nh.egress == 11) seen[0] = 1;
+        else if (nh.egress == 22) seen[1] = 1;
+        else CHECK(0, "unexpected egress %u", nh.egress);
+    }
+    distinct = seen[0] + seen[1];
+    CHECK(distinct == 2, "both legs must be reachable, saw %d", distinct);
+
+    /* A rejected multipath installs NOTHING. A half-built group holding the
+     * legs that happened to parse first is worse than a rejected line,
+     * because it forwards. */
+    {
+        uint32_t before = st.routes;
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.2",
+                  "10.2.0.0/16 nexthop via 172.16.0.1 dev 11"
+                  " nexthop via 172.16.0.2", &st) < 0, "leg without dev");
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.3",
+                  "10.3.0.0/16 nexthop via 999.1.1.1 dev 11"
+                  " nexthop via 172.16.0.2 dev 22", &st) < 0, "bad gateway");
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.4",
+                  "10.4.0.0/16 nexthop wat 1 dev 11", &st) < 0, "unknown keyword");
+        CHECK(st.routes == before, "nothing installed from a rejected multipath");
+    }
+
+    /* A leg with no "via" is directly connected -- the same meaning a via-less
+     * single path has. */
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.5",
+              "10.5.0.0/16 nexthop dev 7 nexthop via 172.16.0.9 dev 8", &st)
+          == DP_L3_CFG_OK, "a connected leg is legal");
+
+    /* Exactly DP_L3_ECMP_MAX legs is the largest LEGAL multipath and must be
+     * accepted -- the case that catches a token budget sized to the maximum
+     * rather than past it. */
+    {
+        char ok[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(ok + off, "10.8.0.0/16");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX; i++)
+            off += sprintf(ok + off, " nexthop via 172.16.0.%d dev %d",
+                           i + 1, i + 1);
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.8", ok, &st)
+              == DP_L3_CFG_OK, "DP_L3_ECMP_MAX legs must be ACCEPTED");
+    }
+
+    /* More legs than a group can hold is a rejection, not a truncation. */
+    {
+        char big[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(big + off, "10.9.0.0/16");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX + 1; i++)
+            off += sprintf(big + off, " nexthop via 172.16.0.%d dev %d",
+                           i + 1, i + 1);
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.6", big, &st) < 0,
+              "more than DP_L3_ECMP_MAX legs must be rejected");
+    }
+
+    /* The single-path form must NOT become a one-member group: that is a
+     * different object in the FIB and would change what an existing config
+     * resolves to. */
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.7", "10.7.0.0/16 via 172.16.0.1 dev 3",
+                            &st) == DP_L3_CFG_OK, "plain single path still works");
+    CHECK(dp_l3_lookup(&l3, 0x0A070001u, &nh) == DP_L3_OK, "single-path lookup");
+    CHECK(nh.egress == 3, "egress 3, got %u", nh.egress);
+
+    dp_l3_fini(&l3);
+}
+
 int main(void)
 {
     printf("ffn_dp_l3_test (%s-endian)\n",
@@ -395,6 +487,7 @@ int main(void)
     test_rewrite(1);          /* same again with a VLAN tag in the way */
     test_checksum_sweep();
     test_config();
+    test_config_multipath();
     test_ecmp();
 
     if (fails == 0) printf("PASS: all L3 tests\n");
