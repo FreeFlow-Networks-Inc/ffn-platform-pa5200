@@ -25,28 +25,35 @@
   }
   function field(parent, label, value) {
     const wrap = element('label', label + ' ', parent);
+    wrap.className = 'form-group';
     const input = element('input', undefined, wrap);
     input.value = value; input.setAttribute('aria-label', label);
     return input;
   }
   function select(parent, label, choices, value) {
     const wrap = element('label', label + ' ', parent);
+    wrap.className = 'form-group';
     const input = element('select', undefined, wrap);
     for (const choice of choices) { const option = element('option', choice, input); option.value = choice; }
     input.value = value; input.setAttribute('aria-label', label);
     return input;
   }
-  async function render(parent) {
+  async function render(parent, section = 'dataplane') {
+    const titles = {dataplane:'Dataplane Status', chassis:'Chassis & Cooling',
+      interfaces:'Dataplane Interfaces', routing:'Dataplane Routing',
+      overlay:'Dataplane Tunnels', inspection:'Dataplane Inspection'};
     parent.replaceChildren();
     const root = element('div', undefined, parent);
-    element('h2', 'PA-5220 controls', root);
+    const header = element('div', undefined, root); header.className = 'page-header';
+    element('h2', titles[section], header);
     const message = element('p', 'Loading appliance state…', root);
-    const refresh = button(root, 'Refresh appliance state', () => render(parent));
+    const refresh = button(header, 'Refresh', () => render(parent, section));
     let snapshot;
     try { snapshot = await api(prefix + '/status'); }
     catch (e) { message.textContent = e.message; return; }
     if (!root.isConnected) return;
     const writable = snapshot.can_write;
+    if (section === 'dataplane') {
     const readiness = card(root, 'OCTEON dataplane handshake');
     function showHandshake(agent) {
     readiness.replaceChildren();
@@ -72,9 +79,10 @@
       setTimeout(pollHandshake, 5000);
     }
     setTimeout(pollHandshake, 5000);
+    }
     message.textContent = 'Observed ' + new Date(snapshot.collected_at * 1000).toLocaleString() +
       (writable ? '. Changes apply immediately and persist separately from candidate/commit.' : '. Read-only access.');
-    element('p', 'Forwarding: software relay, ports 1, 3, 5 and 13; MTU 1500. Hardware flow offload is not active.', root);
+    if (section === 'dataplane') element('p', 'Forwarding uses the commissioning relay on ports 1, 3, 5 and 13; MTU 1500. Hardware flow offload is not active.', root);
     const notice = element('p', '', root);
     let busy = false;
     async function apply(path, payload, target) {
@@ -102,6 +110,7 @@
       b.dataset.apply = 'true'; return b;
     }
     const resources = snapshot.resources;
+    if (section === 'chassis') {
     const health = card(root, 'Power supplies, cooling and fabric');
     for (const name of ['chassis', 'thermal', 'fabric']) {
       const r = resources[name];
@@ -119,11 +128,13 @@
         element('p', ps.name + ' supply: ' + ps.state, health);
       element('p', 'LEDs: ' + Object.entries(chassis.data.leds || {}).map(([n,v]) => n + ' ' + v).join(', '), health);
     }
-    for (const resource of ['network', 'overlay', 'inspection']) {
+    }
+    const selected = {interfaces:['network'], routing:['network'], overlay:['overlay'], inspection:['inspection']}[section] || [];
+    for (const resource of selected) {
       const r = resources[resource];
-      const box = card(root, {network:'Ports and routing', overlay:'Tunnels and MACsec links', inspection:'Inline inspection'}[resource]);
+      const box = card(root, titles[section]);
       if (!r.available) { element('p', r.error, box); continue; }
-      if (resource === 'network') {
+      if (section === 'interfaces') {
         element('p', 'Use L2 VLAN membership or L3 addresses and a virtual router per port. Routes, VRFs and policy rules are edited below.', box);
         for (const [name, config] of Object.entries(r.data.config.ports)) {
           const row = element('div', undefined, box);
@@ -162,12 +173,14 @@
       const details = element('details', undefined, box);
       element('summary', 'Edit ' + resource + ' configuration (JSON)', details);
       const editor = element('textarea', undefined, details);
-      editor.value = JSON.stringify(r.data.config, null, 2); editor.rows = 16; editor.style.width = '100%';
+      const keys = section === 'interfaces' ? ['revision','ports'] : section === 'routing' ? ['revision','routes','vrfs','rules'] : Object.keys(r.data.config);
+      editor.value = JSON.stringify(Object.fromEntries(keys.filter(k => k in r.data.config).map(k => [k,r.data.config[k]])), null, 2); editor.rows = 16; editor.style.width = '100%';
       editor.disabled = !writable; editor.setAttribute('aria-label', resource + ' configuration');
       applyButton(details, 'Apply ' + resource, '/' + resource + (resource === 'network' ? '/patch' : '/set'), () => JSON.parse(editor.value));
       const live = element('details', undefined, box);
       element('summary', 'Runtime state and diagnostics', live); json(live, r.data);
     }
+    if (section === 'routing') {
     const lookup = card(root, 'Route lookup');
     const dst = element('input', undefined, lookup); dst.placeholder = 'Destination IPv4 or IPv6'; dst.setAttribute('aria-label', 'Route destination');
     const vrf = element('input', undefined, lookup); vrf.placeholder = 'Optional VRF name'; vrf.setAttribute('aria-label', 'Route VRF');
@@ -177,7 +190,14 @@
       try { json(output, await api(prefix + '/network/lookup', {method:'POST', body:JSON.stringify({dst:dst.value, ...(vrf.value ? {vrf:vrf.value} : {})})})); }
       catch(e) { output.textContent = e.message; }
     }, !resources.network.available);
+    }
   }
-  window.ffnExtensions.registerPage('pa5200', 'controls', render);
-  window.ffnExtensions.registerPage('pa5200', 'nif', parent => window.ffnPlanes.render(parent, 'nif'));
+  for (const section of ['dataplane', 'chassis', 'interfaces', 'routing', 'overlay', 'inspection'])
+    window.ffnExtensions.registerPage('pa5200', section, parent => render(parent, section));
+  window.ffnExtensions.registerPage('pa5200', 'nif', parent => {
+    if (window.ffnPlanes) return window.ffnPlanes.render(parent, 'nif');
+    parent.replaceChildren();
+    element('h2', 'NIF Links', parent);
+    element('p', 'NIF control service is not available in this installation.', parent);
+  });
 })();
