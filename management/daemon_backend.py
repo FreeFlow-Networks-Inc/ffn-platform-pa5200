@@ -5,9 +5,9 @@ import json
 import sys
 from hardware_backend import Controller, COMMANDS
 
-FIELDS={'network':{'revision','ports','routes','vrfs','rules'},
+FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
-        'faceplate':{'revision','port','enabled'},'thermal':{'revision','operation'}}
+        'faceplate':{'revision','port','enabled','speed'},'thermal':{'revision','operation'}}
 
 
 async def execute(resource, action, payload, backend=None):
@@ -22,10 +22,23 @@ async def execute(resource, action, payload, backend=None):
             observed=await backend.run(resource,'status')
             revision=observed.get('config',observed).get('revision')
             if revision!=payload['revision']: raise ValueError('revision conflict; refresh state')
+            if resource=='phy':
+                if set(payload)!=FIELDS['phy'] or type(payload['phy']) is not int or payload['phy'] not in range(16,20) or payload['speed'] not in ('auto','100','1000','10000'):
+                    raise ValueError('Invalid PHY configuration')
+                if observed.get('saved',{}).get('pending') or not observed['phys'][payload['phy']-16].get('ready'):
+                    raise ValueError('PHY unavailable or operation pending')
+            if resource=='bcm':
+                if set(payload)!=FIELDS['bcm'] or payload.get('operation') not in ('start','stop','restart') or payload.get('acknowledge_link_outage') is not True:
+                    raise ValueError('Invalid BCM service request')
+                if not observed.get('operation_complete'):raise ValueError('BCM operation still pending')
             if resource=='faceplate':
-                if (set(payload)!=FIELDS[resource] or type(payload['port']) is not int or
-                        not 1<=payload['port']<=24 or type(payload['enabled']) is not bool):
+                if (not {'port','revision'}<=set(payload) or not {'enabled','speed'}&set(payload) or type(payload['port']) is not int or
+                        not 1<=payload['port']<=24 or ('enabled' in payload and type(payload['enabled']) is not bool)):
                     raise ValueError('invalid faceplate change')
+                if 'speed' in payload:
+                    port=next((p for p in observed.get('ports',[]) if p['port']==payload['port']),{})
+                    if not port.get('speed_configuration') or payload['speed'] not in ['auto']+[str(v) for v in port.get('supported_speeds',[])]:
+                        raise ValueError('Unsupported link speed')
             if resource=='inspection':
                 from ffn_inspection import validate
                 validate(payload)

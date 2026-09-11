@@ -14,6 +14,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('phy','status'): ('/usr/local/sbin/ffn-phy','status'),
+    ('phy','set'): ('/usr/local/sbin/ffn-phy','set'),
+    ('bcm','status'): ('/usr/local/sbin/ffn-bcm-service','status'),
+    ('bcm','set'): ('/usr/local/sbin/ffn-bcm-service','set'),
     ('faceplate', 'status'): ('/usr/local/sbin/ffn-faceplate', 'status'),
     ('faceplate', 'set'): ('/usr/local/sbin/ffn-faceplate', 'set'),
     ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
