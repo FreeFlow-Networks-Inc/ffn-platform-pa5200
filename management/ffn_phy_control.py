@@ -8,13 +8,23 @@ STATE=Path('/etc/ffn/phy.json')
 MAPPING=Path('/etc/ffn/copper-map.json')
 
 def port_mapping():
-    # Addresses are not physical numbering: the vendor table is pair-swapped.
-    # Only measured mappings belong here or in the local commissioning file.
-    mapping=json.loads(MAPPING.read_text()) if MAPPING.exists() else {'2':17}
-    if (not isinstance(mapping,dict) or any(k not in ('1','2','3','4') or type(v) is not int or v not in range(16,20) for k,v in mapping.items())
-            or len(set(mapping.values()))!=len(mapping)):
-        raise ValueError('Invalid or ambiguous copper faceplate mapping')
-    return mapping
+    # Commissioned associations override vendor numbering on this appliance.
+    # Require both the panel-to-PHY and PHY-to-MAC association for MAC writes.
+    mapping=json.loads(MAPPING.read_text()) if MAPPING.exists() else {}
+    if not isinstance(mapping,dict):raise ValueError('Copper mapping object required')
+    result={}
+    for front,value in mapping.items():
+        # Legacy PHY-only maps remain readable but do not authorize MAC writes.
+        entry={'phy':value,'bcm_port':None} if type(value) is int else value
+        if (front not in ('1','2','3','4') or not isinstance(entry,dict) or set(entry)!={'phy','bcm_port'}
+                or type(entry['phy']) is not int or entry['phy'] not in range(16,20)
+                or (entry['bcm_port'] is not None and (type(entry['bcm_port']) is not int or entry['bcm_port'] not in (28,13,14,15)))):
+            raise ValueError('Invalid copper PHY/MAC mapping')
+        result[front]=entry
+    phys=[v['phy'] for v in result.values()];macs=[v['bcm_port'] for v in result.values() if v['bcm_port'] is not None]
+    if len(set(phys))!=len(phys) or len(set(macs))!=len(macs):raise ValueError('Ambiguous copper mapping')
+    return result
+
 
 def inventory(bus):
     ports=[];mapping=port_mapping()
@@ -22,8 +32,9 @@ def inventory(bus):
         read=lambda dev,reg:bus.transfer(phy,dev,reg)
         ident=[read(1,2),read(1,3)]
         row={'phy':phy,'bus':0,'id':ident,'identified':ident==[0x600d,0x84f9],
-             'faceplate_mapping_verified':phy in mapping.values(),
-             'interface':next(('ethernet1/'+p for p,a in mapping.items() if a==phy),None)}
+             'faceplate_mapping_verified':any(v['phy']==phy for v in mapping.values()),
+             'bcm_port':next((v['bcm_port'] for v in mapping.values() if v['phy']==phy),None),
+             'interface':next(('ethernet1/'+p for p,v in mapping.items() if v['phy']==phy),None)}
         if row['identified']:
             firmware=read(30,0x400f);reset=bool(read(1,0)&0x8000)
             link=read(30,0x400d);an=bool(read(7,0)&0x1000)
@@ -37,7 +48,7 @@ def inventory(bus):
                        supported_speeds=[100,1000,10000])
         ports.append(row)
     saved=json.loads(STATE.read_text()) if STATE.exists() else {'speeds':{}}
-    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','advertisement_registers','control_register','interface')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
+    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','advertisement_registers','control_register','interface','bcm_port')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
     return {'revision':revision,'phys':ports,'saved':saved,'forwarding_verified':False,
             'warning':'PHY speed selection limits auto-negotiation advertisement. MAC synchronization and physical port mapping must also be commissioned.'}
 

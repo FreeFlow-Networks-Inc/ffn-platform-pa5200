@@ -10,7 +10,7 @@ class CopperFaceplateTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.patchers=[patch.object(face,'STATE',Path(self.temp.name)/'state')]
         self.mac={p:True for p in face.PORTS};self.events=[]
-        self.phy={'revision':42,'saved':{},'phys':[{'phy':15+p,'interface':'ethernet1/'+str(p),'ready':True,'control_register':0,
+        self.phy={'revision':42,'saved':{},'phys':[{'phy':15+p,'bcm_port':face.PORTS[p-1],'interface':'ethernet1/'+str(p),'ready':True,'control_register':0,
             'enabled':True,'link':p==2,'speed_mbps':1000 if p==2 else None,'configured_speed':'auto','supported_speeds':[100,1000,10000]} for p in range(1,5)]}
         def sdk(req):
             if req['op']=='port.list':return {'ports':[{'port':p,'enabled':self.mac[p],'link':False,'speed_mb':10000} for p in face.PORTS]}

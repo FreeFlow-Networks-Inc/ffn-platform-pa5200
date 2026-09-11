@@ -50,7 +50,7 @@ def copper_apply(port,request):
         try:
             current=phy.inventory(bus)
             row=next((p for p in current['phys'] if p.get('interface')==port['name']),None)
-            if not row or row['phy']!=port['phy_address'] or current['revision']!=port['phy_revision']:
+            if not row or row['phy']!=port['phy_address'] or row.get('bcm_port')!=port['bcm_port'] or current['revision']!=port['phy_revision']:
                 raise ValueError('Copper state or mapping changed; refresh ports')
             payload={'revision':current['revision'],'phy':row['phy']}
             payload.update({k:request[k] for k in ('speed','enabled') if k in request})
@@ -60,8 +60,13 @@ def copper_apply(port,request):
 
 def observe():
     physical={p['port']:p for p in call({'op':'port.list'})['ports']}
+    try: copper=copper_inventory()
+    except (ImportError,OSError,ValueError,RuntimeError): copper=None
     ports=[]
     for front,chip in enumerate(PORTS,1):
+        if front<=4:
+            phy=next((r for r in copper['phys'] if r.get('interface')=='ethernet1/%d'%front),None) if copper else None
+            chip=phy.get('bcm_port') if phy else None
         p=physical.get(chip)
         ports.append({'port':front,'name':'ethernet1/%d'%front,'bcm_port':chip,
                       'available':p is not None,'enabled':p.get('enabled') if p else None,
@@ -74,8 +79,6 @@ def observe():
                 p.update(speed_configuration=True, supported_speeds=link['supported_speeds'], configured_speed=link['configured_speed'])
             except (RuntimeError,ValueError,KeyError,OSError):
                 p['speed_error']='Link control unavailable; BCM link-control update may need activation'
-    try: copper=copper_inventory()
-    except (ImportError,OSError,ValueError,RuntimeError): copper=None
     for p in ports[:4]:
         p.update(media='copper',mac_enabled=p['enabled'],mac_link=p['link'],mac_speed_mbps=p['speed_mbps'],
                  enabled=None,link=None,speed_mbps=None,admin_configuration=False,phy_mapping_verified=False,
@@ -91,7 +94,10 @@ def observe():
                  datapath_link=bool(p['mac_link'] and phy.get('link')))
         if ready:p.pop('speed_error',None)
     revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled')) for p in ports]).encode()).hexdigest()[:12],16)
-    return {'revision':revision,'ports':ports,'capabilities':{'admin_state':True,'speed_configuration':any(p['speed_configuration'] for p in ports),
+    sync_path=Path('/run/ffn-copper-link.json')
+    try: sync=json.loads(sync_path.read_text()) if sync_path.exists() else {'state':'not-active'}
+    except (OSError,ValueError):sync={'state':'unavailable'}
+    return {'revision':revision,'ports':ports,'copper_sync':sync,'capabilities':{'admin_state':True,'speed_configuration':any(p['speed_configuration'] for p in ports),
             'link_is_forwarding':False},'saved':json.loads(STATE.read_text()) if STATE.exists() else {'ports':{}}}
 
 

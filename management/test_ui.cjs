@@ -27,7 +27,7 @@ async function check(writable) {
     if(path==='/api/auth/me') return {role:writable?'admin':'viewer'};
     if(path.endsWith('/bcm'))return {revision:1,operation_complete:true,service:{ActiveState:'active',SubState:'running',MainPID:'12'},chip:{state:'ready'},warning:'Interrupts links'};
     if(path.endsWith('/phy'))return {revision:1,saved:{},phys:[{phy:17,interface:'ethernet1/2',identified:true,ready:true,firmware:0x1089,link:true,speed_mbps:1000,supported_speeds:[100,1000,10000],configured_speed:'auto'}],warning:'PHY settings only'};
-    if(path.endsWith('/faceplate')&&copper) return {revision:11,saved:{},ports:[{port:2,name:'ethernet1/2',media:'copper',available:true,enabled:true,link:true,mac_link:false,speed_mbps:1000,configured_speed:'auto',supported_speeds:[100,1000,10000],speed_configuration:true,admin_configuration:true}]};
+    if(path.endsWith('/faceplate')&&copper) return {revision:11,saved:{},copper_sync:{ports:{'ethernet1/2':{state:'synchronized'}}},ports:[{port:2,name:'ethernet1/2',media:'copper',available:true,enabled:true,link:true,mac_link:false,speed_mbps:1000,configured_speed:'auto',supported_speeds:[100,1000,10000],speed_configuration:true,admin_configuration:true}]};
     if(path.endsWith('/faceplate')) return {revision:10,saved:{ports:{}},ports:[{port:1,name:'ethernet1/1',available:true,enabled:true,link:false,speed_mbps:10000}]};
     return options ? {revision:10} : snapshot;
   };
@@ -69,6 +69,7 @@ async function check(writable) {
   assert.equal(parent.all().find(n=>n.textContent==='Apply speed').disabled,true,'Unsupported speed is disabled');
   copper=true;await pages.nif(parent);
   assert.ok(parent.all().some(n=>n.textContent==='Up (switch down)'));
+  assert.ok(parent.all().some(n=>n.textContent==='Switch rate: matches copper PHY'));
   assert.equal(parent.all().find(n=>n.textContent==='Apply speed').disabled,!writable);
   assert.ok(parent.all().some(n=>n.tag==='option'&&n.value==='100'));
   await pages.bcm(parent);

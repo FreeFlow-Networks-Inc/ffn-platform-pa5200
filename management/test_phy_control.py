@@ -43,7 +43,7 @@ class PhyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'map'
             with patch.object(phy,'MAPPING',path):
-                for value in ('{"1":17,"2":17}','{"5":16}','{"1":true}'):
+                for value in ('{"1":17,"2":17}','{"5":16}','{"1":true}','{"1":{"phy":16,"bcm_port":28},"2":{"phy":17,"bcm_port":28}}'):
                     path.write_text(value)
                     with self.assertRaises(ValueError):phy.port_mapping()
     def test_unknown_identity_and_stale_revision_never_write(self):

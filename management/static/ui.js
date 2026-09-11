@@ -244,6 +244,11 @@
         }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
       },!writable||!port.speed_configuration||port.phy_pending);
       if(!port.speed_configuration)element('small',port.speed_error||'Speed control unavailable for this port',speedCell);
+      if(port.media==='copper' && data.copper_sync){
+        const sync=data.copper_sync.ports?.[port.name];
+        const state=sync?.state||data.copper_sync.state;
+        element('small','Switch rate: '+(state==='synchronized'?'matches copper PHY':state||'not observed'),speedCell);
+      }
       const action=element('td',undefined,row);
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});

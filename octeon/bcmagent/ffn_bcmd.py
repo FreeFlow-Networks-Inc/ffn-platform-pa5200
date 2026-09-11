@@ -1441,7 +1441,11 @@ def op_phy_mdio(chip, req):
 
 from ffn_bcm_link import status as op_link_status, apply as op_link_set
 
+from ffn_bcm_copper import status as op_copper_status, apply as op_copper_sync
+
 OPS = {
+    'port.copper.status': op_copper_status,
+    'port.copper.sync': op_copper_sync,
     "port.link.status": op_link_status,
     "port.link.set": op_link_set,
     "status": op_status,
