@@ -1,20 +1,135 @@
 {
-  "role": "mp",
-  "peer": [
-    "/usr/bin/ssh",
-    "-F",
-    "/etc/ffn-ngfw/ssh-cp.conf",
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "StrictHostKeyChecking=yes",
-    "-o",
-    "ConnectTimeout=10",
-    "ffn-cp",
-    "/usr/bin/python3",
-    "/usr/local/lib/ffn/ffn_planed.py",
-    "call",
-    "--socket",
-    "/run/ffn-plane-cp/control.sock"
-  ]
+  "commands": {
+    "overlay": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "overlay",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "overlay",
+        "apply"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "overlay",
+        "status"
+      ]
+    },
+    "thermal": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "thermal",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "thermal",
+        "apply"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "thermal",
+        "status"
+      ]
+    },
+    "faceplate": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "faceplate",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "faceplate",
+        "apply"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "faceplate",
+        "status"
+      ]
+    },
+    "network": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "network",
+        "validate"
+      ],
+      "lookup": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "network",
+        "lookup"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "network",
+        "apply"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "network",
+        "status"
+      ]
+    },
+    "dataplane": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dataplane",
+        "status"
+      ]
+    },
+    "chassis": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "chassis",
+        "status"
+      ]
+    },
+    "inspection": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "inspection",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "inspection",
+        "apply"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "inspection",
+        "status"
+      ]
+    },
+    "fabric": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "fabric",
+        "status"
+      ]
+    }
+  },
+  "role": "mp"
 }
