@@ -47,6 +47,31 @@
     catch (e) { message.textContent = e.message; return; }
     if (!root.isConnected) return;
     const writable = snapshot.can_write;
+    const readiness = card(root, 'OCTEON dataplane handshake');
+    function showHandshake(agent) {
+    readiness.replaceChildren();
+    element('h3', 'OCTEON dataplane handshake', readiness);
+    if (!agent || !agent.available) {
+      element('p', 'Agent unavailable: ' + (agent?.error || 'not installed or unreachable'), readiness);
+    } else {
+      const dp = agent.data;
+      element('p', 'State: ' + dp.state + ' · Architecture: ' + dp.arch, readiness);
+      element('p', 'Boot ID: ' + dp.boot_id, readiness);
+      element('p', 'Available packet detectors: ' + (dp.engines?.available || []).join(', '), readiness);
+      element('p', 'Execution: OCTEON CPU. Readiness does not imply hardware acceleration or active inspection.', readiness);
+    }
+    }
+    showHandshake(snapshot.resources.dataplane);
+    async function pollHandshake() {
+      if (!root.isConnected) return;
+      let agent;
+      try { agent = {available:true, data:await api(prefix + '/dataplane')}; }
+      catch (e) { agent = {available:false, error:e.message}; }
+      if (!root.isConnected) return;
+      showHandshake(agent);
+      setTimeout(pollHandshake, 5000);
+    }
+    setTimeout(pollHandshake, 5000);
     message.textContent = 'Observed ' + new Date(snapshot.collected_at * 1000).toLocaleString() +
       (writable ? '. Changes apply immediately and persist separately from candidate/commit.' : '. Read-only access.');
     element('p', 'Forwarding: software relay, ports 1, 3, 5 and 13; MTU 1500. Hardware flow offload is not active.', root);
@@ -128,9 +153,11 @@
         const mode = select(box, 'Inspection mode', ['off', 'alert', 'block'], r.data.config.mode);
         const ports = field(box, 'Inspection ports', r.data.config.ports.join(','));
         const literal = field(box, 'Payload text to match', r.data.config.literal);
-        for (const input of [mode, ports, literal]) input.disabled = !writable;
+        const detectors = field(box, 'Additional detectors (credit_card, ssn, api_key)', (r.data.config.detectors || []).join(','));
+        for (const input of [mode, ports, literal, detectors]) input.disabled = !writable;
         applyButton(box, 'Apply inspection policy', '/inspection/set', () => ({revision:r.data.config.revision,
-          mode:mode.value, ports:ports.value.split(',').map(x=>x.trim()).filter(Boolean).map(Number), literal:literal.value}));
+          mode:mode.value, ports:ports.value.split(',').map(x=>x.trim()).filter(Boolean).map(Number), literal:literal.value,
+          detectors:detectors.value.split(',').map(x=>x.trim()).filter(Boolean)}));
       }
       const details = element('details', undefined, box);
       element('summary', 'Edit ' + resource + ' configuration (JSON)', details);

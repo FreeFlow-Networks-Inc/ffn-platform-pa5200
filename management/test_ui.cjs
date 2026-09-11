@@ -15,6 +15,7 @@ async function check(writable) {
   let render, calls=[];
   const good=data=>({available:true,data});
   const snapshot={can_write:writable,collected_at:0, resources:{
+    dataplane:good({state:'ready',arch:'mips64',boot_id:'test-boot',engines:{available:['literal','credit_card']}}),
     chassis:good({power_supplies:[{name:'<script>alert(1)</script>',state:'good'}],leds:{ps0:'green'}}),
     thermal:good({errors:[]}), fabric:good({running:true}),
     network:good({config:{revision:9,ports:{p1:{mode:'l2',vlans:[100],pvid:100}},vrfs:{}}}),
@@ -22,11 +23,14 @@ async function check(writable) {
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
   const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
   const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');if(label==='controls')render=fn; }}},
-    document:{createElement:tag=>new Node(tag)},Date,JSON,Object};
+    document:{createElement:tag=>new Node(tag)},Date,JSON,Object,setTimeout(){}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');
   const parent=new Node('main'); await render(parent);
   assert.equal(calls.length,1);
+  assert.ok(parent.all().some(n=>n.textContent==='OCTEON dataplane handshake'));
+  assert.ok(parent.all().some(n=>n.textContent.includes('State: ready')));
+  assert.ok(parent.all().some(n=>n.textContent.includes('credit_card')));
   const buttons=parent.all().filter(n=>n.dataset.apply);
   assert.ok(buttons.length>=4);
   assert.ok(buttons.every(b=>b.disabled===!writable));

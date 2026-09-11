@@ -14,23 +14,36 @@ struct inline_state {
     struct dp_dlp dlp;
 };
 
-void *ffn_inline_create(const unsigned char *pattern, unsigned length, int action)
+void *ffn_inline_create_profile(const unsigned char *pattern, unsigned length, int action, unsigned detectors)
 {
     struct inline_state *s;
-    if (!pattern || !length || length >= DP_DLP_PAT_MAX ||
+    if ((!length && !detectors) || (length && !pattern) || length >= DP_DLP_PAT_MAX || detectors > 7 ||
         (action != DP_EV_ALERT && action != DP_EV_BLOCK)) return NULL;
     s = calloc(1, sizeof(*s));
     if (!s) return NULL;
-    s->dlp.count = 1;
-    memcpy(s->dlp.rule[0].pattern, pattern, length);
+    s->dlp.count = length ? 1 : 0;
+    if (length) memcpy(s->dlp.rule[0].pattern, pattern, length);
     s->dlp.rule[0].pattern_len = length;
     strcpy(s->dlp.rule[0].name, "commissioning-literal");
     s->dlp.rule[0].type = DP_DLP_KEYWORD;
     s->dlp.rule[0].action = action;
     s->dlp.rule[0].enabled = 1;
+    for (unsigned i = 0; i < 3; i++) {
+        if (!(detectors & (1u << i))) continue;
+        struct dp_dlp_rule *r = &s->dlp.rule[s->dlp.count++];
+        memset(r, 0, sizeof(*r));
+        r->type = DP_DLP_CREDIT_CARD + i;
+        r->action = action;
+        r->enabled = 1;
+    }
     dp_engine_register(&s->engines, "dlp", dp_dlp_scan, &s->dlp);
     dp_engine_enable(&s->engines, "dlp", 1);
     return s;
+}
+
+void *ffn_inline_create(const unsigned char *pattern, unsigned length, int action)
+{
+    return ffn_inline_create_profile(pattern, length, action, 0);
 }
 
 void ffn_inline_destroy(void *state) { free(state); }

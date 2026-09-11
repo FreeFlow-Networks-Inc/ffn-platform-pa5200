@@ -14,6 +14,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
@@ -171,7 +172,7 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
             except OSError:
                 return resource, {'available': False, 'error': 'Controller unavailable'}
         resources = dict(await asyncio.gather(*(one(r) for r in (
-            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric'))))
+            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric', 'dataplane'))))
         return {'collected_at': time.time(), 'resources': resources,
                 'can_write': user.get('role') in ('admin', 'superuser'),
                 'provider': 'pa5200', 'cpu_role': 'management',
@@ -201,7 +202,7 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
         data = await body(request)
         allowed = {'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
-                   'inspection': {'revision', 'mode', 'ports', 'literal'}, 'thermal': set()}[resource]
+                   'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set()}[resource]
         if set(data) - allowed:
             raise HTTPException(422, 'Unknown configuration fields')
         if resource != 'thermal' and (type(data.get('revision')) is not int or data['revision'] < 0):
