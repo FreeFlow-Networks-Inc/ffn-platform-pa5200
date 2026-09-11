@@ -134,6 +134,10 @@ int dp_l3_route_add(struct dp_l3 *l3, uint32_t prefix, uint8_t prefix_len,
 
     r->prefix = prefix; r->mask = mask; r->prefix_len = prefix_len;
     r->nexthop = nexthop; r->egress = egress; r->used = 1;
+    /* Replacing an ECMP route with a single-next-hop one must clear the group
+     * reference, or the route keeps taking the group and silently ignores the
+     * nexthop/egress just supplied. */
+    r->ecmp = 0;
     if (fresh) l3->route_count++;
     len_bit_set(l3, prefix_len);
     return DP_L3_OK;
@@ -235,7 +239,113 @@ int dp_l3_iface_set_mac(struct dp_l3 *l3, uint16_t egress, const uint8_t mac[6])
 
 /* ---- lookup ----------------------------------------------------------- */
 
+/* --- ECMP ---------------------------------------------------------------- */
+
+int dp_l3_ecmp_add(struct dp_l3 *l3, const uint32_t *nexthop,
+                   const uint16_t *egress, uint8_t n)
+{
+    uint32_t g;
+    uint8_t i;
+
+    if (!nexthop || !egress) return DP_L3_ERR_RANGE;
+    if (n == 0 || n > DP_L3_ECMP_MAX) return DP_L3_ERR_RANGE;
+
+    /* Start at 1: group 0 is reserved so a route's ecmp == 0 can mean
+     * "single next hop" without inventing a sentinel. */
+    for (g = 1; g < DP_L3_MAX_ECMP_GROUPS; g++) {
+        if (!l3->ecmp[g].used) break;
+    }
+    if (g >= DP_L3_MAX_ECMP_GROUPS) return DP_L3_ERR_FULL;
+
+    memset(&l3->ecmp[g], 0, sizeof(l3->ecmp[g]));
+    for (i = 0; i < n; i++) {
+        l3->ecmp[g].nexthop[i] = nexthop[i];
+        l3->ecmp[g].egress[i]  = egress[i];
+    }
+    l3->ecmp[g].n = n;
+    l3->ecmp[g].used = 1;
+    l3->ecmp_count++;
+    return (int)g;
+}
+
+int dp_l3_ecmp_del(struct dp_l3 *l3, uint16_t group)
+{
+    if (group == 0 || group >= DP_L3_MAX_ECMP_GROUPS) return DP_L3_ERR_RANGE;
+    if (!l3->ecmp[group].used) return DP_L3_ERR_RANGE;
+
+    /* Routes pointing at a freed group would otherwise dereference a hole and
+     * silently forward to egress 0. Clear the reference instead, which turns
+     * those routes into DP_L3_ERR_NOROUTE -- a visible failure rather than a
+     * packet sent somewhere nobody asked for. */
+    if (l3->routes) {
+        uint32_t i;
+        for (i = 0; i < l3->route_slots; i++) {
+            if (l3->routes[i].used && l3->routes[i].ecmp == group) {
+                l3->routes[i].used = 0;
+                if (l3->route_count) l3->route_count--;
+            }
+        }
+        len_bitmap_rebuild(l3);
+    }
+    memset(&l3->ecmp[group], 0, sizeof(l3->ecmp[group]));
+    if (l3->ecmp_count) l3->ecmp_count--;
+    return DP_L3_OK;
+}
+
+int dp_l3_route_add_ecmp(struct dp_l3 *l3, uint32_t prefix, uint8_t prefix_len,
+                         uint16_t group)
+{
+    struct dp_l3_route *r;
+    uint32_t mask;
+
+    if (prefix_len > 32) return DP_L3_ERR_RANGE;
+    if (group == 0 || group >= DP_L3_MAX_ECMP_GROUPS) return DP_L3_ERR_RANGE;
+    if (!l3->ecmp[group].used) return DP_L3_ERR_RANGE;
+    if (!l3->routes) return DP_ERR_STATE;
+
+    mask = len_to_mask(prefix_len);
+    prefix &= mask;
+    r = route_slot(l3, prefix, prefix_len, 1);
+    if (!r) return DP_L3_ERR_FULL;
+    if (!r->used) l3->route_count++;
+
+    r->prefix = prefix;
+    r->mask = mask;
+    r->prefix_len = prefix_len;
+    r->nexthop = 0;
+    r->egress = 0;
+    r->ecmp = group;
+    r->used = 1;
+    len_bit_set(l3, prefix_len);
+    return DP_L3_OK;
+}
+
+/*
+ * Pick one member of a group.
+ *
+ * mix() is reused rather than taking the hash modulo directly: a caller's
+ * "hash" is often a raw address or a sum, and low bits of those are far from
+ * uniform -- consecutive addresses would all land on the same member. mix()
+ * is the same avalanche the route table already trusts for bucketing.
+ */
+static void ecmp_pick(const struct dp_l3_ecmp *g, uint32_t flow_hash,
+                      uint32_t dst_ip, struct dp_l3_nh *nh)
+{
+    uint8_t i = (uint8_t)(mix(flow_hash) % g->n);
+
+    nh->egress  = g->egress[i];
+    nh->nexthop = g->nexthop[i] ? g->nexthop[i] : dst_ip;
+}
+
 int dp_l3_lookup(struct dp_l3 *l3, uint32_t dst_ip, struct dp_l3_nh *nh)
+{
+    /* Per-destination spread. Callers with a 5-tuple should use
+     * dp_l3_lookup_hash() and get per-flow spread instead. */
+    return dp_l3_lookup_hash(l3, dst_ip, dst_ip, nh);
+}
+
+int dp_l3_lookup_hash(struct dp_l3 *l3, uint32_t dst_ip, uint32_t flow_hash,
+                      struct dp_l3_nh *nh)
 {
     int len;
 
@@ -257,9 +367,22 @@ int dp_l3_lookup(struct dp_l3 *l3, uint32_t dst_ip, struct dp_l3_nh *nh)
         r = route_slot(l3, key, (uint8_t)len, 0);
         if (!r || !r->used) continue;
 
-        nh->egress  = r->egress;
-        /* nexthop 0 means directly connected: the destination IS the next hop */
-        nh->nexthop = r->nexthop ? r->nexthop : dst_ip;
+        if (r->ecmp) {
+            const struct dp_l3_ecmp *g = &l3->ecmp[r->ecmp];
+            /* A route whose group was freed is refused rather than sent to
+             * egress 0; dp_l3_ecmp_del() clears such routes, so reaching here
+             * means the tables disagree and forwarding blind is the worse
+             * option. */
+            if (!g->used || g->n == 0) {
+                l3->stat_noroute++;
+                return DP_L3_ERR_NOROUTE;
+            }
+            ecmp_pick(g, flow_hash, dst_ip, nh);
+        } else {
+            nh->egress  = r->egress;
+            /* nexthop 0 means directly connected: the destination IS the next hop */
+            nh->nexthop = r->nexthop ? r->nexthop : dst_ip;
+        }
 
         e = neigh_slot(l3, nh->nexthop, 0);
         if (e && e->used && e->state == DP_NEIGH_REACHABLE) {

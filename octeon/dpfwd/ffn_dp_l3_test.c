@@ -284,6 +284,106 @@ static void test_config(void)
     dp_l3_fini(&l3);
 }
 
+/*
+ * ECMP.
+ *
+ * The properties that matter for a dataplane, in order: a flow must not be
+ * split (that is reordering, which TCP reads as loss), every member must be
+ * reachable, and a freed group must never forward anywhere.
+ */
+static void test_ecmp(void)
+{
+    struct dp_l3 l3;
+    struct dp_l3_nh nh;
+    uint32_t nhs[3] = { 0x0a000101u, 0x0a000201u, 0x0a000301u };
+    uint16_t egr[3] = { 11, 22, 33 };
+    int g, i;
+
+    CHECK(dp_l3_init(&l3, 64, 64) == DP_L3_OK, "init");
+
+    g = dp_l3_ecmp_add(&l3, nhs, egr, 3);
+    CHECK(g > 0, "group id must be positive (1-based), got %d", g);
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0b000000u, 8, (uint16_t)g) == DP_L3_OK,
+          "add 11.0.0.0/8 via the group");
+
+    /* Determinism: the same hash must always choose the same member, or a
+     * flow gets split across paths and reordered. */
+    {
+        struct dp_l3_nh a, b;
+        CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x12345678u, &a) == DP_L3_OK, "lookup a");
+        for (i = 0; i < 32; i++) {
+            CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x12345678u, &b) == DP_L3_OK, "lookup b");
+            CHECK(a.egress == b.egress && a.nexthop == b.nexthop,
+                  "same hash must pick the same member every time");
+        }
+    }
+
+    /* Every member must be reachable by some hash -- a selector that can only
+     * ever return member 0 would pass a determinism test and still be broken. */
+    {
+        int seen[3] = { 0, 0, 0 }, distinct = 0;
+        uint32_t h;
+        for (h = 0; h < 4096; h++) {
+            CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, h, &nh) == DP_L3_OK, "sweep");
+            for (i = 0; i < 3; i++)
+                if (nh.egress == egr[i]) seen[i] = 1;
+        }
+        for (i = 0; i < 3; i++) distinct += seen[i];
+        CHECK(distinct == 3, "all 3 members must be selectable, saw %d", distinct);
+    }
+
+    /* The plain wrapper must keep working and stay per-destination. */
+    CHECK(dp_l3_lookup(&l3, 0x0b010203u, &nh) == DP_L3_OK, "plain lookup still routes");
+    {
+        struct dp_l3_nh again;
+        dp_l3_lookup(&l3, 0x0b010203u, &again);
+        CHECK(again.egress == nh.egress, "plain lookup is stable per destination");
+    }
+
+    /* A single-next-hop route must be completely unaffected by ECMP existing. */
+    CHECK(dp_l3_route_add(&l3, 0x0c000000u, 8, 0x0a00ff01u, 77) == DP_L3_OK, "plain route");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0c010203u, 0x9999u, &nh) == DP_L3_OK, "plain route lookup");
+    CHECK(nh.egress == 77 && nh.nexthop == 0x0a00ff01u,
+          "non-ECMP route must ignore the flow hash entirely");
+
+    /* Overwriting an ECMP route with a plain one must drop the group. */
+    CHECK(dp_l3_route_add(&l3, 0x0b000000u, 8, 0x0a00ee01u, 88) == DP_L3_OK, "overwrite");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x1u, &nh) == DP_L3_OK, "after overwrite");
+    CHECK(nh.egress == 88, "overwritten route must use the new single next hop, got %u",
+          nh.egress);
+
+    /* Freeing a group must not leave routes forwarding to egress 0. */
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0d000000u, 8, (uint16_t)g) == DP_L3_OK, "re-point");
+    CHECK(dp_l3_ecmp_del(&l3, (uint16_t)g) == DP_L3_OK, "delete the group");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0d010203u, 0x1u, &nh) == DP_L3_ERR_NOROUTE,
+          "a route whose group was freed must be NOROUTE, not egress 0");
+
+    /* Bounds. */
+    CHECK(dp_l3_ecmp_add(&l3, nhs, egr, 0) == DP_L3_ERR_RANGE, "n=0 rejected");
+    CHECK(dp_l3_ecmp_add(&l3, nhs, egr, DP_L3_ECMP_MAX + 1) == DP_L3_ERR_RANGE,
+          "n > max rejected");
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0e000000u, 8, 0) == DP_L3_ERR_RANGE,
+          "group 0 is not a group");
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0e000000u, 8, 999) == DP_L3_ERR_RANGE,
+          "unknown group rejected");
+    CHECK(dp_l3_ecmp_del(&l3, 0) == DP_L3_ERR_RANGE, "deleting group 0 rejected");
+
+    /* A directly-connected member (nexthop 0) must resolve to the packet's
+     * destination, exactly as a single-next-hop route does. */
+    {
+        uint32_t z[1] = { 0 };
+        uint16_t e[1] = { 5 };
+        int g2 = dp_l3_ecmp_add(&l3, z, e, 1);
+        CHECK(g2 > 0, "single-member group");
+        CHECK(dp_l3_route_add_ecmp(&l3, 0x0f000000u, 8, (uint16_t)g2) == DP_L3_OK, "route");
+        CHECK(dp_l3_lookup_hash(&l3, 0x0f010203u, 0x7u, &nh) == DP_L3_OK, "lookup");
+        CHECK(nh.nexthop == 0x0f010203u,
+              "nexthop 0 in a group means directly connected");
+    }
+
+    dp_l3_fini(&l3);
+}
+
 int main(void)
 {
     printf("ffn_dp_l3_test (%s-endian)\n",
@@ -295,6 +395,7 @@ int main(void)
     test_rewrite(1);          /* same again with a VLAN tag in the way */
     test_checksum_sweep();
     test_config();
+    test_ecmp();
 
     if (fails == 0) printf("PASS: all L3 tests\n");
     else            printf("FAIL: %d check(s)\n", fails);
