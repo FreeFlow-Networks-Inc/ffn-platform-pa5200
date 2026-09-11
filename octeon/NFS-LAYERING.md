@@ -73,7 +73,7 @@ on the live server shows exactly that:
 ```
 
 That the daemons are chrooted is invisible to clients: `showmount -e 127.1.1.2`
-lists `/opt/dproot` and `/opt/dproot-debian-20260909`, and both mount.
+lists `/opt/dproot` and `/opt/dproot-owrt`, and both mount.
 
 ## Layer 2: CP -> DP  (`ffn-cp-nfsd.sh`)
 
