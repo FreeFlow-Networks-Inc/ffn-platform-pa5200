@@ -49,3 +49,24 @@ existing resolve command and boot restore unit.
 
 SDK reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/include/bcm/port.h
 PHY register reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.h
+
+
+## BCM activation and restart recovery
+
+The BCM daemon must be restarted once after upgrading its SDK link handlers.
+A restart interrupts switch links and reinitializes the ASIC; it does not reboot
+MP, CP or DP. `ffn-bcmd.service` also starts `ffn-front-ports.service` so starting
+from a stopped or failed state initializes the faceplate. The DMA prerequisite
+accepts the allocator confirmation from either dmesg or the current boot's kernel
+journal; a command-line reservation token alone is never sufficient.
+
+Link ability parsing accepts complete SDK output lines only. CINT echoes input
+including printf literals for unsupported rates, which must not become advertised
+capabilities. Copper MAC rate control remains unavailable pending synchronization
+with the external PHY. PHY negotiation alone does not prove WAN forwarding.
+
+On hardware, management-daemon requests verified an unused SFP port at 1G and
+10G with readback; existing linked SFP and QSFP ports recovered at 10G and 40G.
+These checks establish link control, not L2/L3 forwarding or a DHCP lease.
+Saved administrative configuration can differ from current runtime; inspect it
+before replaying configuration following a BCM restart.

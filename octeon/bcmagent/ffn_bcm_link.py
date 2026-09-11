@@ -21,11 +21,13 @@ def status(chip,req):
         script.append('if(rv==0 && (a.speed_full_duplex & %s)) printf("FFNSPEED %d\\n");'%(constant,speed))
     script.append('}')
     text=chip.run('cint\n'+' '.join(script)+'\nexit;')
-    found=re.search(r'FFNLINK (-?\d+) (\d+) (\d+)',text)
+    found=re.search(r'^\s*FFNLINK (-?\d+) (\d+) (\d+)\s*$',text,re.M)
     if not found or int(found[1]): raise RuntimeError('SDK link status unavailable')
     # Restrict abilities to the board port class; never expose internal HiGig/lane modes.
     allowed=(1000,10000) if PORTS.index(port)<20 else (40000,100000)
-    speeds=[int(v) for v in re.findall(r'FFNSPEED (\d+)',text) if int(v) in allowed]
+    # CINT echoes the script, including printf literals for unsupported modes.
+    # Accept complete result lines only, never text inside an echoed command.
+    speeds=sorted({int(v) for v in re.findall(r'^\s*FFNSPEED (\d+)\s*$',text,re.M) if int(v) in allowed})
     return {'port':port,'autoneg':bool(int(found[2])),'speed_mbps':int(found[3]),
             'configured_speed':'auto' if int(found[2]) else str(int(found[3])),
             'supported_speeds':speeds}
@@ -43,7 +45,7 @@ def apply(chip,req):
     if speed!='auto': script+='if(rv==0) rv=bcm_port_speed_set(0,%d,%d); '%(port,int(speed))
     script+='printf("FFNSET %d\\n",rv); }'
     text=chip.run('cint\n'+script+'\nexit;')
-    result=re.search(r'FFNSET (-?\d+)',text)
+    result=re.search(r'^\s*FFNSET (-?\d+)\s*$',text,re.M)
     if not result or int(result[1]): raise RuntimeError('SDK link change failed; outcome must be reconciled')
     after=status(chip,{'port':port})
     if after['configured_speed']!=speed: raise RuntimeError('SDK link readback mismatch')
