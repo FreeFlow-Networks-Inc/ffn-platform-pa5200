@@ -1,0 +1,20 @@
+{
+  "role": "mp",
+  "peer": [
+    "/usr/bin/ssh",
+    "-F",
+    "/etc/ffn-ngfw/ssh-cp.conf",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "ffn-cp",
+    "/usr/bin/python3",
+    "/usr/local/lib/ffn/ffn_planed.py",
+    "call",
+    "--socket",
+    "/run/ffn-plane-cp/control.sock"
+  ]
+}

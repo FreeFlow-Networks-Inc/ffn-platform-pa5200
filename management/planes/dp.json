@@ -1,0 +1,27 @@
+{
+  "role": "dp",
+  "commands": {
+    "network": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_network.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_network.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_network.py",
+        "patch"
+      ],
+      "lookup": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_network.py",
+        "lookup"
+      ]
+    }
+  }
+}

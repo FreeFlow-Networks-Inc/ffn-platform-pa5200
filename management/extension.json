@@ -3,5 +3,16 @@
   "label": "PA-5220 controls",
   "api_version": 1,
   "runtime_api_version": 1,
-  "pages": [{"id": "controls", "label": "OCTEON platform", "tab": "device"}]
+  "pages": [
+    {
+      "id": "controls",
+      "label": "OCTEON platform",
+      "tab": "device"
+    },
+    {
+      "id": "nif",
+      "label": "NIF Links",
+      "tab": "device"
+    }
+  ]
 }

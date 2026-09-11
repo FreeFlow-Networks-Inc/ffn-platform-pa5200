@@ -6,6 +6,12 @@ import ffn_network as net
 
 class ConfigTests(unittest.TestCase):
     def setUp(self):
+        paths=patch.object(net, 'Path')
+        paths.start().return_value.exists.return_value=False
+        self.addCleanup(paths.stop)
+        overlay=patch.object(net, 'OVERLAY_STATE')
+        overlay.start().exists.return_value=False
+        self.addCleanup(overlay.stop)
         self.cfg = {'revision': 7, 'ports': {
             'p1': {'mode': 'l2', 'vlans': [100], 'pvid': 100},
             'p3': {'mode': 'l3', 'addresses': ['198.18.1.1/24']}}}
@@ -132,9 +138,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_active_overlay_protects_underlay(self):
         with patch.object(net, 'exists', return_value=True), patch.object(net, 'backend', return_value={'ports':[]}), \
-             patch.object(net, 'Path') as path, patch.object(net, 'configure_port') as change:
-            path.return_value.exists.return_value = True
-            path.return_value.read_text.return_value = '{"links":{"ovtest":{"underlay":"p3"}}}'
+             patch.object(net, 'OVERLAY_STATE') as path, patch.object(net, 'configure_port') as change:
+            path.exists.return_value = True
+            path.read_text.return_value = '{"links":{"ovtest":{"underlay":"p3"}}}'
             with self.assertRaisesRegex(ValueError, 'dependent overlays'):
                 net.patch(self.cfg, {'revision':7,'ports':{'p3':{'mode':'disabled'}}})
         change.assert_not_called()

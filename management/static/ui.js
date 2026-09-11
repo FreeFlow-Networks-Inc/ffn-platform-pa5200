@@ -152,4 +152,5 @@
     }, !resources.network.available);
   }
   window.ffnExtensions.registerPage('pa5200', 'controls', render);
+  window.ffnExtensions.registerPage('pa5200', 'nif', parent => window.ffnPlanes.render(parent, 'nif'));
 })();

@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import time
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -34,6 +35,20 @@ class Controller:
         argv = COMMANDS.get((resource, action))
         if argv is None:
             raise HTTPException(404, 'Unknown appliance operation')
+        socket = os.environ.get('FFN_PLANE_SOCKET')
+        if socket and resource == 'network':
+            from ffn_plane_api import rpc
+            request = {'v':1, 'id':str(uuid.uuid4()), 'resource':resource,
+                       'action':'apply' if action == 'patch' else action, 'payload':payload or {}}
+            try:
+                response = await rpc(socket, request)
+            except (OSError, ValueError, asyncio.TimeoutError):
+                raise HTTPException(502, 'Control outcome unknown; query request ID '+request['id'])
+            if not response.get('ok'):
+                raise HTTPException(409 if response.get('state') == 'rejected' else 502,
+                                    'Control '+response.get('state','unknown')+'; request ID '+request['id']+
+                                    '. '+str(response.get('error','Refresh runtime state')))
+            return dict(response['result'], control={'id':request['id'], 'trace':response.get('trace'), 'state':response['state']})
         if not os.access(argv[0], os.X_OK):
             raise HTTPException(503, 'Appliance controller is not installed')
         data = json.dumps(payload, allow_nan=False).encode() if payload is not None else b''

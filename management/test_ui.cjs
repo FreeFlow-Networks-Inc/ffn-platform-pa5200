@@ -21,7 +21,7 @@ async function check(writable) {
     overlay:{available:false,error:'Offline'},
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
   const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
-  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');render=fn; }}},
+  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');if(label==='controls')render=fn; }}},
     document:{createElement:tag=>new Node(tag)},Date,JSON,Object};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');

@@ -80,6 +80,17 @@ class APITests(unittest.TestCase):
 
 
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selected_plane_socket_uses_rpc_without_legacy_command(self):
+        import types
+        rpc=AsyncMock(return_value={'ok':True,'state':'applied','result':{'config':{'revision':8}},'trace':['mp','cp','dp']})
+        with patch.dict('os.environ',{'FFN_PLANE_SOCKET':'/run/fixture.sock'}), \
+             patch.dict('sys.modules',{'ffn_plane_api':types.SimpleNamespace(rpc=rpc)}), \
+             patch('control.asyncio.create_subprocess_exec') as spawn:
+            result=await Controller().run('network','patch',{'revision':7,'ports':{}})
+        self.assertEqual(result['control']['trace'],['mp','cp','dp'])
+        self.assertEqual(rpc.call_args.args[1]['action'],'apply')
+        spawn.assert_not_called()
+
     async def test_inspection_activation_requires_live_matching_revision(self):
         ctl=AsyncMock()
         result={'accepted':{'revision':8}}
