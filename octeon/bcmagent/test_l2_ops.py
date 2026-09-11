@@ -17,6 +17,7 @@ and raised NameError on the first call -- a fake chip catches that instantly
 where hardware would have cost a re-init to find out.
 """
 import importlib.util
+import json
 import os
 import unittest
 
@@ -210,6 +211,46 @@ class Trunk(unittest.TestCase):
         r = bcmd.op_trunk_create(c, {"tid": 1, "ports": [8, 9]})
         self.assertEqual(r["create_rv"], -8)
         self.assertEqual(r["set_rv"], 0)
+
+
+class VlanList(unittest.TestCase):
+    # This is REAL output, captured from the chip after programming VLAN 1.
+    # The first version of the parser expected a line starting with the vid and
+    # returned zero VLANs on a chip that had one -- "no VLANs" and "my regex
+    # missed" are indistinguishable from the caller's side, so the fixture is
+    # the actual bytes rather than something plausible.
+    REAL = ("vlan 1\tports ce3,xl24,xe5,xe8 "
+            "(0x0000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000"
+            "0000000000000001000128), untagged ce3,xl24,xe5,xe8 "
+            "(0x0000000000000000000000000000000000000000000000000000000000"
+            "000000000000000000000000000000000000000000000000000000000000"
+            "0000000000000001000128)\n")
+
+    def test_parses_the_real_format(self):
+        c = FakeChip(self.REAL)
+        r = bcmd.op_vlan_list(c, {})
+        self.assertEqual(r["count"], 1)
+        v = r["vlans"][0]
+        self.assertEqual(v["vid"], 1)
+        self.assertEqual(v["ports"], ["ce3", "xl24", "xe5", "xe8"])
+        self.assertEqual(v["untagged"], ["ce3", "xl24", "xe5", "xe8"])
+
+    def test_hex_bitmaps_are_not_returned(self):
+        # A 300-character constant in a JSON reply is noise; the names carry
+        # the same fact.
+        r = bcmd.op_vlan_list(FakeChip(self.REAL), {})
+        self.assertNotIn("0x", json.dumps(r))
+
+    def test_empty_output_is_zero_vlans_not_a_crash(self):
+        r = bcmd.op_vlan_list(FakeChip(""), {})
+        self.assertEqual(r["count"], 0)
+
+    def test_tagged_trunk_shows_members_without_untagged(self):
+        c = FakeChip("vlan 100\tports xe8,xe9 (0x1), untagged  (0x0)\n")
+        r = bcmd.op_vlan_list(c, {})
+        self.assertEqual(r["vlans"][0]["ports"], ["xe8", "xe9"])
+        self.assertEqual(r["vlans"][0]["untagged"], [])
 
 
 class ErrorNaming(unittest.TestCase):

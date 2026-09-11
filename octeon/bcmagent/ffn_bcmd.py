@@ -1620,10 +1620,27 @@ def op_vlan_list(chip, req):
     text = chip.run("vlan show")
     vlans = []
     for line in text.splitlines():
-        m = re.match(r"\s*(\d+)\s+(.*)$", line)
+        # The real format, confirmed against the chip:
+        #
+        #   vlan 1\tports ce3,xl24,xe5,xe8 (0x0000...0001000128), untagged ce3,... (0x...)
+        #
+        # An earlier version matched r"\s*(\d+)\s+" -- a line STARTING with the
+        # vid -- and silently returned zero VLANs on a chip that had one. The
+        # lesson is that a read-back parser has to be checked against real
+        # output, because "no VLANs" and "my regex missed" look identical.
+        m = re.match(r"\s*vlan\s+(\d+)\s+(.*)$", line, re.I)
         if not m:
             continue
-        vlans.append({"vid": int(m.group(1)), "detail": m.group(2).strip()[:160]})
+        vid, rest = int(m.group(1)), m.group(2)
+        # Drop the enormous hex port bitmaps: the names carry the same fact and
+        # a 300-character constant in a JSON reply is only noise.
+        members = re.search(r"ports\s+([^\s(]+)", rest)
+        untag = re.search(r"untagged\s+([^\s(]+)", rest)
+        vlans.append({
+            "vid": vid,
+            "ports": members.group(1).split(",") if members else [],
+            "untagged": untag.group(1).split(",") if untag else [],
+        })
     return {"vlans": vlans, "count": len(vlans), "raw_lines": len(text.splitlines())}
 
 
