@@ -1439,7 +1439,11 @@ def op_phy_mdio(chip, req):
             "output": lines[:20]}
 
 
+from ffn_bcm_link import status as op_link_status, apply as op_link_set
+
 OPS = {
+    "port.link.status": op_link_status,
+    "port.link.set": op_link_set,
     "status": op_status,
     "port.list": op_port_list,
     "port.set": op_port_set,

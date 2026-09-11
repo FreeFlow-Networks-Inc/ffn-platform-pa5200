@@ -194,6 +194,13 @@
   }
   for (const section of ['dataplane', 'chassis', 'interfaces', 'routing', 'overlay', 'inspection'])
     window.ffnExtensions.registerPage('pa5200', section, parent => render(parent, section));
+  window.ffnExtensions.interfaceLinkCapabilities=async name=>{
+    const data=await api(prefix+'/faceplate');
+    const port=data.ports.find(p=>p.name===name);
+    if(!port)return null;
+    return {source:'MP faceplate controller',configurable:!!port.speed_configuration,current_speed_mbps:port.speed_mbps,
+      configured_speed:port.configured_speed,supported_speeds:(port.supported_speeds||[]).map(speed=>({speed_mbps:speed,duplex:'full'}))};
+  };
   async function faceplate(parent) {
     parent.replaceChildren();
     const root=element('div',undefined,parent);
@@ -207,16 +214,36 @@
     if (!root.isConnected) return;
     const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
     message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
-      'Administrative state controls the physical port. Link and speed are observations; link up does not confirm forwarding.';
+      'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Auto retains current advertised abilities; link up does not confirm forwarding.';
     const table=element('table',undefined,root);table.className='data-table';
     const headings=element('tr',undefined,element('thead',undefined,table));
-    for(const h of ['Port','Admin','Link','Speed','Action']) element('th',h,headings);
+    for(const h of ['Port','Admin','Link','Negotiated speed','Configured speed','Action']) element('th',h,headings);
     const body=element('tbody',undefined,table);
     for(const port of data.ports) {
       const row=element('tr',undefined,body);
       for(const value of [port.name,port.available?(port.enabled?'Enabled':'Disabled'):'Unavailable',
                          port.link===null?'Unknown':port.link?'Up':'Down',port.speed_mbps?port.speed_mbps+' Mbps':'Unknown'])
         element('td',value,row);
+      const speedCell=element('td',undefined,row);
+      const speedSelect=element('select',undefined,speedCell);
+      for(const value of ['auto',...(port.supported_speeds||[]).map(String)]){
+        const option=element('option',value==='auto'?'Auto':value+' Mbps',speedSelect);option.value=value;
+      }
+      if(port.configured_speed && !Array.from(speedSelect.options).some(o=>o.value===port.configured_speed)){
+        const option=element('option',port.configured_speed+' Mbps (observed)',speedSelect);option.value=port.configured_speed;
+      }
+      speedSelect.value=port.configured_speed||'auto';speedSelect.disabled=!writable||!port.speed_configuration;
+      speedSelect.setAttribute('aria-label',port.name+' link speed');
+      button(speedCell,'Apply speed',async()=>{
+        root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
+        message.textContent='Applying and verifying '+port.name+' link speed...';
+        try{
+          const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,speed:speedSelect.value})});
+          if(result.activation!=='verified')throw new Error('Link setting was not verified');
+          if(root.isConnected)await faceplate(parent);
+        }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
+      },!writable||!port.speed_configuration);
+      if(!port.speed_configuration)element('small',port.speed_error||'Speed control unavailable for this port',speedCell);
       const action=element('td',undefined,row);
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});
@@ -229,5 +256,64 @@
       },!writable||!port.available);
     }
   }
+  async function phyPage(parent){
+    parent.replaceChildren();const root=element('div',undefined,parent);element('h2','Copper PHYs',root);
+    const message=element('p','Reading PHYs...',root);let data,user;
+    try{[data,user]=await Promise.all([api(prefix+'/phy'),api('/api/auth/me')]);}catch(e){message.textContent=e.message;return;}
+    if(!root.isConnected)return;message.textContent=data.warning;
+    const writable=['admin','superuser'].includes(user.role)&&!data.saved?.pending;
+    if(data.saved?.pending)element('p','Previous PHY change unresolved; inspect hardware before retrying.',root);
+    const table=element('table',undefined,root);table.className='data-table';
+    const headings=element('tr',undefined,element('thead',undefined,table));
+    for(const title of ['PHY address / port','Identity','Firmware','Link','Negotiated speed','Advertise'])element('th',title,headings);
+    const body=element('tbody',undefined,table);
+    for(const phy of data.phys){
+      const row=element('tr',undefined,body);
+      for(const value of [String(phy.phy)+(phy.interface?' / '+phy.interface:' / mapping unverified'),phy.identified?'BCM84848':'Unknown',phy.ready?'Running 0x'+phy.firmware.toString(16):'Not ready',phy.link?'Up':'Down',phy.speed_mbps?phy.speed_mbps+' Mbps':'Unknown'])element('td',value,row);
+      const cell=element('td',undefined,row),select=element('select',undefined,cell);
+      for(const speed of ['auto',...(phy.supported_speeds||[]).map(String)]){const o=element('option',speed==='auto'?'Auto (100M/1G/10G)':speed+' Mbps only',select);o.value=speed;}
+      select.value=phy.configured_speed||'auto';select.disabled=!writable||!phy.ready;
+      select.setAttribute('aria-label','PHY '+phy.phy+' advertised speed');
+      button(cell,'Apply PHY setting',async()=>{
+        if(!confirm('Change PHY '+phy.phy+' advertisement? This can interrupt '+(phy.interface||'an unmapped copper port')+'.'))return;
+        root.querySelectorAll('button,select').forEach(n=>{n.disabled=true;});
+        try{const result=await api(prefix+'/phy/set',{method:'POST',body:JSON.stringify({revision:data.revision,phy:phy.phy,speed:select.value})});
+          if(result.activation!=='verified')throw new Error('PHY configuration unverified');
+          if(root.isConnected)await phyPage(parent);
+        }catch(e){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}
+      },!writable||!phy.ready);
+    }
+    const refresh=button(root,'Refresh',()=>phyPage(parent));
+  }
+  window.ffnExtensions.registerPage('pa5200','phy',phyPage);
+  async function bcmService(parent){
+    parent.replaceChildren();const root=element('div',undefined,parent);
+    element('h2','BCM Switch Service',root);
+    const message=element('p','Loading service health...',root);
+    let data,user;
+    try{[data,user]=await Promise.all([api(prefix+'/bcm'),api('/api/auth/me')]);}
+    catch(e){message.textContent=e.message;return;}
+    if(!root.isConnected)return;
+    message.textContent=data.warning;
+    element('p','Service: '+data.service.ActiveState+' / '+data.service.SubState+'; PID '+data.service.MainPID,root);
+    element('p','Switch: '+(data.chip?.state||'Unavailable')+'; forwarding has not been verified',root);
+    if(data.request)element('p','Last request: '+data.request.operation+' ('+(data.operation_complete?'service transition complete':'pending')+')',root);
+    if(data.configuration_reapply_required)element('p','Recommit configuration and verify port/forwarding state after startup.',root);
+    const label=element('label',undefined,root);const ack=element('input',undefined,label);ack.type='checkbox';
+    label.appendChild(document.createTextNode(' I acknowledge that this operation can interrupt all faceplate links.'));
+    const writable=['admin','superuser'].includes(user.role)&&data.operation_complete;
+    const buttons=[];
+    for(const operation of ['start','stop','restart'])buttons.push(button(root,operation,async()=>{
+      root.querySelectorAll('button,input').forEach(node=>{node.disabled=true;});
+      try{
+        const result=await api(prefix+'/bcm/set',{method:'POST',body:JSON.stringify({revision:data.revision,operation,acknowledge_link_outage:ack.checked})});
+        message.textContent=result.message||'Operation submitted; refresh service health.';
+      }catch(e){message.textContent=e.message;}
+      refresh.disabled=false;
+    },true));
+    ack.onchange=()=>buttons.forEach(b=>{b.disabled=!writable||!ack.checked;});
+    const refresh=button(root,'Refresh',()=>bcmService(parent));
+  }
+  window.ffnExtensions.registerPage('pa5200','bcm',bcmService);
   window.ffnExtensions.registerPage('pa5200', 'nif', faceplate);
 })();

@@ -5,6 +5,11 @@ from unittest.mock import Mock
 from cli_extension import handle
 
 class CLITests(unittest.TestCase):
+    def test_interface_speed_uses_mp_api_and_current_revision(self):
+        api=Mock(side_effect=[{'revision':42},{'activation':'verified'}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(handle('request platform interface ethernet1/5 link-speed 1000',api,'session'))
+        api.assert_called_with('/api/system/runtime/faceplate/set',method='POST',token='session',body={'revision':42,'port':5,'speed':'1000'})
     def test_shared_authenticated_path(self):
         api=Mock(return_value={'control':{'trace':['mp']}})
         with contextlib.redirect_stdout(io.StringIO()):

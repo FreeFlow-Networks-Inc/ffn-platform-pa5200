@@ -129,6 +129,46 @@
         "fabric",
         "status"
       ]
+    },
+    "bcm": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "bcm",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "bcm",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "bcm",
+        "apply"
+      ]
+    },
+    "phy": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "phy",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "phy",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "phy",
+        "apply"
+      ]
     }
   },
   "role": "mp"

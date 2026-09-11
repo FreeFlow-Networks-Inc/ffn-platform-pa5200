@@ -45,13 +45,23 @@ class PlatformApplier:
             observed=next((p for p in faceplate['ports'] if p['port']==port),None)
             if not observed or not observed['available']:
                 status.fail(name,'pa5200','Faceplate port unavailable');continue
+            speed=entry.findtext('link-speed','auto')
+            if entry.findtext('link-duplex','auto') not in ('auto','full'):
+                status.fail(name,'pa5200','Half duplex is not supported');continue
+            if entry.find('link-speed') is not None or observed.get('speed_configuration'):
+                if not observed.get('speed_configuration') or speed not in ['auto']+[str(v) for v in observed.get('supported_speeds',[])]:
+                    status.fail(name+'/link-speed','pa5200','Requested speed is unavailable');continue
+                if observed.get('configured_speed')!=speed:
+                    answer=rpc('faceplate','apply',{'revision':faceplate['revision'],'port':port,'speed':speed})
+                    faceplate=answer['data']
+                status.ok(name+'/link-speed',None,speed,'pa5200','SDK link setting read back through MP daemon')
             if observed['enabled']!=enabled:
                 answer=rpc('faceplate','apply',{'revision':faceplate['revision'],'port':port,'enabled':enabled})
                 faceplate=answer['data']
             status.ok(name+'/link-state',None,state,'pa5200','Physical administrative state verified through MP daemon')
             if key not in network['config']['ports']:
                 status.fail(name,'pa5200','No commissioned dataplane attachment for this port');continue
-            unsupported=[child.tag for child in entry if child.tag not in ('comment','link-state','layer3')]
+            unsupported=[child.tag for child in entry if child.tag not in ('comment','link-state','link-speed','link-duplex','layer3')]
             l3=entry.find('layer3')
             if unsupported or l3 is None or any(c.tag not in ('ip','mtu') for c in l3):
                 status.fail(name,'pa5200','Interface mode or option is not implemented by this config adapter');continue
