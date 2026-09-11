@@ -27,6 +27,7 @@ KEYS
     dp.fabric.port.<name>.enable = 1|0
     dp.fabric.vlan.<vid>.ports   = xe5,xe8      (applied, untagged)
     dp.fabric.stp.forward        = xe5,xe8      (applied)
+    dp.fabric.trunk.<tid>.members = xe8,xe9     (applied; not yet silicon-proven)
 
 VLAN AND STP ARE APPLIED NOW. They were recorded-but-skipped for as long as
 ffn-bcmd exposed only port enable and loopback; it now has vlan.create,
@@ -247,8 +248,46 @@ def main():
             else:
                 warn("stp.forward: %s" % r.get("error"))
 
-        elif rest.startswith("vlan.") or rest.startswith("stp."):
-            warn("unrecognised vlan/stp key: %s" % key)
+        elif rest.startswith("trunk.") and rest.endswith(".members"):
+            # dp.fabric.trunk.<tid>.members = xe8,xe9
+            #
+            # HARDWARE link aggregation, on the switch. This is a different
+            # thing from octeon/debian/ffn_lacp.py, which manages Linux
+            # 802.3ad bonds on the MP: front ports are BCM switch ports and
+            # not Linux netdevs, so Linux bonding cannot aggregate them at all
+            # (its preflight correctly refuses, because the members do not
+            # exist as links). Aggregating faceplate ports has to happen here.
+            #
+            # NOT YET VALIDATED ON SILICON: the trunk calls cannot be
+            # exercised until ports reach the Ethernet class, the same
+            # config gate stp.forward hits. Failures are reported with the
+            # API status rather than retried.
+            tid_s = rest[len("trunk."):-len(".members")]
+            if not tid_s.isdigit():
+                warn("bad trunk key (tid must be numeric): %s" % key)
+                continue
+            names = [x.strip() for x in str(val).split(",") if x.strip()]
+            ports, unknown = [], []
+            for n in names:
+                p = by_name.get(n)
+                (ports.append(p["port"]) if p else unknown.append(n))
+            if unknown:
+                warn("trunk %s: no such fabric port(s): %s"
+                     % (tid_s, ", ".join(unknown)))
+            if len(ports) < 2:
+                warn("trunk %s needs at least 2 resolvable members; got %s"
+                     % (tid_s, ports))
+                continue
+            r = call({"op": "trunk.create", "tid": int(tid_s), "ports": ports})
+            if r.get("ok"):
+                log("trunk %s: members %s" % (tid_s, ports))
+                changed += 1
+            else:
+                warn("trunk %s: %s" % (tid_s, r.get("error")))
+
+        elif rest.startswith("vlan.") or rest.startswith("stp.") \
+                or rest.startswith("trunk."):
+            warn("unrecognised vlan/stp/trunk key: %s" % key)
             skipped += 1
 
         elif rest == "protected":
