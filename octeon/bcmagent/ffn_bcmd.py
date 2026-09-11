@@ -1439,6 +1439,293 @@ def op_phy_mdio(chip, req):
             "output": lines[:20]}
 
 
+CINT_NL = chr(10)
+
+# ---------------------------------------------------------------------------
+# VLAN / STP / trunk
+#
+# These exist because control/apply.d/50-fabric renders dp.fabric.vlan.* and
+# dp.fabric.stp.forward and then reports them UNAPPLIED -- ffn-bcmd had no way
+# to program them. Everything below drives the BCM API through the same single
+# long-lived cint session op_port_set uses, and checks the API's own return
+# code. Shell text is never pattern-matched for success.
+# ---------------------------------------------------------------------------
+
+def _cint_rv(chip, body, what):
+    """Run a cint fragment that prints FFNRV <rv>, and insist on rv == 0.
+
+    op_port_set had this parse written inline; it is needed by every op here,
+    so it is one function now. The fragment MUST print exactly one FFNRV line:
+    a missing marker means the recipe died before reaching it, which is a
+    different failure from a non-zero rv and is reported as such.
+    """
+    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+    m = re.search(r"FFNRV (-?\d+)", text)
+    if not m:
+        raise RuntimeError("no status from %s; output: %s" % (what, text[-400:]))
+    rv = int(m.group(1))
+    if rv != 0:
+        raise RuntimeError("%s returned %d (%s)" % (what, rv, _bcm_err(rv)))
+    return text
+
+
+def _bcm_err(rv):
+    """Name the common BCM error codes, so a caller is not left with -18.
+
+    -18 in particular is the one that matters here: BCM_E_PORT is what
+    bcm_port_stp_set returns for a port that is not in the Ethernet class, and
+    the cure is a tm_port_header_type_in/out_<port>=ETH config change plus a
+    re-init -- NOT a retry. See bcm/ffn_bcm_l2.c.
+    """
+    return {0: "OK", -1: "INTERNAL", -2: "MEMORY", -3: "UNIT", -4: "PARAM",
+            -5: "EMPTY", -6: "FULL", -7: "NOT_FOUND", -8: "EXISTS",
+            -9: "TIMEOUT", -10: "BUSY", -11: "FAIL", -12: "DISABLED",
+            -13: "BADID", -14: "RESOURCE", -15: "CONFIG", -16: "UNAVAIL",
+            -17: "INIT", -18: "PORT (not in the Ethernet class?)"}.get(rv, "?")
+
+
+def _pbmp(ports):
+    """cint text that builds a bcm_pbmp_t from a list of port numbers."""
+    out = ["BCM_PBMP_CLEAR(pbmp);"]
+    for p in ports:
+        out.append("BCM_PBMP_PORT_ADD(pbmp, %d);" % int(p))
+    return " ".join(out)
+
+
+def _ubmp(ports):
+    out = ["BCM_PBMP_CLEAR(ubmp);"]
+    for p in ports:
+        out.append("BCM_PBMP_PORT_ADD(ubmp, %d);" % int(p))
+    return " ".join(out)
+
+
+def _ports_arg(req, key="ports"):
+    """Accept [5,8] or "xe5,xe8" or "5,8" and return a list of port numbers."""
+    v = req.get(key)
+    if v is None:
+        return []
+    if isinstance(v, (int, float)):
+        return [int(v)]
+    if isinstance(v, str):
+        v = [x for x in re.split(r"[,\s]+", v.strip()) if x]
+    out = []
+    for item in v:
+        if isinstance(item, (int, float)):
+            out.append(int(item))
+            continue
+        s = str(item).strip()
+        m = re.match(r"^(?:xe|xl|ce|il|xlge|cge)(\d+)$", s, re.I)
+        out.append(int(m.group(1)) if m else int(s))
+    return out
+
+
+_STP_STATES = {
+    "disable": "BCM_STG_STP_DISABLE",
+    "block":   "BCM_STG_STP_BLOCK",
+    "listen":  "BCM_STG_STP_LISTEN",
+    "learn":   "BCM_STG_STP_LEARN",
+    "forward": "BCM_STG_STP_FORWARD",
+}
+
+
+def op_vlan_create(chip, req):
+    """bcm_vlan_create. Idempotent: BCM_E_EXISTS is success, not an error.
+
+    An applier re-runs on every commit, so treating "already there" as a
+    failure would make a converged configuration look broken.
+    """
+    vid = int(req["vid"])
+    if not 1 <= vid <= 4094:
+        raise ValueError("vid must be 1..4094")
+    body = ("{ int rv; rv = bcm_vlan_create(0, %d); "
+            'printf("FFNRV %%d\\n", rv); }') % vid
+    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+    m = re.search(r"FFNRV (-?\d+)", text)
+    if not m:
+        raise RuntimeError("no status from bcm_vlan_create; output: %s" % text[-400:])
+    rv = int(m.group(1))
+    if rv == -8:                      # BCM_E_EXISTS
+        return {"vid": vid, "created": False, "existed": True}
+    if rv != 0:
+        raise RuntimeError("bcm_vlan_create(%d) returned %d (%s)"
+                           % (vid, rv, _bcm_err(rv)))
+    return {"vid": vid, "created": True, "existed": False}
+
+
+def op_vlan_destroy(chip, req):
+    """bcm_vlan_destroy. BCM_E_NOT_FOUND is success for the same reason."""
+    vid = int(req["vid"])
+    if vid == 1:
+        raise ValueError("refusing to destroy VLAN 1: it is the default "
+                         "forwarding domain and removing it strands every "
+                         "port that has no other membership")
+    body = ("{ int rv; rv = bcm_vlan_destroy(0, %d); "
+            'printf("FFNRV %%d\\n", rv); }') % vid
+    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+    m = re.search(r"FFNRV (-?\d+)", text)
+    if not m:
+        raise RuntimeError("no status from bcm_vlan_destroy; output: %s" % text[-400:])
+    rv = int(m.group(1))
+    if rv == -7:                      # BCM_E_NOT_FOUND
+        return {"vid": vid, "destroyed": False, "absent": True}
+    if rv != 0:
+        raise RuntimeError("bcm_vlan_destroy(%d) returned %d (%s)"
+                           % (vid, rv, _bcm_err(rv)))
+    return {"vid": vid, "destroyed": True}
+
+
+def op_vlan_port_add(chip, req):
+    """bcm_vlan_port_add: put ports in a VLAN, optionally untagged.
+
+    `untagged` defaults to ALL the given ports, because the common case here
+    is an access/untagged domain -- the flat VLAN 1 this chip has always used
+    is exactly that. Pass untagged=[] for a tagged trunk.
+    """
+    vid = int(req["vid"])
+    ports = _ports_arg(req, "ports")
+    if not ports:
+        raise ValueError("ports is required")
+    unt = _ports_arg(req, "untagged") if "untagged" in req else list(ports)
+    extra = [p for p in unt if p not in ports]
+    if extra:
+        raise ValueError("untagged ports must also be members: %s" % extra)
+    body = ("{ int rv; bcm_pbmp_t pbmp; bcm_pbmp_t ubmp; %s %s "
+            "rv = bcm_vlan_port_add(0, %d, pbmp, ubmp); "
+            'printf("FFNRV %%d\\n", rv); }') % (_pbmp(ports), _ubmp(unt), vid)
+    _cint_rv(chip, body, "bcm_vlan_port_add(vid=%d)" % vid)
+    return {"vid": vid, "ports": ports, "untagged": unt}
+
+
+def op_vlan_port_remove(chip, req):
+    """bcm_vlan_port_remove."""
+    vid = int(req["vid"])
+    ports = _ports_arg(req, "ports")
+    if not ports:
+        raise ValueError("ports is required")
+    body = ("{ int rv; bcm_pbmp_t pbmp; %s "
+            "rv = bcm_vlan_port_remove(0, %d, pbmp); "
+            'printf("FFNRV %%d\\n", rv); }') % (_pbmp(ports), vid)
+    _cint_rv(chip, body, "bcm_vlan_port_remove(vid=%d)" % vid)
+    return {"vid": vid, "removed": ports}
+
+
+def op_vlan_list(chip, req):
+    """Read back the VLAN table via the shell `vlan show`.
+
+    Read-back goes through the shell rather than the API because
+    bcm_vlan_list() hands back an allocated array, and freeing it correctly
+    from a cint fragment is more ways to go wrong than parsing a table.
+    Writes all go through the API, where the status can be checked.
+    """
+    text = chip.run("vlan show")
+    vlans = []
+    for line in text.splitlines():
+        m = re.match(r"\s*(\d+)\s+(.*)$", line)
+        if not m:
+            continue
+        vlans.append({"vid": int(m.group(1)), "detail": m.group(2).strip()[:160]})
+    return {"vlans": vlans, "count": len(vlans), "raw_lines": len(text.splitlines())}
+
+
+def op_stp_set(chip, req):
+    """bcm_port_stp_set for one or more ports.
+
+    THE -18 CASE IS NOT A RETRYABLE ERROR. bcm_petra_port_stp_set rejects any
+    port that is not in the Ethernet class (STG_CHECK_PORT wants IS_E_PORT /
+    IS_HG_PORT / IS_SPI_SUBPORT_PORT), and the class comes from
+    tm_port_header_type_in/out_<port> in config.bcm, read at init. So -18 means
+    "fix the config and re-init", and the error says that rather than leaving
+    the caller to rediscover it. See bcm/ffn_bcm_l2.c.
+    """
+    state = str(req.get("state", "forward")).lower()
+    if state not in _STP_STATES:
+        raise ValueError("state must be one of: %s" % ", ".join(sorted(_STP_STATES)))
+    ports = _ports_arg(req, "ports") or ([int(req["port"])] if "port" in req else [])
+    if not ports:
+        raise ValueError("port or ports is required")
+    done, failed = [], []
+    for p in ports:
+        body = ("{ int rv; rv = bcm_port_stp_set(0, %d, %s); "
+                'printf("FFNRV %%d\\n", rv); }') % (p, _STP_STATES[state])
+        text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+        m = re.search(r"FFNRV (-?\d+)", text)
+        rv = int(m.group(1)) if m else None
+        if rv == 0:
+            done.append(p)
+        else:
+            failed.append({"port": p, "rv": rv, "meaning": _bcm_err(rv) if rv is not None else "no status"})
+    out = {"state": state, "set": done, "failed": failed}
+    if failed and not done:
+        hint = ("every port was rejected. rv=-18 means the port is not in the "
+                "Ethernet class: set tm_port_header_type_in_<port>=ETH and "
+                "tm_port_header_type_out_<port>=ETH in config.bcm and re-init. "
+                "Only port 3 ships as ETH.")
+        raise RuntimeError("bcm_port_stp_set failed for all ports: %s -- %s"
+                           % (failed, hint))
+    return out
+
+
+def op_trunk_create(chip, req):
+    """Create a LAG (BCM trunk) and set its members in one step.
+
+    NOT YET VALIDATED ON SILICON -- see the caveat in octeon/bcmagent/README
+    or the commit that added this. The call sequence is
+    bcm_trunk_create_id + bcm_trunk_set, which is the documented DPP path, but
+    it cannot be exercised until ports are in the Ethernet class (the same
+    config gate bcm_port_stp_set hits), so this returns the API status rather
+    than claiming success it has not seen.
+
+    This is the hardware backend that octeon/debian/ffn_lacp.py needs and does
+    not have: that module drives Linux 802.3ad bonding over front ports
+    p1..p24, which are BCM switch ports and NOT Linux netdevs, so Linux
+    bonding can never aggregate them.
+    """
+    tid = int(req["tid"])
+    ports = _ports_arg(req, "ports")
+    if len(ports) < 2:
+        raise ValueError("a trunk needs at least 2 member ports")
+    if len(ports) > 8:
+        raise ValueError("refusing more than 8 members")
+    members = " ".join(
+        "bcm_trunk_member_t_init(&mem[%d]); mem[%d].gport = %d;" % (i, i, p)
+        for i, p in enumerate(ports))
+    body = ("{ int rv; bcm_trunk_info_t ti; bcm_trunk_member_t mem[8]; "
+            "bcm_trunk_info_t_init(&ti); %s "
+            "rv = bcm_trunk_create_id(0, 0, %d); "
+            'printf("FFNTC %%d\\n", rv); '
+            "rv = bcm_trunk_set(0, %d, &ti, %d, mem); "
+            'printf("FFNRV %%d\\n", rv); }') % (members, tid, tid, len(ports))
+    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+    cm = re.search(r"FFNTC (-?\d+)", text)
+    sm = re.search(r"FFNRV (-?\d+)", text)
+    create_rv = int(cm.group(1)) if cm else None
+    set_rv = int(sm.group(1)) if sm else None
+    # BCM_E_EXISTS on create is fine; the set is what decides.
+    if set_rv != 0:
+        raise RuntimeError("bcm_trunk_set(tid=%d) returned %s (%s); "
+                           "create_id returned %s (%s)"
+                           % (tid, set_rv, _bcm_err(set_rv) if set_rv is not None else "no status",
+                              create_rv, _bcm_err(create_rv) if create_rv is not None else "no status"))
+    return {"tid": tid, "members": ports,
+            "create_rv": create_rv, "set_rv": set_rv}
+
+
+def op_trunk_destroy(chip, req):
+    """bcm_trunk_destroy. NOT YET VALIDATED ON SILICON."""
+    tid = int(req["tid"])
+    body = ("{ int rv; rv = bcm_trunk_destroy(0, %d); "
+            'printf("FFNRV %%d\\n", rv); }') % tid
+    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
+    m = re.search(r"FFNRV (-?\d+)", text)
+    rv = int(m.group(1)) if m else None
+    if rv == -7:
+        return {"tid": tid, "destroyed": False, "absent": True}
+    if rv != 0:
+        raise RuntimeError("bcm_trunk_destroy(%d) returned %s (%s)"
+                           % (tid, rv, _bcm_err(rv) if rv is not None else "no status"))
+    return {"tid": tid, "destroyed": True}
+
+
 OPS = {
     "status": op_status,
     "port.list": op_port_list,
@@ -1454,6 +1741,14 @@ OPS = {
     "led.status": op_led_status,
     "sys.inventory": op_sys_inventory,
     "sys.dpstatus": op_sys_dpstatus,
+    "vlan.create": op_vlan_create,
+    "vlan.destroy": op_vlan_destroy,
+    "vlan.port.add": op_vlan_port_add,
+    "vlan.port.remove": op_vlan_port_remove,
+    "vlan.list": op_vlan_list,
+    "stp.set": op_stp_set,
+    "trunk.create": op_trunk_create,
+    "trunk.destroy": op_trunk_destroy,
     "raw": op_raw,
 }
 
