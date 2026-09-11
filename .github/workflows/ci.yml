@@ -1,0 +1,192 @@
+name: CI
+
+# pa5200 had no CI at all: 58k lines, 133 Python files, 78 C/H files, 81 shell
+# scripts and 30 test files, none of it automatically verified -- while the
+# repository it is a submodule of runs two workflows. That is the wrong way
+# round, because this is the half that talks to a switch ASIC and an OCTEON,
+# where a mistake costs a re-init or a power cycle rather than a retry.
+#
+# Everything here runs with no secrets, no privileges and no hardware, so it
+# works on pull requests from forks.
+#
+# DELIBERATELY NOT BUILT: the OpenBCM / OpenNSA trees. Their licence permits
+# binary but not source redistribution, so they are not in this repository and
+# CI must not start expecting them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax:
+    name: everything parses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # The cheapest gate that finds real breakage. This project has shipped a
+      # heredoc-mangled Python block that was a SyntaxError from the moment it
+      # was committed, because `sh -n` does not look inside heredocs and
+      # nothing else checked.
+      - name: every Python file compiles
+        run: |
+          fail=0
+          n=0
+          while IFS= read -r f; do
+            n=$((n+1))
+            python3 -m py_compile "$f" 2>/tmp/e || {
+              echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
+          done <<< "$(git ls-files '*.py')"
+          echo "checked $n Python files"
+          exit $fail
+
+      - name: every shell script parses
+        run: |
+          fail=0
+          n=0
+          while IFS= read -r f; do
+            n=$((n+1))
+            sh -n "$f" 2>/tmp/e || { echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
+          done <<< "$(git ls-files '*.sh')"
+          echo "checked $n shell scripts"
+          exit $fail
+
+      # CRLF in a shebang makes the kernel exec "/bin/sh\r" and fail with a
+      # "no such file" naming a file that plainly exists. .gitattributes
+      # declares `* text=auto eol=lf`; this proves the declaration is actually
+      # holding for the committed blobs rather than trusting it.
+      - name: no CRLF in committed blobs
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            case "$f" in *.sh|*.py|*.c|*.h|*.service|*.conf) ;; *) continue ;; esac
+            if git show "HEAD:$f" 2>/dev/null | grep -qU $'\r'; then
+              echo "CRLF in blob: $f"; fail=1
+            fi
+          done <<< "$(git ls-files)"
+          echo "blob line endings checked"
+          exit $fail
+
+  python-tests:
+    name: python suites (no hardware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      - name: deps
+        run: python3 -m pip install --quiet pyelftools
+
+      # Each suite is NAMED rather than discovered, matching FFN-NGFW's ci.yml.
+      # A discovery loop would turn red the moment someone adds a test that
+      # needs a switch ASIC, and the honest answer to "which tests can CI run"
+      # is a list, not a glob.
+      #
+      # These suites import sibling modules by bare name, so each runs from its
+      # own directory.
+      - name: config render
+        run: cd control && python3 test_config_render.py
+      - name: fe100 lookup health
+        run: cd fe100 && python3 test_lookup_health.py
+      - name: fe100 parser codec
+        run: cd fe100 && python3 test_parser_codec.py
+      - name: bcm agent -- cint result parsing
+        run: cd octeon/bcmagent && python3 test_cint_result.py
+      - name: bcm agent -- dsc parsing
+        run: cd octeon/bcmagent && python3 test_dscparse.py
+      - name: bcm agent -- VLAN/STP/trunk ops
+        run: cd octeon/bcmagent && python3 test_l2_ops.py
+      - name: bcm agent -- ps parsing
+        run: cd octeon/bcmagent && python3 test_psparse.py
+      - name: fabric codec
+        run: cd octeon/debian && python3 test_fabric_codec.py
+      - name: network config
+        run: cd octeon/debian && python3 test_network_config.py
+      - name: overlay
+        run: cd octeon/debian && python3 test_overlay.py
+
+      # ffn_thermal.py imports ffn_i2cread by bare name, but that module lives
+      # in octeon/i2c -- on the appliance it is installed into /usr/local/bin,
+      # which is why this works there and not from a checkout. PYTHONPATH is
+      # the fix rather than moving the file, because the install layout is the
+      # one that matters at runtime.
+      - name: thermal policy
+        run: cd octeon/debian && PYTHONPATH=$GITHUB_WORKSPACE/octeon/i2c python3 test_thermal_policy.py
+      - name: power policy
+        run: cd octeon/debian && PYTHONPATH=$GITHUB_WORKSPACE/octeon/i2c python3 test_power_policy.py
+
+  dataplane:
+    name: dataplane C suites, little AND big endian
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: false
+          persist-credentials: false
+
+      # THE BIG-ENDIAN RUN IS THE POINT OF THIS JOB.
+      #
+      # The real target is a big-endian MIPS64 OCTEON. The dataplane tests say
+      # so themselves: "running these suites ONLY on x86 tests them on the one
+      # byte order they will never see in production". The packet-touching
+      # paths -- the IPv4 header checksum in particular -- pass on x86 and
+      # corrupt every forwarded packet on the OCTEON when the byte order is
+      # wrong, which is the exact bug class ffn_dp_oct.h warns about.
+      #
+      # Both tools are plain Ubuntu packages, so CI can do this even when the
+      # lab VM holding the cross toolchain is unavailable -- which is precisely
+      # when it is most useful.
+      - name: cross toolchain and emulator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mips64-linux-gnuabi64 qemu-user-static
+          mips64-linux-gnuabi64-gcc --version | head -1
+          qemu-mips64-static --version | head -1
+
+      - name: little-endian (x86-64)
+        working-directory: octeon/dpfwd
+        run: |
+          make -s test
+          make -s l3-test
+          make -s v6-test
+          make -s arp-test
+          make -s engine-test
+          make -s vsys-test
+          make -s oct-test
+          make -s oct3-test
+
+      # qemu-user-static installs the binary as qemu-mips64-static; the
+      # Makefile calls qemu-mips64. Linked rather than the Makefile edited, so
+      # the same rules work on a workstation with qemu-user installed.
+      - name: big-endian (qemu-mips64)
+        working-directory: octeon/dpfwd
+        run: |
+          sudo ln -sf "$(command -v qemu-mips64-static)" /usr/local/bin/qemu-mips64
+          make -s l3-qemu
+          make -s v6-qemu
+          make -s arp-qemu
+          make -s qemu-test
+          make -s oct-qemu
+          make -s oct3-qemu
+
+      # The inline adapter is a shared object the Python side dlopens, so it is
+      # only testable once built -- which is why it is its own step rather than
+      # part of the python-tests job.
+      - name: inline adapter (builds the .so, then exercises it)
+        working-directory: octeon/dpfwd
+        run: make -s inline-test
