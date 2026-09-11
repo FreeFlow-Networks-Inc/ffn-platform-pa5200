@@ -115,9 +115,97 @@ the DP.
 The reconstructed init is built with the **same** SDK gcc 4.7.0, to keep the
 compiler out of the variables.
 
+## Booting it from the Debian CP (`../dpboot/dp-nfsboot-debian.sh`)
+
+The CP moved from OpenWrt to Debian and the DP came back up on the *recovery*
+kernel, which left it on its initramfs — `/proc/mounts` read `rootfs / rootfs`
+and nothing was mounted. Re-rooting it needed a port of `dp-nfsboot.sh`, because
+every path that script used is now on the far side of a chroot and three of the
+tools it called are not installed on a Debian root.
+
+Verified after the port, read back out of the DP rather than out of the boot
+script's own log:
+
+```
+127.1.2.1:/opt/dproot / nfs rw,relatime,vers=3,...,nolock,proto=tcp
+/proc/1/root/etc/openwrt_release   DISTRIB_ID='OpenWrt'  DISTRIB_RELEASE='24.10.4'
+chroot /proc/1/root busybox uname  Linux 6.18.49-00007-g616977ba1b11 mips64
+/proc/1/root/oldroot               bin dev etc ffn-switch-root init lib ... sbin
+```
+
+and the property the layering exists for, proven in both directions — a file
+written on the MP's SSD read back on the DP, and a DP write seen on the MP:
+
+```
+MP:  /opt/ffn-cproot-owrt/opt/dproot/<stamp>  ->  DP: cat /proc/1/root/<stamp>
+DP:  echo > /proc/1/root/dp-wtest            ->  MP: cat .../opt/dproot/dp-wtest
+```
+
+`fsid=7` then shows up in `/proc/fs/nfsd/exports`, which is the positive
+evidence that a real client mounted it — the export table alone only proves
+what was *offered*.
+
+### What had to change, and why
+
+**The boot tooling runs under `chroot /opt/ffn-compat`.** `dpboot8.sh` needs
+`$VT=/tmp/dpfs` (the vendor tree, NFS-mounted read-only and used in place),
+`$FFN=/opt/ffn` (the staged kernels) and a glibc loader at `/lib/ld.so.1` for
+the vendor `oct-remote-*` binaries. On the Debian CP none of those resolve —
+`/opt` holds only `ffn-compat`. All of them resolve inside it, which already
+has `proc`, `sys` and `dev` bound in. So the boot is run there, the same way
+`ffn-bcm-debian.sh` runs the BCM agent, and every path `dpboot8` prints is
+chroot-relative.
+
+**`ffn_dpnetd` is staged on tmpfs at `/run/ffn-dp`, never run from the compat
+root.** It is the transport the NFS root is served across; if a page of its own
+executable had to be faulted in from an NFS mount, the fault would need the
+daemon that is blocked servicing it. This is the same reasoning that keeps the
+initramfs at `/oldroot`.
+
+**`pidof`, `ps` and `ping` are all absent.** procps is not installed on the
+CP's 91-package root — the same gap that made `sysctl` missing and sent
+`10-forwarding` to `/proc/sys` — and neither is iputils. Processes are found by
+walking `/proc/[0-9]*/comm`, and DP liveness is judged from the mailbox agent
+rather than from ICMP.
+
+**`ffn-cfgagent` is stopped for the duration.** `ffn-dpsh` is single-session and
+concurrent clients wedge it; the config agent pushes `dp.env` over that same
+channel on a timer, so leaving it running races the boot for the mailbox. It is
+restarted at the end and reconverges on its own (`converged on version 1`).
+
+## `strings` on a vmlinux cannot see the initramfs
+
+Checking a kernel for the agent branch before booting it is worth doing —
+booting one without it strands the DP. But the obvious check is wrong:
+
+```
+strings ffn-vmlinux-6.18.49-dp-nfsroot | grep -c /sbin/ffn_dpagent2   ->  0
+strings ffn-vmlinux-6.18.49-dp-pknd4   | grep -c /sbin/ffn_dpagent2   ->  0
+```
+
+Both are zero, and the second kernel's agent was **running at that moment**.
+The initramfs is an embedded *xz-compressed* cpio, so a zero from `strings` is
+not evidence of absence — it is evidence the check was wrong, which is the more
+dangerous of the two, because it fails in the direction of "do not boot this"
+only by luck.
+
+`../dpboot/ffn_dp_kernel_check.py` locates the blob by compression magic,
+decompresses it and searches the real bytes. It reports an undecodable image as
+**inconclusive and non-zero**, never as a pass. On the two staged kernels:
+
+| kernel | agent | `/sbin/ffn-nfsroot` | `ffn-switch-root` |
+|---|---|---|---|
+| `…-dp-nfsroot` | yes | yes | yes |
+| `…-dp-pknd4` | yes | yes | **no** |
+
+That last column is why the DP sat on its initramfs after the recovery boot.
+pknd4 carries the nfsroot *script* but its pid 1 never looks for the
+`/ffn-switch-root` handover file, so it can mount and cannot hand over. The
+kernel was doing exactly what it was built to do; nothing was broken.
+
 ## ffn-dpsh shows the OLD root, and that is deliberate
 
-`readlink /proc/1/root` reports the NFS root, but commands run through
+`/proc/1/root` *contains* the NFS root, but commands run through
 `ffn-dpsh` see the **initramfs**. That is by design, not a bug: the agent is
 forked before the switch, and `chroot()` affects only the caller and its future
 children. So the control channel stays on the initramfs and is **independent of
@@ -131,6 +219,12 @@ Consequences when debugging:
 * `/proc/mounts` is namespace-wide, so it shows the NFS mount at `/` regardless
   of which root the querying process has. It lists the `rootfs` line too; that
   is normal after `MS_MOVE`, exactly as `switch_root` leaves it.
+* **`readlink /proc/1/root` returns `/`, not a path naming the export.** The new
+  root was *moved onto* `/`, so `/` is genuinely pid 1's root and the kernel has
+  nothing else to report. Reading that as a failed switch is a false alarm; the
+  mount line in `/proc/mounts` and the *contents* of `/proc/1/root` are the real
+  evidence. A write test must also go through `/proc/1/root/...` — writing to
+  `/` over `ffn-dpsh` lands in the initramfs and the MP never sees it.
 
 ## The initramfs is kept at /oldroot, on purpose
 

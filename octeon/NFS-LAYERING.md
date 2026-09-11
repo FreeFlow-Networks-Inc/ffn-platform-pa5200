@@ -32,14 +32,48 @@ hash reconciliation.
 
 ## Layer 1: MP -> CP  (already in place)
 
+The CP now roots on **Debian**, with the old OpenWrt root mounted alongside it:
+
 ```
-127.1.1.1:/opt/ffn-cproot-owrt / nfs rw,vers=3,nolock,proto=tcp
+127.1.1.1:/opt/ffn-cproot-debian-20260909  /              nfs vers=3,nolock
+127.1.1.1:/opt/ffn-cproot-owrt             /opt/ffn-compat nfs vers=3,nolock
 ```
 
-The MP's `/etc/exports` carries `/opt/ffn-cproot-owrt 127.1.0.0/16(rw,sync,
+The MP's `/etc/exports` carries both with `127.1.0.0/16(rw,sync,
 no_root_squash,no_subtree_check)`. Addresses are in 127/8 because the CP reaches
 the world only across the PCIe virtual-ethernet link — see
 `ffn-owrt-mirror.conf` for why that shapes the package feed too.
+
+### What the move to Debian changed, and what it did not
+
+**The DP's root did not move.** It is still authored at
+`/opt/ffn-cproot-owrt/opt/dproot` on the MP and still served as `/opt/dproot`,
+so the identity this whole design exists for is intact — the difference is only
+that the CP reaches it through `/opt/ffn-compat` rather than through its own
+`/`. The daemons that serve it are chrooted there, so the path they resolve is
+unchanged. Nothing had to be copied.
+
+**nfsd is built in, not a module.** `CONFIG_NFSD` was unset in the OpenWrt CP's
+kernel and the module had to be built (below); the Debian CP kernel has it
+compiled in and `/proc/filesystems` lists `nodev nfsd` at boot. The `insmod`
+branch of `ffn-cp-nfsd.sh` is a no-op there and correctly skips itself.
+
+**The NFS userland is used in place, not ported.** `nfs-utils` does not build
+for mips64 here — it wants `libdevmapper-dev`, `libnl-3-dev`,
+`libnl-genl-3-dev` and `rpcsvc-proto`, none of which are in the CP's 91-package
+root. It does not need to: the OpenWrt binaries extracted earlier are already on
+`/opt/ffn-compat`, they are musl-linked against a libc that is right there, and
+they run unmodified under `chroot /opt/ffn-compat`. `readlink /proc/<pid>/root`
+on the live server shows exactly that:
+
+```
+785  rpcbind      root=/opt/ffn-compat
+820  rpc.mountd   root=/opt/ffn-compat
+799..806 nfsd     root=/          (kernel threads; they have no userland root)
+```
+
+That the daemons are chrooted is invisible to clients: `showmount -e 127.1.1.2`
+lists `/opt/dproot` and `/opt/dproot-debian-20260909`, and both mount.
 
 ## Layer 2: CP -> DP  (`ffn-cp-nfsd.sh`)
 
