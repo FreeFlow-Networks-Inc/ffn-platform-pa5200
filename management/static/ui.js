@@ -214,15 +214,15 @@
     if (!root.isConnected) return;
     const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
     message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
-      'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Auto retains current advertised abilities; link up does not confirm forwarding.';
+      'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Copper Auto advertises all supported speeds; optical Auto retains its advertisement. Copper link reflects the external PHY; switch link and forwarding are reported separately.';
     const table=element('table',undefined,root);table.className='data-table';
     const headings=element('tr',undefined,element('thead',undefined,table));
     for(const h of ['Port','Admin','Link','Negotiated speed','Configured speed','Action']) element('th',h,headings);
     const body=element('tbody',undefined,table);
     for(const port of data.ports) {
       const row=element('tr',undefined,body);
-      for(const value of [port.name,port.available?(port.enabled?'Enabled':'Disabled'):'Unavailable',
-                         port.link===null?'Unknown':port.link?'Up':'Down',port.speed_mbps?port.speed_mbps+' Mbps':'Unknown'])
+      for(const value of [port.name,port.available?(port.enabled===null?'Unknown':port.enabled?'Enabled':'Disabled'):'Unavailable',
+                         port.link===null?'Unknown':port.media==='copper'?(port.link?'Up':'Down')+' (switch '+(port.mac_link?'up':'down')+')':port.link?'Up':'Down',port.speed_mbps?port.speed_mbps+' Mbps':'Unknown'])
         element('td',value,row);
       const speedCell=element('td',undefined,row);
       const speedSelect=element('select',undefined,speedCell);
@@ -232,7 +232,7 @@
       if(port.configured_speed && !Array.from(speedSelect.options).some(o=>o.value===port.configured_speed)){
         const option=element('option',port.configured_speed+' Mbps (observed)',speedSelect);option.value=port.configured_speed;
       }
-      speedSelect.value=port.configured_speed||'auto';speedSelect.disabled=!writable||!port.speed_configuration;
+      speedSelect.value=port.configured_speed||'auto';speedSelect.disabled=!writable||!port.speed_configuration||port.phy_pending;
       speedSelect.setAttribute('aria-label',port.name+' link speed');
       button(speedCell,'Apply speed',async()=>{
         root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
@@ -242,8 +242,13 @@
           if(result.activation!=='verified')throw new Error('Link setting was not verified');
           if(root.isConnected)await faceplate(parent);
         }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
-      },!writable||!port.speed_configuration);
+      },!writable||!port.speed_configuration||port.phy_pending);
       if(!port.speed_configuration)element('small',port.speed_error||'Speed control unavailable for this port',speedCell);
+      if(port.media==='copper' && data.copper_sync){
+        const sync=data.copper_sync.ports?.[port.name];
+        const state=sync?.state||data.copper_sync.state;
+        element('small','Switch rate: '+(state==='synchronized'?'matches copper PHY':state||'not observed'),speedCell);
+      }
       const action=element('td',undefined,row);
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});
@@ -253,7 +258,7 @@
           if(result.activation!=='verified') throw new Error('Hardware change was not verified');
           if(root.isConnected) await faceplate(parent);
         } catch(e) { if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;} }
-      },!writable||!port.available);
+      },!writable||!port.available||port.admin_configuration===false||port.phy_pending);
     }
   }
   async function phyPage(parent){

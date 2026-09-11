@@ -7,6 +7,10 @@ class LinkTests(unittest.TestCase):
         chip=Mock();chip.run.return_value='FFNLINK 0 1 10000\nFFNSPEED 1000\nFFNSPEED 10000\nFFNSPEED 40000\nFFNSPEED 100000'
         self.assertEqual(link.status(chip,{'port':16})['supported_speeds'],[1000,10000])
         self.assertEqual(link.status(chip,{'port':34})['supported_speeds'],[40000,100000])
+    def test_echoed_cint_does_not_advertise_unsupported_speeds(self):
+        chip=Mock()
+        chip.run.return_value='cint> if (a.speed_full_duplex & BCM_PORT_ABILITY_1000MB) printf("FFNSPEED 1000\\n");\nFFNLINK 0 0 10000\nFFNSPEED 10000\nFFNSPEED 10000\n'
+        self.assertEqual(link.status(chip,{'port':16})['supported_speeds'],[10000])
     def test_fixed_speed_checked_and_read_back(self):
         chip=Mock();chip.run.side_effect=['FFNLINK 0 1 10000\nFFNSPEED 1000\nFFNSPEED 10000','FFNSET 0','FFNLINK 0 0 1000\nFFNSPEED 1000']
         self.assertEqual(link.apply(chip,{'port':16,'speed':'1000'})['configured_speed'],'1000')

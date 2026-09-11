@@ -35,8 +35,10 @@ async def execute(resource, action, payload, backend=None):
                 if (not {'port','revision'}<=set(payload) or not {'enabled','speed'}&set(payload) or type(payload['port']) is not int or
                         not 1<=payload['port']<=24 or ('enabled' in payload and type(payload['enabled']) is not bool)):
                     raise ValueError('invalid faceplate change')
+                port=next((p for p in observed.get('ports',[]) if p['port']==payload['port']),{})
+                if port.get('media')=='copper' and (port.get('admin_configuration') is False or port.get('phy_pending')):
+                    raise ValueError('Copper control unavailable or pending')
                 if 'speed' in payload:
-                    port=next((p for p in observed.get('ports',[]) if p['port']==payload['port']),{})
                     if not port.get('speed_configuration') or payload['speed'] not in ['auto']+[str(v) for v in port.get('supported_speeds',[])]:
                         raise ValueError('Unsupported link speed')
             if resource=='inspection':

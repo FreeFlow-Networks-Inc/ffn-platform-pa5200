@@ -21,11 +21,11 @@ class FaceplateTests(unittest.TestCase):
                 self.assertEqual(len(before['ports']),24)
                 self.assertNotIn(12,[p['bcm_port'] for p in before['ports']])
                 with self.assertRaises(ValueError): f.apply({'revision':before['revision'],'port':25,'enabled':False})
-                with self.assertRaises(ValueError): f.apply({'revision':-1,'port':1,'enabled':False})
-                result=f.apply({'revision':before['revision'],'port':1,'enabled':False})
+                with self.assertRaises(ValueError): f.apply({'revision':-1,'port':5,'enabled':False})
+                result=f.apply({'revision':before['revision'],'port':5,'enabled':False})
                 self.assertEqual(result['activation'],'verified')
-                self.assertIn({'op':'port.set','port':28,'enable':False},calls)
-                self.assertEqual(json.loads(state.read_text()),{'ports':{'1':False}})
+                self.assertIn({'op':'port.set','port':16,'enable':False},calls)
+                self.assertEqual(json.loads(state.read_text()),{'ports':{'5':False}})
 
     def test_speed_persistence_revision_and_readback(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(f,'STATE',Path(tmp)/'state.json'):
