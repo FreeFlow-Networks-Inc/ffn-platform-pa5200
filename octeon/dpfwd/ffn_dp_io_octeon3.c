@@ -643,6 +643,11 @@ enum oct_gen oct_detect_gen(void)
  *
  * All reads. Safe to run on a live dataplane.
  */
+int cvmx3_is_init_core(void)
+{
+    return cvmx_is_init_core();
+}
+
 void cvmx3_probe_interfaces(FILE *f)
 {
     int iface;
@@ -684,6 +689,12 @@ void cvmx3_probe_interfaces(FILE *f)
 void cvmx3_probe_interfaces(FILE *f)
 {
     fprintf(f, "built without CVMX: no interfaces to probe\n");
+}
+
+/* One process without the SDK, so it is always the one that should act. */
+int cvmx3_is_init_core(void)
+{
+    return 1;
 }
 
 static int  stub3_init(struct oct_ctx *c) { c->available = 0; return DP_ERR_NOMEM; }

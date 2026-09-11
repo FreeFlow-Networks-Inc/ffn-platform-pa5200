@@ -151,7 +151,22 @@ int appmain(int argc, const char *argv[])
 	 * calls appmain() only after cvmx_user_app_init() has returned.
 	 */
 	if (probe) {
-		cvmx3_probe_interfaces(stdout);
+		/* ONE core prints, not forty.
+		 *
+		 * cvmx_user_app_init() forks appmain() onto every core in the
+		 * coremask -- 0xffffffffff, all 40, on this CN78XX -- so without
+		 * this gate each of them probes and prints its own copy of the
+		 * table. The result is not merely 40x too long: the lines
+		 * interleave between cores mid-table, so the columns no longer
+		 * line up with the interface they belong to and the output cannot
+		 * be read at all. Measured: 29628 bytes of shuffled rows.
+		 *
+		 * The other cores still have to return from appmain() rather than
+		 * fall through into the forwarding path, which is why this returns
+		 * for everyone and only the printing differs.
+		 */
+		if (cvmx3_is_init_core())
+			cvmx3_probe_interfaces(stdout);
 		return 0;
 	}
 
