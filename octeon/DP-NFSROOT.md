@@ -320,3 +320,30 @@ one hop further along than it did, but a void.
 Building one needs the mips64 cross toolchain, which is on the lab VM
 (`stephen@192.168.47.129`, unreachable) — and neither the MP nor the CP has a
 compiler. When that is available the deploy step is the `cp` above.
+
+## The DP now roots on Debian, and its userland runs
+
+Swapped from the 19 MB OpenWrt tree to the staged Debian one — see
+[`NFS-LAYERING.md`](NFS-LAYERING.md) for why it is a rename rather than a bind
+mount and why `fsid=7` follows the role. Verified by execution:
+
+```
+/                                      127.1.2.1:/opt/dproot  nfs vers=3 nolock
+/proc/1/root/etc/os-release            Debian GNU/Linux forky/sid
+chroot /proc/1/root /bin/uname -srm    Linux 6.18.49 mips64
+chroot /proc/1/root /bin/ls /usr/bin   303 binaries
+chroot /proc/1/root python3 -c ...     3.14.7 mips64 big
+/proc/1/root/oldroot/sbin/ffn_dpnetd   present
+ffn-dpsh --status                      agent v2 gen=1 up=1 shell_alive=1
+/etc/ffn/dp.env                        934 bytes, unchanged
+```
+
+**Mounting proves the export; executing proves the ABI**, and those have come
+apart on this box before — OpenWrt binaries under the initramfs reported "not
+found" for a file that was plainly there, because the ELF interpreter path
+resolved into a root with no musl. Debian wants `/lib64/ld.so.1` and glibc, so
+the same failure was available and had to be ruled out by running something.
+
+Both OCTEONs now run the same distribution. `/sbin/init` in the tree is a
+symlink to systemd and is **never executed** — pid 1 stays `ffn_init`, which
+chroots and keeps the mailbox agent it forked beforehand.

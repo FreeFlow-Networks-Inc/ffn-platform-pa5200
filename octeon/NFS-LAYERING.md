@@ -122,6 +122,48 @@ root and the DP use), listening on 2049.
 
 ## The DP root itself
 
+**Debian GNU/Linux forky/sid, mips64 big-endian, 1.1 GB** — the same
+distribution the CP roots on, so one userland now covers both OCTEONs. Proven
+by execution on the DP, not by reading a mount table:
+
+```
+/ is 127.1.2.1:/opt/dproot                      (nfs, vers=3, nolock)
+PRETTY_NAME="Debian GNU/Linux forky/sid"
+chroot /proc/1/root /bin/uname -srm   Linux 6.18.49 mips64
+chroot /proc/1/root /bin/ls /usr/bin  303 binaries
+chroot /proc/1/root python3 -c ...    3.14.7 mips64 big
+```
+
+A real interpreter on the dataplane is what the swap was for. Note that
+`/sbin/init` in this tree is a symlink to systemd and **is never executed**:
+pid 1 on the DP stays `ffn_init` from the initramfs, which does `MS_MOVE` +
+`chroot` and keeps the mailbox agent it already forked. The Debian tree is a
+filesystem, not a boot.
+
+### Swapping the root: rename, not a bind mount
+
+The DP's initramfs hardcodes `EXPORT=/opt/dproot`, so a new tree has to be
+reachable under that name. A bind mount over it works and needs no rebuild, but
+it does not survive a CP reboot — the CP would silently revert to serving the
+old tree while every path and document still said otherwise. A rename is
+persistent, is honest (one name, one tree), and is undone by renaming back.
+
+**`fsid=` follows the ROLE, not the tree.** 7 has always meant "the DP's root"
+and the initramfs asks for `/opt/dproot`, so 7 stays with that path across
+swaps and the displaced tree takes 8. The stale file handles this creates never
+matter because the DP is reset immediately afterwards.
+
+The previous root is **kept, never deleted** — `/opt/dproot-owrt`, `fsid=8`. It
+is the tree the DP is known to boot on, which is what makes the swap
+reversible:
+
+```sh
+mv .../opt/dproot .../opt/dproot-debian && mv .../opt/dproot-owrt .../opt/dproot
+# restore exports, exportfs -ra in the chroot, re-run dp-nfsboot-debian.sh
+```
+
+### The previous root, for reference
+
 OpenWrt 24.10.4 `mips64_octeonplus`, 19 MB, taken from the octeon target's
 `squashfs-sysupgrade.tar` (OpenWrt publishes no plain rootfs tarball for this
 target; the `root` member of that tar *is* a squashfs root). Same distribution,
