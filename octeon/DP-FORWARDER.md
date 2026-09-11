@@ -129,11 +129,64 @@ it produces **1041** and is readable. The wrapper lives in the octeon3 backend
 so `ffn_dp_octeon_main.c` stays free of CVMX headers, as it is for everything
 else in that backend.
 
+## The config chain now reaches the FIB
+
+`dp.l3.*` keys rendered on the MP arrive in the forwarder's routing table. On
+the live appliance, against the file the CP actually relayed:
+
+```
+/etc/ffn/dp.env: 3 route(s), 2 neighbour(s), 1 iface(s), 24 ignored, 0 REJECTED
+```
+
+which is exactly the six `dp.l3.*` keys out of the thirty in that file. End to
+end that is: MP renders -> `ffn_cfgd` serves -> `ffn_cfgagent` relays over the
+PCIe mailbox -> `/etc/ffn/dp.env` on the DP -> `dp_l3_config_apply()` -> FIB.
+
+### The line that was missing was the attach
+
+`struct dp_ctx` has carried `struct dp_l3 *l3` with the comment *"optional: NULL
+disables routing entirely"* since the L3 layer landed, and **nothing anywhere
+set it**. Everything else existed and was tested: the FIB, the parser, the
+config layer, the ARP path, the lookup in `ffn_dp_oct.c`. Routing was inert in
+the OCTEON forwarder for want of one assignment.
+
+It has to happen **after** `dp_init()`, which memsets the context — an attach
+before it is silently erased, and the failure looks like a routing bug with
+every counter reading zero rather than like a missing line.
+
+### `--check-config`
+
+Loads the config, reports what it would install, exits non-zero if any line was
+rejected. Touches no hardware and needs no `-p`, so it answers "would the
+dataplane accept what the MP sent?" without starting the datapath. That question
+is otherwise unanswerable from the MP: config travels over a **one-way** mailbox,
+so a rejected key is invisible upstream, and finding out by running the
+forwarder means running the forwarder.
+
+Rejected lines are also reported loudly at startup, for the same reason.
+
+### Where the config lives, and why
+
+`/etc/ffn/dp.env` is in the DP's **initramfs**, not its NFS root. That is
+deliberate: `ffn-dpsh` stays on the initramfs after the root switch so the
+control channel cannot be taken down by a bad export, and the config arrives
+over that same channel. See [`DP-NFSROOT.md`](DP-NFSROOT.md).
+
+Absent config is **not** fatal. `l3 == NULL` is the documented "routing
+disabled" state, so an unconfigured DP still starts and forwards at L2 rather
+than refusing to run; an explicit `-C` that cannot be opened *is* fatal, because
+the operator named a file.
+
 ## What is still missing
 
-**The forwarder does not read `dp.env`.** `ffn_dp_octeon_main.c` takes its ports
-from `-p` on the command line and never calls `dp_l3_config_apply()`, so the
-config chain still terminates one step short: the MP renders it, the CP relays
-it, the DP holds it at `/etc/ffn/dp.env` (30 keys, 6 of them `dp.l3.*`) and the
-forwarder ignores it. `dp_l3_config_apply()` and the v6 equivalent are both
-linked into the binary and both have unit coverage; what is absent is the call.
+The forwarding path itself has not been run on this hardware. `--probe` and
+`--check-config` both exercise the CVMX runtime, the XKPHYS mapping and the
+config layer, but no packet has been taken from PKI or given to PKO3 here:
+`pko_dq` still reads `-1` because only `cvmx3_hw_init()` resolves it, and that
+runs on the `-p` path.
+
+Two things to know before starting it. All 40 cores run `appmain()`, so every
+core adds its own ports, `calloc`s its own region and prints its own stats --
+only the probe and config reporting are gated to the init core so far. And the
+one live interface is iface 2, the 40G XLAUI to the BCM88375, which is the
+production datapath rather than a spare.
