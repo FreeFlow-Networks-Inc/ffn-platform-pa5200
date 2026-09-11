@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from control import Controller, router
+from control import Controller, router, inspection_activation
 
 
 class APITests(unittest.TestCase):
@@ -80,6 +80,22 @@ class APITests(unittest.TestCase):
 
 
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inspection_activation_requires_live_matching_revision(self):
+        ctl=AsyncMock()
+        result={'accepted':{'revision':8}}
+        for observed,expected in [
+            ({'config':{'revision':8},'running':True,'runtime':{'revision':8}},'active'),
+            ({'config':{'revision':8},'running':False,'runtime':{'revision':8}},'pending'),
+            ({'config':{'revision':8},'running':True,'runtime':{'revision':7}},'pending'),
+            ({'config':{'revision':9},'running':True,'runtime':{'revision':9}},'superseded'),
+            ({'config':{'revision':8},'runtime':{'reload_error':'private diagnostic'}},'failed')]:
+            ctl.run.return_value=observed
+            answer=await inspection_activation(ctl,result,attempts=1)
+            self.assertEqual(answer['activation'],expected)
+            self.assertNotIn('private diagnostic',str(answer))
+        ctl.run.side_effect=HTTPException(503)
+        self.assertEqual((await inspection_activation(ctl,result))['activation'],'unknown')
+
     async def test_unknown_command_never_spawns(self):
         with patch('control.asyncio.create_subprocess_exec') as spawn:
             with self.assertRaises(HTTPException):
