@@ -237,3 +237,58 @@ cannot reach `127.1.1.1:8080` until the DP has a default route via 127.1.2.1 and
 the CP forwards. Until then packages are added on the MP, into
 `/opt/ffn-cproot-owrt/opt/dproot`, where they appear on the DP immediately —
 which is the same property that made this design worth building.
+
+## The vendor master tree is chained the same way
+
+`/opt/dpfs` is the vendor's tree, 2.2 GB, and the **MP holds the master**. It is
+chained down the same MP → CP → DP path as the DP's root rather than being a
+CP-only mount:
+
+```
+MP  /opt/dpfs                    master, exported rw to 127.1.0.0/16
+CP  /opt/ffn-compat/tmp/dpfs     mounted ro   (= /tmp/dpfs inside the chroot)
+     └─ re-exported ro, fsid=9
+DP  /opt/dpfs                    mounted ro from 127.1.2.1:/tmp/dpfs
+```
+
+Verified through all three hops — the DP reads `bcm.user` at 196,484,446 bytes,
+the same size the MP holds; `brdagent/cp` shows its five role plugins and
+`brdagent/dp` its one; both vendor module trees (`3.10.87-oct2-dp`, `4.9.57`)
+are visible.
+
+**Read-only the whole way down, and that is not a limitation.** The CP already
+mounts the master `ro`, so an `rw` re-export would be a lie the DP discovers as
+`EROFS` on its first write. It also happens to be the policy — vendor firmware
+is used in place and never modified — so the chain enforces what would otherwise
+rely on everyone remembering.
+
+**The export path is chroot-relative.** `rpc.mountd` runs inside
+`/opt/ffn-compat`, so what it and its `/etc/exports` call `/tmp/dpfs` is
+`/opt/ffn-compat/tmp/dpfs` on the CP, and the DP asks for
+`127.1.2.1:/tmp/dpfs`. The name is the compat root's own — `dpboot8.sh`
+hardcodes `VT=/tmp/dpfs`, so it cannot be tidied without breaking the DP boot.
+
+**`fsid=9`, and the export was published singly.** `/tmp/dpfs` sits on an NFS
+mount, so this is a re-export and nfsd refuses it without an id; 7 is the DP's
+root and 8 the OpenWrt fallback. It was added with
+`exportfs -o … 127.1.0.0/16:/tmp/dpfs` rather than `exportfs -ra`, deliberately:
+the DP is *rooted* on fsid=7 at the time, and re-exporting everything is a
+bigger blast radius than adding one entry for no benefit.
+
+### Not yet persistent on the DP
+
+The CP-side export is in the compat `/etc/exports` and survives a reboot. The
+DP-side mount does not: the DP runs no init that reads `fstab` — pid 1 is
+`ffn_init` — so the mount has to be reissued, or added to the initramfs
+`ffn-nfsroot` flow, which is the script that strands the DP when it is wrong.
+Reissue it with:
+
+```sh
+mount -t nfs -o ro,nolock,vers=3 127.1.2.1:/tmp/dpfs /proc/1/root/opt/dpfs
+```
+
+### Do not `wc -c` across this chain
+
+Sizes come from `ls -l`. Streaming `bcm.user` — 196 MB — back through two nested
+NFS hops and the PCIe mailbox blew a 300 s marker timeout on the first attempt.
+The mount was fine; the check was not.
