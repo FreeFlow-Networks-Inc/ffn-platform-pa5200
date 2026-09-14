@@ -115,10 +115,29 @@ fi
 
 # ---------------------------------------------------------------------------
 say "=== 2. stop the CP end of dpnet before the DP reset ==="
-# By pid. `pkill -f <pattern>` matches the caller's own argv and has killed this
-# session twice already.
+# THROUGH SYSTEMD, because the unit owns this daemon.
+#
+# An earlier version of this script started ffn_dpnetd directly and left
+# ffn-dpnet.service unable to claim the TAP:
+#
+#     ffn_dpnetd: TUNSETIFF ffndp0: Device or resource busy
+#
+# The unit then restarted every RestartSec=3 forever -- 76412 times before it
+# was noticed -- because 3 s spacing sits just under systemd's default limit of
+# 5 starts in 10 s, so the start limit never trips and the failure never
+# surfaces as a failed unit. The link worked the whole time, on a process no
+# unit owned and nothing would restart.
+#
+# So the daemon is started and stopped ONLY through systemctl here. The kill
+# loop below stays as a backstop for a manually-started leftover, by pid:
+# `pkill -f <pattern>` matches the caller's own argv and has killed this session
+# twice already.
+if systemctl stop ffn-dpnet 2>/dev/null; then
+	say "   systemctl stop ffn-dpnet"
+fi
+sleep 1
 for p in $(pids_of ffn_dpnetd); do
-	kill "$p" 2>/dev/null && say "   killed pid $p"
+	kill "$p" 2>/dev/null && say "   killed leftover pid $p (not unit-owned)"
 done
 sleep 2
 for p in $(pids_of ffn_dpnetd); do
@@ -175,17 +194,22 @@ fi
 
 # ---------------------------------------------------------------------------
 say "=== 6. start the CP end of dpnet ==="
-# The DP's nfsroot flow is already waiting for this; its window is 60s and it
+# Through the unit, not a bare exec -- see step 2. The unit's ExecStart is
+# /run/ffn-dp/ffn_dpnetd, which step 3 has already staged on tmpfs, so this
+# still never runs the transport binary off the filesystem the transport
+# serves.
+#
+# The DP's nfsroot flow is already waiting for this; its window is 60 s and it
 # restarts its own end if we are late, so being prompt matters but being late
 # is survivable.
-setsid "$DPNETD" --role cp -v >/tmp/dpnetd-cp-debian.log 2>&1 </dev/null &
+systemctl start ffn-dpnet
 sleep 6
-if running ffn_dpnetd; then
-	say "   up (pid $(pids_of ffn_dpnetd | tr '\n' ' '))"
+if systemctl is-active --quiet ffn-dpnet && running ffn_dpnetd; then
+	say "   up via ffn-dpnet.service (pid $(pids_of ffn_dpnetd | tr '\n' ' '))"
 	ip -o addr show ffndp0 2>/dev/null | sed 's/^/     /' | tee -a "$LOG"
 else
 	say "   FAILED to start:"
-	tail -6 /tmp/dpnetd-cp-debian.log 2>/dev/null | sed 's/^/     /' | tee -a "$LOG"
+	systemctl status ffn-dpnet --no-pager 2>&1 | tail -8 | sed 's/^/     /' | tee -a "$LOG"
 fi
 
 # ---------------------------------------------------------------------------
@@ -219,8 +243,23 @@ say "=== 8. what the new root actually contains ==="
 	-t 60 2>&1 | grep -v '@@' | sed 's/^/     /' | tee -a "$LOG"
 
 # ---------------------------------------------------------------------------
+# The DP has no init that reads fstab -- pid 1 is ffn_init -- so any mount the
+# DP needs after the root switch has to be reissued from here. Only attempted
+# when the switch actually happened: mounting onto /proc/1/root when pid 1 is
+# still on the initramfs would put the vendor tree somewhere nothing looks.
+if [ "$sw" = 1 ]; then
+	say "=== 9. mount the vendor master tree on the DP ==="
+	if [ -x "$(dirname "$0")/dp-mount-dpfs.sh" ]; then
+		sh "$(dirname "$0")/dp-mount-dpfs.sh" 2>&1 | tee -a "$LOG"
+	elif [ -x /usr/local/libexec/dp-mount-dpfs.sh ]; then
+		sh /usr/local/libexec/dp-mount-dpfs.sh 2>&1 | tee -a "$LOG"
+	else
+		say "   dp-mount-dpfs.sh not found; /opt/dpfs will be absent on the DP"
+	fi
+fi
+
 if [ "$CFGAGENT_WAS" = yes ]; then
-	systemctl start ffn-cfgagent && say "=== 9. ffn-cfgagent restarted ==="
+	systemctl start ffn-cfgagent && say "=== 10. ffn-cfgagent restarted ==="
 fi
 [ "$sw" = 1 ] || exit 5
 exit 0

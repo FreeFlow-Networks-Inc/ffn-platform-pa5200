@@ -1,0 +1,35 @@
+[Unit]
+Description=FFN CP-to-DP transport from RAM
+After=ffn-cp-nfs.service
+
+# A FAILING SERVICE MUST LOOK FAILED.
+#
+# Without these this unit restarted 76412 times without ever entering the
+# failed state, because RestartSec=3 sits just under systemd's default limit of
+# 5 starts per 10 s -- so the start limit never tripped, `systemctl is-failed`
+# stayed false, and the only symptom was a journal line every three seconds
+# that nobody was reading:
+#
+#     ffn_dpnetd: TUNSETIFF ffndp0: Device or resource busy
+#
+# (The cause there was a manually started ffn_dpnetd holding the TAP, which is
+# why dp-nfsboot-debian.sh now starts and stops this daemon only through
+# systemctl.) Five attempts in a minute is enough to ride out a transient; past
+# that the unit stops and says so.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# /run is tmpfs. The transport binary must never be paged in from the
+# filesystem the transport itself serves -- a fault on its own text would need
+# the daemon that is blocked servicing it. dp-nfsboot-debian.sh stages it here
+# before starting this unit.
+ExecStart=/run/ffn-dp/ffn_dpnetd --role cp -v
+Restart=on-failure
+RestartSec=3
+
+# Started by ffn-dp-boot after the recovery agent has published its mailbox.
+# Never enable independently: it must be stopped during vendor boot operations,
+# and it cannot start at all until the DP agent's magic is readable at BAR
+# offset 0x400000 (the window canary).
