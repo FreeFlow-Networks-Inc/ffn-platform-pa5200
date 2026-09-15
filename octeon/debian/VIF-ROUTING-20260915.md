@@ -83,3 +83,11 @@ The optional `--neighbors` harness run creates fresh VIFs without permanent
 neighbors. Its probe emulates only the reserved next-hop addresses, replying
 to observed ARP requests and IPv6 neighbor solicitations over the DAC. It requires
 successful neighbor exchange and exact physical routed frames in both directions.
+
+`VIF-NEIGHBOR-FORWARDING-20260915.json` records that follow-up: IPv4 and IPv6
+each returned 4/4 exact routed frames in both directions after one ARP/ND reply
+per direction. All four kernel neighbor entries were `REACHABLE`. No permanent
+neighbors were installed. Final cleanup left network revision 68 and VIF revision
+17, empty VIF assignments, stopped transport and no test routes, rules or VRFs.
+The front-port saved settings were restored. Throughput, TCP sessions and
+simultaneous bidirectional load were not exercised by these bounded UDP probes.
