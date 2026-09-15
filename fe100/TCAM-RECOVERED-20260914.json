@@ -1,0 +1,296 @@
+{
+  "schema": 1,
+  "provider": "pa5200",
+  "cp": {
+    "available": true,
+    "data": {
+      "schema": 1,
+      "provider": "pa5200",
+      "observed_at": 1789417513.340263,
+      "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+      "ddr_training_verified": true,
+      "ddr_clocks_ready": true,
+      "tcam_clocks_ready": true,
+      "memory_test_history": {
+        "ddr_memory_test_verified": true,
+        "eye_widths": [
+          60,
+          57,
+          62,
+          58,
+          59,
+          63,
+          60,
+          60,
+          59,
+          60,
+          59,
+          61,
+          58,
+          61,
+          61,
+          61
+        ],
+        "eye_reference": [
+          61,
+          62,
+          61,
+          62,
+          61,
+          61,
+          59,
+          60,
+          62,
+          63,
+          60,
+          61,
+          61,
+          60,
+          61,
+          62
+        ],
+        "eye_test_passed": true,
+        "vref_sequence_completed": false,
+        "after": {
+          "0xa05c0": 130105600,
+          "0xa05c4": 8,
+          "0xa05c8": 9216,
+          "0xa05cc": 248,
+          "0xa05d0": 1,
+          "0xa05d4": 1,
+          "0xa0718": 3,
+          "0xa071c": 3,
+          "0xa01a8": 1233,
+          "0xa01b0": 1107423249,
+          "0xa0004": 19841,
+          "0xa01c0": 65011712
+        },
+        "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+        "external_tables_active": false
+      },
+      "external_tables": {
+        "stage": "configuration-verified",
+        "profile": "cfg4-v4-v6",
+        "expected": 263,
+        "completed": 263,
+        "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+        "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+        "started_ns": 1789412601459304798,
+        "session_offload_verified": false,
+        "recovery": {
+          "before": {
+            "0xa0004": 19841,
+            "0xa01c0": 66060288,
+            "0x80500": 33554944,
+            "0x80504": 4160,
+            "0x80508": 8388608,
+            "0x80794": 0,
+            "0xa0704": 67585,
+            "0xa0184": 0,
+            "0xa0214": 393221,
+            "0xa0224": 327685
+          },
+          "trace": "/var/lib/ffn/fe100/clock-init-1789417252735807066.txt",
+          "archive": "/var/lib/ffn/fe100/external-tables-before-recovery-1789417254231277966.json",
+          "method": "owner-nop-synchronization",
+          "synchronization": {
+            "changed": false
+          },
+          "after": {
+            "0xa0004": 19841,
+            "0xa01c0": 66060288,
+            "0x80500": 33554944,
+            "0x80504": 4160,
+            "0x80508": 8388608,
+            "0x80794": 0,
+            "0xa0704": 67585,
+            "0xa0184": 0,
+            "0xa0214": 393221,
+            "0xa0224": 327685
+          },
+          "replay_completed": 263
+        },
+        "recovery_required": false,
+        "verification_trace": "/var/lib/ffn/fe100/clock-init-1789417454668200843.txt",
+        "verified_at_ns": 1789417456239065704
+      },
+      "recovery_required": false,
+      "configuration_readback_recorded": true,
+      "tcam_synchronized": true,
+      "external_tables_qualified": false,
+      "session_backend_qualified": false,
+      "forwarding_verified": false,
+      "queue_status": {
+        "0xa0708": 3,
+        "0xa01d4": 0,
+        "0xa01e4": 0,
+        "0xa01f4": 0,
+        "0xa0204": 0,
+        "0xa0214": 393221,
+        "0xa0224": 327685,
+        "0xa0234": 0,
+        "0xa0244": 0,
+        "0xa0254": 0,
+        "0xa0264": 0,
+        "0xa0274": 0
+      },
+      "registers": {
+        "0xa05c0": 130105600,
+        "0xa05c4": 8,
+        "0xa05c8": 9216,
+        "0xa05cc": 248,
+        "0xa05d0": 1,
+        "0xa05d4": 1,
+        "0xa0718": 3,
+        "0xa071c": 3,
+        "0xa01a8": 1233,
+        "0xa01b0": 1107423249,
+        "0xa0004": 19841,
+        "0xa01c0": 66060288
+      },
+      "supported_actions": [
+        "status"
+      ],
+      "blocked_actions": {
+        "activate": "TCAM completion/readback and packet tests required",
+        "session-install": "hardware flow-entry adapter unqualified"
+      }
+    }
+  },
+  "dp": {
+    "available": true,
+    "data": {
+      "protocol": 1,
+      "nonce": "eb603294-4d14-4c9a-a040-ac87237a0437",
+      "role": "dataplane",
+      "platform": "pa5200",
+      "boot_id": "390ab72f-9328-4e9c-bc68-1d9e40cb60b2",
+      "agent_pid": 924,
+      "arch": "mips64",
+      "octeon": true,
+      "cpu_count": 40,
+      "ready": true,
+      "observed_at": 1788305118.9905005,
+      "boot": {
+        "ready": true,
+        "process_os": "debian",
+        "pid1_os": "debian",
+        "pid1_executable": "/usr/lib/systemd/systemd",
+        "same_root_as_pid1": true,
+        "reasons": []
+      },
+      "packet_io": {
+        "schema": 1,
+        "role": "dataplane",
+        "sample_monotonic": 7335.300997772,
+        "internal_link_ready": true,
+        "physical_packet_transport_verified": false,
+        "session_offload_verified": false,
+        "hardware": {
+          "schema": 1,
+          "bgx": 2,
+          "lmac": 0,
+          "enabled": 1,
+          "rx_enabled": 1,
+          "tx_enabled": 1,
+          "lmac_type": 4,
+          "link": 1,
+          "block_lock": 1,
+          "fault": 0,
+          "pknd": 8,
+          "pki_enabled": 0
+        },
+        "available": true
+      },
+      "state": "ready",
+      "forwarding_verified": false,
+      "engines": {
+        "execution": "OCTEON CPU",
+        "available": [
+          "literal",
+          "credit_card",
+          "ssn",
+          "api_key"
+        ],
+        "runtime": null,
+        "hardware_acceleration": false,
+        "limitations": [
+          "2048-byte packet payload budget",
+          "no stream reassembly",
+          "no TLS decryption",
+          "fragments and unsupported protocols pass"
+        ]
+      },
+      "packet_initialization": {
+        "dma_published": true,
+        "dma_ready": true,
+        "dma_error": 0,
+        "sso_xaq_prepared": true,
+        "pko_memory_ready": true,
+        "pko_queues_prepared": true,
+        "dma_pools": [
+          {
+            "pool": 61,
+            "aura": 1021,
+            "block_size": 4096,
+            "capacity": 512,
+            "tested": true,
+            "available": 512,
+            "aura_count": 32
+          },
+          {
+            "pool": 62,
+            "aura": 1022,
+            "block_size": 4096,
+            "capacity": 570,
+            "tested": true,
+            "available": 314,
+            "aura_count": 288
+          },
+          {
+            "pool": 63,
+            "aura": 1023,
+            "block_size": 4096,
+            "capacity": 1024,
+            "tested": true,
+            "available": 1004,
+            "aura_count": 52
+          }
+        ],
+        "schema": 1,
+        "pki_reset_busy": false,
+        "pki_active": 0,
+        "pki_enabled": 0,
+        "pko_enabled": 0,
+        "sso_aw_cfg": "0x000000000000000e",
+        "enabled_fpa_pools": 3,
+        "pki_microcode_prepared": true,
+        "microcode_words": 1001,
+        "ready": false
+      }
+    }
+  },
+  "forwarding_verified": false,
+  "session_offload_available": false,
+  "supported_preparation": [
+    "prepare-pki",
+    "prepare-dma",
+    "prepare-sso",
+    "prepare-pko-memory",
+    "prepare-pko-queues"
+  ],
+  "session_lifecycle": {
+    "implemented": [
+      "encode",
+      "journal",
+      "recover",
+      "invalidate"
+    ],
+    "hardware_adapter_qualified": false
+  },
+  "limitations": [
+    "PKI input mapping and packet consumer not commissioned",
+    "PKO MAC credits and physical transmit not commissioned",
+    "FE100 native session ABI adapter and packet qualification pending"
+  ]
+}

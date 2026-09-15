@@ -116,7 +116,8 @@ class ConfigTests(unittest.TestCase):
                 net.patch(self.cfg,{'revision':7,'rules':[rule]})
         self.assertEqual([c.args for c in change.call_args_list],[('add',rule),('del',rule)])
 
-    def test_only_changed_port(self):
+    @patch.object(net, 'ip', return_value='[]')
+    def test_only_changed_port(self, _ip):
         original = copy.deepcopy(self.cfg)
         with patch.object(net, 'exists', return_value=True), patch.object(net, 'configure_port') as change, patch.object(net, 'save'):
             result = net.patch(self.cfg, {'revision': 7, 'ports': {'p1': {'mode': 'disabled'}}})
@@ -124,13 +125,15 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result['revision'], 8)
         self.assertEqual(original, self.cfg)
 
-    def test_persistence_failure_restores_port(self):
+    @patch.object(net, 'ip', return_value='[]')
+    def test_persistence_failure_restores_port(self, _ip):
         with patch.object(net, 'exists', return_value=True), patch.object(net, 'configure_port') as change, patch.object(net, 'save', side_effect=OSError('disk full')):
             with self.assertRaisesRegex(RuntimeError, 'rollback errors: \\[\\]'):
                 net.patch(self.cfg, {'revision': 7, 'ports': {'p1': {'mode': 'disabled'}}})
         self.assertEqual(change.call_args_list[-1].args, ('p1', self.cfg['ports']['p1']))
 
-    def test_active_overlay_protects_underlay(self):
+    @patch.object(net, 'ip', return_value='[]')
+    def test_active_overlay_protects_underlay(self, _ip):
         with patch.object(net, 'exists', return_value=True), patch.object(net, 'backend', return_value={'ports':[]}), \
              patch.object(net, 'Path') as path, patch.object(net, 'configure_port') as change:
             path.return_value.exists.return_value = True
@@ -138,6 +141,14 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'dependent overlays'):
                 net.patch(self.cfg, {'revision':7,'ports':{'p3':{'mode':'disabled'}}})
         change.assert_not_called()
+
+    def test_active_lacp_member_cannot_be_reconfigured(self):
+        with patch.object(net, 'exists', return_value=True), patch.object(net, 'backend', return_value={'ports':[]}), \
+             patch.object(net, 'ip', return_value='[{"ifname":"p1","master":"lag1"}]'), \
+             patch.object(net, 'configure_port') as change:
+            with self.assertRaisesRegex(ValueError, 'LACP group'):
+                net.patch(self.cfg, {'revision':7,'ports':{'p1':{'mode':'disabled'}}})
+            change.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "boot_id": "fe8d6e21-6f43-4e7c-b94a-de9c4f75a840",
+  "matched_rx": [
+    {
+      "source": "p5",
+      "destination": "p13",
+      "frame_size": 64
+    },
+    {
+      "source": "p13",
+      "destination": "p5",
+      "frame_size": 64
+    },
+    {
+      "source": "p5",
+      "destination": "p13",
+      "frame_size": 1514
+    },
+    {
+      "source": "p13",
+      "destination": "p5",
+      "frame_size": 1514
+    }
+  ],
+  "tap_physical_round_trip_verified": true,
+  "transport_output": "{\"transport\": \"direct-dp\", \"rx_format\": \"bcm-otmh-ssp\", \"hardware_offload\": false, \"counters\": {\"tx_p5\": 5, \"tx_p13\": 5, \"outgoing_ignored\": 10, \"rx_p13\": 5, \"rx_p5\": 5}}\n",
+  "test_links_restored_down": true,
+  "session_offload_verified": false
+}

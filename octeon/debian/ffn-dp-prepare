@@ -1,0 +1,17 @@
+#!/usr/bin/python3
+"""MP to DP bounded packet-initialization bridge using pinned appliance SSH."""
+import subprocess
+import sys
+
+STAGES={'prepare-pki','prepare-dma','prepare-sso','prepare-pko-memory','prepare-pko-queues',
+        'prepare-trunk','start-trunk','stop-trunk'}
+if len(sys.argv)!=2 or sys.argv[1] not in STAGES|{'status'}:
+    raise SystemExit('unsupported packet initialization stage')
+argv=['ssh','-T','-o','BatchMode=yes','-o','ConnectTimeout=5',
+      '-o','StrictHostKeyChecking=yes',
+      '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
+      '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp',
+      'root@127.1.2.2',
+      'python3 /usr/local/sbin/ffn_dp_hardware_status.py' if sys.argv[1]=='status' else
+      'python3 /usr/local/sbin/ffn_dp_packet_init.py '+sys.argv[1]]
+raise SystemExit(subprocess.run(argv,timeout=60).returncode)

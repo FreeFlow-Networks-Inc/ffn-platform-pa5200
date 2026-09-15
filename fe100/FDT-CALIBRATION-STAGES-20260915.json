@@ -1,0 +1,57 @@
+{
+  "stages": [
+    {
+      "algorithm": "WRITE_LEVELING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "INIT_PAT_WRITE",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "DQS_ALIGN",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "RDCLK_ALIGN",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "READ_CENTERING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "WRITE_CENTERING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "INIT_COARSE_WRITE",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "COARSE_READ",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    }
+  ],
+  "failed_algorithms": [],
+  "training_verified": false,
+  "session_offload_verified": false,
+  "log": "/var/lib/ffn/fe100/fdt-init-pattern-recovery-live.txt",
+  "log_sha256": "e0d1b53ae905d75aac8f396685be51ee2dce8592b931b187a9d716164bbac02f"
+}

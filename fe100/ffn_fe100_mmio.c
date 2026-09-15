@@ -14,6 +14,7 @@
 static volatile uint32_t *regs;
 static unsigned char known[0x100000 / 4];
 static int writable;
+static unsigned faults;
 static FILE *trace;
 static pthread_mutex_t ia_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* The inspected owner ABI returns void; table helpers use these around IA. */
@@ -65,6 +66,42 @@ int ffn_fe100_allow(uint32_t off)
     known[off / 4] = 1;
     return 0;
 }
+/* Some DDR helpers inspect the other controller's capability register.
+ * Permit individually named reads outside the selected writable block. */
+int ffn_fe100_allow_readonly(uint32_t off)
+{
+    if ((off & 3) || off >= 0x100000) return -1;
+    if (!known[off / 4]) known[off / 4] = 2;
+    return 0;
+}
+unsigned ffn_fe100_faults(void) { return faults; }
+/* TDI external-memory diagnostics use the TLU IA bridge (owner block 16).
+ * Opt in separately; no other TLU registers or arbitrary targets are exposed. */
+int ffn_fe100_allow_external_ia(void)
+{
+    if (block_base != 0xa0000) return -1;
+    for (unsigned off = 0x80500; off <= 0x80518; off += 4)
+        known[off / 4] = 3;
+    return 0;
+}
+static int external_ia(uint32_t dev, uint32_t off)
+{
+    return regs && dev == 0 && !(off & 3) && off >= 0x80500 &&
+           off <= 0x80518 && known[off / 4] == 3;
+}
+static int external_command(uint32_t value)
+{
+    uint32_t target = (value >> 1) & 0xfffff;
+    uint32_t op = (value >> 25) & 7;
+    uint32_t addr = le32toh(regs[0x80504 / 4]);
+    if ((value & ~0x0e1fffffU) || !(value & 1) || (op != 1 && op != 2))
+        return 0;
+    if (target == 0x2200) return addr == 0;
+    return target == 0x100 && (addr == 1 ||
+        (addr >= 0x1000 && addr <= 0x2fe0 && !(addr & 31)) ||
+        (addr >= 0x40a00 && addr <= 0x40a03) ||
+        addr == 0x40a5a || addr == 0x40a5c);
+}
 static int valid(uint32_t dev, uint32_t off)
 {
     return regs && dev == 0 && !(off & 3) && off >= block_base &&
@@ -72,7 +109,9 @@ static int valid(uint32_t dev, uint32_t off)
 }
 int fe100_reg_rd(uint32_t dev, uint32_t off, uint32_t *value)
 {
-    if (!value || !valid(dev, off)) {
+    if (!value || !(valid(dev, off) || external_ia(dev, off) || (regs && dev == 0 && !(off & 3) &&
+                                      off < 0x100000 && known[off / 4] == 2))) {
+        faults++;
         if (trace) fprintf(trace, "DENIED READ dev=%u off=0x%x\n", dev, off);
         return 12;
     }
@@ -82,7 +121,10 @@ int fe100_reg_rd(uint32_t dev, uint32_t off, uint32_t *value)
 }
 int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
 {
-    if (!writable || !valid(dev, off)) {
+    if (!writable || !((valid(dev, off) && known[off / 4] == 1) ||
+        (external_ia(dev, off) && off != 0x80508 &&
+         (off != 0x80500 || external_command(value))))) {
+        faults++;
         if (trace) fprintf(trace, "DENIED WRITE dev=%u off=0x%x value=0x%x\n", dev, off, value);
         return 12;
     }

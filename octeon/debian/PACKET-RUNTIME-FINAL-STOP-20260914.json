@@ -1,0 +1,64 @@
+{
+  "dma_published": true,
+  "dma_ready": true,
+  "dma_error": 0,
+  "sso_xaq_prepared": true,
+  "pko_memory_ready": true,
+  "pko_queues_prepared": true,
+  "dma_pools": [
+    {
+      "pool": 61,
+      "aura": 1021,
+      "block_size": 4096,
+      "capacity": 512,
+      "tested": true,
+      "available": 512,
+      "aura_count": 32
+    },
+    {
+      "pool": 62,
+      "aura": 1022,
+      "block_size": 4096,
+      "capacity": 570,
+      "tested": true,
+      "available": 298,
+      "aura_count": 304
+    },
+    {
+      "pool": 63,
+      "aura": 1023,
+      "block_size": 4096,
+      "capacity": 1024,
+      "tested": true,
+      "available": 1001,
+      "aura_count": 55
+    }
+  ],
+  "trunk": {
+    "interface": "ffnpkt0",
+    "running": false,
+    "error": 0,
+    "stage": "stopped",
+    "dq_open": false,
+    "last_ack": "0x0002000000000000",
+    "rx": 0,
+    "tx_accepted": 12,
+    "tx_completed": 12,
+    "wire_tx": 12,
+    "wire_rx": 0,
+    "tx_rejected": 0,
+    "bad_dma": 0,
+    "physical_forwarding_verified": false
+  },
+  "trunk_registered": true,
+  "schema": 1,
+  "pki_reset_busy": false,
+  "pki_active": 0,
+  "pki_enabled": 0,
+  "pko_enabled": 0,
+  "sso_aw_cfg": "0x000000000000000f",
+  "enabled_fpa_pools": 3,
+  "pki_microcode_prepared": true,
+  "microcode_words": 1001,
+  "ready": false
+}

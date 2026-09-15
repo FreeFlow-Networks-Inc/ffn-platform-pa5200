@@ -356,6 +356,9 @@ def patch(cfg, request):
         new['rules'] = request['rules']
     new['revision'] += 1
     validate(new)
+    if STATE.with_name('vifs.json').exists():
+        from ffn_vif import protect_network
+        protect_network(new)
     old_vrfs, new_vrfs = cfg.get('vrfs', {}), new.get('vrfs', {})
     if any(name in new_vrfs and new_vrfs[name] != table for name, table in old_vrfs.items()):
         raise ValueError('remove a virtual router before changing its table ID')
@@ -367,6 +370,10 @@ def patch(cfg, request):
     if not exists():
         raise RuntimeError('network service is stopped')
     changed = [p for p in request.get('ports', {}) if cfg['ports'].get(p) != new['ports'][p]]
+    live_links = {p['ifname']: p for p in json.loads(ip('-j', 'link'))} if changed else {}
+    if any(re.fullmatch(r'lag(?:[1-9]|1[0-2])', str(live_links.get(p, {}).get('master', '')))
+           for p in changed):
+        raise ValueError('deactivate the LACP group before reconfiguring a member port')
     old_routes, new_routes = cfg.get('routes', []), new.get('routes', [])
     retained = [r for r in old_routes if r in new_routes]
     if any(route_ports(r).intersection(changed) for r in retained):
@@ -477,6 +484,8 @@ def main():
             import sys
             result = lookup(cfg, json.load(sys.stdin))
         elif args.action == 'stop':
+            if STATE.with_name('vifs.json').exists() and json.loads(STATE.with_name('vifs.json').read_text())['vifs']:
+                raise RuntimeError('remove VIF assignments before stopping their network namespace')
             if exists():
                 run('ip', 'netns', 'delete', NS)
             result = {'stopped': True}

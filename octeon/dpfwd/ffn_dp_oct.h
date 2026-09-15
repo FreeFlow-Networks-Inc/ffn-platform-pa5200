@@ -146,6 +146,7 @@ struct dp_io_ops {
     int  (*init)(void *arg);
     void (*fini)(void *arg);
     int  (*rx)(void *arg, struct dp_pkt *burst, int max);
+    /* Return accepted packets; n=0 flushes any software TX backlog. */
     int  (*tx)(void *arg, struct dp_pkt *burst, int n);
     void (*to_local)(void *arg, struct dp_pkt *p);
     void (*to_offload)(void *arg, struct dp_pkt *p);

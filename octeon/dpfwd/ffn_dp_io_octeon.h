@@ -20,8 +20,8 @@
  * A work-queue entry covers two things that may or may not be one allocation:
  * the WQE and the packet data. Each must be released EXACTLY ONCE or the box
  * leaks FPA buffers and wedges within minutes. Rules enforced:
- *   * on transmit, PKO takes ownership of the packet data and frees it after the
- *     wire, so we must NOT free the data -- only the WQE;
+ *   * TX enqueue moves ownership into a core-local software FIFO; a real PKO
+ *     acknowledgement transfers data to hardware, so we free only the WQE;
  *   * on drop, we free both, data first (the WQE is still needed to find it);
  *   * a send failure leaves ownership with us, so we free both;
  *   * every WQE records its disposition, and a second disposal is a no-op that
@@ -47,12 +47,17 @@ struct dp_vsys_plan;
 
 #define OCT_MAX_PORTS   8
 #define OCT_BURST       DP_BURST
+#define OCT_TX_DEPTH    OCT_BURST
+#define OCT_TX_PASSES   4
+/* Only this result permits retry: no DMA has been submitted. */
+#define OCT_SEND_BUSY   1
 
 /* disposition of a work entry, tracked so nothing is released twice */
 enum oct_disp {
     OCT_DISP_HELD = 0,      /* we still own it               */
     OCT_DISP_SENT,          /* data handed to PKO, WQE freed  */
     OCT_DISP_FREED,         /* both released by us            */
+    OCT_DISP_QUEUED,        /* software TX queue owns the copy */
 };
 
 /* One received work item, abstracted away from cvmx types so the logic is
@@ -126,7 +131,8 @@ struct oct_hw_ops {
     void (*fini)(struct oct_ctx *c);
     /* 1 if a work item was dequeued, 0 if none pending */
     int  (*work_get)(struct oct_ctx *c, struct oct_wqe *w);
-    /* hand the packet to PKO on `port`; 0 = success (PKO now owns the data) */
+    /* 0: PKO owns data; OCT_SEND_BUSY: not submitted, retry permitted;
+     * negative: rejected, caller still owns data, no retry. */
     int  (*pkt_send)(struct oct_ctx *c, struct oct_wqe *w, uint16_t port);
     /* release the packet data buffer we still own */
     void (*data_free)(struct oct_ctx *c, struct oct_wqe *w);
@@ -157,6 +163,11 @@ struct oct_ctx {
      * forwarder that owns the box wants; narrow it with (1ull << group). */
     uint64_t pow_group_mask;
     int      available;                     /* hardware present + initialised */
+    /* An optional session engine transport must COPY the packet before
+     * returning 0. It never owns the WQE/FPA buffer. Nonzero means no accepted
+     * packet. The caller supplies framing and a bounded transport/queue. */
+    int (*offload_copy)(void *arg, const struct dp_pkt *packet);
+    void *offload_arg;
     /* OCTEON-III: hand PKO3 a per-(flow, queue) atomic tag so packets of one
      * flow leave in the order they arrived, at the cost of a tag switch each.
      * Off by default -- see cvmx3_hw_pkt_send(). */
@@ -169,8 +180,18 @@ struct oct_ctx {
     struct oct_wqe inflight[OCT_BURST];     /* current burst */
     int      n_inflight;
 
+    /* Core-local FIFOs. Payloads stay in their original FPA DMA buffers;
+     * only ownership metadata is copied. Drained at the end of every poll,
+     * before the next policy/port command can execute. */
+    struct {
+        struct oct_wqe entries[OCT_TX_DEPTH];
+        unsigned head, count;
+    } txq[OCT_MAX_PORTS];
+    uint64_t stat_tx_queued, stat_tx_busy, stat_tx_overflow, stat_tx_expired;
+
     uint64_t stat_rx, stat_rx_err, stat_tx, stat_tx_fail, stat_drop_freed, stat_local;
     uint64_t stat_no_egress, stat_bad_egress, stat_offload;
+    uint64_t stat_offload_unavailable, stat_offload_rejected;
     uint64_t stat_wqe_freed, stat_data_freed;
     uint64_t bug_double_dispose;            /* must stay 0 */
 };
@@ -187,6 +208,7 @@ void oct_ctx_init(struct oct_ctx *c, const struct oct_hw_ops *hw, void *hw_priv)
 int  oct_add_port(struct oct_ctx *c, const char *name, int ipd_port,
                   int pko_queue, uint8_t vsys);
 void oct_dump_stats(const struct oct_ctx *c, FILE *f);
+void oct_tx_flush(struct oct_ctx *c);
 int  oct_backend_available(void);           /* built with CVMX? */
 const char *oct_backend_name(void);
 

@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "scope": "DP physical forwarding prerequisites",
+  "boot_id": "390ab72f-9328-4e9c-bc68-1d9e40cb60b2",
+  "sample_monotonic": 8009.931686409,
+  "checks": {
+    "debian_boot_ready": true,
+    "internal_bgx_link_ready": true,
+    "dma_pools_prepared": true,
+    "pki_microcode_prepared": true,
+    "pki_enabled": false,
+    "sso_external_queue_operations_enabled": false,
+    "pko_enabled": false,
+    "pko_queue_topology_prepared": true,
+    "linux_physical_packet_interface_present": false
+  },
+  "packet_register_status": {
+    "dma_published": true,
+    "dma_ready": true,
+    "dma_error": 0,
+    "sso_xaq_prepared": true,
+    "pko_memory_ready": true,
+    "pko_queues_prepared": true,
+    "dma_pools": [
+      {
+        "pool": 61,
+        "aura": 1021,
+        "block_size": 4096,
+        "capacity": 512,
+        "tested": true,
+        "available": 512,
+        "aura_count": 32
+      },
+      {
+        "pool": 62,
+        "aura": 1022,
+        "block_size": 4096,
+        "capacity": 570,
+        "tested": true,
+        "available": 314,
+        "aura_count": 288
+      },
+      {
+        "pool": 63,
+        "aura": 1023,
+        "block_size": 4096,
+        "capacity": 1024,
+        "tested": true,
+        "available": 1004,
+        "aura_count": 52
+      }
+    ],
+    "schema": 1,
+    "pki_reset_busy": false,
+    "pki_active": 0,
+    "pki_enabled": 0,
+    "pko_enabled": 0,
+    "sso_aw_cfg": "0x000000000000000e",
+    "enabled_fpa_pools": 3,
+    "pki_microcode_prepared": true,
+    "microcode_words": 1001,
+    "ready": false
+  },
+  "interfaces": [
+    {
+      "name": "ffndp0",
+      "physical_device": false,
+      "type": 1,
+      "operstate": "unknown"
+    },
+    {
+      "name": "lo",
+      "physical_device": false,
+      "type": 772,
+      "operstate": "unknown"
+    },
+    {
+      "name": "sit0",
+      "physical_device": false,
+      "type": 776,
+      "operstate": "down"
+    }
+  ],
+  "management_tap_rejected_as_trunk": true,
+  "physical_forwarding_test": "not-run",
+  "pki_rx_dma_test": "not-run",
+  "pko_tx_completion_test": "not-run",
+  "session_hit_miss_forwarding_test": "not-run",
+  "hardware_validated": false,
+  "result": "blocked"
+}

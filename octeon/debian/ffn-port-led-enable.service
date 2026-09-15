@@ -1,0 +1,12 @@
+[Unit]
+Description=PA-5220 front-port LED output enable
+After=ffn-bcmd.service
+ConditionPathExists=/sys/bus/pci/devices/0001:01:00.0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_port_led_enable.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

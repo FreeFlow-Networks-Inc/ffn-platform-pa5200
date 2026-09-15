@@ -135,6 +135,11 @@ const char *oct_gen_name(enum oct_gen g)
 
 /* ======================================================================== */
 #ifdef FFN_HAVE_CVMX
+
+/* SDK LMTDMA otherwise returns a synthetic PASS without reading completion.
+ * Ownership must be based on the real DQ acknowledgement. */
+#undef CVMX_ENABLE_PARAMETER_CHECKING
+#define CVMX_ENABLE_PARAMETER_CHECKING 1
 /* ======================================================================== */
 
 /* Supplied by the operator's OCTEON SDK for their own hardware; never vendored. */
@@ -208,6 +213,8 @@ static int cvmx3_fail(const char *what)
 
 #define CVMX3_FAIL(what) return cvmx3_fail(what)
 
+static CVMX_SHARED int cvmx3_global_init_rc;
+
 static int cvmx3_hw_init(struct oct_ctx *c)
 {
     int i;
@@ -225,8 +232,7 @@ static int cvmx3_hw_init(struct oct_ctx *c)
         CVMX3_FAIL("OCTEON_FEATURE_CN78XX_WQE (wrong part for this backend)");
 
     if (cvmx_is_init_core()) {
-        if (cvmx_helper_initialize_packet_io_global() != 0)
-            CVMX3_FAIL("cvmx_helper_initialize_packet_io_global");
+        cvmx3_global_init_rc = cvmx_helper_initialize_packet_io_global();
     }
 
     /*
@@ -257,6 +263,8 @@ static int cvmx3_hw_init(struct oct_ctx *c)
                 cvmx_is_init_core() ? " (init core, global setup done)" : "");
 
     cvmx_coremask_barrier_sync(&cvmx_sysinfo_get()->core_mask);
+    if (cvmx3_global_init_rc != 0)
+        CVMX3_FAIL("cvmx_helper_initialize_packet_io_global");
 
     if (cvmx3_trace)
         fprintf(stderr, "cvmx3: core %u past barrier\n",
@@ -562,6 +570,21 @@ static int cvmx3_hw_pkt_send(struct oct_ctx *c, struct oct_wqe *w, uint16_t port
     /* keep_data = 0: PKO3 frees the data to its aura once it is on the wire. */
     if (oct3_build_desc(&d, w, /*keep_data*/ 0) != DP_OK)
         return -1;
+
+    /* A pre-submission watermark check is the only retryable outcome.
+     * A race after this check is handled by the real DMA acknowledgement;
+     * a rejection there is dropped, never blindly resubmitted. */
+    {
+        int node = p->pko_queue >> 10;
+        int dq = p->pko_queue & 1023;
+        cvmx_pko3_dq_params_t *params = cvmx_pko3_dq_parameters(node, dq);
+        cvmx_pko_dqx_wm_cnt_t depth;
+        depth.u64 = cvmx_read_csr_node(node, CVMX_PKO_DQX_WM_CNT(dq));
+        if (params->limit < 0)
+            return -1;
+        if (depth.s.count > (unsigned)params->limit)
+            return OCT_SEND_BUSY;
+    }
 
     pki_ptr.u64 = w->pkt_ptr;
 

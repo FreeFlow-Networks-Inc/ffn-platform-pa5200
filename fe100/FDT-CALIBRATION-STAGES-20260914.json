@@ -1,0 +1,55 @@
+{
+  "stages": [
+    {
+      "algorithm": "WRITE_LEVELING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "DQS_ALIGN",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "RDCLK_ALIGN",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "READ_CENTERING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "failed",
+      "error_registers": [
+        "0x808"
+      ]
+    },
+    {
+      "algorithm": "WRITE_CENTERING",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "INIT_COARSE_WRITE",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    },
+    {
+      "algorithm": "COARSE_READ",
+      "interface": "FE100_DRAM_FDT1",
+      "outcome": "returned_success",
+      "error_registers": []
+    }
+  ],
+  "failed_algorithms": [
+    "READ_CENTERING"
+  ],
+  "training_verified": false,
+  "session_offload_verified": false,
+  "log": "/var/lib/ffn/fe100/fdt-controller-recovery-live.txt",
+  "log_sha256": "4af1ace1141d533ffccbfb7fc64c6e07390ecde4c582ee7b6322c93060aa0b32"
+}

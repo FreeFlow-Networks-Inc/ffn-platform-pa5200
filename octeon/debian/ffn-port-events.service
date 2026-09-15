@@ -1,0 +1,21 @@
+[Unit]
+Description=FFN PA-5220 physical port observations
+After=ffn-bcmd.service
+ConditionPathExists=/sys/bus/pci/devices/0001:01:00.0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_port_events.py serve
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=ffn-port-events
+RuntimeDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

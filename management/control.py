@@ -9,10 +9,19 @@ import json
 import os
 import signal
 import time
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
+    ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
+    ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),
+    ('lacp', 'activate'): ('/usr/local/sbin/ffn-lacp', 'activate'),
+    ('lacp', 'deactivate'): ('/usr/local/sbin/ffn-lacp', 'deactivate'),
+    ('faceplate', 'status'): ('/usr/local/sbin/ffn-faceplate', 'status'),
+    ('faceplate', 'set'): ('/usr/local/sbin/ffn-faceplate', 'set'),
+    ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
@@ -29,71 +38,63 @@ COMMANDS = {
 LIMIT = 1024 * 1024
 
 
+def before_policy_commit(candidate_bytes):
+    # Imported only by an explicitly selected extension at commit time.
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('pa5200_policy_guard',Path(__file__).with_name('policy_guard.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.before_commit(candidate_bytes)
+
+
+def legacy_router(current_user, require_admin, record_audit):
+    api = APIRouter(prefix='/api/bcm')
+    ctl = Controller()
+
+    @api.post('/port/{port}/enable')
+    async def enable(port: int, request: Request, user=Depends(current_user)):
+        require_admin(user)
+        data = await body(request)
+        if set(data) != {'enable'} or type(data['enable']) is not bool:
+            raise HTTPException(422, 'Expected boolean enable')
+        observed = await ctl.run('faceplate','status')
+        match = next((p for p in observed['ports'] if p['bcm_port']==port),None)
+        if not match: raise HTTPException(422, 'Only mapped faceplate ports are controllable')
+        await record_audit(user['username'],'faceplate_legacy_request','port=%d'%match['port'])
+        result = await ctl.run('faceplate','set',{'revision':observed['revision'],'port':match['port'],'enabled':data['enable']})
+        return dict(result,ok=True)
+
+    @api.post('/port/{port}/loopback')
+    async def loopback(port: int, user=Depends(current_user)):
+        require_admin(user)
+        raise HTTPException(503,'Loopback has no commissioned MP daemon adapter; direct ASIC bypass is disabled')
+
+    return api
+
+
 class Controller:
     async def run(self, resource, action, payload=None):
-        argv = COMMANDS.get((resource, action))
-        if argv is None:
+        if (resource, action) not in COMMANDS:
             raise HTTPException(404, 'Unknown appliance operation')
-        if not os.access(argv[0], os.X_OK):
-            raise HTTPException(503, 'Appliance controller is not installed')
-        data = json.dumps(payload, allow_nan=False).encode() if payload is not None else b''
+        from ffn_plane_api import rpc
+        target = os.environ.get('FFN_PLANE_SOCKET', '/run/ffn-plane-mp/control.sock')
+        data = dict(payload or {})
+        operation = 'apply' if action in ('patch','set','auto','full') else action
+        if resource == 'lacp' and action != 'status':
+            operation = 'apply'
+            data['operation'] = action
+        if resource == 'thermal' and operation == 'apply':
+            data = {'revision':0, 'operation':action}
+        request = {'v':1, 'id':str(uuid.uuid4()), 'resource':resource, 'action':operation, 'payload':data}
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE, start_new_session=True)
-        except OSError:
-            raise HTTPException(503, 'Appliance controller could not be started')
-
-        async def read(stream):
-            parts, size = [], 0
-            while True:
-                part = await stream.read(65536)
-                if not part:
-                    return b''.join(parts)
-                size += len(part)
-                if size > LIMIT:
-                    raise HTTPException(502, 'Controller response exceeds limit; refresh status')
-                parts.append(part)
-
-        async def exchange():
-            proc.stdin.write(data)
-            await proc.stdin.drain()
-            proc.stdin.close()
-            out, err = await asyncio.gather(read(proc.stdout), read(proc.stderr))
-            await proc.wait()
-            return out, err
-
-        try:
-            out, err = await asyncio.wait_for(exchange(), timeout=90 if payload is not None else 25)
-        except asyncio.TimeoutError:
-            raise HTTPException(504, 'Controller timed out; outcome may be unknown. Refresh status before retrying.')
-        finally:
-            if proc.returncode is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await proc.wait()
-        if resource == 'fabric':
-            state = out.decode(errors='replace').strip()
-            if proc.returncode in (0, 3, 4) and state in ('active', 'inactive', 'failed', 'unknown', 'activating', 'deactivating'):
-                return {'state': state, 'running': state == 'active'}
-        if proc.returncode:
-            # Never return traceback, SSH diagnostics or configuration secrets.
-            if b'revision conflict' in err.lower():
-                raise HTTPException(409, 'Configuration changed; reload before applying')
-            if b'ValueError:' in err:
-                raise HTTPException(422, 'Controller rejected configuration; check fields and port dependencies')
-            raise HTTPException(502, 'Controller failed; refresh status before retrying')
-        if resource == 'thermal' and action != 'status':
-            return {'requested_mode': action, 'completed': True}
-        try:
-            result = json.loads(out)
-            if not isinstance(result, dict):
-                raise ValueError()
-            return result
-        except (ValueError, UnicodeError):
-            raise HTTPException(502, 'Controller returned an invalid response')
+            response = await rpc(target, request)
+        except (OSError, ValueError, asyncio.TimeoutError):
+            raise HTTPException(503, 'MP control daemon unavailable or outcome unknown; request ID '+request['id'])
+        if not response.get('ok'):
+            raise HTTPException(409 if response.get('state') == 'rejected' else 502,
+                'MP control '+response.get('state','unknown')+'; request ID '+request['id']+
+                '. '+str(response.get('error','Refresh status')))
+        return dict(response['result'], control={'id':request['id'], 'trace':response.get('trace'), 'state':response['state']})
 
 
 async def body(request):
@@ -111,8 +112,43 @@ async def body(request):
         raise HTTPException(422, 'Expected a JSON object')
 
 
-def router(current_user, require_admin, record_audit, controller=None):
-    api = APIRouter(prefix='/api/pa5200', tags=['PA-5220 controls'])
+def runtime_router(current_user, require_admin, record_audit):
+    return router(current_user, require_admin, record_audit, prefix='/api/system/runtime')
+
+
+async def inspection_activation(ctl, result, attempts=10):
+    """Persistence is not activation. Observe the DP's live revision separately."""
+    accepted = result.get('accepted', {})
+    expected = accepted.get('revision')
+    if type(expected) is not int:
+        return dict(result, activation='unknown')
+    deadline = time.monotonic() + 8
+    for attempt in range(attempts):
+        try:
+            observed = await asyncio.wait_for(ctl.run('inspection', 'status'),
+                                             timeout=max(0.01, deadline - time.monotonic()))
+        except (HTTPException, OSError, asyncio.TimeoutError):
+            return dict(result, activation='unknown', expected_revision=expected)
+        runtime = observed.get('runtime') or {}
+        configured = (observed.get('config') or {}).get('revision')
+        if configured != expected:
+            return dict(result, activation='superseded', expected_revision=expected)
+        if runtime.get('reload_error'):
+            return dict(result, activation='failed', expected_revision=expected)
+        if observed.get('running') and runtime.get('revision') == expected:
+            return dict(result, activation='active', expected_revision=expected)
+        if attempt + 1 < attempts:
+            await asyncio.sleep(0.25)
+    return dict(result, activation='pending', expected_revision=expected)
+
+
+def router(current_user, require_admin, record_audit, controller=None, prefix='/api/pa5200'):
+    api = APIRouter(prefix=prefix, tags=['PA-5220 controls'])
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('pa5200_vif_api',Path(__file__).with_name('vif_api.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    api.include_router(module.router(current_user,require_admin,record_audit))
     ctl = controller or Controller()
     lock = asyncio.Lock()
 
@@ -126,9 +162,10 @@ def router(current_user, require_admin, record_audit, controller=None):
             except OSError:
                 return resource, {'available': False, 'error': 'Controller unavailable'}
         resources = dict(await asyncio.gather(*(one(r) for r in (
-            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric'))))
+            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric', 'dataplane', 'lacp', 'port-events'))))
         return {'collected_at': time.time(), 'resources': resources,
                 'can_write': user.get('role') in ('admin', 'superuser'),
+                'provider': 'pa5200', 'cpu_role': 'management',
                 'capabilities': {'ports': ['p1', 'p3', 'p5', 'p13'], 'mtu': 1500,
                     'forwarding': 'software relay', 'hardware_flow_offload': False,
                     'dynamic_routing': 'FRR lab validated; production peer configuration not integrated',
@@ -149,13 +186,13 @@ def router(current_user, require_admin, record_audit, controller=None):
     @api.post('/{resource}/{action}')
     async def change(resource: str, action: str, request: Request, user=Depends(current_user)):
         require_admin(user)
-        if (resource, action) not in {('network', 'patch'), ('overlay', 'set'),
-                ('inspection', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
+        if (resource, action) not in {('network', 'patch'), ('overlay', 'set'), ('lacp','set'), ('lacp','activate'), ('lacp','deactivate'),
+                ('inspection', 'set'), ('faceplate', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'faceplate': {'revision','port','enabled'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
-                   'inspection': {'revision', 'mode', 'ports', 'literal'}, 'thermal': set()}[resource]
+                   'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set(), 'lacp': {'revision','groups'} if action=='set' else {'revision','group'}}[resource]
         if set(data) - allowed:
             raise HTTPException(422, 'Unknown configuration fields')
         if resource != 'thermal' and (type(data.get('revision')) is not int or data['revision'] < 0):
@@ -165,9 +202,13 @@ def router(current_user, require_admin, record_audit, controller=None):
             await record_audit(user['username'], 'pa5200_request', detail)
             try:
                 result = await ctl.run(resource, action, data if resource != 'thermal' else None)
+                if resource == 'inspection':
+                    result = await inspection_activation(ctl, result)
             except HTTPException as e:
                 await record_audit(user['username'], 'pa5200_failed', detail + ' http=%d' % e.status_code)
                 raise
+            if resource == 'inspection':
+                detail += ' activation=' + result['activation']
             await record_audit(user['username'], 'pa5200_completed', detail)
             return result
 

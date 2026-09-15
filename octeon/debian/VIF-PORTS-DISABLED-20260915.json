@@ -1,0 +1,195 @@
+{
+  "started": 1789489709.0750313,
+  "steps": [
+    {
+      "label": "before",
+      "result": {
+        "config": {
+          "revision": 0,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 1,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 3
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "start",
+      "result": {
+        "config": {
+          "revision": 1,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "counters": {
+          "tx_fv4001": 1,
+          "tx_fv4002": 1
+        },
+        "forwarding": true,
+        "generation": "2621997b-84f7-4eba-95e1-13f808c8dd56",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 4
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4001",
+        "receiver": "fv4002",
+        "sent": 4,
+        "received": 0,
+        "sequences": []
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 2,
+          "vifs": {}
+        },
+        "counters": {
+          "tx_fv4001": 11,
+          "tx_fv4002": 7
+        },
+        "forwarding": false,
+        "generation": "2621997b-84f7-4eba-95e1-13f808c8dd56",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 5
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "stop",
+      "result": {
+        "config": {
+          "revision": 2,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 6
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "after",
+      "result": {
+        "config": {
+          "revision": 2,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    }
+  ]
+}
