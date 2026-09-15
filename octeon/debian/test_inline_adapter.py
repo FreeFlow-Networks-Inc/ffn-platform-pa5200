@@ -25,6 +25,18 @@ def packet(payload=b'FFN_TEST_DENY', version=4, tcp=False, tagged=False):
 
 
 class Adapter(unittest.TestCase):
+    def test_builtin_profiles(self):
+        for detector, payload in [('credit_card', b'4111111111111111'), ('ssn', b'123-45-6789'), ('api_key', b'AKIAIOSFODNN7EXAMPLE')]:
+            cfg = {'revision':0, 'mode':'block', 'ports':[1], 'literal':'', 'detectors':[detector]}
+            validate(cfg)
+            state = inspection.create_engine(LIB, cfg)
+            self.assertTrue(state)
+            try:
+                self.assertEqual(LIB.ffn_inline_scan(state, packet(payload), len(packet(payload))), 2)
+                self.assertEqual(LIB.ffn_inline_scan(state, packet(b'clean'), len(packet(b'clean'))), 0)
+            finally:
+                LIB.ffn_inline_destroy(state)
+
     def setUp(self):
         self.state = LIB.ffn_inline_create(b'FFN_TEST_DENY', 13, 2)
         self.assertTrue(self.state)

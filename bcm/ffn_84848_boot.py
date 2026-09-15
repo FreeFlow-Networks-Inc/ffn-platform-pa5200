@@ -27,8 +27,12 @@ class Copper:
             if time.monotonic() >= end: raise RuntimeError('PHY firmware busy')
             time.sleep(0.001)
     def enable(self):
-        if not self.read(30, 0x400f) or self.read(1, 0) & 0x8000:
+        if self.read(30, 0x400f) in (0, 65535) or self.read(1, 0) & 0x8000:
             raise RuntimeError('cannot enable a PHY without running firmware')
+        # A service recovery must not renegotiate an already enabled WAN PHY.
+        if not self.read(30, 0x401a) & 0x8180 and self.read(7, 0) & 0x1000:
+            print('PHY %d copper already enabled' % self.phy, flush=True)
+            return
         self.handshake()
         # Clear super-isolate, fiber preference, and copper disable only.
         self.write(30, 0x401a, self.read(30, 0x401a) & ~0x8180)

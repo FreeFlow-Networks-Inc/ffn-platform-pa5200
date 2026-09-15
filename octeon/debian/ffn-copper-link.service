@@ -1,0 +1,8 @@
+[Unit]
+Description=Synchronize commissioned copper PHY rates to BCM MACs
+After=ffn-front-ports.service ffn-copper.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_copper_link.py
+TimeoutStartSec=45

@@ -7,10 +7,14 @@ MODULES=/usr/local/lib/ffn/modules
 case "${1:-run}" in
 prepare)
     # A command-line token alone does not prove the allocator excluded it.
-    dmesg | grep -q 'FFN: ffn_reserve 0x30000000+0x4000000 reserved' || {
+    # The ring buffer can wrap during normal operation. The current boot's
+    # kernel journal retains the allocator confirmation across service restarts.
+    reservation='FFN: ffn_reserve 0x30000000+0x4000000 reserved, kept out of the allocator'
+    if ! dmesg | grep -F "$reservation" >/dev/null &&
+       ! journalctl --boot=0 --dmesg --no-pager --output=cat | grep -Fx "$reservation" >/dev/null; then
         echo 'BCM DMA pool is not reserved; fix boot arguments before loading BDE' >&2
         exit 1
-    }
+    fi
     test -x "$COMPAT/usr/local/ffn/bcm.user.8481"
     test -f "$COMPAT/tmp/bcmcfg/config.bcm"
     test "$(readlink "$COMPAT/usr/share/broadcom")" = /tmp/bcmcfg

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from control import router
-from hardware_backend import Controller
+from control import Controller, router, inspection_activation, legacy_router
+from hardware_backend import Controller as HardwareController
 
 
 class APITests(unittest.TestCase):
@@ -123,15 +123,57 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await execute('lacp','validate',{'revision':0,'group':'lag1','operation':'activate'},backend)
         backend.run.assert_awaited_once_with('lacp','status')
+    async def test_selected_plane_socket_uses_rpc_without_legacy_command(self):
+        import types
+        rpc=AsyncMock(return_value={'ok':True,'state':'applied','result':{'config':{'revision':8}},'trace':['mp','cp','dp']})
+        with patch.dict('os.environ',{'FFN_PLANE_SOCKET':'/run/fixture.sock'}), \
+             patch.dict('sys.modules',{'ffn_plane_api':types.SimpleNamespace(rpc=rpc)}), \
+             patch('control.asyncio.create_subprocess_exec') as spawn:
+            result=await Controller().run('network','patch',{'revision':7,'ports':{}})
+        self.assertEqual(result['control']['trace'],['mp','cp','dp'])
+        self.assertEqual(rpc.call_args.args[1]['action'],'apply')
+        spawn.assert_not_called()
+
+    async def test_inspection_activation_requires_live_matching_revision(self):
+        ctl=AsyncMock()
+        result={'accepted':{'revision':8}}
+        for observed,expected in [
+            ({'config':{'revision':8},'running':True,'runtime':{'revision':8}},'active'),
+            ({'config':{'revision':8},'running':False,'runtime':{'revision':8}},'pending'),
+            ({'config':{'revision':8},'running':True,'runtime':{'revision':7}},'pending'),
+            ({'config':{'revision':9},'running':True,'runtime':{'revision':9}},'superseded'),
+            ({'config':{'revision':8},'runtime':{'reload_error':'private diagnostic'}},'failed')]:
+            ctl.run.return_value=observed
+            answer=await inspection_activation(ctl,result,attempts=1)
+            self.assertEqual(answer['activation'],expected)
+            self.assertNotIn('private diagnostic',str(answer))
+        ctl.run.side_effect=HTTPException(503)
+        self.assertEqual((await inspection_activation(ctl,result))['activation'],'unknown')
 
     async def test_unknown_command_never_spawns(self):
         with patch('hardware_backend.asyncio.create_subprocess_exec') as spawn:
             with self.assertRaises(HTTPException):
-                await Controller().run('network; reboot','status')
+                await HardwareController().run('network; reboot','status')
             spawn.assert_not_called()
 
+
+class LegacyTests(unittest.IsolatedAsyncioTestCase):
+    def test_port_write_uses_mp_client(self):
+        async def user(): return {'username':'test','role':'admin'}
+        ctl=AsyncMock()
+        ctl.run.side_effect=[{'revision':4,'ports':[{'port':1,'bcm_port':28}]},{'activation':'verified'}]
+        app=FastAPI()
+        with patch('control.Controller',return_value=ctl):
+            app.include_router(legacy_router(user,lambda u:None,AsyncMock()))
+        with TestClient(app) as client:
+            self.assertTrue(client.post('/api/bcm/port/28/enable',json={'enable':False}).json()['ok'])
+            self.assertEqual(client.post('/api/bcm/port/28/loopback',json={'mode':'mac'}).status_code,503)
+        self.assertEqual(ctl.run.await_args.args,('faceplate','set',{'revision':4,'port':1,'enabled':False}))
+
     async def test_missing_binary_no_spawn(self):
-        with patch('hardware_backend.os.access',return_value=False), patch('hardware_backend.asyncio.create_subprocess_exec') as spawn:
+        import types
+        rpc=AsyncMock(side_effect=OSError('missing socket'))
+        with patch.dict('sys.modules',{'ffn_plane_api':types.SimpleNamespace(rpc=rpc)}), patch('control.asyncio.create_subprocess_exec') as spawn:
             with self.assertRaises(HTTPException) as e:
                 await Controller().run('network','status')
             self.assertEqual(e.exception.status_code,503)

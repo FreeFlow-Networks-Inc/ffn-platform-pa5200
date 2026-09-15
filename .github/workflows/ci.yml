@@ -91,6 +91,17 @@ jobs:
       - name: deps
         run: python3 -m pip install --quiet pyelftools
 
+      - name: shared Linux network engine
+        uses: actions/checkout@v5
+        with:
+          repository: FreeFlow-Networks-Inc/FFN-NGFW
+          ref: 19bbf893c76c8843cde789f845d0a73930054347
+          path: .core-runtime
+          submodules: false
+          persist-credentials: false
+      - name: network engine import path
+        run: echo "PYTHONPATH=$GITHUB_WORKSPACE/.core-runtime/opt" >> "$GITHUB_ENV"
+
       # Each suite is NAMED rather than discovered, matching FFN-NGFW's ci.yml.
       # A discovery loop would turn red the moment someone adds a test that
       # needs a switch ASIC, and the honest answer to "which tests can CI run"
@@ -118,6 +129,8 @@ jobs:
         run: cd octeon/debian && python3 test_fabric_codec.py
       - name: network config
         run: cd octeon/debian && python3 test_network_config.py
+      - name: VIF assignments and adapter guards
+        run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter
       - name: overlay
         run: cd octeon/debian && python3 test_overlay.py
 

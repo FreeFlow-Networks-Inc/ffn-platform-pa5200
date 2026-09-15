@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore saved PA-5200 faceplate administrative state
+Requires=ffn-front-ports.service
+After=ffn-front-ports.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_faceplate.py restore
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -47,6 +47,18 @@
       "after": "dash-system"
     },
     {
+      "id": "bcm",
+      "label": "BCM Switch Service",
+      "tab": "device",
+      "after": "dash-system"
+    },
+    {
+      "id": "phy",
+      "label": "Copper PHYs",
+      "tab": "network",
+      "after": "interfaces"
+    },
+    {
       "id": "vifs",
       "label": "Virtual Interfaces",
       "tab": "network",

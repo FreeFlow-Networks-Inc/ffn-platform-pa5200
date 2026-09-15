@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe copper rate changes without restarting PHY negotiation
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=5
+AccuracySec=1
+Unit=ffn-copper-link.service
+
+[Install]
+WantedBy=timers.target

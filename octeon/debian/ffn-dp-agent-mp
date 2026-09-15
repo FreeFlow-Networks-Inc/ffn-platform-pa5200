@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+[ "${1:-status}" = status ] || exit 2
+exec ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes \
+    -o ServerAliveInterval=3 -o ServerAliveCountMax=2 \
+    -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \
+    -o 'ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp' \
+    root@127.1.2.2 'python3 /usr/local/sbin/ffn_dp_agent.py status'

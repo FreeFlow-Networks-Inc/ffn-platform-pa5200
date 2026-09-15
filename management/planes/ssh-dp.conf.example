@@ -1,0 +1,11 @@
+Host ffn-dp
+    HostName 127.1.2.2
+    User root
+    IdentityFile /etc/ffn/planes/dp_identity
+    IdentitiesOnly yes
+    BatchMode yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /etc/ffn/planes/dp_known_hosts
+    ConnectTimeout 10
+    ServerAliveInterval 10
+    ServerAliveCountMax 2
