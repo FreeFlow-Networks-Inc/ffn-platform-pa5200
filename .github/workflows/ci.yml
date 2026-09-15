@@ -58,7 +58,9 @@ jobs:
           n=0
           while IFS= read -r f; do
             n=$((n+1))
-            sh -n "$f" 2>/tmp/e || { echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
+            interpreter=sh
+            case "$(head -n 1 "$f")" in '#!'*bash*) interpreter=bash ;; esac
+            "$interpreter" -n "$f" 2>/tmp/e || { echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
           done <<< "$(git ls-files '*.sh')"
           echo "checked $n shell scripts"
           exit $fail
@@ -169,7 +171,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-mips64-linux-gnuabi64 qemu-user-static
+            gcc-mips64-linux-gnuabi64 libc6-dev-mips64-cross qemu-user-static
           mips64-linux-gnuabi64-gcc --version | head -1
           qemu-mips64-static --version | head -1
 
