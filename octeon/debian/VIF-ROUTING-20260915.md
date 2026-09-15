@@ -58,3 +58,28 @@ line-rate forwarding and cold-boot restoration of VIF-dependent routes are not
 qualified. The route configuration persists, but base networking must exist
 before VIF devices, and VIF devices must exist before their routes are replayed.
 This change does not enable a boot orchestrator or leave lab assignments active.
+
+## Physical results, 2026-09-15
+
+`VIF-L2-L3-FORWARDING-20260915.json` records the MP-controlled test on the
+5--13 DAC with the updated shared engine installed on Debian/OCTEON:
+
+| Test | Each direction | Result |
+| --- | --- | --- |
+| L2 bridge with wire VLAN translation | 4/4 exact frames | Passed |
+| Different bridge VLANs | 4/4 ingress, 0/4 forwarded | Isolation passed |
+| IPv4 VRF static route and ingress rule | 4/4 exact frames | MAC rewrite, TTL 63, checksum passed |
+| IPv6 VRF static route and ingress rule | 4/4 exact frames | MAC rewrite, hop limit 63 passed |
+| Disable a VIF with route/policy dependencies | Rejected | Assignment preserved |
+
+These are sequential directions with both interfaces configured concurrently.
+The initial routing run used permanent test next-hop neighbors. Tests compare
+the complete expected frame and physical ingress metadata, not TX counters alone.
+Cleanup restored empty assignments, no test routes/rules/VRF, stopped transport,
+and ports 5/13 disabled at their saved automatic speed setting. Revisions advanced
+to network 64 and VIF 15; existing physical-port network settings were preserved.
+
+The optional `--neighbors` harness run creates fresh VIFs without permanent
+neighbors. Its probe emulates only the reserved next-hop addresses, replying
+to observed ARP requests and IPv6 neighbor solicitations over the DAC. It requires
+successful neighbor exchange and exact physical routed frames in both directions.

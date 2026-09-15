@@ -132,7 +132,7 @@ jobs:
       - name: network config
         run: cd octeon/debian && python3 test_network_config.py
       - name: VIF assignments and adapter guards
-        run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter
+        run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter test_vif_probe
       - name: management UI controls
         run: |
           node management/test_ui.cjs

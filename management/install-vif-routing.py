@@ -26,6 +26,8 @@ for name in files:compile((source/name).read_text(),name,'exec')
 core=(source/'ffn_linux_network.py').read_text()
 assert 'def routing_interfaces(cfg):' in core and 'def attached_interfaces(attachment):' in core
 ui=(extension/'static/ui.js').read_text()
+ui=ui.replace('Forwarding uses the commissioning relay on ports 1, 3, 5 and 13; MTU 1500. Hardware flow offload is not active.',
+              'The VIF packet transport is commissioned on ports 5 and 13 with MTU 1500. Check Virtual Interfaces for active assignments and Faceplate Ports for link state. Hardware flow offload is not active.')
 start="      if (section === 'routing') {\n        element('p', 'Routes and policy rules can use enabled L3 VIF names"
 staged=(source/'ui.js').read_text()
 block=staged[staged.index(start):staged.index("      if (section === 'interfaces') {",staged.index(start))]

@@ -11,7 +11,8 @@ import uuid
 sys.path.insert(0,'/opt/ffn-ngfw-v2')
 from ffn_plane_api import rpc
 
-output=Path('/tmp/VIF-L2-L3-FORWARDING-20260915.json')
+neighbors='--neighbors' in sys.argv
+output=Path('/tmp/VIF-'+('NEIGHBOR' if neighbors else 'L2-L3')+'-FORWARDING-20260915.json')
 report={'started':time.time(),'steps':[]}
 
 def record(label,result):
@@ -45,7 +46,8 @@ def checked(*args):
     return result.stdout
 
 def probe(mode,expected=4):
-    result=dp('python3','/usr/local/sbin/validate_vif_forwarding.py',mode,'--expect',str(expected))
+    result=dp('python3','/usr/local/sbin/validate_vif_forwarding.py',mode,'--expect',str(expected),
+              *(['--resolve-neighbors'] if neighbors else []))
     record('wire_'+mode,json.loads(result.stdout))
     if result.returncode:raise RuntimeError('wire test failed: '+result.stderr)
 
@@ -79,17 +81,20 @@ try:
     for port in (5,13):changed.append(port);face(port,True,'10000')
     current={p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in (5,13)}
     if not all(p['enabled'] and p['link'] for p in current.values()):raise RuntimeError('DAC link unavailable')
-    vif('set',bindings);vif('start');bridge_ready();probe('l2')
-    bindings['fv4002']['network']={'mode':'l2','vlans':[3903],'pvid':3903}
-    vif('set',bindings);bridge_ready();probe('l2',0)
+    if not neighbors:
+        vif('set',bindings);vif('start');bridge_ready();probe('l2')
+        bindings['fv4002']['network']={'mode':'l2','vlans':[3903],'pvid':3903}
+        vif('set',bindings);bridge_ready();probe('l2',0)
     network(vrfs={**net_before.get('vrfs',{}),'vrf-viflab':4090})
     for name,subnet in [('fv4001',201),('fv4002',202)]:
         bindings[name]['network']={'mode':'l3','vrf':'vrf-viflab',
             'addresses':['198.18.%d.1/24'%subnet,'2001:db8:%d::1/64'%subnet]}
     vif('set',bindings)
+    if neighbors:vif('start')
     for name,subnet,mac in [('fv4001',201,'02:ff:00:00:00:01'),('fv4002',202,'02:ff:00:00:00:02')]:
         for address in ('198.18.%d.2'%subnet,'2001:db8:%d::2'%subnet):
-            checked('ip','-n','ffn-data','neigh','replace',address,'lladdr',mac,'dev',name,'nud','permanent')
+            if not neighbors:
+                checked('ip','-n','ffn-data','neigh','replace',address,'lladdr',mac,'dev',name,'nud','permanent')
     routes=[];rules=[]
     for name,subnet in [('fv4001',201),('fv4002',202)]:
         routes += [{'dst':'198.19.%d.0/24'%subnet,'via':'198.18.%d.2'%subnet,'dev':name,'table':4090},
@@ -99,6 +104,7 @@ try:
     network(routes=net_before.get('routes',[])+routes,rules=net_before.get('rules',[])+rules)
     time.sleep(2)
     probe('ipv4');probe('ipv6')
+    if neighbors:record('learned_neighbors',json.loads(checked('ip','-n','ffn-data','-j','neigh','show')))
     record('route_lookup',call('network','lookup',{'dst':'198.19.202.2','vrf':'vrf-viflab'}))
     invalid=copy.deepcopy(bindings);invalid['fv4001']['enabled']=False
     current=call('vifs','status')
