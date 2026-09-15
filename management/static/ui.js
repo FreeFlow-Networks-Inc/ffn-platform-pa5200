@@ -91,7 +91,7 @@
     }
     message.textContent = 'Observed ' + new Date(snapshot.collected_at * 1000).toLocaleString() +
       (writable ? '. Changes apply immediately and persist separately from candidate/commit.' : '. Read-only access.');
-    if (section === 'dataplane') element('p', 'Forwarding uses the commissioning relay on ports 1, 3, 5 and 13; MTU 1500. Hardware flow offload is not active.', root);
+    if (section === 'dataplane') element('p', 'The VIF packet transport is commissioned on ports 5 and 13 with MTU 1500. Check Virtual Interfaces for active assignments and Faceplate Ports for link state. Hardware flow offload is not active.', root);
     const notice = element('p', '', root);
     let busy = false;
     async function apply(path, payload, target) {
@@ -167,6 +167,15 @@
       const r = resources[resource];
       const box = card(root, titles[section]);
       if (!r.available) { element('p', r.error, box); continue; }
+      if (section === 'routing') {
+        element('p', 'Routes and policy rules can use enabled L3 VIF names as dev, nexthop dev or iif. The route table must match the egress virtual router. Remove dependent routes and rules before changing an assignment.', box);
+        try {
+          const vifs = await api(prefix + '/vifs');
+          if (!root.isConnected) return;
+          const names = Object.entries(vifs.config.vifs).filter(([,b]) => b.enabled && b.network.mode === 'l3').map(([n,b]) => n + ' (' + (b.network.vrf || 'main') + ')');
+          element('p', 'Configured L3 VIFs: ' + (names.join(', ') || 'none') + '. Transport: ' + (vifs.forwarding ? 'active' : 'inactive'), box);
+        } catch (e) { element('p', 'VIF routing state unavailable: ' + e.message, box); }
+      }
       if (section === 'interfaces') {
         element('p', 'Use L2 VLAN membership or L3 addresses and a virtual router per port. Routes, VRFs and policy rules are edited below.', box);
         for (const [name, config] of Object.entries(r.data.config.ports)) {

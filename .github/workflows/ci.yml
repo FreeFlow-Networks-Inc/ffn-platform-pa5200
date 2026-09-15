@@ -58,7 +58,9 @@ jobs:
           n=0
           while IFS= read -r f; do
             n=$((n+1))
-            sh -n "$f" 2>/tmp/e || { echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
+            interpreter=sh
+            case "$(head -n 1 "$f")" in '#!'*bash*) interpreter=bash ;; esac
+            "$interpreter" -n "$f" 2>/tmp/e || { echo "SYNTAX: $f"; sed 's/^/    /' /tmp/e; fail=1; }
           done <<< "$(git ls-files '*.sh')"
           echo "checked $n shell scripts"
           exit $fail
@@ -95,7 +97,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: FreeFlow-Networks-Inc/FFN-NGFW
-          ref: 19bbf893c76c8843cde789f845d0a73930054347
+          ref: 11386877aca78dc00860d24f76c3a0b37396b9c2
           path: .core-runtime
           submodules: false
           persist-credentials: false
@@ -130,7 +132,12 @@ jobs:
       - name: network config
         run: cd octeon/debian && python3 test_network_config.py
       - name: VIF assignments and adapter guards
-        run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter
+        run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter test_vif_probe
+      - name: management UI controls
+        run: |
+          node management/test_ui.cjs
+          node management/test_ui_forwarding.cjs
+          node management/test_vif_ui.cjs
       - name: overlay
         run: cd octeon/debian && python3 test_overlay.py
 
@@ -169,7 +176,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-mips64-linux-gnuabi64 qemu-user-static
+            gcc-mips64-linux-gnuabi64 libc6-dev-mips64-cross qemu-user-static
           mips64-linux-gnuabi64-gcc --version | head -1
           qemu-mips64-static --version | head -1
 

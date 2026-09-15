@@ -79,6 +79,16 @@ class Linux:
                 raise ValueError('configure the referenced VRF first')
         # Do not silently remove routes installed by another controller.
         changed={n for n in old['vifs'] if old['vifs'].get(n)!=new['vifs'].get(n)}
+        if network.STATE.exists():
+            saved=json.loads(network.STATE.read_text())
+            if any(changed & network.route_ports(r) for r in saved.get('routes', [])):
+                raise RuntimeError('remove configured VIF routes before reassignment')
+            if any(r['iif'] in changed for r in saved.get('rules', [])):
+                raise RuntimeError('remove configured VIF policies before reassignment')
+        for family in ('-4','-6'):
+            if any(r.get('iif',r.get('iifname')) in changed
+                   for r in json.loads(network.ip(family,'-j','rule','show'))):
+                raise RuntimeError('remove dependent VIF policies before reassignment')
         for family in ('-4','-6'):
             for route in json.loads(network.ip(family,'-j','route','show','table','all')):
                 devs={route.get('dev')}|{h.get('dev') for h in route.get('nexthops',[])}

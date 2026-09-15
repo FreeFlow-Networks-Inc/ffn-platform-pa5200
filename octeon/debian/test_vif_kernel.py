@@ -31,7 +31,9 @@ try:
     ip('link','add','br-data','type','bridge','vlan_filtering','1','vlan_default_pvid','0','stp_state','0')
     ip('link','set','br-data','up')
     with tempfile.TemporaryDirectory() as tmp:
-        owner=Owner(backend,{5,13},Path(tmp)/'state',Path(tmp)/'intent')
+        network.STATE=Path(tmp)/'network.json'
+        network.REQUIRE_ATTACHMENT=True
+        owner=Owner(backend,{5,13},Path(tmp)/'vifs.json',Path(tmp)/'intent')
         vifs={n:{'port':p,'vlan':100,'enabled':True,'network':{'mode':'l2','vlans':[100],'pvid':100}}
               for n,p in [('fv3001',5),('fv3002',13)]}
         owner.replace({'revision':0,'vifs':vifs})
@@ -64,6 +66,22 @@ try:
         os.write(handles[0],frame);received=read(handles[1],nonce)
         assert received[22]==63 and checksum(received[14:34])==0 and received[:6]==bytes.fromhex('02ff00000002')
         report['l3_vrf_ttl_checksum_forwarding']=True
+        cfg={'revision':0,'ports':{},'vrfs':{'vrf-viftest':1001},'routes':[],'rules':[]}
+        network.save(cfg)
+        route={'dst':'198.19.2.0/24','dev':'fv3002','via':'198.18.2.2','table':1001}
+        rule={'from':'198.18.1.0/24','iif':'fv3001','table':1001,'priority':101}
+        cfg=network.patch(cfg,{'revision':0,'routes':[route],'rules':[rule]})['config']
+        header=header[:16]+bytes([198,19,2,2])
+        header=header[:10]+b'\0\0'+header[12:]
+        header=header[:10]+struct.pack('!H',checksum(header))+header[12:]
+        os.write(handles[0],frame[:14]+header+udp);received=read(handles[1],nonce)
+        assert received[22]==63 and checksum(received[14:34])==0 and received[:6]==bytes.fromhex('02ff00000002')
+        report['vif_static_route_and_policy_forwarding']=True
+        changed=copy.deepcopy(owner.config);changed['vifs']['fv3001']['vlan']=200
+        try:backend.preflight(owner.config,changed)
+        except RuntimeError:report['dependent_policy_reassignment_rejected']=True
+        else:raise AssertionError('dependent VIF policy was orphaned')
+        cfg=network.patch(cfg,{'revision':cfg['revision'],'routes':[],'rules':[]})['config']
         ip('link','set','fv3001','nomaster')
         try:backend.verify(owner.config)
         except RuntimeError:report['vrf_drift_rejected']=True

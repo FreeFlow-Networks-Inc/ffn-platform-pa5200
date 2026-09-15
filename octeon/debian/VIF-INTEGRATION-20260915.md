@@ -49,10 +49,9 @@ Create `vrf-lab` through the existing network controls first. For L2 use, e.g.,
 `{"mode":"l2","vlans":[100],"pvid":100}`. That bridge VLAN is independent
 of the wire VLAN and allows VLAN translation between logical interfaces.
 The existing bridge uses STP, so L2 forwarding may wait for bridge convergence.
-Connected L3 routes are installed by Linux. The current physical-port static
-route/ECMP/policy-rule editor does not accept VIF device names; extending that
-editor is separate work. IPv6 addresses are accepted but have not received
-physical VIF forwarding qualification here.
+Connected L3 routes are installed by Linux. The Routing page also accepts VIF
+names in static-route `dev`, ECMP nexthop `dev` and policy-rule `iif` fields.
+See `VIF-ROUTING-20260915.md` for dependencies and physical qualification.
 
 Configuration persists in `/etc/ffn/vifs.json`; a durable pending record enables
 rollback after interruption. `/run/ffn-vif.sock` is root-only. The fabric lock
