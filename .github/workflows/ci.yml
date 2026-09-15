@@ -137,6 +137,8 @@ jobs:
         run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport
       - name: MP VIF observation and configuration ordering
         run: cd management && python3 -m unittest test_vif_backend
+      - name: all four copper PHY and MAC control paths
+        run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link
       - name: management UI controls
         run: |
           node management/test_ui.cjs
