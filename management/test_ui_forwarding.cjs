@@ -23,13 +23,24 @@ async function check(writable, operation='port') {
     overlay:{available:false,error:'Offline'},
     lacp:good({config:{revision:0,groups:{}},capabilities:{activation_supported:false,reason:'Unqualified relay'},runtime:{}}),
     inspection:good({config:{revision:3,mode:'off',ports:[],literal:''}})}};
-  const request=async(path,options)=> { calls.push({path,options}); return options ? {revision:10} : snapshot; };
-  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');if(label===(operation==='dataplane'?'dataplane':'interfaces')) render=fn; }}},
+  const request=async(path,options)=> { calls.push({path,options});
+    if(path.endsWith('/vifs'))return {forwarding:true,config:{vifs:{fv1:{enabled:true,network:{mode:'l3',vrf:'vrf-test'}},fv2:{enabled:false,network:{mode:'l3'}}}}};
+    return options ? {revision:10} : snapshot; };
+  const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');if(label===(['dataplane','routing'].includes(operation)?operation:'interfaces')) render=fn; }}},
     document:{createElement:tag=>new Node(tag)},Date,JSON,Object,setTimeout:()=>{}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');
   const parent=new Node('main'); await render(parent);
-  assert.equal(calls.length,1);
+  assert.equal(calls.length,operation==='routing'?2:1);
+  if(operation==='routing') {
+    assert.ok(parent.all().some(n=>n.textContent==='Configured L3 VIFs: fv1 (vrf-test). Transport: active'));
+    const editor=parent.all().find(n=>n['aria-label']==='network configuration');
+    editor.value=JSON.stringify({revision:9,routes:[{dst:'0.0.0.0/0',dev:'fv1',via:'198.18.0.2',table:1001}]});
+    parent.all().find(n=>n.textContent==='Apply network').onclick();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(JSON.parse(calls.find(c=>c.options).options.body).routes[0].dev,'fv1');
+    return;
+  }
   if(operation==='dataplane') {
     assert.ok(parent.all().some(n=>n.textContent==='Internal DP link: ready'));
     assert.ok(parent.all().some(n=>n.textContent==='Physical packet forwarding: unverified'));
@@ -66,4 +77,4 @@ async function check(writable, operation='port') {
     assert.ok(buttons.every(b=>b.disabled),'stale editors disabled after apply');
   }
 }
-(async()=>{await check(true);await check(false);await check(true,'lacp');await check(false,'dataplane');console.log('PA-5220 UI tests passed');})().catch(e=>{console.error(e);process.exit(1);});
+(async()=>{await check(true);await check(false);await check(true,'lacp');await check(false,'dataplane');await check(true,'routing');console.log('PA-5220 UI tests passed');})().catch(e=>{console.error(e);process.exit(1);});
