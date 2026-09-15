@@ -19,7 +19,16 @@
       ' · Packet transport '+(state.forwarding?'active':'inactive')+
       (state.recovery_required?' · Recovery required':'')+(state.runtime_error?' · '+state.runtime_error:'');
     el('p','Assign each VIF to a commissioned front port and an optional wire VLAN. L2 bridge VLANs join logical interfaces; L3 addresses use the selected virtual router. Saving applies immediately. Start enables the packet transport.',root);
-    el('p','Commissioned ports: '+state.ports.join(', ')+'. Physical link state is reported under Faceplate Ports. FE100 VIF session offload is not active.',root);
+    el('p','Commissioned ports: '+state.ports.join(', ')+'. FE100 VIF session offload is not active.',root);
+    if(state.link_observation_error)el('p','Physical observation: '+state.link_observation_error,root);
+    if(state.copper_ports){
+      const copper=el('table',undefined,root);copper.className='data-table';
+      const ch=el('tr',undefined,copper);['Copper port','PHY / BCM','Speed','VIF readiness'].forEach(x=>el('th',x,ch));
+      for(const [p,s] of Object.entries(state.copper_ports)){
+        const row=el('tr',undefined,copper);
+        [p,s.phy===null?'Unverified':s.phy+' / '+s.bcm_port,s.speed_mbps===null?'Unknown':s.speed_mbps+' Mbps',s.reason].forEach(x=>el('td',String(x),row));
+      }
+    }
     let busy=false;
     async function change(op,fields={}) {
       if(busy)return;busy=true;controls.forEach(b=>b.disabled=true);notice.textContent='Applying…';
@@ -30,7 +39,7 @@
     button('Stop transport',()=>change('stop'),!writable||!state.running);
     button('Recover interrupted change',()=>change('recover'),!writable||state.running||!state.recovery_required);
     const table=el('table',undefined,root);table.className='data-table';
-    const head=el('tr',undefined,table);['VIF','Front port','Wire VLAN','Enabled','Mode','Actions'].forEach(x=>el('th',x,head));
+    const head=el('tr',undefined,table);['VIF','Front port','Wire VLAN','Enabled','Mode','Carrier','Actions'].forEach(x=>el('th',x,head));
     function input(label,value,choices) {
       const wrap=el('label',label+' ',root);wrap.className='form-group';
       const n=el(choices?'select':'input',undefined,wrap);n.setAttribute('aria-label',label);
@@ -45,7 +54,9 @@
     function load(n,b) {name.value=n;port.value=b.port;vlan.value=b.vlan===null?'':b.vlan;enabled.value=String(b.enabled);
       mode.value=b.network.mode;bridge.value=b.network.pvid||'';addresses.value=(b.network.addresses||[]).join(',');vrf.value=b.network.vrf||'';mtu.value=b.network.mtu||1500;}
     for(const [n,b] of Object.entries(state.config.vifs)) {
-      const row=el('tr',undefined,table);[n,b.port,b.vlan===null?'Untagged':b.vlan,String(b.enabled),b.network.mode].forEach(x=>el('td',String(x),row));
+      const link=(state.vif_links||{})[n];
+      const carrier=!state.running?'Stopped':!b.enabled||b.network.mode==='disabled'?'Disabled':link?(link.carrier===true?'Up':link.reason):'Unknown';
+      const row=el('tr',undefined,table);[n,b.port,b.vlan===null?'Untagged':b.vlan,String(b.enabled),b.network.mode,carrier].forEach(x=>el('td',String(x),row));
       const cell=el('td',undefined,row);
       for(const [label,fn] of [['Edit',()=>load(n,b)],['Remove',()=>change('set',{vifs:Object.fromEntries(Object.entries(state.config.vifs).filter(([key])=>key!==n))})]]) {
         const btn=el('button',label,cell);btn.disabled=!writable||state.recovery_required;btn.onclick=fn;controls.push(btn);

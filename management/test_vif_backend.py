@@ -3,6 +3,23 @@ from vif_backend import execute
 
 
 class Backend(unittest.TestCase):
+    def test_physical_observation_uses_dp_challenge(self):
+        calls=[]
+        def remote(op,data):
+            calls.append((op,data))
+            return {'running':True,'link_token':'fresh','config':{'revision':4}}
+        rows=[{'port':2}]
+        execute('status',{},remote,read_links=lambda:rows)
+        self.assertEqual(calls,[('status',{}),('links',{'token':'fresh','ports':rows})])
+
+    def test_observation_failure_reports_error_without_configuration_write(self):
+        calls=[]
+        def remote(op,data):calls.append(op);return {'running':True,'link_token':'fresh'}
+        def failed():raise RuntimeError('CP unavailable')
+        result=execute('status',{},remote,read_links=failed)
+        self.assertEqual(calls,['status','status'])
+        self.assertIn('CP unavailable',result['link_observation_error'])
+
     def test_validate_then_drain_then_apply(self):
         calls=[]
         def remote(op,data):calls.append(op);return {'config':{'revision':4},'running':False}

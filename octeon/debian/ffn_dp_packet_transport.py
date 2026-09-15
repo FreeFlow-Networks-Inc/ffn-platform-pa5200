@@ -19,7 +19,9 @@ import time
 
 from ffn_fabric import tap, run, MAX_FRAME
 
-FRONT = dict(enumerate((28,13,14,15,16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35), 1))
+# Copper wiring is commissioned per appliance by ffn_copper_vif. Do not
+# install the old sequential PHY/MAC guess into a packet classifier.
+FRONT = dict(enumerate((16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35), 5))
 
 
 def decode(frame, ports):
@@ -37,14 +39,14 @@ def decode(frame, ports):
     return port, frame[32:32+length]
 
 
-def encode(port, frame):
-    if type(port) is not int or port not in FRONT or not 14 <= len(frame) <= MAX_FRAME:
+def encode(port, frame, front=FRONT):
+    if type(port) is not int or port not in front or not 14 <= len(frame) <= MAX_FRAME:
         raise ValueError('invalid front port or Ethernet length')
     # Requires a commissioned Jericho injected-header/RAW_DSA trunk.
-    return b'\x01'+struct.pack('!H', FRONT[port])+b'\0'+frame[:12]+bytes(8)+frame[12:]
+    return b'\x01'+struct.pack('!H', front[port])+b'\0'+frame[:12]+bytes(8)+frame[12:]
 
 
-def decode_otmh_ssp(frame, ports):
+def decode_otmh_ssp(frame, ports, front=FRONT):
     """Commissioned BCM24 TM_SSP return, TC0, front ingress RAW.
 
     Four-byte OTMH: observed destination24 then source system port, both BE16.
@@ -55,7 +57,7 @@ def decode_otmh_ssp(frame, ports):
     if not 18 <= len(frame) <= MAX_FRAME+4 or frame[:2]!=b'\0\x18':
         return None
     source=struct.unpack_from('!H',frame,2)[0]
-    reverse={v:k for k,v in FRONT.items()}
+    reverse={v:k for k,v in front.items()}
     port=reverse.get(source)
     if port not in ports:
         return None
