@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from control import Controller, router, inspection_activation, legacy_router
+from hardware_backend import Controller as HardwareController
 
 
 class APITests(unittest.TestCase):
@@ -36,13 +37,22 @@ class APITests(unittest.TestCase):
 
     def test_readonly_cannot_write(self):
         self.role = 'read-only'
-        for path in ('network/patch','overlay/set','inspection/set','thermal/full'):
+        for path in ('network/patch','overlay/set','inspection/set','thermal/full','lacp/set','lacp/activate','lacp/deactivate'):
             self.assertEqual(self.client.post('/api/pa5200/'+path, json={'revision':7}).status_code,403)
         self.controller.run.assert_not_called()
 
     def test_unknown_action_no_dispatch(self):
         self.assertEqual(self.client.post('/api/pa5200/thermal/reboot', json={}).status_code,404)
         self.controller.run.assert_not_called()
+
+    def test_lacp_profile_and_activation_are_separate(self):
+        data = {'revision':7,'groups':{}}
+        self.assertEqual(self.client.post('/api/pa5200/lacp/set',json=data).status_code,200)
+        self.controller.run.assert_awaited_once_with('lacp','set',data)
+        self.controller.run.reset_mock()
+        data = {'revision':7,'group':'lag1'}
+        self.assertEqual(self.client.post('/api/pa5200/lacp/activate',json=data).status_code,200)
+        self.controller.run.assert_awaited_once_with('lacp','activate',data)
 
     def test_revision_required_and_unknown_fields_rejected(self):
         for data in ({}, {'revision':True}, {'revision':-1}, {'revision':7,'command':'reboot'}):
@@ -78,8 +88,41 @@ class APITests(unittest.TestCase):
         self.role='read-only'
         self.assertEqual(self.client.post('/api/pa5200/network/lookup',json={'dst':'198.18.1.2','vrf':'vrf-blue'}).status_code,200)
 
+    def test_port_observations_read_only(self):
+        self.role = 'read-only'
+        self.assertEqual(self.client.get('/api/pa5200/port-events').status_code, 200)
+        self.controller.run.assert_awaited_once_with('port-events', 'status')
+        self.controller.run.reset_mock()
+        self.role = 'admin'
+        self.assertEqual(self.client.post('/api/pa5200/port-events/set', json={}).status_code, 404)
+        self.controller.run.assert_not_called()
+
 
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_port_events_fixed_read_adapter(self):
+        from daemon_backend import execute
+        from hardware_backend import COMMANDS
+        backend = AsyncMock()
+        await execute('port-events', 'status', {}, backend)
+        backend.run.assert_awaited_once_with('port-events', 'status', None)
+        self.assertEqual(COMMANDS['port-events', 'status'],
+            ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'))
+        for action, payload in [('status', {'command':'anything'}), ('apply', {}), ('validate', {})]:
+            with self.assertRaises(ValueError): await execute('port-events', action, payload, backend)
+    async def test_daemon_lacp_save_is_not_activation(self):
+        from daemon_backend import execute
+        backend=AsyncMock()
+        backend.run.return_value={'config':{'revision':0,'groups':{}},'capabilities':{'activation_supported':False}}
+        await execute('lacp','apply',{'revision':0,'groups':{},'operation':'set'},backend)
+        self.assertEqual(backend.run.call_args.args,('lacp','set',{'revision':0,'groups':{}}))
+
+    async def test_daemon_lacp_activation_rejects_unqualified_backend(self):
+        from daemon_backend import execute
+        backend=AsyncMock()
+        backend.run.return_value={'config':{'revision':0,'groups':{}},'capabilities':{'activation_supported':False}}
+        with self.assertRaises(ValueError):
+            await execute('lacp','validate',{'revision':0,'group':'lag1','operation':'activate'},backend)
+        backend.run.assert_awaited_once_with('lacp','status')
     async def test_selected_plane_socket_uses_rpc_without_legacy_command(self):
         import types
         rpc=AsyncMock(return_value={'ok':True,'state':'applied','result':{'config':{'revision':8}},'trace':['mp','cp','dp']})
@@ -108,9 +151,9 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await inspection_activation(ctl,result))['activation'],'unknown')
 
     async def test_unknown_command_never_spawns(self):
-        with patch('control.asyncio.create_subprocess_exec') as spawn:
+        with patch('hardware_backend.asyncio.create_subprocess_exec') as spawn:
             with self.assertRaises(HTTPException):
-                await Controller().run('network; reboot','status')
+                await HardwareController().run('network; reboot','status')
             spawn.assert_not_called()
 
 

@@ -14,6 +14,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
+    ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
+    ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),
+    ('lacp', 'activate'): ('/usr/local/sbin/ffn-lacp', 'activate'),
+    ('lacp', 'deactivate'): ('/usr/local/sbin/ffn-lacp', 'deactivate'),
     ('phy','status'): ('/usr/local/sbin/ffn-phy','status'),
     ('phy','set'): ('/usr/local/sbin/ffn-phy','set'),
     ('bcm','status'): ('/usr/local/sbin/ffn-bcm-service','status'),
@@ -35,6 +40,16 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+# These operations are consumed only by the explicitly mounted hardware
+# harness. They are not generic FFN resources or an arbitrary shell API.
+COMMANDS[('accelerator','status')]=('/usr/local/sbin/ffn-cp',
+    'env LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:'
+    '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64 '
+    'python3 /usr/local/sbin/ffn_fe100_hardware_status.py')
+for _stage in ('status','prepare-pki','prepare-dma','prepare-sso','prepare-pko-memory','prepare-pko-queues',
+               'prepare-trunk','start-trunk','stop-trunk'):
+    COMMANDS[('packet-init',_stage)]=('/usr/local/sbin/ffn-dp-prepare',_stage)
 
 
 class Controller:

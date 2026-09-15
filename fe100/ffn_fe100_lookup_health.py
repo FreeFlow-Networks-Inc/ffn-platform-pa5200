@@ -11,6 +11,10 @@ import re
 import time
 
 BLOCKS = ('lif', 'acl', 'dfp', 'fwd', 'tlu', 'tdi')
+CLOCK_MONITORS = {
+    'dram_ddr_clk':'tdi_ddr_1x_clk_clk_mon', 'dram_pclk':'tdi_ddr_pclk_clk_mon',
+    'tcam_2x_clk':'tdi_tcam_2x_clk_mon', 'tcam_1x_clk':'tdi_tcam_1x_clk_mon',
+}
 PAIR_NAMES = {
     'acl_packets': ('acl_cr_lif_acl_pca_rx', 'acl_cr_acl_dfp_pca_tx'),
     'acl_lookups': ('acl_cr_acl_tlu_req_tx', 'acl_cr_tlu_acl_rslt_rx'),
@@ -27,7 +31,9 @@ def selected(name):
         return True
     if 'rd_clr' in name:
         return False
-    return (name.endswith(('_cr_mode', '_cr_flow_control_status',
+    return (name in CLOCK_MONITORS.values() or
+            name in ('tdi_tcam_pll_status', 'tdi_ddr_pll_status') or
+            name.endswith(('_cr_mode', '_cr_flow_control_status',
                            '_fifo_status', '_init_status'))
             or re.fullmatch(r'tlu_table_cfg_\d+', name) is not None)
 
@@ -67,10 +73,13 @@ def analyze(samples):
     external = [int(n.rsplit('_', 1)[1]) for n, r in last.items()
                 if n.startswith('tlu_table_cfg_') and r['fields'].get('external_sel')]
     tdi = last.get('tdi_init_status', {}).get('fields', {})
+    monitors = {key:last.get(name, {}).get('fields', {}).get('en')
+                for key,name in CLOCK_MONITORS.items()}
     return {'offload_verified': False,
             'interpretation': 'Register samples alone cannot establish functional forwarding. '
                               'Counter deltas assume no hardware reset during sampling; reads are not atomic. '
-                              'TDI queue values must not be treated as valid occupancy when their clocks are off.',
+                              'Disabled clock monitors mean unknown clock state. '
+                              'TDI queue values are unqualified unless their clocks are verified.',
             'counter_pairs': pairs, 'nonempty_queues': queues,
             'mode_faults_or_pauses': faults, 'flow_control_flags': flags,
             'external_table_ids': external,
@@ -78,8 +87,10 @@ def analyze(samples):
             'lookup_table_location': {
                 label: last.get('tlu_table_cfg_'+str(index), {}).get('fields', {}).get('external_sel')
                 for label, index in (('acl_external_sel', 2), ('fwd_external_sel', 4))},
-            'external_clock_status': {k: tdi.get(k) for k in
-                                      ('dram_ddr_clk', 'dram_pclk', 'tcam_2x_clk', 'tcam_1x_clk')},
+            'external_clock_monitor_enabled': monitors,
+            'external_clock_status_raw': {key:tdi.get(key) for key in CLOCK_MONITORS},
+            'external_clock_status': {key:tdi.get(key) if monitors[key] == 1 else None
+                                      for key in CLOCK_MONITORS},
             'acl_lookup_observed': pairs['acl_lookups']['received_delta_mod32'] > 0}
 
 

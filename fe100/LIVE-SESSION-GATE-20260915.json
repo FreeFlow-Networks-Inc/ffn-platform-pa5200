@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+  "activation_rejected_without_writes": true,
+  "reason": "FLU memory initialization is incomplete; FLU is not configured for the audited usecase; FLU flow-memory interfaces are held in reset",
+  "expected_blocker": "FLU memory initialization is incomplete",
+  "writes": [],
+  "traces": [
+    "/var/lib/ffn/fe100/session-io-1789480161569369622.txt"
+  ],
+  "session_offload_verified": false
+}

@@ -1,0 +1,374 @@
+{
+  "started_at_ns": 1789417768266888165,
+  "scope": "TCAM configuration and recovery guards",
+  "forwarding_verified": false,
+  "session_offload_verified": false,
+  "before": {
+    "schema": 1,
+    "provider": "pa5200",
+    "observed_at": 1789417771.9303286,
+    "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+    "ddr_training_verified": true,
+    "ddr_clocks_ready": true,
+    "tcam_clocks_ready": true,
+    "memory_test_history": {
+      "ddr_memory_test_verified": true,
+      "eye_widths": [
+        60,
+        57,
+        62,
+        58,
+        59,
+        63,
+        60,
+        60,
+        59,
+        60,
+        59,
+        61,
+        58,
+        61,
+        61,
+        61
+      ],
+      "eye_reference": [
+        61,
+        62,
+        61,
+        62,
+        61,
+        61,
+        59,
+        60,
+        62,
+        63,
+        60,
+        61,
+        61,
+        60,
+        61,
+        62
+      ],
+      "eye_test_passed": true,
+      "vref_sequence_completed": false,
+      "after": {
+        "0xa05c0": 130105600,
+        "0xa05c4": 8,
+        "0xa05c8": 9216,
+        "0xa05cc": 248,
+        "0xa05d0": 1,
+        "0xa05d4": 1,
+        "0xa0718": 3,
+        "0xa071c": 3,
+        "0xa01a8": 1233,
+        "0xa01b0": 1107423249,
+        "0xa0004": 19841,
+        "0xa01c0": 65011712
+      },
+      "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+      "external_tables_active": false
+    },
+    "external_tables": {
+      "stage": "configuration-verified",
+      "profile": "cfg4-v4-v6",
+      "expected": 263,
+      "completed": 263,
+      "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+      "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+      "started_ns": 1789412601459304798,
+      "session_offload_verified": false,
+      "recovery": {
+        "before": {
+          "0xa0004": 19841,
+          "0xa01c0": 66060288,
+          "0x80500": 33554944,
+          "0x80504": 4160,
+          "0x80508": 8388608,
+          "0x80794": 0,
+          "0xa0704": 67585,
+          "0xa0184": 0,
+          "0xa0214": 393221,
+          "0xa0224": 327685
+        },
+        "trace": "/var/lib/ffn/fe100/clock-init-1789417252735807066.txt",
+        "archive": "/var/lib/ffn/fe100/external-tables-before-recovery-1789417254231277966.json",
+        "method": "owner-nop-synchronization",
+        "synchronization": {
+          "changed": false
+        },
+        "after": {
+          "0xa0004": 19841,
+          "0xa01c0": 66060288,
+          "0x80500": 33554944,
+          "0x80504": 4160,
+          "0x80508": 8388608,
+          "0x80794": 0,
+          "0xa0704": 67585,
+          "0xa0184": 0,
+          "0xa0214": 393221,
+          "0xa0224": 327685
+        },
+        "replay_completed": 263
+      },
+      "recovery_required": false,
+      "verification_trace": "/var/lib/ffn/fe100/clock-init-1789417454668200843.txt",
+      "verified_at_ns": 1789417456239065704
+    },
+    "recovery_required": false,
+    "configuration_readback_recorded": true,
+    "tcam_synchronized": true,
+    "external_tables_qualified": false,
+    "session_backend_qualified": false,
+    "forwarding_verified": false,
+    "queue_status": {
+      "0xa0708": 3,
+      "0xa01d4": 0,
+      "0xa01e4": 0,
+      "0xa01f4": 0,
+      "0xa0204": 0,
+      "0xa0214": 393221,
+      "0xa0224": 327685,
+      "0xa0234": 0,
+      "0xa0244": 0,
+      "0xa0254": 0,
+      "0xa0264": 0,
+      "0xa0274": 0
+    },
+    "registers": {
+      "0xa05c0": 130105600,
+      "0xa05c4": 8,
+      "0xa05c8": 9216,
+      "0xa05cc": 248,
+      "0xa05d0": 1,
+      "0xa05d4": 1,
+      "0xa0718": 3,
+      "0xa071c": 3,
+      "0xa01a8": 1233,
+      "0xa01b0": 1107423249,
+      "0xa0004": 19841,
+      "0xa01c0": 66060288
+    },
+    "supported_actions": [
+      "status"
+    ],
+    "blocked_actions": {
+      "activate": "TCAM completion/readback and packet tests required",
+      "session-install": "hardware flow-entry adapter unqualified"
+    }
+  },
+  "passes": [
+    {
+      "table_configuration_verified": true,
+      "entries_verified": 263,
+      "recovery_required": false,
+      "session_offload_verified": false,
+      "trace": "/var/lib/ffn/fe100/clock-init-1789417773927008160.txt",
+      "pass_number": 1,
+      "audit": {
+        "read_commands": 263,
+        "configuration_data_writes": 0,
+        "reset_writes": 0,
+        "denied_accesses": 0,
+        "trace_sha256": "0454e13de51da7eb3eff03c5313a6c36f3d477d87bdf3488acba9c4dda6c7877"
+      }
+    },
+    {
+      "table_configuration_verified": true,
+      "entries_verified": 263,
+      "recovery_required": false,
+      "session_offload_verified": false,
+      "trace": "/var/lib/ffn/fe100/clock-init-1789417777746219871.txt",
+      "pass_number": 2,
+      "audit": {
+        "read_commands": 263,
+        "configuration_data_writes": 0,
+        "reset_writes": 0,
+        "denied_accesses": 0,
+        "trace_sha256": "ebdcd92ffed967da503ca05d92ef79df446a8767bff66bd0e983a20abf9bf8d2"
+      }
+    },
+    {
+      "table_configuration_verified": true,
+      "entries_verified": 263,
+      "recovery_required": false,
+      "session_offload_verified": false,
+      "trace": "/var/lib/ffn/fe100/clock-init-1789417781388203478.txt",
+      "pass_number": 3,
+      "audit": {
+        "read_commands": 263,
+        "configuration_data_writes": 0,
+        "reset_writes": 0,
+        "denied_accesses": 0,
+        "trace_sha256": "45c2a8ffa20e07657362e202203bde6b51b55e990cf220fb3db834fb0ca571d8"
+      }
+    }
+  ],
+  "guards": {
+    "ddr_memory_test": {
+      "rejected": true,
+      "writes": 0,
+      "journal_unchanged": true,
+      "reason": "RuntimeError: external-table journal exists; destructive DDR tests prohibited"
+    },
+    "repeat_recovery": {
+      "rejected": true,
+      "writes": 0,
+      "journal_unchanged": true,
+      "reason": "RuntimeError: not the known same-boot commissioning failure"
+    }
+  },
+  "after": {
+    "schema": 1,
+    "provider": "pa5200",
+    "observed_at": 1789417793.296306,
+    "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+    "ddr_training_verified": true,
+    "ddr_clocks_ready": true,
+    "tcam_clocks_ready": true,
+    "memory_test_history": {
+      "ddr_memory_test_verified": true,
+      "eye_widths": [
+        60,
+        57,
+        62,
+        58,
+        59,
+        63,
+        60,
+        60,
+        59,
+        60,
+        59,
+        61,
+        58,
+        61,
+        61,
+        61
+      ],
+      "eye_reference": [
+        61,
+        62,
+        61,
+        62,
+        61,
+        61,
+        59,
+        60,
+        62,
+        63,
+        60,
+        61,
+        61,
+        60,
+        61,
+        62
+      ],
+      "eye_test_passed": true,
+      "vref_sequence_completed": false,
+      "after": {
+        "0xa05c0": 130105600,
+        "0xa05c4": 8,
+        "0xa05c8": 9216,
+        "0xa05cc": 248,
+        "0xa05d0": 1,
+        "0xa05d4": 1,
+        "0xa0718": 3,
+        "0xa071c": 3,
+        "0xa01a8": 1233,
+        "0xa01b0": 1107423249,
+        "0xa0004": 19841,
+        "0xa01c0": 65011712
+      },
+      "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+      "external_tables_active": false
+    },
+    "external_tables": {
+      "stage": "configuration-verified",
+      "profile": "cfg4-v4-v6",
+      "expected": 263,
+      "completed": 263,
+      "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+      "trace": "/var/lib/ffn/fe100/clock-init-1789412599942329079.txt",
+      "started_ns": 1789412601459304798,
+      "session_offload_verified": false,
+      "recovery": {
+        "before": {
+          "0xa0004": 19841,
+          "0xa01c0": 66060288,
+          "0x80500": 33554944,
+          "0x80504": 4160,
+          "0x80508": 8388608,
+          "0x80794": 0,
+          "0xa0704": 67585,
+          "0xa0184": 0,
+          "0xa0214": 393221,
+          "0xa0224": 327685
+        },
+        "trace": "/var/lib/ffn/fe100/clock-init-1789417252735807066.txt",
+        "archive": "/var/lib/ffn/fe100/external-tables-before-recovery-1789417254231277966.json",
+        "method": "owner-nop-synchronization",
+        "synchronization": {
+          "changed": false
+        },
+        "after": {
+          "0xa0004": 19841,
+          "0xa01c0": 66060288,
+          "0x80500": 33554944,
+          "0x80504": 4160,
+          "0x80508": 8388608,
+          "0x80794": 0,
+          "0xa0704": 67585,
+          "0xa0184": 0,
+          "0xa0214": 393221,
+          "0xa0224": 327685
+        },
+        "replay_completed": 263
+      },
+      "recovery_required": false,
+      "verification_trace": "/var/lib/ffn/fe100/clock-init-1789417781388203478.txt",
+      "verified_at_ns": 1789417782879040927
+    },
+    "recovery_required": false,
+    "configuration_readback_recorded": true,
+    "tcam_synchronized": true,
+    "external_tables_qualified": false,
+    "session_backend_qualified": false,
+    "forwarding_verified": false,
+    "queue_status": {
+      "0xa0708": 3,
+      "0xa01d4": 0,
+      "0xa01e4": 0,
+      "0xa01f4": 0,
+      "0xa0204": 0,
+      "0xa0214": 393221,
+      "0xa0224": 327685,
+      "0xa0234": 0,
+      "0xa0244": 0,
+      "0xa0254": 0,
+      "0xa0264": 0,
+      "0xa0274": 0
+    },
+    "registers": {
+      "0xa05c0": 130105600,
+      "0xa05c4": 8,
+      "0xa05c8": 9216,
+      "0xa05cc": 248,
+      "0xa05d0": 1,
+      "0xa05d4": 1,
+      "0xa0718": 3,
+      "0xa071c": 3,
+      "0xa01a8": 1233,
+      "0xa01b0": 1107423249,
+      "0xa0004": 19841,
+      "0xa01c0": 66060288
+    },
+    "supported_actions": [
+      "status"
+    ],
+    "blocked_actions": {
+      "activate": "TCAM completion/readback and packet tests required",
+      "session-install": "hardware flow-entry adapter unqualified"
+    }
+  },
+  "passed": true
+}

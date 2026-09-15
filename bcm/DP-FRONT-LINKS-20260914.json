@@ -1,0 +1,356 @@
+{
+  "ports": [
+    {
+      "name": "xe1",
+      "port": 1,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "       xe1(  1)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xl2",
+      "port": 2,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 40000,
+      "faceplate": false,
+      "raw": "       xl2(  2)  up     40G  FD   SW  No   Disable  TX RX   None    D  XLAUI 16360  PHY"
+    },
+    {
+      "name": "ce3",
+      "port": 3,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 100000,
+      "faceplate": false,
+      "raw": "       ce3(  3)  up    100G  FD   SW  No   Forward     RX   None   FA   CAUI 16360"
+    },
+    {
+      "name": "xe4",
+      "port": 4,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": false,
+      "raw": "       xe4(  4)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe5",
+      "port": 5,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": false,
+      "raw": "       xe5(  5)  down   10G  FD   SW  No   Forward  TX RX   None   FA    XFI 16360"
+    },
+    {
+      "name": "xe6",
+      "port": 6,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "       xe6(  6)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe7",
+      "port": 7,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "       xe7(  7)  up     10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe8",
+      "port": 8,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 10000,
+      "faceplate": false,
+      "raw": "       xe8(  8)  up     10G  FD   SW  Yes  Forward  TX RX   None   FA     KR 16360"
+    },
+    {
+      "name": "xe9",
+      "port": 9,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 10000,
+      "faceplate": false,
+      "raw": "       xe9(  9)  up     10G  FD   SW  Yes  Disable  TX RX   None    D     KR 16360"
+    },
+    {
+      "name": "xe10",
+      "port": 10,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe10( 10)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe11",
+      "port": 11,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe11( 11)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "ce12",
+      "port": 12,
+      "enabled": false,
+      "link": false,
+      "state": "!ena",
+      "speed_mb": 100000,
+      "faceplate": true,
+      "raw": "      ce12( 12)  !ena  100G  FD   SW  No   Disable  TX RX   None    D   CAUI 16360"
+    },
+    {
+      "name": "xe13",
+      "port": 13,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe13( 13)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe14",
+      "port": 14,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe14( 14)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe15",
+      "port": 15,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe15( 15)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe16",
+      "port": 16,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe16( 16)  up     10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe18",
+      "port": 18,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe18( 18)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe19",
+      "port": 19,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe19( 19)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "il20",
+      "port": 20,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 12500,
+      "faceplate": false,
+      "raw": "      il20( 20)  up   12.5G  FD None  No   Disable          None    D   ILKN     0"
+    },
+    {
+      "name": "xe21",
+      "port": 21,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe21( 21)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe22",
+      "port": 22,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe22( 22)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe23",
+      "port": 23,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe23( 23)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xl24",
+      "port": 24,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 40000,
+      "faceplate": false,
+      "raw": "      xl24( 24)  up     40G  FD   SW  No   Forward     RX   None   FA  XLAUI 16360"
+    },
+    {
+      "name": "xl25",
+      "port": 25,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 40000,
+      "faceplate": false,
+      "raw": "      xl25( 25)  down   40G  FD   SW  No   Disable     RX   None    D  XLAUI 16360"
+    },
+    {
+      "name": "xl26",
+      "port": 26,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 40000,
+      "faceplate": false,
+      "raw": "      xl26( 26)  down   40G  FD   SW  No   Disable     RX   None    D  XLAUI 16360"
+    },
+    {
+      "name": "xe27",
+      "port": 27,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe27( 27)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe28",
+      "port": 28,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 1000,
+      "faceplate": true,
+      "raw": "      xe28( 28)  up      1G  FD   SW  No   Disable  TX RX   None    D  SGMII 16360"
+    },
+    {
+      "name": "xe29",
+      "port": 29,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe29( 29)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe30",
+      "port": 30,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe30( 30)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "xe31",
+      "port": 31,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe31( 31)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    },
+    {
+      "name": "ce32",
+      "port": 32,
+      "enabled": true,
+      "link": true,
+      "state": "up",
+      "speed_mb": 100000,
+      "faceplate": true,
+      "raw": "      ce32( 32)  up    100G  FD   SW  Yes  Disable          None    D    KR4 16360"
+    },
+    {
+      "name": "ce33",
+      "port": 33,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 20000,
+      "faceplate": true,
+      "raw": "      ce33( 33)  down   20G  FD   SW  Yes  Disable  TX RX   None    D    CR4 16360"
+    },
+    {
+      "name": "ce34",
+      "port": 34,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 20000,
+      "faceplate": true,
+      "raw": "      ce34( 34)  down   20G  FD   SW  Yes  Disable  TX RX   None    D    CR4 16360"
+    },
+    {
+      "name": "ce35",
+      "port": 35,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 20000,
+      "faceplate": true,
+      "raw": "      ce35( 35)  down   20G  FD   SW  Yes  Disable  TX RX   None    D    CR4 16360"
+    },
+    {
+      "name": "xe36",
+      "port": 36,
+      "enabled": true,
+      "link": false,
+      "state": "down",
+      "speed_mb": 10000,
+      "faceplate": true,
+      "raw": "      xe36( 36)  down   10G  FD   SW  No   Disable  TX RX   None    D    XFI 16360"
+    }
+  ],
+  "count": 35,
+  "ok": true
+}

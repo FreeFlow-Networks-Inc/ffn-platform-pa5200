@@ -24,6 +24,17 @@
 #include <string.h>
 
 static int g_fail;
+static int copied_offloads;
+static int offload_result;
+static int copy_offload(void *arg, const struct dp_pkt *p)
+{
+    (void)arg;
+    struct oct_wqe *w = p->cookie;
+    if (!w || w->disp != OCT_DISP_HELD || !w->data || !w->len)
+        return -1;
+    copied_offloads++;
+    return offload_result;
+}
 static void chk(int cond, const char *msg)
 {
     printf("  %s %s\n", cond ? "ok  " : "FAIL", msg);
@@ -323,8 +334,24 @@ int main(void)
     dp.default_decision = FP_PUNT_FPGA_W;
     b = push(&m, IP(10,0,0,1), IP(8,8,8,8), 9999, 16);
     dp_poll_once(&dp);
-    chk(oc.stat_offload == 1, "offload punt counted (FE100 not present)");
+    chk(oc.stat_offload == 0 && oc.stat_offload_unavailable == 1,
+        "missing FE100 adapter is not counted as successful offload");
     chk(b->data_freed == 1 && b->wqe_freed == 1, "punt path released the buffer");
+    oc.offload_copy = copy_offload;
+    offload_result = 0;
+    b = push(&m, IP(10,0,0,2), IP(8,8,8,8), 9999, 16);
+    dp_poll_once(&dp);
+    chk(copied_offloads == 1 && oc.stat_offload == 1,
+        "accepted session adapter copy counts as delivered");
+    chk(b->data_freed == 1 && b->wqe_freed == 1,
+        "accepted copy releases the original exactly once");
+    offload_result = -1;
+    b = push(&m, IP(10,0,0,3), IP(8,8,8,8), 9999, 16);
+    dp_poll_once(&dp);
+    chk(oc.stat_offload == 1 && oc.stat_offload_rejected == 1,
+        "rejected adapter packet is not a successful offload");
+    chk(b->data_freed == 1 && b->wqe_freed == 1 && !b->sent_to_pko,
+        "mandatory inspection rejection cannot bypass into forwarding");
     dp_fini(&dp); free(region);
 
     /* ---------- 8. burst + teardown with packets in flight ---------- */

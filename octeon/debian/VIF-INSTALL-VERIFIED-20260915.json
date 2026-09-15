@@ -1,0 +1,1 @@
+{"selected_routes_present": true, "generic_platform_has_no_vif_routes": true, "webui_page_declared": true, "mp_daemon_status": {"config": {"revision": 11, "vifs": {}}, "forwarding": false, "hardware_session_offload": false, "physical_link": null, "ports": [5, 13], "recovery_required": false, "running": false}}

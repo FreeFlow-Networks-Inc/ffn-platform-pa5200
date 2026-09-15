@@ -175,6 +175,12 @@ say "4. boot (mem=$MEM $RES_ARGS)"
   >>"$LOG" 2>&1
 say "   dpsend rc=$?"
 
+# The Debian supervisor must start the CP transport before the DP can mount
+# its NFS root. Its own readiness checks replace this legacy agent wait.
+if [ "${FFN_DP_SKIP_AGENT_WAIT:-0}" = 1 ]; then
+  say "5. kernel dispatched; supervisor owns transport and readiness"
+  exit 0
+fi
 say "5. waiting for the DP agent session"
 i=0
 while [ $i -lt 18 ]; do

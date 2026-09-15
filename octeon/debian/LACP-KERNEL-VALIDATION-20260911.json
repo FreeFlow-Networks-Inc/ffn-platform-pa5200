@@ -1,0 +1,394 @@
+{
+  "negotiated_members": 2,
+  "ipv4_forwarding": true,
+  "single_member_failover": true,
+  "physical_ports_used": false,
+  "states": [
+    {
+      "link": {
+        "ifindex": 4,
+        "ifname": "lag1",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "MASTER",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "ba:cc:7e:f8:dc:76",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "bond",
+          "info_data": {
+            "mode": "802.3ad",
+            "miimon": 100,
+            "updelay": 0,
+            "downdelay": 0,
+            "peer_notify_delay": 0,
+            "use_carrier": 1,
+            "arp_interval": 0,
+            "arp_validate": null,
+            "arp_all_targets": "any",
+            "primary_reselect": "always",
+            "fail_over_mac": "none",
+            "xmit_hash_policy": "layer2+3",
+            "resend_igmp": 1,
+            "num_peer_notif": 1,
+            "all_slaves_active": 0,
+            "min_links": 1,
+            "lp_interval": 1,
+            "packets_per_slave": 1,
+            "ad_lacp_active": "on",
+            "ad_lacp_rate": "fast",
+            "ad_select": "stable",
+            "ad_info": {
+              "aggregator": 1,
+              "num_ports": 2,
+              "actor_key": 15,
+              "partner_key": 15,
+              "partner_mac": "5a:8e:85:ba:3e:8d"
+            },
+            "ad_actor_sys_prio": 32768,
+            "ad_user_port_key": 0,
+            "ad_actor_system": "00:00:00:00:00:00",
+            "tlb_dynamic_lb": 1
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 16,
+        "num_rx_queues": 16,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "ifalias": "ffn-lacp:lag1"
+      },
+      "members": [
+        {
+          "ifindex": 2,
+          "link_index": 2,
+          "ifname": "p1",
+          "flags": [
+            "BROADCAST",
+            "MULTICAST",
+            "SLAVE",
+            "UP",
+            "LOWER_UP"
+          ],
+          "mtu": 1500,
+          "qdisc": "noqueue",
+          "master": "lag1",
+          "operstate": "UP",
+          "linkmode": "DEFAULT",
+          "group": "default",
+          "txqlen": 1000,
+          "link_type": "ether",
+          "address": "ba:cc:7e:f8:dc:76",
+          "broadcast": "ff:ff:ff:ff:ff:ff",
+          "link_netnsid": 0,
+          "promiscuity": 0,
+          "min_mtu": 68,
+          "max_mtu": 65535,
+          "linkinfo": {
+            "info_kind": "veth",
+            "info_slave_kind": "bond",
+            "info_slave_data": {
+              "state": "ACTIVE",
+              "mii_status": "UP",
+              "link_failure_count": 0,
+              "perm_hwaddr": "ba:cc:7e:f8:dc:76",
+              "queue_id": 0,
+              "ad_aggregator_id": 1,
+              "ad_actor_oper_port_state": 63,
+              "ad_actor_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ],
+              "ad_partner_oper_port_state": 63,
+              "ad_partner_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ]
+            }
+          },
+          "inet6_addr_gen_mode": "eui64",
+          "num_tx_queues": 16,
+          "num_rx_queues": 16,
+          "gso_max_size": 65536,
+          "gso_max_segs": 65535
+        },
+        {
+          "ifindex": 3,
+          "link_index": 3,
+          "ifname": "p3",
+          "flags": [
+            "BROADCAST",
+            "MULTICAST",
+            "SLAVE",
+            "UP",
+            "LOWER_UP"
+          ],
+          "mtu": 1500,
+          "qdisc": "noqueue",
+          "master": "lag1",
+          "operstate": "UP",
+          "linkmode": "DEFAULT",
+          "group": "default",
+          "txqlen": 1000,
+          "link_type": "ether",
+          "address": "ba:cc:7e:f8:dc:76",
+          "broadcast": "ff:ff:ff:ff:ff:ff",
+          "link_netnsid": 0,
+          "promiscuity": 0,
+          "min_mtu": 68,
+          "max_mtu": 65535,
+          "linkinfo": {
+            "info_kind": "veth",
+            "info_slave_kind": "bond",
+            "info_slave_data": {
+              "state": "ACTIVE",
+              "mii_status": "UP",
+              "link_failure_count": 0,
+              "perm_hwaddr": "b2:f5:2c:5e:a6:de",
+              "queue_id": 0,
+              "ad_aggregator_id": 1,
+              "ad_actor_oper_port_state": 63,
+              "ad_actor_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ],
+              "ad_partner_oper_port_state": 63,
+              "ad_partner_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ]
+            }
+          },
+          "inet6_addr_gen_mode": "eui64",
+          "num_tx_queues": 16,
+          "num_rx_queues": 16,
+          "gso_max_size": 65536,
+          "gso_max_segs": 65535
+        }
+      ],
+      "bonding": "Ethernet Channel Bonding Driver: v6.8.0-138-generic\n\nBonding Mode: IEEE 802.3ad Dynamic link aggregation\nTransmit Hash Policy: layer2+3 (2)\nMII Status: up\nMII Polling Interval (ms): 100\nUp Delay (ms): 0\nDown Delay (ms): 0\nPeer Notification Delay (ms): 0\n\n802.3ad info\nLACP active: on\nLACP rate: fast\nMin links: 1\nAggregator selection policy (ad_select): stable\nSystem priority: 32768\nSystem MAC address: ba:cc:7e:f8:dc:76\nActive Aggregator Info:\n\tAggregator ID: 1\n\tNumber of ports: 2\n\tActor Key: 15\n\tPartner Key: 15\n\tPartner Mac Address: 5a:8e:85:ba:3e:8d\n\nSlave Interface: p1\nMII Status: up\nSpeed: 10000 Mbps\nDuplex: full\nLink Failure Count: 0\nPermanent HW addr: ba:cc:7e:f8:dc:76\nSlave queue ID: 0\nAggregator ID: 1\nActor Churn State: monitoring\nPartner Churn State: monitoring\nActor Churned Count: 0\nPartner Churned Count: 0\ndetails actor lacp pdu:\n    system priority: 32768\n    system mac address: ba:cc:7e:f8:dc:76\n    port key: 15\n    port priority: 255\n    port number: 1\n    port state: 63\ndetails partner lacp pdu:\n    system priority: 32768\n    system mac address: 5a:8e:85:ba:3e:8d\n    oper key: 15\n    port priority: 255\n    port number: 1\n    port state: 63\n\nSlave Interface: p3\nMII Status: up\nSpeed: 10000 Mbps\nDuplex: full\nLink Failure Count: 0\nPermanent HW addr: b2:f5:2c:5e:a6:de\nSlave queue ID: 0\nAggregator ID: 1\nActor Churn State: monitoring\nPartner Churn State: monitoring\nActor Churned Count: 0\nPartner Churned Count: 0\ndetails actor lacp pdu:\n    system priority: 32768\n    system mac address: ba:cc:7e:f8:dc:76\n    port key: 15\n    port priority: 255\n    port number: 2\n    port state: 63\ndetails partner lacp pdu:\n    system priority: 32768\n    system mac address: 5a:8e:85:ba:3e:8d\n    oper key: 15\n    port priority: 255\n    port number: 2\n    port state: 63\n"
+    },
+    {
+      "link": {
+        "ifindex": 4,
+        "ifname": "lag1",
+        "flags": [
+          "BROADCAST",
+          "MULTICAST",
+          "MASTER",
+          "UP",
+          "LOWER_UP"
+        ],
+        "mtu": 1500,
+        "qdisc": "noqueue",
+        "operstate": "UP",
+        "linkmode": "DEFAULT",
+        "group": "default",
+        "txqlen": 1000,
+        "link_type": "ether",
+        "address": "5a:8e:85:ba:3e:8d",
+        "broadcast": "ff:ff:ff:ff:ff:ff",
+        "promiscuity": 0,
+        "min_mtu": 68,
+        "max_mtu": 65535,
+        "linkinfo": {
+          "info_kind": "bond",
+          "info_data": {
+            "mode": "802.3ad",
+            "miimon": 100,
+            "updelay": 0,
+            "downdelay": 0,
+            "peer_notify_delay": 0,
+            "use_carrier": 1,
+            "arp_interval": 0,
+            "arp_validate": null,
+            "arp_all_targets": "any",
+            "primary_reselect": "always",
+            "fail_over_mac": "none",
+            "xmit_hash_policy": "layer2+3",
+            "resend_igmp": 1,
+            "num_peer_notif": 1,
+            "all_slaves_active": 0,
+            "min_links": 1,
+            "lp_interval": 1,
+            "packets_per_slave": 1,
+            "ad_lacp_active": "on",
+            "ad_lacp_rate": "fast",
+            "ad_select": "stable",
+            "ad_info": {
+              "aggregator": 1,
+              "num_ports": 2,
+              "actor_key": 15,
+              "partner_key": 15,
+              "partner_mac": "ba:cc:7e:f8:dc:76"
+            },
+            "ad_actor_sys_prio": 32768,
+            "ad_user_port_key": 0,
+            "ad_actor_system": "00:00:00:00:00:00",
+            "tlb_dynamic_lb": 1
+          }
+        },
+        "inet6_addr_gen_mode": "eui64",
+        "num_tx_queues": 16,
+        "num_rx_queues": 16,
+        "gso_max_size": 65536,
+        "gso_max_segs": 65535,
+        "ifalias": "ffn-lacp:lag1"
+      },
+      "members": [
+        {
+          "ifindex": 2,
+          "link_index": 2,
+          "ifname": "p1",
+          "flags": [
+            "BROADCAST",
+            "MULTICAST",
+            "SLAVE",
+            "UP",
+            "LOWER_UP"
+          ],
+          "mtu": 1500,
+          "qdisc": "noqueue",
+          "master": "lag1",
+          "operstate": "UP",
+          "linkmode": "DEFAULT",
+          "group": "default",
+          "txqlen": 1000,
+          "link_type": "ether",
+          "address": "5a:8e:85:ba:3e:8d",
+          "broadcast": "ff:ff:ff:ff:ff:ff",
+          "link_netnsid": 0,
+          "promiscuity": 0,
+          "min_mtu": 68,
+          "max_mtu": 65535,
+          "linkinfo": {
+            "info_kind": "veth",
+            "info_slave_kind": "bond",
+            "info_slave_data": {
+              "state": "ACTIVE",
+              "mii_status": "UP",
+              "link_failure_count": 0,
+              "perm_hwaddr": "5a:8e:85:ba:3e:8d",
+              "queue_id": 0,
+              "ad_aggregator_id": 1,
+              "ad_actor_oper_port_state": 63,
+              "ad_actor_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ],
+              "ad_partner_oper_port_state": 63,
+              "ad_partner_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ]
+            }
+          },
+          "inet6_addr_gen_mode": "eui64",
+          "num_tx_queues": 16,
+          "num_rx_queues": 16,
+          "gso_max_size": 65536,
+          "gso_max_segs": 65535
+        },
+        {
+          "ifindex": 3,
+          "link_index": 3,
+          "ifname": "p3",
+          "flags": [
+            "BROADCAST",
+            "MULTICAST",
+            "SLAVE",
+            "UP",
+            "LOWER_UP"
+          ],
+          "mtu": 1500,
+          "qdisc": "noqueue",
+          "master": "lag1",
+          "operstate": "UP",
+          "linkmode": "DEFAULT",
+          "group": "default",
+          "txqlen": 1000,
+          "link_type": "ether",
+          "address": "5a:8e:85:ba:3e:8d",
+          "broadcast": "ff:ff:ff:ff:ff:ff",
+          "link_netnsid": 0,
+          "promiscuity": 0,
+          "min_mtu": 68,
+          "max_mtu": 65535,
+          "linkinfo": {
+            "info_kind": "veth",
+            "info_slave_kind": "bond",
+            "info_slave_data": {
+              "state": "ACTIVE",
+              "mii_status": "UP",
+              "link_failure_count": 0,
+              "perm_hwaddr": "76:79:60:b8:3a:75",
+              "queue_id": 0,
+              "ad_aggregator_id": 1,
+              "ad_actor_oper_port_state": 63,
+              "ad_actor_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ],
+              "ad_partner_oper_port_state": 63,
+              "ad_partner_oper_port_state_str": [
+                "active",
+                "short_timeout",
+                "aggregating",
+                "in_sync",
+                "collecting",
+                "distributing"
+              ]
+            }
+          },
+          "inet6_addr_gen_mode": "eui64",
+          "num_tx_queues": 16,
+          "num_rx_queues": 16,
+          "gso_max_size": 65536,
+          "gso_max_segs": 65535
+        }
+      ],
+      "bonding": "Ethernet Channel Bonding Driver: v6.8.0-138-generic\n\nBonding Mode: IEEE 802.3ad Dynamic link aggregation\nTransmit Hash Policy: layer2+3 (2)\nMII Status: up\nMII Polling Interval (ms): 100\nUp Delay (ms): 0\nDown Delay (ms): 0\nPeer Notification Delay (ms): 0\n\n802.3ad info\nLACP active: on\nLACP rate: fast\nMin links: 1\nAggregator selection policy (ad_select): stable\nSystem priority: 32768\nSystem MAC address: 5a:8e:85:ba:3e:8d\nActive Aggregator Info:\n\tAggregator ID: 1\n\tNumber of ports: 2\n\tActor Key: 15\n\tPartner Key: 15\n\tPartner Mac Address: ba:cc:7e:f8:dc:76\n\nSlave Interface: p1\nMII Status: up\nSpeed: 10000 Mbps\nDuplex: full\nLink Failure Count: 0\nPermanent HW addr: 5a:8e:85:ba:3e:8d\nSlave queue ID: 0\nAggregator ID: 1\nActor Churn State: monitoring\nPartner Churn State: monitoring\nActor Churned Count: 0\nPartner Churned Count: 0\ndetails actor lacp pdu:\n    system priority: 32768\n    system mac address: 5a:8e:85:ba:3e:8d\n    port key: 15\n    port priority: 255\n    port number: 1\n    port state: 63\ndetails partner lacp pdu:\n    system priority: 32768\n    system mac address: ba:cc:7e:f8:dc:76\n    oper key: 15\n    port priority: 255\n    port number: 1\n    port state: 63\n\nSlave Interface: p3\nMII Status: up\nSpeed: 10000 Mbps\nDuplex: full\nLink Failure Count: 0\nPermanent HW addr: 76:79:60:b8:3a:75\nSlave queue ID: 0\nAggregator ID: 1\nActor Churn State: monitoring\nPartner Churn State: monitoring\nActor Churned Count: 0\nPartner Churned Count: 0\ndetails actor lacp pdu:\n    system priority: 32768\n    system mac address: 5a:8e:85:ba:3e:8d\n    port key: 15\n    port priority: 255\n    port number: 2\n    port state: 63\ndetails partner lacp pdu:\n    system priority: 32768\n    system mac address: ba:cc:7e:f8:dc:76\n    oper key: 15\n    port priority: 255\n    port number: 2\n    port state: 63\n"
+    }
+  ]
+}

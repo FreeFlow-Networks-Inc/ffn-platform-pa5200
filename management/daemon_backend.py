@@ -12,6 +12,23 @@ FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowle
 
 async def execute(resource, action, payload, backend=None):
     backend=backend or Controller()
+    if resource == 'lacp':
+        if action == 'status':
+            if payload: raise ValueError('status takes no payload')
+            return await backend.run('lacp','status')
+        if action not in ('apply','validate'): raise ValueError('unsupported LACP action')
+        data=dict(payload)
+        operation=data.pop('operation', None)
+        fields={'revision','groups'} if operation=='set' else {'revision','group'}
+        if operation not in ('set','activate','deactivate') or set(data)!=fields:
+            raise ValueError('invalid LACP operation')
+        observed=await backend.run('lacp','status')
+        if type(data['revision']) is not int or data['revision']!=observed['config']['revision']:
+            raise ValueError('revision conflict')
+        if operation=='activate' and not observed['capabilities']['activation_supported']:
+            raise ValueError('LACP backend is not qualified')
+        if action=='validate': return {'validated':True}
+        return await backend.run('lacp',operation,data)
     if action in ('apply','validate'):
         if resource not in FIELDS or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
         if type(payload.get('revision')) is not int or payload['revision']<0: raise ValueError('revision required')

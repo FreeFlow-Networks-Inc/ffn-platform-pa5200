@@ -1,0 +1,59 @@
+{
+  "owner_sha256": "b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9",
+  "device": 0,
+  "initialized": true,
+  "exclusive": true,
+  "bounded": true,
+  "writable": false,
+  "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+  "blockers": [],
+  "registers": {
+    "0x40010": 2047,
+    "0x40014": 0,
+    "0x40400": 2164573993,
+    "0x40404": 288,
+    "0x40428": 0,
+    "0x40450": 0,
+    "0x48008": 2952782752,
+    "0x48018": 1,
+    "0x48708": 7,
+    "0xa8100": 3,
+    "0xa8104": 780,
+    "0xa8134": 1,
+    "0xa8148": 1233,
+    "0xa8150": 1107423249,
+    "0xa8168": 1233,
+    "0xa8170": 1107423249,
+    "0xb0100": 3,
+    "0xb0104": 3852,
+    "0xb0134": 1,
+    "0xb0148": 15569,
+    "0xb0150": 1107423249,
+    "0xb0168": 15569,
+    "0xb0170": 1107423249
+  },
+  "calibration": {
+    "3": {
+      "stage": "completed",
+      "error": null,
+      "journal": "/var/lib/ffn/fe100/fhm-train-3-c3b75f79-b285-4a5c-ad61-489d1038a298.json"
+    },
+    "4": {
+      "stage": "completed",
+      "error": null,
+      "journal": "/var/lib/ffn/fe100/fhm-train-4-c3b75f79-b285-4a5c-ad61-489d1038a298.json"
+    },
+    "5": {
+      "stage": "completed",
+      "error": null,
+      "journal": "/var/lib/ffn/fe100/fdt-train-5-c3b75f79-b285-4a5c-ad61-489d1038a298.json"
+    },
+    "6": {
+      "stage": "completed",
+      "error": null,
+      "journal": "/var/lib/ffn/fe100/fdt-recover-init-pattern-6-c3b75f79-b285-4a5c-ad61-489d1038a298.json"
+    }
+  },
+  "session_offload_verified": false,
+  "trace": "/var/lib/ffn/fe100/session-io-1789480854769421933.txt"
+}

@@ -57,6 +57,13 @@
       "label": "Copper PHYs",
       "tab": "network",
       "after": "interfaces"
+    },
+    {
+      "id": "vifs",
+      "label": "Virtual Interfaces",
+      "tab": "network",
+      "after": "interfaces"
     }
-  ]
+  ],
+  "policy_barrier_version": 1
 }

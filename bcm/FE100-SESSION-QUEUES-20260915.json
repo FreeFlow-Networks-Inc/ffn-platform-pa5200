@@ -1,0 +1,33 @@
+{
+  "script": "ffn_bcm_forward_test.c",
+  "purpose": "lab: explicit front/NIF/Interlaken test mode; allocate only once per BCM initialization",
+  "path": "/tmp/bcmcfg/ffn_bcm_forward_test.c",
+  "markers": [
+    "FFN_SESSION_QUEUE_PREFLIGHT rv=0",
+    "FFN_PORT dst=3 core=1 tm=3 priorities=2 modid=0",
+    "FFN_CONNECTOR dst=3 gport=0xc4080030 rv=0",
+    "FFN_ATTACH dst=3 queues=8 rv=0",
+    "FFN_VOQ dst=3 sysport=0x6c000003 gport=0x243c003c rv=0",
+    "FFN_PORT dst=8 core=0 tm=8 priorities=2 modid=0",
+    "FFN_CONNECTOR dst=8 gport=0xc4000028 rv=0",
+    "FFN_ATTACH dst=8 queues=8 rv=0",
+    "FFN_VOQ dst=8 sysport=0x6c000008 gport=0x243c0044 rv=0",
+    "FFN_DONE"
+  ],
+  "completed": true,
+  "output_lines": 10,
+  "output": [
+    "FFN_SESSION_QUEUE_PREFLIGHT rv=0",
+    "FFN_PORT dst=3 core=1 tm=3 priorities=2 modid=0",
+    "FFN_CONNECTOR dst=3 gport=0xc4080030 rv=0",
+    "FFN_ATTACH dst=3 queues=8 rv=0",
+    "FFN_VOQ dst=3 sysport=0x6c000003 gport=0x243c003c rv=0",
+    "FFN_PORT dst=8 core=0 tm=8 priorities=2 modid=0",
+    "FFN_CONNECTOR dst=8 gport=0xc4000028 rv=0",
+    "FFN_ATTACH dst=8 queues=8 rv=0",
+    "FFN_VOQ dst=8 sysport=0x6c000008 gport=0x243c0044 rv=0",
+    "FFN_DONE"
+  ],
+  "truncated": false,
+  "ok": true
+}

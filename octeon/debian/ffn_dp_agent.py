@@ -10,6 +10,7 @@ import socket
 import socketserver
 import time
 import uuid
+from ffn_dp_boot_health import inspect_boot
 
 SOCKET = '/run/ffn-dp-agent/control.sock'
 
@@ -18,6 +19,23 @@ def snapshot(nonce):
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     cpu = Path('/proc/cpuinfo').read_text().lower()
     octeon = 'octeon' in cpu
+    cores = sum(line.startswith('processor') and ':' in line for line in cpu.splitlines())
+    dp_hardware = octeon and cores >= 16
+    boot_health = inspect_boot()
+    ready = dp_hardware and boot_health['ready']
+    packet_io = {'available':False, 'error':'DP link observer is not installed'}
+    packet_initialization = {'available':False}
+    if dp_hardware:
+        try:
+            from ffn_dp_link import observe
+            packet_io = observe()
+        except ImportError:
+            pass
+        try:
+            from ffn_dp_packet_init import status as packet_status
+            packet_initialization = packet_status()
+        except (ImportError, OSError, RuntimeError, ValueError):
+            packet_initialization = {'available':False,'error':'packet initialization status unavailable'}
     engines = []
     try:
         lib = ctypes.CDLL('/usr/local/lib/libffn-inline.so')
@@ -38,8 +56,13 @@ def snapshot(nonce):
         pass
     return {'protocol': 1, 'nonce': nonce, 'role': 'dataplane', 'platform': 'pa5200',
             'boot_id': boot, 'agent_pid': os.getpid(), 'arch': platform.machine(),
-            'octeon': octeon, 'ready': octeon, 'observed_at': time.time(),
-            'state': 'forwarding' if octeon and runtime else 'ready' if octeon else 'wrong-hardware',
+            'octeon': octeon, 'cpu_count': cores, 'ready': ready, 'observed_at': time.time(),
+            'boot': boot_health,
+            'packet_io': packet_io,
+            'packet_initialization': packet_initialization,
+            'state': ('wrong-hardware' if not dp_hardware else 'boot-incomplete' if not ready
+                      else 'inspection-active' if runtime else 'ready'),
+            'forwarding_verified': False,
             'engines': {'execution': 'OCTEON CPU', 'available': engines,
                         'runtime': runtime, 'hardware_acceleration': False,
                         'limitations': ['2048-byte packet payload budget', 'no stream reassembly',
@@ -80,8 +103,11 @@ def handshake(path=SOCKET):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['serve', 'status'])
+    parser.add_argument('action', choices=['serve', 'status', 'diagnose'])
     args = parser.parse_args()
+    if args.action == 'diagnose':
+        print(json.dumps(snapshot(str(uuid.uuid4())), indent=2))
+        return
     if args.action == 'status':
         print(json.dumps(handshake()))
         return

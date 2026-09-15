@@ -284,6 +284,198 @@ static void test_config(void)
     dp_l3_fini(&l3);
 }
 
+/*
+ * ECMP.
+ *
+ * The properties that matter for a dataplane, in order: a flow must not be
+ * split (that is reordering, which TCP reads as loss), every member must be
+ * reachable, and a freed group must never forward anywhere.
+ */
+static void test_ecmp(void)
+{
+    struct dp_l3 l3;
+    struct dp_l3_nh nh;
+    uint32_t nhs[3] = { 0x0a000101u, 0x0a000201u, 0x0a000301u };
+    uint16_t egr[3] = { 11, 22, 33 };
+    int g, i;
+
+    CHECK(dp_l3_init(&l3, 64, 64) == DP_L3_OK, "init");
+
+    g = dp_l3_ecmp_add(&l3, nhs, egr, 3);
+    CHECK(g > 0, "group id must be positive (1-based), got %d", g);
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0b000000u, 8, (uint16_t)g) == DP_L3_OK,
+          "add 11.0.0.0/8 via the group");
+
+    /* Determinism: the same hash must always choose the same member, or a
+     * flow gets split across paths and reordered. */
+    {
+        struct dp_l3_nh a, b;
+        CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x12345678u, &a) == DP_L3_OK, "lookup a");
+        for (i = 0; i < 32; i++) {
+            CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x12345678u, &b) == DP_L3_OK, "lookup b");
+            CHECK(a.egress == b.egress && a.nexthop == b.nexthop,
+                  "same hash must pick the same member every time");
+        }
+    }
+
+    /* Every member must be reachable by some hash -- a selector that can only
+     * ever return member 0 would pass a determinism test and still be broken. */
+    {
+        int seen[3] = { 0, 0, 0 }, distinct = 0;
+        uint32_t h;
+        for (h = 0; h < 4096; h++) {
+            CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, h, &nh) == DP_L3_OK, "sweep");
+            for (i = 0; i < 3; i++)
+                if (nh.egress == egr[i]) seen[i] = 1;
+        }
+        for (i = 0; i < 3; i++) distinct += seen[i];
+        CHECK(distinct == 3, "all 3 members must be selectable, saw %d", distinct);
+    }
+
+    /* The plain wrapper must keep working and stay per-destination. */
+    CHECK(dp_l3_lookup(&l3, 0x0b010203u, &nh) == DP_L3_OK, "plain lookup still routes");
+    {
+        struct dp_l3_nh again;
+        dp_l3_lookup(&l3, 0x0b010203u, &again);
+        CHECK(again.egress == nh.egress, "plain lookup is stable per destination");
+    }
+
+    /* A single-next-hop route must be completely unaffected by ECMP existing. */
+    CHECK(dp_l3_route_add(&l3, 0x0c000000u, 8, 0x0a00ff01u, 77) == DP_L3_OK, "plain route");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0c010203u, 0x9999u, &nh) == DP_L3_OK, "plain route lookup");
+    CHECK(nh.egress == 77 && nh.nexthop == 0x0a00ff01u,
+          "non-ECMP route must ignore the flow hash entirely");
+
+    /* Overwriting an ECMP route with a plain one must drop the group. */
+    CHECK(dp_l3_route_add(&l3, 0x0b000000u, 8, 0x0a00ee01u, 88) == DP_L3_OK, "overwrite");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0b010203u, 0x1u, &nh) == DP_L3_OK, "after overwrite");
+    CHECK(nh.egress == 88, "overwritten route must use the new single next hop, got %u",
+          nh.egress);
+
+    /* Freeing a group must not leave routes forwarding to egress 0. */
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0d000000u, 8, (uint16_t)g) == DP_L3_OK, "re-point");
+    CHECK(dp_l3_ecmp_del(&l3, (uint16_t)g) == DP_L3_OK, "delete the group");
+    CHECK(dp_l3_lookup_hash(&l3, 0x0d010203u, 0x1u, &nh) == DP_L3_ERR_NOROUTE,
+          "a route whose group was freed must be NOROUTE, not egress 0");
+
+    /* Bounds. */
+    CHECK(dp_l3_ecmp_add(&l3, nhs, egr, 0) == DP_L3_ERR_RANGE, "n=0 rejected");
+    CHECK(dp_l3_ecmp_add(&l3, nhs, egr, DP_L3_ECMP_MAX + 1) == DP_L3_ERR_RANGE,
+          "n > max rejected");
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0e000000u, 8, 0) == DP_L3_ERR_RANGE,
+          "group 0 is not a group");
+    CHECK(dp_l3_route_add_ecmp(&l3, 0x0e000000u, 8, 999) == DP_L3_ERR_RANGE,
+          "unknown group rejected");
+    CHECK(dp_l3_ecmp_del(&l3, 0) == DP_L3_ERR_RANGE, "deleting group 0 rejected");
+
+    /* A directly-connected member (nexthop 0) must resolve to the packet's
+     * destination, exactly as a single-next-hop route does. */
+    {
+        uint32_t z[1] = { 0 };
+        uint16_t e[1] = { 5 };
+        int g2 = dp_l3_ecmp_add(&l3, z, e, 1);
+        CHECK(g2 > 0, "single-member group");
+        CHECK(dp_l3_route_add_ecmp(&l3, 0x0f000000u, 8, (uint16_t)g2) == DP_L3_OK, "route");
+        CHECK(dp_l3_lookup_hash(&l3, 0x0f010203u, 0x7u, &nh) == DP_L3_OK, "lookup");
+        CHECK(nh.nexthop == 0x0f010203u,
+              "nexthop 0 in a group means directly connected");
+    }
+
+    dp_l3_fini(&l3);
+}
+
+/* Multipath from the config, which is how an operator reaches ECMP at all.
+ *
+ * dp_l3_ecmp_add() had existed since the ECMP work with no caller outside
+ * these tests, so the FIB could do ECMP and no configuration could ask for it.
+ */
+static void test_config_multipath(void)
+{
+    struct dp_l3_config_stats st;
+    struct dp_l3 l3;
+    struct dp_l3_nh nh;
+    int seen[2], h, distinct;
+
+    memset(&st, 0, sizeof(st));
+    CHECK(dp_l3_init(&l3, 64, 64) == DP_L3_OK, "init");
+
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.1",
+              "10.0.0.0/8 nexthop via 172.16.0.1 dev 11"
+              " nexthop via 172.16.0.2 dev 22", &st)
+          == DP_L3_CFG_OK, "two-leg multipath");
+    CHECK(st.routes == 1 && st.errors == 0,
+          "routes=%u errors=%u", st.routes, st.errors);
+
+    seen[0] = seen[1] = 0;
+    for (h = 0; h < 512; h++) {
+        CHECK(dp_l3_lookup_hash(&l3, 0x0A010203u, (uint32_t)h, &nh) == DP_L3_OK,
+              "sweep");
+        if (nh.egress == 11) seen[0] = 1;
+        else if (nh.egress == 22) seen[1] = 1;
+        else CHECK(0, "unexpected egress %u", nh.egress);
+    }
+    distinct = seen[0] + seen[1];
+    CHECK(distinct == 2, "both legs must be reachable, saw %d", distinct);
+
+    /* A rejected multipath installs NOTHING. A half-built group holding the
+     * legs that happened to parse first is worse than a rejected line,
+     * because it forwards. */
+    {
+        uint32_t before = st.routes;
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.2",
+                  "10.2.0.0/16 nexthop via 172.16.0.1 dev 11"
+                  " nexthop via 172.16.0.2", &st) < 0, "leg without dev");
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.3",
+                  "10.3.0.0/16 nexthop via 999.1.1.1 dev 11"
+                  " nexthop via 172.16.0.2 dev 22", &st) < 0, "bad gateway");
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.4",
+                  "10.4.0.0/16 nexthop wat 1 dev 11", &st) < 0, "unknown keyword");
+        CHECK(st.routes == before, "nothing installed from a rejected multipath");
+    }
+
+    /* A leg with no "via" is directly connected -- the same meaning a via-less
+     * single path has. */
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.5",
+              "10.5.0.0/16 nexthop dev 7 nexthop via 172.16.0.9 dev 8", &st)
+          == DP_L3_CFG_OK, "a connected leg is legal");
+
+    /* Exactly DP_L3_ECMP_MAX legs is the largest LEGAL multipath and must be
+     * accepted -- the case that catches a token budget sized to the maximum
+     * rather than past it. */
+    {
+        char ok[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(ok + off, "10.8.0.0/16");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX; i++)
+            off += sprintf(ok + off, " nexthop via 172.16.0.%d dev %d",
+                           i + 1, i + 1);
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.8", ok, &st)
+              == DP_L3_CFG_OK, "DP_L3_ECMP_MAX legs must be ACCEPTED");
+    }
+
+    /* More legs than a group can hold is a rejection, not a truncation. */
+    {
+        char big[DP_L3_CFG_MAX_VALUE];
+        int i, off = 0;
+        off += sprintf(big + off, "10.9.0.0/16");
+        for (i = 0; i < (int)DP_L3_ECMP_MAX + 1; i++)
+            off += sprintf(big + off, " nexthop via 172.16.0.%d dev %d",
+                           i + 1, i + 1);
+        CHECK(dp_l3_config_line(&l3, "dp.l3.route.6", big, &st) < 0,
+              "more than DP_L3_ECMP_MAX legs must be rejected");
+    }
+
+    /* The single-path form must NOT become a one-member group: that is a
+     * different object in the FIB and would change what an existing config
+     * resolves to. */
+    CHECK(dp_l3_config_line(&l3, "dp.l3.route.7", "10.7.0.0/16 via 172.16.0.1 dev 3",
+                            &st) == DP_L3_CFG_OK, "plain single path still works");
+    CHECK(dp_l3_lookup(&l3, 0x0A070001u, &nh) == DP_L3_OK, "single-path lookup");
+    CHECK(nh.egress == 3, "egress 3, got %u", nh.egress);
+
+    dp_l3_fini(&l3);
+}
+
 int main(void)
 {
     printf("ffn_dp_l3_test (%s-endian)\n",
@@ -295,6 +487,8 @@ int main(void)
     test_rewrite(1);          /* same again with a VLAN tag in the way */
     test_checksum_sweep();
     test_config();
+    test_config_multipath();
+    test_ecmp();
 
     if (fails == 0) printf("PASS: all L3 tests\n");
     else            printf("FAIL: %d check(s)\n", fails);

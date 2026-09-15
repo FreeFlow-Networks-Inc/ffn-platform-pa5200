@@ -67,6 +67,23 @@ if [ ! -d "$STAGE" ] || [ "${REFRESH:-0}" = 1 ]; then
 	done
 	grep -q 'FFN: section attr' "$STAGE/include/cvmx-access-native.h" \
 		|| { echo "  PATCH DID NOT APPLY -- SDK layout changed?"; exit 3; }
+
+	# octeon-app-init.h is a COMPILER-provided header, not a library one: it
+	# ships inside Cavium's own gcc 4.7 tree, so building with any other
+	# compiler cannot see it and cvmx-app-init-linux.c and octeon-model.c both
+	# fail on it. Those two are not optional -- between them they define
+	# main(), cvmx_user_app_init() and the runtime model checks -- so without
+	# this the link dies on "undefined reference to `main'", which reads like
+	# a problem with FFN's own sources rather than a missing SDK header.
+	#
+	# Copied into the staged include dir rather than adding the gcc directory
+	# to -I: that directory also holds a 2012 stdint.h and friends, and
+	# putting those ahead of musl's is a much larger change than the one file
+	# actually needed.
+	AIH=$SDK/tools-gcc-4.7/mipsisa64-octeon-elf/include/octeon-app-init.h
+	[ -f "$AIH" ] || AIH=$(find "$SDK/tools-gcc-4.7" -name octeon-app-init.h 2>/dev/null | head -1)
+	[ -f "$AIH" ] || { echo "  no octeon-app-init.h under $SDK/tools-gcc-4.7"; exit 3; }
+	cp "$AIH" "$STAGE/include/octeon-app-init.h"
 fi
 
 CF="-march=octeon3 -mabi=64 -EB -O2 -std=gnu99 -w
@@ -107,6 +124,28 @@ done
 echo "  executive: $n objects"
 [ "$n" -gt 130 ] || { echo "  too few -- expected ~143"; exit 4; }
 
+# NAME THE FILES THAT MUST BE THERE, do not just count.
+#
+# The compile loop above sends errors to /dev/null and carries on, because five
+# executive files genuinely do not build against musl and none of them is
+# reachable. That tolerance hid a real failure: cvmx-app-init-linux.c and
+# octeon-model.c were ALSO failing (on the missing compiler header above), the
+# count still cleared 130, and the build ran on to die at link time on
+# "undefined reference to `main'" -- which points at FFN's sources, not at the
+# SDK header that actually caused it.
+#
+# A threshold cannot catch that; only naming the objects can. These two are the
+# ones the link genuinely needs: main() and cvmx_user_app_init() come from
+# cvmx-app-init-linux, and USE_RUNTIME_MODEL_CHECKS routes through octeon-model.
+for must in cvmx-app-init-linux octeon-model; do
+	[ -f "cvmx-obj-musl/$must.o" ] || {
+		echo "  MISSING $must.o -- the link would fail on main/cvmx_user_app_init."
+		echo "  Rebuild it alone, without 2>/dev/null, to see the real error:"
+		echo "    \$CC -c \$CF -o /tmp/x.o $STAGE/executive/$must.c"
+		exit 4
+	}
+done
+
 rm -f libcvmx.a
 $AR rcs libcvmx.a cvmx-obj-musl/*.o
 
@@ -115,7 +154,14 @@ $AR rcs libcvmx.a cvmx-obj-musl/*.o
 # ---------------------------------------------------------------------------
 echo "  building forwarder"
 rm -rf musl-obj && mkdir -p musl-obj
-for f in ffn_dp_oct.c ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_arp.c \
+# ffn_dp_l3_parse.c is not optional: the text -> address primitives moved out of
+# ffn_dp_l3_config.c when the v6 config layer needed the same MAC, token and
+# prefix handling, so omitting it links to undefined dp_l3_parse_* symbols.
+# This list is hand-maintained rather than a glob, deliberately -- a glob would
+# also sweep in the *_test.c files and the AF_PACKET backend, which is the
+# development path and has no business in the OCTEON binary.
+for f in ffn_dp_oct.c ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_l3_parse.c \
+         ffn_dp_arp.c \
          ffn_dp_engine.c ffn_dp_dlp.c ffn_dp_vsys.c \
          ffn_dp_io_octeon.c ffn_dp_io_octeon3.c ffn_dp_bgx_octeon3.c \
          ffn_dp_octeon_main.c; do

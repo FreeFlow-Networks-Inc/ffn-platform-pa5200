@@ -49,13 +49,38 @@
 #define DP_L3_ERR_RANGE   (-24)   /* bad prefix length or interface id      */
 #define DP_L3_ERR_SHORT   (-25)   /* packet too short to rewrite            */
 
+/* ECMP: how many next hops one group may hold, and how many groups exist.
+ *
+ * 8 members because that is what the hardware trunk path allows too, so a
+ * route's spread and a LAG's spread cannot disagree about the maximum. 256
+ * groups is far more than a firewall with 4096 routes needs and costs 12 KB.
+ */
+#define DP_L3_ECMP_MAX        8u
+#define DP_L3_MAX_ECMP_GROUPS 256u
+
 /* One routing-table entry. Host-order addresses. */
 struct dp_l3_route {
     uint32_t prefix;        /* already masked: prefix & mask                */
     uint32_t mask;
     uint32_t nexthop;       /* 0 means "directly connected": use dst itself */
     uint16_t egress;        /* egress port id, as dp_result.egress          */
+    uint16_t ecmp;          /* 0 = single next hop above; else group id     */
     uint8_t  prefix_len;
+    uint8_t  used;
+};
+
+/*
+ * An equal-cost next-hop set.
+ *
+ * Group ids are 1-BASED so that zero keeps meaning "this route has a single
+ * next hop", which is what every existing route and every existing caller
+ * already expresses. Adding ECMP therefore changes no existing behaviour: a
+ * route with ecmp == 0 takes exactly the path it took before.
+ */
+struct dp_l3_ecmp {
+    uint32_t nexthop[DP_L3_ECMP_MAX];   /* host order; 0 = directly connected */
+    uint16_t egress[DP_L3_ECMP_MAX];
+    uint8_t  n;
     uint8_t  used;
 };
 
@@ -110,6 +135,11 @@ struct dp_l3 {
 
     struct dp_l3_iface  iface[DP_L3_MAX_IFACES];
 
+    /* Flat array, 1-based ids: ecmp[0] is never used so that a route's
+     * ecmp == 0 can mean "none" without a sentinel constant. */
+    struct dp_l3_ecmp   ecmp[DP_L3_MAX_ECMP_GROUPS];
+    uint32_t            ecmp_count;
+
     /* Caller advances this; ARP uses it to throttle retransmission. Kept here
      * rather than passed down so no existing signature has to change. */
     uint32_t now_ms;
@@ -141,10 +171,44 @@ int  dp_l3_iface_by_ip(const struct dp_l3 *l3, uint32_t ip);
 struct dp_l3_neigh *dp_l3_neigh_find(struct dp_l3 *l3, uint32_t ip);
 int  dp_l3_neigh_reserve(struct dp_l3 *l3, uint32_t ip);
 
+/* --- ECMP ---------------------------------------------------------------- */
+
+/* Create a next-hop group. Returns a 1-based group id, or a negative
+ * DP_L3_ERR_*. n must be 1..DP_L3_ECMP_MAX. */
+int  dp_l3_ecmp_add(struct dp_l3 *l3, const uint32_t *nexthop,
+                    const uint16_t *egress, uint8_t n);
+int  dp_l3_ecmp_del(struct dp_l3 *l3, uint16_t group);
+
+/* Point a prefix at a group instead of a single next hop. */
+int  dp_l3_route_add_ecmp(struct dp_l3 *l3, uint32_t prefix, uint8_t prefix_len,
+                          uint16_t group);
+
 /* Longest-prefix match. Fills nh; nh->have_mac says whether the neighbour was
  * resolved. Returns DP_L3_OK, or DP_L3_ERR_NOROUTE. A route with no neighbour
  * is still a successful lookup -- the caller decides whether to punt for ARP. */
 int  dp_l3_lookup(struct dp_l3 *l3, uint32_t dst_ip, struct dp_l3_nh *nh);
+
+/*
+ * The same lookup, with an explicit flow hash for ECMP member selection.
+ *
+ * dp_l3_lookup() is this with hash = dst_ip, which is per-DESTINATION spread:
+ * correct, but every flow to one host takes one path. Callers that have a
+ * 5-tuple should pass a hash of it and get per-FLOW spread. The existing
+ * signature is untouched so no current call site has to change.
+ *
+ * SELECTION MUST BE DETERMINISTIC FOR A GIVEN (hash, group). Packets of one
+ * flow taking different members would reorder that flow, which TCP reads as
+ * loss. So this is a pure function of its inputs -- no counters, no
+ * round-robin, nothing that depends on arrival order.
+ *
+ * KNOWN LIMITATION, stated rather than hidden: member choice is
+ * mix(hash) % n, so changing a group's size remaps roughly every flow across
+ * it. That is the classic modulo-rehash problem and it is acceptable here
+ * because groups change on operator action, not per packet. Consistent
+ * hashing would fix it and is not worth the table space yet.
+ */
+int  dp_l3_lookup_hash(struct dp_l3 *l3, uint32_t dst_ip, uint32_t flow_hash,
+                       struct dp_l3_nh *nh);
 
 /*
  * Rewrite an IPv4 packet in place for forwarding: decrement TTL, update the

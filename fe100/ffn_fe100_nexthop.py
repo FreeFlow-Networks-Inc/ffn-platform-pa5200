@@ -14,7 +14,6 @@ import os
 import struct
 import subprocess
 import sys
-from ffn_fe100 import bar0_base_and_size, memory_decode_on
 
 LIB = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
 SHA = 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9'
@@ -36,8 +35,23 @@ def encode(destination=8, dmac=None, vlan=None, mtu=1518):
     return struct.pack('>IHHH6s', flags, destination, vlan or 0, mtu, mac)
 
 
+def encode_front(egress_lif, dmac=None, mtu=1518, vlan=None):
+    """Normal LEF forwarding; sysport mode is a CPU message destination.
+
+    Sysroot pdt nexthop.insert defaults sysport=False and takes eg_lif.
+    The referenced LEF and TX port-map must be provisioned separately.
+    """
+    if type(egress_lif) is not int or not 0<=egress_lif<=65535:
+        raise ValueError('invalid egress LIF')
+    raw=bytearray(encode(0,dmac=dmac,mtu=mtu,vlan=vlan))
+    struct.pack_into('>I',raw,0,int.from_bytes(raw[:4],'big') & ~(1<<20))
+    struct.pack_into('>H',raw,4,egress_lif)
+    return bytes(raw)
+
+
 class NextHop:
     def __init__(self):
+        from ffn_fe100 import bar0_base_and_size, memory_decode_on
         self.lock = open('/run/ffn-fe100-tables.lock', 'w')
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with open(LIB, 'rb') as f:

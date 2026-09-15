@@ -65,6 +65,16 @@ def build_db(path):
         (3, 1, "10.9.0.0/16", "10.0.0.9", "enp11s0f0", 0, 254, ""),  # kernel name
         (4, 1, None, None, "ethernet1/1", 0, 254, ""),               # invalid
         (5, 1, "10.8.0.0/16", "10.0.0.8", None, 0, 254, ""),         # invalid
+        # IPv6. The DP keeps a SEPARATE FIB behind a separate key namespace,
+        # so these must render as dp.l3.route6.* -- under the v4 key the v4
+        # parser rejects them as malformed addresses and the v6 parser never
+        # sees them, so the route would exist nowhere.
+        (6, 1, "2001:db8::/32", "2001:db8::1", "ethernet1/1", 0, 254, ""),
+        (7, 1, "2001:db8:5::/48", None, "ethernet1/2", 0, 254, ""),  # connected
+        (8, 1, "::/0", "2001:db8::1", "ethernet1/1", 0, 254, ""),    # v6 default
+        # Mixed families: a v4 next hop on a v6 destination. The DP would
+        # reject it, so it must be reported and withheld rather than published.
+        (9, 1, "2001:db8:9::/48", "10.0.0.254", "ethernet1/1", 0, 254, ""),
     ])
     db.execute("CREATE TABLE virtual_routers (id INTEGER, name TEXT, "
                "table_id INTEGER, interfaces TEXT, admin_up INTEGER, vsys TEXT, "
@@ -155,7 +165,12 @@ def main():
     # The DLP fixtures deliberately add more (see the engines section below);
     # they are matched by content there rather than by counting here, so that
     # a NEW unexplained problem still fails this check.
-    unexplained = [p for p in problems if "dlp" not in p.lower()]
+    # The mixed-family route (id 9) is a DELIBERATE fixture and is matched by
+    # content in the address-family section below, so it is excluded here the
+    # same way the DLP ones are -- the point of this check is that a problem
+    # nobody expected still fails it.
+    unexplained = [p for p in problems
+                   if "dlp" not in p.lower() and "no plane can install" not in p]
     check(len(unexplained) == 1 and "notanumber" in unexplained[0],
           "unexpected problems: %r" % (unexplained,))
     kv = dict(l.split("=", 1) for l in lines)
@@ -293,6 +308,37 @@ def main():
               "unenforceable rule not reported: %s" % want)
     check(any("match BOTH directions" in p for p in problems),
           "direction scoping is advisory and must say so")
+
+    # -- address family picks the KEY, not just the value -----------------
+    #
+    # This is the renderer half of the same defect the dataplane had: the DP
+    # could route IPv6 and nothing could ask it to. Emitting a v6 prefix under
+    # dp.l3.route. does not half-work -- ffn_dp_l3_config.c rejects it as a
+    # malformed address and ffn_dp_l3_v6_config.c never matches the key.
+    v6routes = [l for l in lines if l.startswith("dp.l3.route6.")]
+    v4routes = [l for l in lines if l.startswith("dp.l3.route.")]
+    check(len(v6routes) == 3, "expected 3 IPv6 DP routes, got %d: %s"
+          % (len(v6routes), v6routes))
+    for l in v6routes:
+        check(":" in l.split("=", 1)[1], "a route6 key must carry a v6 prefix: %s" % l)
+    for l in v4routes:
+        check(":" not in l.split("=", 1)[1].split()[0],
+              "a v6 prefix must never appear under the v4 key: %s" % l)
+    check(any(l.startswith("dp.l3.route6.") and "::/0 via 2001:db8::1 dev" in l
+              for l in lines), "the IPv6 default route did not render")
+    check(any(l.startswith("dp.l3.route6.") and "2001:db8:5::/48 dev" in l
+              and " via " not in l for l in lines),
+          "a connected IPv6 route must omit the via clause")
+
+    # A mixed-family route is withheld from the DP and REPORTED. Publishing it
+    # would put a line in dp.env that the dataplane counts as an error every
+    # time it applies its config, with nothing on the MP saying why.
+    check(not any("2001:db8:9::/48" in l for l in lines),
+          "a v6 route with a v4 next hop must not be published to the DP")
+    check(not any("cp.route." in l and "2001:db8:9::/48" in l for l in lines),
+          "a mixed-family route cannot be installed by the CP either")
+    check(any("no plane can install that" in p for p in problems),
+          "mixed-family route not reported: %s" % problems)
 
     # -- deterministic ordering -------------------------------------------
     check(lines == sorted(lines), "output is not sorted; version would churn")
