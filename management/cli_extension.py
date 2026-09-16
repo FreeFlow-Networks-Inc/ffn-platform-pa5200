@@ -17,7 +17,7 @@ def handle(line, api, token):
                 raise ValueError('WAN outcome uncertain; request '+ident+': '+str(error)) from error
             if not value.get('ok'):raise ValueError('WAN operation failed; request '+ident+': '+str(value.get('error')))
             return value['result']
-        if parts[0]=='request' and parts[3] not in ('probe','recover'):raise ValueError('WAN operation must be probe or recover')
+        if parts[0]=='request' and parts[3] not in ('probe','recover','attach','detach'):raise ValueError('WAN operation must be probe, recover, attach or detach')
         result=plane('status',{})
         if parts[0]=='request':
             result=plane('apply',{'revision':result['revision'],'operation':parts[3],'expected_boot_id':result['dp']['boot_id']})

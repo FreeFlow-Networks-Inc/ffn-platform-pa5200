@@ -4,6 +4,14 @@ from ffn_dp_packet_transport import decode, decode_otmh_ssp, encode, FRONT
 
 
 class PacketTransport(unittest.TestCase):
+    def test_short_ethernet_frame_is_padded_before_injected_headers(self):
+        frame=bytes(range(42))
+        wire=encode(1,frame,{1:28})
+        ethernet=wire[4:16]+wire[24:]
+        self.assertEqual(len(ethernet),60)
+        self.assertEqual(ethernet[:42],frame)
+        self.assertEqual(ethernet[42:],bytes(18))
+
     def test_all_ports(self):
         payload=bytes(range(60))
         self.assertEqual(len(set(FRONT.values())),20)

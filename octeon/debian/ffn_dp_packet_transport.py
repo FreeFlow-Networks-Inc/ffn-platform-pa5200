@@ -7,6 +7,7 @@ this process does not change them or claim hardware flow acceleration.
 """
 import argparse
 import collections
+import errno
 import fcntl
 import json
 import os
@@ -42,6 +43,10 @@ def decode(frame, ports):
 def encode(port, frame, front=FRONT):
     if type(port) is not int or port not in front or not 14 <= len(frame) <= MAX_FRAME:
         raise ValueError('invalid front port or Ethernet length')
+    # The trunk's own minimum length includes ITMH/RAW_DSA overhead, which
+    # BCM strips before faceplate transmission. Pad the inner Ethernet frame
+    # first so short ARP/ICMP packets cannot become runts after stripping.
+    frame=frame.ljust(60,b'\0')
     # Requires a commissioned Jericho injected-header/RAW_DSA trunk.
     return b'\x01'+struct.pack('!H', front[port])+b'\0'+frame[:12]+bytes(8)+frame[12:]
 
@@ -116,6 +121,16 @@ def pump(rx, tx, taps, inspector, seconds=0, counters=None, decoder=decode):
                     counts['tx_p%d' % port] += 1
             except BlockingIOError:
                 counts['backpressure_drop'] += 1
+            except OSError as error:
+                if error.errno in (errno.EIO, errno.ENETDOWN):
+                    # A committed address/MTU change briefly lowers the TAP.
+                    # Discard this packet; keep the exclusive owner attached.
+                    counts['admin_down_drop'] += 1
+                    time.sleep(.01)
+                elif error.errno == errno.ENOBUFS:
+                    counts['backpressure_drop'] += 1
+                else:
+                    raise
     return dict(counts)
 
 

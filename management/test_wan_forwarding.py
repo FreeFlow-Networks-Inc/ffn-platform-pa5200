@@ -38,6 +38,17 @@ class WAN(unittest.TestCase):
         self.prepare()
         result=wan.execute('finish',{'token':TOKEN,'report':self.report(dhcp_offer_verified=False)})
         self.assertFalse(result['qualified']);self.assertFalse(self.enabled)
+    def test_static_wan_attachment_uses_wire_proof_not_dhcp_offer(self):
+        self.prepare()
+        result=wan.execute('finish',{'token':TOKEN,'report':self.report(dhcp_offer_verified=False,
+            counters={'wan_rx':3},return_sources={'28':3})})
+        self.assertFalse(result['qualified'])
+        with self.assertRaises(RuntimeError):
+            wan.execute('start',{'revision':result['revision'],'dp_boot_id':TOKEN})
+        active=wan.execute('start',{'revision':result['revision'],'dp_boot_id':BOOT})
+        self.assertTrue(active['ready']['1'])
+        stopped=wan.execute('stop',{'revision':active['revision']})
+        self.assertFalse(stopped['ready']['1'])
     def test_watchdog_disables_interrupted_probe(self):
         self.prepare();result=wan.execute('expire',{'token':TOKEN})
         self.assertFalse(result['state']['enabled']);self.assertIsNone(result['state']['pending'])

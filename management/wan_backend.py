@@ -12,10 +12,12 @@ def remote(role, operation, payload):
     dp=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5',
         '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
         '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp','root@127.1.2.2']
-    if role=='cp' and operation in ('status','prepare','finish','abort','recover'):
+    if role=='cp' and operation in ('status','prepare','finish','abort','recover','start','stop'):
         argv=cp+['python3 /usr/local/sbin/ffn_wan_forwarding.py '+operation]
     elif role=='dp' and operation in ('status','probe'):
         argv=dp+['python3 /usr/local/sbin/ffn_wan_probe.py'+(' --status' if operation=='status' else '')]
+    elif role=='dp' and operation in ('attachment-status','start','stop'):
+        argv=dp+['python3 /usr/local/sbin/ffn_wan_runtime.py '+('status' if operation=='attachment-status' else operation)]
     else:raise ValueError('unsupported WAN remote operation')
     result=subprocess.run(argv,input=json.dumps(payload),text=True,capture_output=True,timeout=40)
     if result.returncode:raise RuntimeError(role+' WAN operation failed: '+result.stderr[-1000:])
@@ -31,7 +33,7 @@ def execute(action,payload,call=remote,drain=before_commit):
         return call('cp','status',{})|{'dp':call('dp','status',{}),'internet_ready':False}
     if (action not in ('validate','apply') or not isinstance(payload,dict)
             or set(payload)!={'operation','revision','expected_boot_id'}
-            or payload['operation'] not in ('probe','recover')
+            or payload['operation'] not in ('probe','recover','attach','detach')
             or type(payload['revision']) is not int or payload['revision']<0
             or not isinstance(payload['expected_boot_id'],str)
             or str(uuid.UUID(payload['expected_boot_id']))!=payload['expected_boot_id']):
@@ -40,6 +42,24 @@ def execute(action,payload,call=remote,drain=before_commit):
     if current['revision']!=payload['revision']:raise ValueError('WAN revision conflict')
     dp=call('dp','status',{})
     if dp['boot_id']!=payload['expected_boot_id']:raise ValueError('DP boot identity changed')
+    if payload['operation'] in ('attach','detach'):
+        attachment=call('dp','attachment-status',{})
+        if payload['operation']=='attach' and not attachment['running'] and not dp['fabric_available']:
+            raise ValueError('Another dataplane packet owner is active')
+        if action=='validate':return {'validated':True}
+        barrier=drain(json.dumps(payload,sort_keys=True).encode())
+        if payload['operation']=='detach':
+            call('dp','stop',{'boot_id':dp['boot_id']})
+            result=call('cp','stop',{'revision':current['revision']})
+        else:
+            result=call('cp','start',{'revision':current['revision'],'dp_boot_id':dp['boot_id']})
+            try:attachment=call('dp','start',{'boot_id':dp['boot_id']})
+            except BaseException:
+                call('cp','stop',{'revision':result['revision']})
+                raise
+            if not attachment['running'] or not result['ready']['1']:
+                raise RuntimeError('WAN attachment readback incomplete')
+        return result|{'attachment':attachment,'policy_barrier':barrier,'internet_ready':False}
     if not dp['fabric_available']:raise ValueError('stop the DP packet owner before WAN qualification')
     if payload['operation']=='probe' and (current['state'].get('pending') or current['state'].get('enabled')):
         raise ValueError('recover pending WAN operation first')

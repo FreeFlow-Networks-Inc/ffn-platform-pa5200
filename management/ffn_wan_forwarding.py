@@ -102,11 +102,20 @@ def verified_report(report,state):
     return report['dhcp_offer_verified']
 
 
+def wire_qualified(proof, current, boot_id):
+    report=proof.get('report',{})
+    return (proof.get('schema')==1 and proof.get('epoch')==current and proof.get('port')==1
+            and report.get('boot_id')==boot_id and report.get('port')==1 and report.get('bcm_port')==28
+            and type(report.get('discover_sent')) is int and 1<=report['discover_sent']<=3
+            and report.get('counters',{}).get('wan_rx',0)>0
+            and report.get('return_sources',{}).get('28',0)>0)
+
+
 def execute(operation,payload=None):
     payload={} if payload is None else payload
     fields={'status':set(),'prepare':{'revision','token','dp_boot_id'},
             'finish':{'token','report'},'expire':{'token'},'abort':{'token'},
-            'recover':{'revision'}}
+            'recover':{'revision'},'start':{'revision','dp_boot_id'},'stop':{'revision'}}
     if operation not in fields or not isinstance(payload,dict) or set(payload)!=fields[operation]:
         raise ValueError('invalid WAN operation or fields')
     for key in ('token','dp_boot_id'):
@@ -122,7 +131,21 @@ def execute(operation,payload=None):
                                                 or state.get('epoch')!=current):
             return {'cleanup_required':False}
         observed=hardware(0)
-        if operation=='prepare':
+        if operation=='start':
+            if not wire_qualified(proof,current,payload['dp_boot_id']):
+                raise RuntimeError('WAN wire mapping must be qualified in this CP/DP lifetime')
+            if state.get('pending'):
+                raise RuntimeError('Recover the interrupted WAN operation first')
+            if observed['enabled'] and not (state.get('enabled') and state.get('epoch')==current
+                                            and state.get('dp_boot_id')==payload['dp_boot_id']):
+                raise RuntimeError('Refusing to adopt an unowned WAN redirect')
+            wanted={'revision':state['revision']+1,'epoch':current,'dp_boot_id':payload['dp_boot_id'],
+                    'enabled':False,'pending':'start'}
+            atomic(STATE,wanted)
+            observed=hardware(1)
+            if epoch()!=current:raise RuntimeError('BCM owner changed during WAN attachment')
+            state=wanted|{'enabled':True,'pending':None};atomic(STATE,state)
+        elif operation=='prepare':
             if state.get('pending') or state.get('enabled') or observed['enabled']:
                 raise RuntimeError('WAN path must be stopped and recovered before probing')
             wanted={'revision':state['revision']+1,'epoch':current,'enabled':False,'pending':'prepare',
@@ -155,7 +178,10 @@ def execute(operation,payload=None):
         if epoch()!=current:raise RuntimeError('BCM owner changed during WAN observation')
         return {'revision':state['revision'],'config':{'revision':state['revision']},'epoch':current,'state':state,'hardware':observed,
                 'scope':[1],'qualified':proof.get('epoch')==current and proof.get('dhcp_offer_verified') is True,
-                'ready':{'1':False},'qualification':proof}
+                'ready':{'1':bool(state.get('epoch')==current and state.get('enabled') and not state.get('pending')
+                     and wire_qualified(proof,current,state.get('dp_boot_id')) and observed=={
+                     'header':11,'wan_queues':8,'trunk_queues':8,'destination':24,'enabled':1})},
+                'qualification':proof}
 
 
 if __name__=='__main__':

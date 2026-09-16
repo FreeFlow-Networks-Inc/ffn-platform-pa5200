@@ -13,6 +13,20 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_routes_are_read_from_xml_and_deletions_do_not_use_legacy_sql(self):
+        from xml.etree import ElementTree as ET
+        dev=ET.fromstring('''<entry><network><virtual-router><ffn-candidate-managed>yes</ffn-candidate-managed>
+        <entry name="default"><routing-table><ip><static-route><entry name="default"><destination>0.0.0.0/0</destination>
+        <nexthop><ip-address>192.0.2.254</ip-address></nexthop><interface>ethernet1/1</interface><metric>100</metric>
+        </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
+        config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/24']}}}
+        self.assertEqual(configd_applier.committed_routes(dev,config),[
+            {'dst':'0.0.0.0/0','via':'192.0.2.254','dev':'p1','metric':100}])
+        dev.find('.//static-route').clear()
+        with patch.object(configd_applier.sqlite3,'connect') as db:
+            self.assertEqual(configd_applier.committed_routes(dev,config),[])
+            db.assert_not_called()
+
     def test_configd_uses_controld_without_subprocess_fallback(self):
         client=Mock();client.plane_request.return_value={'ok':True,'result':{'revision':9}}
         with patch.dict('sys.modules',{'ffn_controld_client':SimpleNamespace(ControldClient=Mock(return_value=client))}), \
@@ -47,7 +61,7 @@ class ApplyTests(unittest.TestCase):
             path=Path(temp)/'running.xml';path.write_text(xml)
             status=Status()
             with patch('configd_applier.rpc',side_effect=rpc): PlatformApplier(path).reconcile(status)
-        self.assertEqual(net['config']['ports']['p1'],{'mode':'l3','addresses':[]})
+        self.assertEqual(net['config']['ports']['p1'],{'mode':'disabled'})
         self.assertEqual(net['config']['ports']['p5'],{'mode':'disabled'})
         self.assertFalse(face['ports'][1]['enabled'])
         self.assertEqual({e[0] for e in status.errors},{'ethernet1/21','ae1'})
