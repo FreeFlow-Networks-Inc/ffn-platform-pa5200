@@ -14,6 +14,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('lacp-observation','status'): ('/usr/local/sbin/ffn-lacp-observe',),
     ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
     ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
     ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),

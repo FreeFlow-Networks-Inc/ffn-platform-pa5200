@@ -7,6 +7,9 @@ import uuid
 def handle(line, api, token):
     parts=shlex.split(line)
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
+    if parts==['show','platform','aggregates']:
+        result=api('/api/interfaces/aggregate-status',token=token)
+        print(json.dumps(result,indent=2));return True
     if parts==['show','platform','wan-path'] or (len(parts)==4 and parts[:3]==['request','platform','wan-path']):
         def plane(action,payload):
             ident=str(uuid.uuid4())

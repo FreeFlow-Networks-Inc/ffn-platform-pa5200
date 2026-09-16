@@ -44,6 +44,14 @@ COMMANDS = {
 LIMIT = 1024 * 1024
 
 
+def aggregate_status():
+    from ffn_controld_client import ControldClient
+    request={'v':1,'id':str(uuid.uuid4()),'resource':'aggregates','action':'status','payload':{}}
+    response=ControldClient(timeout=55).plane_request(request)
+    if not response.get('ok'):raise RuntimeError('Aggregate controller unavailable; request '+request['id'])
+    return response['result']
+
+
 def before_policy_commit(candidate_bytes):
     if os.environ.get('FFN_CONTROL_GATEWAY') == 'controld':
         import hashlib

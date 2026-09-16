@@ -31,6 +31,9 @@ class PlatformApplier:
         if device is None: return
         faceplate=rpc('faceplate')
         network=rpc('network')
+        from aggregate_config import compile_device,readiness
+        groups,orphans=compile_device(device)
+        aggregate_errors={g['ae_name']:'; '.join(b['message'] for b in readiness(g,faceplate,network,{})['blockers']) for g in groups}
         patches={}
         requested=[]
         for entry in device.findall('./network/interface/ethernet/entry'):
@@ -39,7 +42,8 @@ class PlatformApplier:
                 status.fail(name,'pa5200','Unmapped faceplate interface');continue
             port=int(match[1]);key='p%d'%port
             if entry.find('aggregate-group') is not None:
-                status.fail(name,'pa5200','Hardware aggregate/LACP membership is not supported by the commissioned backend');continue
+                group=entry.findtext('aggregate-group','')
+                status.fail(name,'pa5200',group+': '+aggregate_errors.get(group,'Aggregate definition does not exist'));continue
             state=entry.findtext('link-state','auto')
             if state not in ('up','down','auto'):
                 status.fail(name,'pa5200','Unsupported link-state');continue
@@ -81,7 +85,8 @@ class PlatformApplier:
             if l3.findtext('mtu'): desired['mtu']=int(l3.findtext('mtu'))
             patches[key]=desired;requested.append((name,key,enabled))
         for entry in device.findall('./network/interface/aggregate-ethernet/entry'):
-            status.fail(entry.get('name','aggregate'),'pa5200','Aggregate/LACP configuration is not supported on this backend')
+            name=entry.get('name','aggregate')
+            status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))
         if (patches.get('p1',{}).get('addresses') and 1 not in network.get('backend',{}).get('ports',[])):
             try:
                 wan=rpc('wan-path')
