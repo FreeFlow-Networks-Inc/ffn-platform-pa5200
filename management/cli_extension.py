@@ -8,6 +8,14 @@ def handle(line, api, token):
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
     if parts[:2]==['show','platform'] and len(parts) in (2,3):
         resource=parts[2] if len(parts)==3 else 'status'
+        if resource in ('control', 'agents', 'fe100', 'control-events'):
+            result=api('/api/system/control' + ('/events' if resource=='control-events' else ''),token=token)
+            if resource=='fe100':
+                result={name: {'fresh': state['fresh'], 'age_seconds':state['age_seconds'],
+                    'fe100':(state.get('last_observation') or {}).get('report',{}).get('fe100')}
+                    for name,state in result['agents'].items() if state['role']=='cp'}
+            print(json.dumps(result,indent=2))
+            return True
         if resource not in ('status','bcm','phy','faceplate','dataplane','network','inspection','overlay','chassis','thermal','fabric'):
             raise ValueError('unknown platform resource')
         result=api('/api/system/runtime/'+resource,token=token)

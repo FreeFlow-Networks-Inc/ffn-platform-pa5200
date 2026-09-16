@@ -2,8 +2,10 @@ import copy
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from types import SimpleNamespace
 from configd_applier import PlatformApplier
+import configd_applier
 
 class Status:
     def __init__(self): self.applied=[];self.errors=[]
@@ -11,6 +13,18 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_configd_uses_controld_without_subprocess_fallback(self):
+        client=Mock();client.plane_request.return_value={'ok':True,'result':{'revision':9}}
+        with patch.dict('sys.modules',{'ffn_controld_client':SimpleNamespace(ControldClient=Mock(return_value=client))}), \
+                patch.object(configd_applier.subprocess,'run') as direct:
+            self.assertEqual(configd_applier.rpc('network'),{'revision':9})
+            request=client.plane_request.call_args.args[0]
+            self.assertEqual(request['resource'],'network')
+            self.assertEqual(request['action'],'status')
+            client.plane_request.side_effect=RuntimeError('controld unavailable')
+            with self.assertRaises(RuntimeError):configd_applier.rpc('network','apply',{'revision':9})
+            direct.assert_not_called()
+
     def test_interface_config_reaches_mp_and_unsupported_is_error(self):
         xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>
         <entry name="ethernet1/1"><layer3/></entry>

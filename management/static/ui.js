@@ -78,6 +78,57 @@
     }
     }
     showHandshake(snapshot.resources.dataplane);
+    const control = card(root, 'Control plane and forwarding telemetry');
+    async function showControl() {
+      if (!writable) {
+        element('p', 'Administrator access is required for control telemetry.', control);
+        return;
+      }
+      let status;
+      try { status = await api('/api/system/control'); }
+      catch (e) {
+        if (!root.isConnected) return;
+        control.replaceChildren();
+        element('h3', 'Control plane and forwarding telemetry', control);
+        element('p', 'Control telemetry unavailable: ' + e.message, control);
+        return;
+      }
+      if (!root.isConnected) return;
+      control.replaceChildren();
+      element('h3', 'Control plane and forwarding telemetry', control);
+      element('p', 'Configuration owner: ' + status.owner, control);
+      const agents = Object.entries(status.agents || {});
+      if (!agents.length) element('p', 'No platform agent channels are configured.', control);
+      for (const [name, state] of agents) {
+        const report = state.last_observation?.report || {};
+        const box = card(control, name + ' (' + state.role.toUpperCase() + ')');
+        element('p', state.fresh ? (state.ready ? 'Agent ready' : 'Agent connected; subsystem not ready') :
+          'Agent unavailable or stale; last observation is historical', box);
+        if (state.age_seconds !== null) element('p', 'Last observation: ' + Math.floor(state.age_seconds) + ' seconds ago', box);
+        if (!state.fresh) continue;
+        if (report.bcm) element('p', 'BCM owner: ' + (report.bcm.available ? 'responding' : 'unavailable'), box);
+        if (report.policy?.available) element('p', 'FE100 policy revision: ' + report.policy.configured_revision +
+          '. Configured phase: ' + report.policy.configured_phase + '. Journaled sessions: ' + report.policy.journaled_sessions, box);
+        if (report.fe100) {
+          element('p', 'FE100 statistics: ' + (report.fe100.available ? 'available' : 'unavailable'), box);
+          if (report.fe100.available) {
+            const summary = report.fe100.summary || {};
+            element('p', 'Nonempty lookup queues: ' + (summary.nonempty_queues || []).length +
+              '. Fault or pause flags: ' + (summary.mode_faults_or_pauses || []).length, box);
+            element('p', 'Hardware flow offload: ' + (report.fe100.offload_verified === true ? 'verified' : 'unverified'), box);
+            const detail = element('details', undefined, box);
+            element('summary', 'FE100 counters and queue details', detail);
+            json(detail, {summary, counters: report.fe100.counters});
+          }
+        }
+        if (report.vifs) {
+          element('p', 'VIF forwarding: ' + (!report.vifs.available ? 'unavailable' : report.vifs.forwarding ? 'active' : 'inactive'), box);
+          element('p', 'Applied VIF revision: ' + (report.vifs.revision ?? 'unavailable'), box);
+          if (report.vifs.available) json(box, report.vifs.counters || {});
+        }
+      }
+    }
+    await showControl();
     async function pollHandshake() {
       if (!root.isConnected) return;
       let agent;
@@ -85,6 +136,7 @@
       catch (e) { agent = {available:false, error:e.message}; }
       if (!root.isConnected) return;
       showHandshake(agent);
+      if (writable) await showControl();
       setTimeout(pollHandshake, 5000);
     }
     setTimeout(pollHandshake, 5000);

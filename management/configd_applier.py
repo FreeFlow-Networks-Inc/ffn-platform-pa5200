@@ -7,11 +7,9 @@ from xml.etree import ElementTree as ET
 
 
 def rpc(resource, action='status', payload=None):
+    from ffn_controld_client import ControldClient
     request={'v':1,'id':str(uuid.uuid4()),'resource':resource,'action':action,'payload':payload or {}}
-    result=subprocess.run(['/usr/bin/python3','/usr/local/lib/ffn/ffn_planed.py','call',
-                           '--socket','/run/ffn-plane-mp/control.sock'],input=json.dumps(request),
-                          capture_output=True,text=True,timeout=125,check=True)
-    response=json.loads(result.stdout)
+    response=ControldClient(timeout=130).plane_request(request)
     if not response.get('ok'):
         raise ValueError('MP request %s: %s (%s)'%(request['id'],response.get('state'),response.get('error')))
     return response['result']
