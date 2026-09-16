@@ -2,7 +2,8 @@
 """Install a staged copper VIF driver without enabling packet forwarding.
 
 Stage this file, vif_backend.py, vif-link-poll.py, vif-ui.js, both
-ffn-vif-links units, the three DP driver modules and ffn_inspection.py together on the MP.
+ffn-vif-links units, ffn_copper_forwarding.py, the three DP driver modules and
+ffn_inspection.py together on the MP.
 Requires an existing VIF installation, stopped transport and empty assignments.
 Discovers verified wiring, but never automatically certifies the packet path.
 """
@@ -49,6 +50,25 @@ def main():
     ui_path=extension/'static/ui.js';ui=ui_path.read_text()
     start=ui.index('/* FFN PA5200 VIF UI v1:');end=ui.index('\n})();',start)+len('\n})();')
     writes[ui_path]=(ui[:start]+(source/'vif-ui.js').read_text().rstrip()+ui[end:]).encode()
+    # Install the CP dependency before exposing the new MP observation path.
+    controller=(source/'ffn_copper_forwarding.py').read_text()
+    compile(controller,'ffn_copper_forwarding.py','exec')
+    cp_install='''import fcntl,shutil,time
+from pathlib import Path
+source=SOURCE
+path=Path('/usr/local/sbin/ffn_copper_forwarding.py')
+compile(source,str(path),'exec')
+with open('/run/ffn-copper-forwarding.lock','a') as lock:
+    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    backup=Path('/var/backups/ffn/copper-controller-'+str(time.time_ns()))
+    if path.exists():
+        backup.mkdir(parents=True);shutil.copy2(path,backup/path.name)
+    temporary=path.with_suffix('.new');temporary.write_text(source)
+    temporary.chmod(0o755);temporary.replace(path)
+'''.replace('SOURCE',repr(controller))
+    subprocess.run(['ssh','-F','/etc/ffn-ngfw/ssh-cp.conf','-o','BatchMode=yes',
+        '-o','ConnectTimeout=5','ffn-cp','python3 -'],input=cp_install,text=True,
+        check=True,timeout=20)
     backup=Path('/var/backups/ffn/copper-vif-'+str(time.time_ns()))
     manifest=[]
     for path in writes:

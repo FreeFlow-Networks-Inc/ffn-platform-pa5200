@@ -10,7 +10,9 @@ import time
 import uuid
 
 PROFILE = Path('/etc/ffn/vif-copper.json')
-LEASE_SECONDS = 12
+# A CP inventory takes 6-8 seconds on OCTEON. Cover two poll cycles while
+# retaining an absolute, non-renewable deadline from challenge issuance.
+LEASE_SECONDS = 30
 
 
 def validate_profile(value):
@@ -101,6 +103,8 @@ class CopperVif:
         elif (type(row.get('speed_mbps')) is not int or row['speed_mbps'] not in (100, 1000, 10000)
                 or type(row.get('mac_speed_mbps')) is not int or row['speed_mbps'] != row['mac_speed_mbps']):
             reason = 'PHY and MAC speeds are not synchronized'
+        elif row.get('packet_path_ready') is not True:
+            reason = 'BCM packet path unavailable or unqualified'
         else:
             result['speed_mbps'] = row['speed_mbps']
             reason = 'ready' if entry['packet_path_verified'] else 'packet path not commissioned'

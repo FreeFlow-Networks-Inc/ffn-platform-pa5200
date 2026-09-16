@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 import ffn_network as network
 from ffn_vif_runtime import Linux, Owner
-from ffn_copper_vif import CopperVif
+from ffn_copper_vif import LEASE_SECONDS, CopperVif
 from test_copper_vif import profile, observation
 
 
@@ -36,7 +36,7 @@ def main():
                 assert carrier()==expected,'kernel carrier differs from physical observation'
             driver.observe({'token':driver.challenge(),'ports':[observation()]})
             backend.carrier(fd,driver.allowed(2));assert carrier()
-            driver.clock=lambda:time.monotonic()+13
+            driver.clock=lambda:time.monotonic()+LEASE_SECONDS+1
             backend.carrier(fd,driver.allowed(2));assert not carrier(),'stale observation left carrier up'
             os.close(fd);fd=None
             assert not carrier(),'driver close left carrier up'

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 
 def remote(op,payload):
@@ -26,9 +27,23 @@ def barrier(data):
 
 
 def faceplate():
-    result=subprocess.run(['/usr/local/sbin/ffn-faceplate','status'],text=True,capture_output=True,timeout=8)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        pending=worker.submit(copper_forwarding,'status')
+        result=subprocess.run(['/usr/local/sbin/ffn-faceplate','status'],text=True,capture_output=True,timeout=8)
+        ready=pending.result()['ready']
     if result.returncode:raise RuntimeError('faceplate observation failed')
-    return json.loads(result.stdout)['ports']
+    rows=json.loads(result.stdout)['ports']
+    for row in rows:
+        if row['port']<=4:row['packet_path_ready']=ready.get(str(row['port']),False)
+    return rows
+
+
+def copper_forwarding(operation):
+    if operation not in ('status','start','stop','recover'):raise ValueError('invalid copper operation')
+    result=subprocess.run(['ssh','-F','/etc/ffn-ngfw/ssh-cp.conf','-o','BatchMode=yes','ffn-cp',
+        'python3 /usr/local/sbin/ffn_copper_forwarding.py '+operation],capture_output=True,text=True,timeout=40)
+    if result.returncode:raise RuntimeError('CP copper forwarding failed: '+result.stderr[-1000:])
+    return json.loads(result.stdout)
 
 
 def observe(call,read_links):
@@ -44,7 +59,7 @@ def observe(call,read_links):
     return result
 
 
-def execute(action,payload,call=remote,drain=barrier,read_links=faceplate):
+def execute(action,payload,call=remote,drain=barrier,read_links=faceplate,forward=copper_forwarding):
     if action=='status':
         if payload:raise ValueError('status takes no payload')
         return observe(call,read_links)
@@ -59,7 +74,15 @@ def execute(action,payload,call=remote,drain=barrier,read_links=faceplate):
     if operation=='set':call('check',request)
     if action=='validate':return {'validated':True}
     invalidation=drain(json.dumps(payload,sort_keys=True,separators=(',',':')).encode())
+    bindings=payload['vifs'] if operation=='set' else observed['config'].get('vifs',{})
+    copper=any(b.get('enabled') and b.get('port') in (3,4) for b in bindings.values())
+    if copper and (operation=='start' or operation=='set' and observed.get('running')):forward('start')
     result=call(operation,request if operation=='set' else {})
+    if operation in ('stop','recover'):
+        state=forward('status')
+        owned=state['state']
+        if (owned.get('enabled') or owned.get('pending')) and owned.get('epoch')==state['epoch']:
+            forward('recover' if owned.get('pending') else 'stop')
     return result|{'policy_barrier':invalidation}
 
 

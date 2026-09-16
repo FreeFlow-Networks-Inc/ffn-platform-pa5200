@@ -67,7 +67,9 @@ async def execute(resource, action, payload, backend=None):
             if resource=='inspection':
                 from ffn_inspection import validate
                 validate(payload)
-        if action=='validate': return {'validated':True}
+        if action=='validate':
+            if resource=='network':return await backend.run('network','validate',payload)
+            return {'validated':True}
         actual='patch' if resource=='network' else payload['operation'] if resource=='thermal' else 'set'
         return await backend.run(resource,actual,None if resource=='thermal' else payload)
     if action not in ('status','lookup') or (resource,action) not in COMMANDS:

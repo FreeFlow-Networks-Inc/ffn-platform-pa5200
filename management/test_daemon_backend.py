@@ -3,6 +3,15 @@ from unittest.mock import AsyncMock
 from daemon_backend import execute
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_network_validation_checks_physical_attachment_before_apply(self):
+        backend=AsyncMock()
+        backend.run.side_effect=[{'config':{'revision':7}},ValueError('physical port unattached')]
+        payload={'revision':7,'ports':{'p5':{'mode':'l3','addresses':[]}}}
+        with self.assertRaisesRegex(ValueError,'unattached'):
+            await execute('network','validate',payload,backend)
+        self.assertEqual([c.args for c in backend.run.await_args_list],
+                         [('network','status'),('network','validate',payload)])
+
     async def test_pair_recovery_requires_down_port_capability_and_standalone_request(self):
         backend=AsyncMock();row={'port':4,'media':'copper','enabled':True,'pair_map_recovery':True}
         backend.run.return_value={'revision':8,'ports':[row]}

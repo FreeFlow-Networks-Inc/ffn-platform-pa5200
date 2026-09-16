@@ -28,6 +28,7 @@ COMMANDS = {
     ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
+    ('network', 'validate'): ('/usr/local/sbin/ffn-network', 'validate'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
