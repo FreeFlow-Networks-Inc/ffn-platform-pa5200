@@ -28,7 +28,8 @@ modes = {'front-allocate': 0, 'nif-allocate': 1, 'nif-enable': 2,
          'cross13-return-create':57,'cross5-return-create':58,
          'cross13-release':59,'cross5-release':60,
          'cross13-restore':61,'cross5-restore':62,
-         'session-group-absent':63}
+         'session-group-absent':63,'tm-front4-allocate':64,
+         'copper-return-pair-enable':65,'copper-return-pair-disable':66}
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('mode', choices=tuple(modes))
 p.add_argument('output', type=pathlib.Path)

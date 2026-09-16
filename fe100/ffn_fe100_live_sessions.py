@@ -155,8 +155,7 @@ class LiveSessions:
             state = self.status()
             if state['blockers']: raise RuntimeError('; '.join(state['blockers']))
             self.lib = C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
-            self.cfg = C.create_string_buffer(bytes((C.c_char*2812).in_dll(self.lib,'fe100_cfg1')),2812)
-            struct.pack_into('>I',self.cfg,0,1)
+            self.cfg = C.create_string_buffer(native_configuration(bytes((C.c_char*2812).in_dll(self.lib,'fe100_cfg1')),load_profile()),2812)
             # Exact ELF DWARF: eight fe100_dev_t objects, stride272, config
             # pointer at264. Native session calls read usecase through it.
             # Retain both objects for endpoint lifetime. No device init call.

@@ -6,6 +6,7 @@ fe100_sem_update_configuration before DDR and fe100_sem_fe_init after it.
 This separated stage never writes FCM clocks, PHYs, or other lookup blocks.
 """
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import fcntl
 import hashlib
@@ -54,7 +55,7 @@ class Sem:
         if self.read(0x78804)!=0x100000 or self.read(0x78174) or self.read(0x406a4)&255:
             raise RuntimeError('SEM already initialized; refusing to replay')
         self.lib=C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
-        raw=bytearray((C.c_char*2812).in_dll(self.lib,'fe100_cfg1'))
+        raw=bytearray(native_configuration(bytes((C.c_char*2812).in_dll(self.lib,'fe100_cfg1')),load_profile()))
         for channel,offset in ((0,1980),(1,2228)):
             r=json.loads((ROOT/('fcm-train-'+str(channel)+'-'+self.boot+'.json')).read_text())
             if r.get('stage')!='completed' or r.get('owner_sha256')!=SHA or r.get('faults')!=0 or r.get('cp_boot_id')!=self.boot:
@@ -66,7 +67,7 @@ class Sem:
             if self.read(0x98128+channel*32)&0x410!=0x410 or self.read(0x98130+channel*32)&7!=1:
                 raise RuntimeError('FCM controller not ready')
         if self.read(0x98008)&3!=3 or self.read(0x98174)&1!=1:raise RuntimeError('FCM clocks not ready')
-        struct.pack_into('>II',raw,0,1,0);struct.pack_into('>II',raw,1400,4,2)
+        struct.pack_into('>I',raw,4,0)
         if any(raw[2804:]):raise RuntimeError('unsupported owner debug mode')
         self.cfg=C.create_string_buffer(bytes(raw),2812)
         protected={r:self.read(r) for r in (*PROTECTED,*LOOKUP,0x98100,0x98174)}

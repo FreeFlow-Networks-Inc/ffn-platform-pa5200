@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PA-5220 TDI DDR configuration and clock diagnostics. Default is read-only."""
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import json
 import os
@@ -103,9 +104,7 @@ def train(io):
     if (tuple(io.read(r) for r in DDR)!=DDR_PLAN or io.read(DDR_STATUS)&1!=1 or
         io.read(INIT)&DDR_CLOCK_MASK!=DDR_CLOCK_MASK or io.read(RST)!=0x581):
         raise RuntimeError('DDR clocks/reset preconditions not satisfied')
-    cfg=C.create_string_buffer(bytes((C.c_char*2812).in_dll(io.lib,'fe100_cfg1')),2812)
-    struct.pack_into('>I',cfg,0,1)
-    struct.pack_into('>II',cfg,1400,4,2)
+    cfg=C.create_string_buffer(native_configuration(bytes((C.c_char*2812).in_dll(io.lib,'fe100_cfg1')),load_profile()),2812)
     fn=io.lib.fe100_dram_initialize_config
     fn.argtypes=[C.c_uint32,C.c_uint32,C.c_void_p]; fn.restype=C.c_int
     if fn(0,2,cfg) or io.shim.ffn_fe100_faults():

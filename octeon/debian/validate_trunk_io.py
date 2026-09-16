@@ -5,6 +5,7 @@ Does not reconfigure ports, bridges or routes. Requires explicitly named,
 already connected test ports. Exit2 means packet round-trip was not proven.
 """
 import argparse
+import fcntl
 import json
 from pathlib import Path
 import select
@@ -12,6 +13,34 @@ import socket
 import time
 import uuid
 from ffn_dp_packet_transport import FRONT, RX_FORMATS, encode, validate_trunk
+
+
+def probe_mapping(ports,profile=None):
+    """Use explicit board wiring while commissioning; never certify it here."""
+    mapping=dict(FRONT)
+    if profile is not None:
+        from ffn_copper_vif import validate_profile
+        validated=validate_profile(profile)
+        for port in ports:
+            if port in range(1,5):
+                row=validated.get(str(port))
+                if row is None:raise ValueError('selected copper port lacks a physical mapping')
+                mapping[port]=row['bcm_port']
+    if not ports or len(set(ports))!=len(ports) or any(type(p) is not int or p not in mapping for p in ports):
+        raise ValueError('invalid front ports')
+    return mapping
+
+
+def probe_frame(port, sequence, size, token, vlan=None):
+    header=bytes.fromhex('02ff0000000202ff00000001')
+    if vlan is not None:
+        if type(vlan) is not int or not 1 <= vlan <= 4094:
+            raise ValueError('VLAN must be 1..4094')
+        header+=b'\x81\x00'+vlan.to_bytes(2,'big')
+    payload=header+b'\x88\xb5'+token+bytes([port,sequence])
+    if not len(payload) <= size <= 1518:
+        raise ValueError('invalid probe frame length')
+    return payload+bytes((i+sequence)%256 for i in range(size-len(payload)))
 
 
 def main():
@@ -22,14 +51,18 @@ def main():
     parser.add_argument('--size', type=int, default=64, help='Ethernet frame length without FCS')
     parser.add_argument('--pairs', help='expected return ports, e.g. 5:13,13:5')
     parser.add_argument('--rx-format',choices=tuple(RX_FORMATS),default='fe100-sysport')
+    parser.add_argument('--copper-profile',type=Path,help='explicit physical wiring profile for copper commissioning')
+    parser.add_argument('--vlan',type=int,help='include an 802.1Q tag (1..4094); size includes the tag')
     args = parser.parse_args()
     ports = [int(x) for x in args.ports.split(',')]
-    if not ports or len(set(ports)) != len(ports) or any(p not in FRONT for p in ports):
-        parser.error('invalid front ports')
+    try:front=probe_mapping(ports,json.loads(args.copper_profile.read_text()) if args.copper_profile else None)
+    except (ValueError,OSError) as exc:parser.error(str(exc))
     if not 1 <= args.seconds <= 30:
         parser.error('seconds must be 1..30')
     if not 1 <= args.count <= 64 or not 64 <= args.size <= 1518:
         parser.error('count must be 1..64 and size 64..1518')
+    if args.vlan is not None and not 1 <= args.vlan <= 4094:
+        parser.error('VLAN must be 1..4094')
     peers = {}
     if args.pairs:
         try:
@@ -41,22 +74,22 @@ def main():
             parser.error('pairs must map every selected port exactly once')
     validate_trunk('ffnpkt0')
     status = lambda: json.loads(Path('/sys/kernel/debug/ffn_dp_packet_init/status').read_text())
-    before = status()
     token = b'FFN-TRUNK-TEST:' + uuid.uuid4().bytes
     received = []
     other = 0
     samples = []
     expected = {}
-    with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as sock:
+    with open('/run/ffn-fabric.lock','a') as owner,socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as sock:
+        fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        before = status()
         sock.bind(('ffnpkt0',0))
         sock.setblocking(False)
         for sequence in range(args.count):
             for port in ports:
                 # Experimental ethertype, locally administered unicast MACs.
-                payload = bytes.fromhex('02ff0000000202ff0000000188b5') + token + bytes([port,sequence])
-                payload += bytes((i+sequence)%256 for i in range(args.size-len(payload)))
+                payload = probe_frame(port,sequence,args.size,token,args.vlan)
                 expected[port,sequence]=payload
-                packet = encode(port,payload)
+                packet = encode(port,payload,front)
                 if sock.send(packet) != len(packet):
                     raise RuntimeError('short packet submission')
                 time.sleep(.01)
@@ -67,9 +100,9 @@ def main():
             data, addr = sock.recvfrom(65536)
             if addr[2] == socket.PACKET_OUTGOING:
                 continue
-            if len(samples)<8:
+            if token in data and len(samples)<8:
                 samples.append({'length':len(data),'prefix_hex':data[:256].hex()})
-            result = RX_FORMATS[args.rx_format](data, ports)
+            result = RX_FORMATS[args.rx_format](data, ports,front) if args.rx_format=='bcm-otmh-ssp' else RX_FORMATS[args.rx_format](data,ports)
             if result and token in result[1]:
                 offset = result[1].index(token)+len(token)
                 if offset+1 < len(result[1]):
@@ -78,10 +111,10 @@ def main():
                         received.append({'sent_port':sent_port, 'received_port':result[0], 'sequence':sequence})
             else:
                 other += 1
-    after = status()
+        after = status()
     b, a = before['trunk'], after['trunk']
     result = {'schema':1,'rx_format':args.rx_format,'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-              'ports':ports,'expected_peers':peers,'frame_size':args.size,'sent':len(expected),
+              'ports':ports,'physical_mapping':{p:front[p] for p in ports},'expected_peers':peers,'frame_size':args.size,'vlan':args.vlan,'sent':len(expected),
               'matched_rx':received,'other_rx':other,'raw_rx_samples':samples,
               'tx_accepted_delta':a['tx_accepted']-b['tx_accepted'],
               'tx_completed_delta':a['tx_completed']-b['tx_completed'],

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lab: initialize an individually audited FE100 packet-processing block."""
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import fcntl
 import hashlib
@@ -15,9 +16,10 @@ blocks={'tmi':0x8000,'nif':0x10000,'ipq':0x18000,'par':0x20000,'lif':0x28000,'ac
         'qmm':0x60000,'lag':0x68000,'prw':0x70000,'tlu':0x80000,'egr':0x88000}
 p.add_argument('--block', choices=tuple(blocks), required=True)
 p.add_argument('--apply', action='store_true')
-p.add_argument('--usecase',type=int,choices=(1,2),default=1,help='1=owner PA-5220 packet broker; 2=FPP diagnostic')
+p.add_argument('--usecase',type=int,choices=(1,2),default=None,help='1=owner PA-5220 packet broker; 2=FPP diagnostic')
 p.add_argument('--parser-json', action='store_true', help='PAR only: load the owner parser overrides in place')
 args=p.parse_args()
+profile=load_profile()
 if args.parser_json and args.block!='par':p.error('--parser-json requires --block par')
 lock=open('/run/ffn-fe100-tables.lock','w')
 fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -37,15 +39,14 @@ lib=C.CDLL(library,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
 # fe100_cfg1 is an exported 2812-byte initialized object in this exact ELF.
 # Copy it; never mutate the library's global configuration in place.
 owner_defaults=(C.c_char*2812).in_dll(lib,'fe100_cfg1')
-cfg=C.create_string_buffer(bytes(owner_defaults),2812)
-struct.pack_into('>I',cfg,0,args.usecase)
+cfg=C.create_string_buffer(native_configuration(bytes(owner_defaults),profile),2812)
+# Retain the explicit legacy lab-only FPP override; never selected by XML.
+if args.usecase is not None:struct.pack_into('>I',cfg,0,args.usecase)
 # Audited IPQ config: check headers/errors; Jericho ITMH; retain pipeline credits.
 struct.pack_into('>IIIIII',cfg,1240,1,1,1,0,0,1)
 struct.pack_into('>III',cfg,1296,0xffffffff,0xffffffff,255) # documented parser reset controls
 # Rewrite lab output toward the MP, using the board's Jericho ITMH format.
 struct.pack_into('>I',cfg,1324,8)
-# /etc/cfgdb/dp/5200/fe100.cfgdb.xml overrides the generic table partition.
-struct.pack_into('>II',cfg,1400,4,2)
 struct.pack_into('>IIII',cfg,2476,2,2,1,1)
 struct.pack_into('>IIIII',cfg,2576,0,1,1,2,12)
 cfg[2596:2608]=bytes((11,10,9,0,8,4,5,6,1,2,7,3))

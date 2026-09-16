@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run owner DDR configuration against an offline register model, not hardware."""
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import hashlib
 import json
@@ -20,9 +21,7 @@ def main():
             raise RuntimeError('owner ABI changed')
     shim=C.CDLL(args.capture_library,mode=os.RTLD_GLOBAL|os.RTLD_NOW)
     lib=C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
-    cfg=C.create_string_buffer(bytes((C.c_char*2812).in_dll(lib,'fe100_cfg1')),2812)
-    struct.pack_into('>I',cfg,0,1)
-    struct.pack_into('>II',cfg,1400,4,2)
+    cfg=C.create_string_buffer(native_configuration(bytes((C.c_char*2812).in_dll(lib,'fe100_cfg1')),load_profile()),2812)
     capability=lib.pan_fe100_tdi_set_capability
     capability.argtypes=[C.c_uint32,C.c_uint32]; capability.restype=C.c_int
     if capability(0,4): raise RuntimeError('capability capture failed')

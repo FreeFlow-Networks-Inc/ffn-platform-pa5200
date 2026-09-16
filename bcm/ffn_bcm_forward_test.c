@@ -34,10 +34,34 @@ int ffn_session_queue_preflight(int unit, int port, int numq, uint32 flags, int 
     }
     return 0;
 }
+int ffn_copper4_queue_preflight(int unit, int port, int numq, uint32 flags, int gport, void *data)
+{
+    int rc;
+    if (BCM_GPORT_IS_UCAST_QUEUE_GROUP(gport)) {
+        rc=bcm_cosq_gport_get(unit,gport,&port,&numq,&flags);
+        if(rc)return rc;
+        if((port & 0x7ff)==15)return -8;
+    }
+    return 0;
+}
+int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int gport, void *data)
+{
+    int rc;
+    int *found=data;
+    if (BCM_GPORT_IS_UCAST_QUEUE_GROUP(gport)) {
+        rc=bcm_cosq_gport_get(unit,gport,&port,&numq,&flags);
+        if(rc)return rc;
+        if(numq!=8)return 0;
+        if((port & 0x7ff)==14)*found=*found | 1;
+        if((port & 0x7ff)==15)*found=*found | 2;
+        if((port & 0x7ff)==24)*found=*found | 4;
+    }
+    return 0;
+}
 {
     int rv = 0;
     int fe100_test = 0;
-    int single_front = fe100_test == 9 || fe100_test == 12 || fe100_test == 15 || fe100_test == 16 || fe100_test == 23 || fe100_test == 24 || fe100_test == 37;
+    int single_front = fe100_test == 9 || fe100_test == 12 || fe100_test == 15 || fe100_test == 16 || fe100_test == 23 || fe100_test == 24 || fe100_test == 37 || fe100_test == 64;
     int n;
     int cos;
     int src;
@@ -62,6 +86,10 @@ int ffn_session_queue_preflight(int unit, int port, int numq, uint32 flags, int 
     int hw_cross = fe100_test>=55 && fe100_test<=58;
     int dp_header;
     int dp_queue_count=0;
+    int copper_queues=0;
+    int copper_previous[2];
+    int copper_changed=0;
+    int copper_rollback;
     int an_front[4] = {5, 13, 23, 24};
     int an_value;
     int an_link;
@@ -91,6 +119,10 @@ int ffn_session_queue_preflight(int unit, int port, int numq, uint32 flags, int 
     bcm_mac_t hw_mac = {0x02, 0x52, 0x20, 0xab, 0xcd, 0x91};
     bcm_mac_t hw_mask = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     rv = bcm_stk_modid_get(0, &modid);
+    if(fe100_test==64 && rv==0) {
+        rv=bcm_cosq_gport_traverse(0,ffn_copper4_queue_preflight,NULL);
+        printf("FFN_COPPER4_QUEUE_PREFLIGHT rv=%d\n",rv);
+    }
     if (fe100_test == 37 && rv==0) {
         /* Dedicated commissioning allocation: never overwrite/adopt queues
          * from an existing owner or retry a partially completed allocation. */
@@ -109,12 +141,14 @@ int ffn_session_queue_preflight(int unit, int port, int numq, uint32 flags, int 
         if (fe100_test == 12) dst = 7;
         if (fe100_test == 15) dst = 14;
         if (fe100_test == 16) dst = 28;
+        if (fe100_test == 64) dst = 15;
         if (fe100_test == 23) dst = 34;
         if (fe100_test == 24) dst = 35;
         if (fe100_test == 37) dst = dp_ports[n];
         if (fe100_test == 46) dst = n==0 ? 3 : 8;
         rv = bcm_port_get(0, dst, &flags, &intf, &mapping);
         if (rv) break;
+        if(fe100_test==64 && (mapping.core!=1 || mapping.tm_port!=15)) {rv=-1;break;}
         printf("FFN_PORT dst=%d core=%d tm=%d priorities=%d modid=%d\n", dst, mapping.core, mapping.tm_port, mapping.num_priorities, modid);
         BCM_COSQ_GPORT_E2E_PORT_SET(e2e, dst);
         tmport = mapping.tm_port;
@@ -458,6 +492,36 @@ int ffn_session_queue_preflight(int unit, int port, int numq, uint32 flags, int 
             rv=bcm_port_force_forward_set(0,an_ports[n],24,fe100_test==39);
             if (rv==0) rv=bcm_port_force_forward_get(0,an_ports[n],&dst,&an_value);
             printf("FFN_DP_RETURN port=%d destination=%d enabled=%d rv=%d\n",an_ports[n],dst,an_value,rv);
+        }
+    }
+    if(fe100_test==65 || fe100_test==66) {
+        /* Only the confirmed copper 3<->4 cable. Never touch WAN/BCM28.
+         * Ingress goes to the DP, never back to the cabled peer. */
+        if(fe100_test==65 && rv==0) {
+            rv=bcm_switch_control_port_get(0,24,bcmSwitchPortHeaderType,&dp_header);
+            if(rv==0 && dp_header!=BCM_SWITCH_PORT_HEADER_TYPE_TM_SSP)rv=-1;
+            if(rv==0)rv=bcm_cosq_gport_traverse(0,ffn_copper_return_preflight,&copper_queues);
+            if(rv==0 && copper_queues!=7)rv=-1;
+            printf("FFN_COPPER_RETURN_PREFLIGHT queues=%d rv=%d\n",copper_queues,rv);
+        }
+        for(n=14;n<=15 && rv==0;n++) {
+            rv=bcm_port_force_forward_get(0,n,&dst,&an_value);
+            if(rv==0 && an_value && dst!=24)rv=-8;
+            copper_previous[n-14]=an_value;
+        }
+        for(n=14;n<=15 && rv==0;n++) {
+            /* Include the attempted port in rollback if the SDK errors. */
+            copper_changed=n-13;
+            rv=bcm_port_force_forward_set(0,n,24,fe100_test==65);
+            if(rv==0)rv=bcm_port_force_forward_get(0,n,&dst,&an_value);
+            printf("FFN_COPPER_RETURN port=%d destination=%d enabled=%d rv=%d\n",n,dst,an_value,rv);
+            if(rv==0 && (an_value!=(fe100_test==65) || (an_value && dst!=24)))rv=-1;
+        }
+        if(rv && copper_changed) {
+            for(n=0;n<copper_changed;n++) {
+                copper_rollback=bcm_port_force_forward_set(0,n+14,24,copper_previous[n]);
+                printf("FFN_COPPER_RETURN_ROLLBACK port=%d enabled=%d rv=%d\n",n+14,copper_previous[n],copper_rollback);
+            }
         }
     }
     if (fe100_test>=59 && fe100_test<=62) {

@@ -5,6 +5,7 @@ Default is read-only. Apply is exclusive and once per boot, before any live
 sessions. DDR, TDI and packet blocks cannot be written through this mapping.
 """
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import fcntl
 import hashlib
@@ -40,7 +41,7 @@ def completed_targets(trace):
 
 
 def configuration(template, records, boot):
-    cfg=bytearray(template)
+    cfg=bytearray(native_configuration(template,load_profile()))
     if len(cfg)!=2812: raise ValueError('wrong owner configuration size')
     for channel,off in OFFSETS.items():
         r=records.get(channel,{})
@@ -52,8 +53,7 @@ def configuration(template, records, boot):
             raise ValueError('incorrect saved channel configuration')
         cfg[off:off+248]=raw[off:off+248]
         if channel==6: cfg[48:52]=raw[48:52] # capacity detected by FDT1 initializer
-    struct.pack_into('>II',cfg,0,1,0)
-    struct.pack_into('>II',cfg,1400,4,2)
+    struct.pack_into('>I',cfg,4,0)
     if struct.unpack_from('>I',cfg,48)[0]!=4:
         raise ValueError('only the audited FDT capacity4 plan is supported')
     if any(struct.unpack_from('>I',cfg,o+184)[0] for o in OFFSETS.values()):
