@@ -90,23 +90,31 @@ PHY firmware busy checks and the kernel write gate protect MDIO mutations.
 
 Physical mapping is separate from the MDIO address. The vendor address array is
 pair-swapped, so consecutive addresses alone are not evidence of panel numbering.
-The live measured path is the operator's ethernet1/2 -> PHY 17 -> BCM port 28.
-The old table had selected BCM 13, whose SerDes had no incoming signal. BCM 28
-reported signal without lock at 10G XFI, then linked at 1G after SGMII selection.
-Do not treat the vendor enable-list ordering as commissioned connector numbering.
+The operator corrected the WAN label from ethernet1/2 to ethernet1/1. Its live
+path is PHY17 -> BCM28, linked at 1G after SGMII selection. This agrees with the
+vendor panel map; the earlier apparent mismatch came from the physical label.
+The complete PA-5220 board map is:
+
+| Panel port | PHY | BCM MAC |
+|---|---:|---:|
+| ethernet1/1 (WAN) | 17 | 28 |
+| ethernet1/2 | 16 | 13 |
+| ethernet1/3 | 19 | 14 |
+| ethernet1/4 | 18 | 15 |
 
 Store measured associations in `/etc/ffn/copper-map.json`. Each physical port key
 (1..4) requires a `phy` (16..19) and `bcm_port` (28,13,14,15). Both sets must be
-unique. Example for this commissioned path: `{"2":{"phy":17,"bcm_port":28}}`.
+unique. The WAN entry is `{"1":{"phy":17,"bcm_port":28}}`.
 There is no global mapping default: appliance-specific evidence stays local.
 Legacy integer PHY-only entries remain readable but cannot authorize MAC writes.
 Unknown associations disable copper faceplate writes. Configuration revisions
 include both PHY and MAC mapping so stale requests cannot hit a different socket.
 
-All four port mappings are covered by controller tests. Live validation reapplied
-port 2's Auto advertisement through the authenticated CLI and MP daemon, leaving
-its 1G external link and advertisement unchanged. Ports 1, 3 and 4 still need a
-physical cable/link correlation before commissioning their mapping on this unit.
+All four port mappings are now installed on this appliance and covered by
+controller tests. The authenticated MP API exposes admin and speed controls for
+all four. Auto negotiation and enable were verified on ports 2 and 4; the WAN
+on port1 remained at 1G. The reported 2-to-4 cable loop still had no PHY link
+after negotiation; control readback does not certify an external connection.
 
 The faceplate page reports copper wire speed/link separately from switch-side
 link. A wire link alone does not establish PHY-to-MAC synchronization, a dataplane
@@ -157,7 +165,7 @@ Administrators use **Network → Faceplate Ports → Identify copper ports**:
 
 1. Select an unmapped port with no cable attached and start identification.
 2. Connect one spare active Ethernet peer to that exact port. Leave existing
-   links, especially WAN port2, in place.
+   links, especially WAN port1, in place.
 3. Refresh and confirm the detected PHY. Repeat for each remaining port.
 
 The root CLI `/usr/local/sbin/ffn-copper-identify` uses the same MP resource:
@@ -178,3 +186,13 @@ used by the PHY and faceplate controllers. No PHY registers are written by
 identification. Once mapped, the existing faceplate enable/disable and speed
 controls operate the matching PHY and MAC, and the copper link service follows
 its negotiated speed. This does not mark a VIF packet path as commissioned.
+
+The one-time MP operation `correct-wan-label` migrates only the former single
+`port2 -> PHY17/BCM28` mapping to the vendor panel map above, following the
+operator's corrected identification. Other mappings and active identification
+probes are rejected. Its payload contains only `operation` and current
+`revision`; callers cannot supply replacement wiring. The MP first verifies
+the DP VIF service is stopped, assignments are empty and no copper packet path
+has been commissioned. It backs up and corrects the DP profile before updating
+the CP mapping. The CP writes no PHY registers. The MP journal preserves an
+uncertain outcome rather than retrying a partial cross-plane change blindly.

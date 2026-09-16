@@ -12,8 +12,11 @@ object. Each commissioned physical port key (`1` through `4`) has integer
 There are no guessed copper mappings. A mapped port becomes selectable only
 after its packet path has been separately commissioned and verified.
 
-The appliance's confirmed port2 maps to PHY17 and BCM28. This mapping must
-not also identify port1. Other appliances require their own physical checks.
+The operator corrected the WAN label: port1 maps to PHY17/BCM28. The complete
+PA-5220 panel order is port1=PHY17/BCM28, port2=PHY16/BCM13,
+port3=PHY19/BCM14, port4=PHY18/BCM15. The former single port2 label is migrated
+through the MP `copper-identify` resource with stopped, empty VIFs. The corrected
+profile retains `packet_path_verified=false` until wire forwarding is qualified.
 Do not mark packet paths verified based on link alone: BCM/FE100 queue,
 ingress/return-header and OCTEON packet transport setup must also be tested.
 Profile changes require stopping the VIF owner and restarting it after

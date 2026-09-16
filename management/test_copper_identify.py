@@ -79,5 +79,28 @@ class Identification(unittest.TestCase):
         identify.phy.STATE.write_text(json.dumps({'pending':{'phy':17}}))
         with self.assertRaises(ValueError):self.owner.status()
 
+    def test_operator_label_correction_restores_vendor_order_without_phy_writes(self):
+        before=self.owner.status()
+        request={'operation':'correct-wan-label','revision':before['config']['revision']}
+        planned=self.owner.execute(request,False)
+        self.assertEqual(planned['mapping'],identify.PA5220_MAP)
+        self.assertEqual(identify.phy.port_mapping(),identify.OLD_WAN_LABEL)
+        result=self.owner.execute(request,True)
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['config']['mapping']['1'],{'phy':17,'bcm_port':28})
+        self.assertEqual(result['config']['mapping']['2'],{'phy':16,'bcm_port':13})
+        self.assertEqual(result['config']['mapping']['4'],{'phy':18,'bcm_port':15})
+        self.assertEqual(self.bus.writes,[])
+        self.assertEqual(json.loads(identify.phy.MAPPING.with_name('copper-map.previous.json').read_text()),identify.OLD_WAN_LABEL)
+
+    def test_label_correction_refuses_other_maps_and_active_identification(self):
+        self.begin()
+        request={'operation':'correct-wan-label','revision':self.owner.status()['config']['revision']}
+        with self.assertRaises(ValueError):self.owner.execute(request,True)
+        identify.PROBE.unlink()
+        identify.phy.MAPPING.write_text(json.dumps({'3':{'phy':17,'bcm_port':28}}))
+        request['revision']=self.owner.status()['config']['revision']
+        with self.assertRaises(ValueError):self.owner.execute(request,True)
+
 
 if __name__=='__main__':unittest.main()

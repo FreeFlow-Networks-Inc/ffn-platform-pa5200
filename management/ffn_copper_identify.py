@@ -17,8 +17,12 @@ import ffn_phy_control as phy
 import ffn_faceplate as face
 
 # Board wiring from octeon/bcmagent/ffn-bcm-overrides.conf. This is NOT a
-# panel-number map. In particular, PHY17/BCM28 is confirmed panel port2.
+# panel-number map. PHY17/BCM28 is panel port1 (the operator corrected the
+# earlier port2 label). The vendor panel order is 17,16,19,18.
 PHY_MAC = {16:13, 17:28, 18:15, 19:14}
+PA5220_MAP = {str(p):{'phy':address,'bcm_port':PHY_MAC[address]}
+              for p,address in enumerate((17,16,19,18),1)}
+OLD_WAN_LABEL = {'2':{'phy':17,'bcm_port':28}}
 PROBE = Path('/run/ffn-copper-identify.json')
 BOOT = Path('/proc/sys/kernel/random/boot_id')
 TTL = 900
@@ -91,11 +95,21 @@ class Identifier:
     def execute(self,request,write=False):
         if not isinstance(request,dict):raise ValueError('identification request required')
         op=request.get('operation')
-        fields={'operation','revision','port'} if op=='begin' else {'operation','revision','token'}
-        if op not in ('begin','confirm','cancel') or set(request)!=fields or type(request['revision']) is not int:
+        fields={'operation','revision'} if op=='correct-wan-label' else {'operation','revision','port'} if op=='begin' else {'operation','revision','token'}
+        if op not in ('begin','confirm','cancel','correct-wan-label') or set(request)!=fields or type(request['revision']) is not int:
             raise ValueError('invalid identification operation or fields')
         current=self.snapshot();probe=self.probe()
         if current['config']['revision']!=request['revision']:raise ValueError('revision conflict; refresh identification status')
+        if op=='correct-wan-label':
+            if probe:raise ValueError('cancel active identification before correcting labels')
+            mapping=current['config']['mapping']
+            if mapping not in (OLD_WAN_LABEL,PA5220_MAP):
+                raise ValueError('this correction only migrates the former single WAN-port label')
+            if not write:return {'validated':True,'mapping':PA5220_MAP}
+            if mapping!=PA5220_MAP:
+                atomic(phy.MAPPING.with_name('copper-map.previous.json'),mapping)
+                atomic(phy.MAPPING,PA5220_MAP)
+            return self.status()
         if op=='begin':
             port=request['port']
             if type(port) is not int or port not in range(1,5):raise ValueError('select copper panel port 1 through 4')
