@@ -28,8 +28,33 @@ DP_RUNTIME={'start-trunk':True,'stop-trunk':False}
 def create_harness(platform, adapter_factory):
     """The factory is never called on generic or unsupported hardware."""
     if platform not in ('pa5200','pa5220'): return None
+    import os
+    if adapter_factory is installed_adapters and os.environ.get('FFN_CONTROL_GATEWAY') == 'controld':
+        return RemoteHarness()
     cp,dp=adapter_factory()
     return Harness(cp,dp)
+
+
+class RemoteHarness:
+    """Frontend delegates the whole operation, including its boot fence."""
+    async def request(self, action, payload):
+        import uuid
+        from ffn_control_plane import control_rpc
+        request = {'v':1, 'id':str(uuid.uuid4()), 'resource':'hardware',
+                   'action':action, 'payload':payload}
+        result = await control_rpc('plane/request', {'request':request})
+        if not result.get('ok'):
+            raise RuntimeError('Hardware control ' + result.get('state','unknown') + '; request ID ' + request['id'])
+        return result['result']
+
+    async def status(self):
+        return await self.request('status', {})
+
+    async def prepare(self, operation, expected_boot_id):
+        return await self.request('apply', {'revision':0, 'operation':operation, 'expected_boot_id':expected_boot_id})
+
+    async def runtime(self, operation, expected_boot_id):
+        return await self.prepare(operation, expected_boot_id)
 
 
 def installed_adapters():

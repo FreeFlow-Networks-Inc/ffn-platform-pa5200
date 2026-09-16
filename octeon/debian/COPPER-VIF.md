@@ -25,10 +25,14 @@ review; they are not hot-reloaded underneath existing bindings.
 Copper TAPs attach without carrier. Carrier and packet delivery require a
 fresh observation with matching wiring, enabled PHY and MAC, no pending PHY
 transaction, both links up, and matching 100/1000/10000 Mbps rates. A single-use
-DP challenge expires after 12 seconds measured from issuance on the DP's
+DP challenge expires after 30 seconds measured from issuance on the DP's
 monotonic clock. Delayed, duplicate and out-of-order responses cannot extend
 that window. Loss of the MP/CP observation path lowers carrier and drops
 copper traffic. Driver shutdown also lowers TAP carrier.
+
+Commissioned copper3/4 now also requires current CP-owned BCM forwarding
+readback. See `management/COPPER-NETWORKING.md` for control ordering,
+qualification lifetime, recovery and the physical bridge/routing tests.
 
 Install `management/install-copper-vif.py` from a staged directory as
 described in its module documentation. It requires stopped, empty VIFs,

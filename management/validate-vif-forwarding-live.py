@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""MP-controlled L2/IPv4/IPv6 VIF wire test; only the 5--13 DAC, with cleanup."""
+"""MP-controlled L2/IPv4/IPv6 wire test on optical 5/13 or copper 3/4."""
 import asyncio
 import copy
 import json
 from pathlib import Path
 import subprocess
+import shlex
 import sys
 import time
 import uuid
@@ -12,7 +13,9 @@ sys.path.insert(0,'/opt/ffn-ngfw-v2')
 from ffn_plane_api import rpc
 
 neighbors='--neighbors' in sys.argv
-output=Path('/tmp/VIF-'+('NEIGHBOR' if neighbors else 'L2-L3')+'-FORWARDING-20260915.json')
+copper='--copper' in sys.argv
+pair=(3,4) if copper else (5,13)
+output=Path('/tmp/VIF-'+('COPPER-' if copper else '')+('NEIGHBOR' if neighbors else 'L2-L3')+'-FORWARDING-20260915.json')
 report={'started':time.time(),'steps':[]}
 
 def record(label,result):
@@ -38,7 +41,10 @@ def network(**fields):
     record('network_apply',result);return result
 
 def dp(*args):
-    return subprocess.run(['python3','/tmp/ffn-dp-ssh.py',*args],capture_output=True,text=True,timeout=65)
+    return subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5',
+        '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
+        '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp',
+        'root@127.1.2.2',shlex.join(args)],capture_output=True,text=True,timeout=65)
 
 def checked(*args):
     result=dp(*args)
@@ -47,7 +53,7 @@ def checked(*args):
 
 def probe(mode,expected=4):
     result=dp('python3','/usr/local/sbin/validate_vif_forwarding.py',mode,'--expect',str(expected),
-              *(['--resolve-neighbors'] if neighbors else []))
+              *(['--resolve-neighbors'] if neighbors else []),*(['--copper'] if copper else []))
     record('wire_'+mode,json.loads(result.stdout))
     if result.returncode:raise RuntimeError('wire test failed: '+result.stderr)
 
@@ -65,32 +71,42 @@ def bridge_ready():
         time.sleep(2)
     raise RuntimeError('VIF bridge ports did not reach forwarding state')
 
+def carrier_ready():
+    deadline=time.monotonic()+45
+    while time.monotonic()<deadline:
+        state=call('vifs','status')
+        if all(state.get('vif_links',{}).get(n,{}).get('carrier') is True for n in ('fv4001','fv4002')):return
+        time.sleep(2)
+    raise RuntimeError('test VIF carrier unavailable')
+
 before=call('vifs','status');net_before=call('network','status')['config']
-front={p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in (5,13)}
+front={p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in pair}
 if before['running'] or before['config']['vifs'] or before['recovery_required']:
     raise RuntimeError('lab requires empty stopped VIF runtime')
-if set(front)!={5,13} or 'vrf-viflab' in net_before.get('vrfs',{}) or 4090 in net_before.get('vrfs',{}).values():
+if set(front)!=set(pair) or 'vrf-viflab' in net_before.get('vrfs',{}) or 4090 in net_before.get('vrfs',{}).values():
     raise RuntimeError('test resources unavailable')
 if any(set(p.get('vlans',[])) & {3900,3903} for p in net_before['ports'].values()):
     raise RuntimeError('test bridge VLAN already configured')
 record('before',{'network':net_before,'vifs':before,'front':front})
 bindings={n:{'port':p,'vlan':v,'enabled':True,'network':{'mode':'l2','vlans':[3900],'pvid':3900}}
-          for n,p,v in [('fv4001',13,3901),('fv4002',5,3902)]}
+          for n,p,v in [('fv4001',pair[1],3901),('fv4002',pair[0],3902)]}
 changed=[]
 try:
-    for port in (5,13):changed.append(port);face(port,True,'10000')
-    current={p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in (5,13)}
-    if not all(p['enabled'] and p['link'] for p in current.values()):raise RuntimeError('DAC link unavailable')
+    if not copper:
+        for port in pair:changed.append(port);face(port,True,'10000')
+    current={p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in pair}
+    if not all(p['enabled'] and p['link'] for p in current.values()):raise RuntimeError('test cable link unavailable')
     if not neighbors:
-        vif('set',bindings);vif('start');bridge_ready();probe('l2')
+        vif('set',bindings);vif('start');carrier_ready();bridge_ready();probe('l2')
         bindings['fv4002']['network']={'mode':'l2','vlans':[3903],'pvid':3903}
-        vif('set',bindings);bridge_ready();probe('l2',0)
+        vif('set',bindings);carrier_ready();bridge_ready();probe('l2',0)
     network(vrfs={**net_before.get('vrfs',{}),'vrf-viflab':4090})
     for name,subnet in [('fv4001',201),('fv4002',202)]:
         bindings[name]['network']={'mode':'l3','vrf':'vrf-viflab',
             'addresses':['198.18.%d.1/24'%subnet,'2001:db8:%d::1/64'%subnet]}
     vif('set',bindings)
     if neighbors:vif('start')
+    carrier_ready()
     for name,subnet,mac in [('fv4001',201,'02:ff:00:00:00:01'),('fv4002',202,'02:ff:00:00:00:02')]:
         for address in ('198.18.%d.2'%subnet,'2001:db8:%d::2'%subnet):
             if not neighbors:
@@ -121,5 +137,5 @@ finally:
         record('after',{'network':call('network','status')['config'],'vifs':call('vifs','status')})
     finally:
         for port in reversed(changed):face(port,front[port]['enabled'],front[port]['configured_speed'])
-        record('front_restored',{p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in (5,13)})
+        record('front_restored',{p['port']:p for p in call('faceplate','status')['ports'] if p['port'] in pair})
         report['finished']=time.time();output.write_text(json.dumps(report,indent=2)+'\n')

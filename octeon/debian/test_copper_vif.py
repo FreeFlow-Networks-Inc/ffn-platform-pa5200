@@ -2,7 +2,7 @@ import copy
 import collections
 import unittest
 from unittest.mock import Mock
-from ffn_copper_vif import CopperVif, validate_profile
+from ffn_copper_vif import LEASE_SECONDS, CopperVif, validate_profile
 from ffn_dp_packet_transport import FRONT, encode, decode_otmh_ssp
 
 
@@ -14,7 +14,7 @@ def observation():
     return {'port':2,'phy_address':17,'bcm_port':28,'phy_mapping_verified':True,
             'available':True,'enabled':True,'phy_enabled':True,'mac_enabled':True,
             'phy_pending':False,'link':True,'mac_link':True,'datapath_link':True,
-            'speed_mbps':1000,'mac_speed_mbps':1000}
+            'speed_mbps':1000,'mac_speed_mbps':1000,'packet_path_ready':True}
 
 
 class Copper(unittest.TestCase):
@@ -61,17 +61,26 @@ class Copper(unittest.TestCase):
         self.assertTrue(self.driver.allowed(2))
         for old in (token,new):
             with self.assertRaises(ValueError):self.driver.observe({'token':old,'ports':[observation()]})
-        self.now+=12
+        self.now+=LEASE_SECONDS
         self.assertFalse(self.driver.allowed(2))
-        token=self.driver.challenge();self.now+=12
+        token=self.driver.challenge();self.now+=LEASE_SECONDS
         with self.assertRaises(ValueError):self.driver.observe({'token':token,'ports':[observation()]})
         self.assertFalse(self.driver.allowed(2))
+
+    def test_slow_inventory_does_not_flap_between_poll_cycles(self):
+        for cycle in range(6):
+            token=self.driver.challenge()
+            self.now+=8  # measured upper end of CP inventory latency
+            if cycle:self.assertTrue(self.driver.allowed(2))
+            self.driver.observe({'token':token,'ports':[observation()]})
+            self.now+=2  # MP timer delay after completing an observation
+            self.assertTrue(self.driver.allowed(2))
 
     def test_disable_pending_mapping_and_speed_mismatch_drop(self):
         for key,value in [('enabled',False),('phy_enabled',False),('mac_enabled',False),('available',False),
                           ('link',False),('mac_link',None),('datapath_link',1),('phy_pending',True),
                           ('phy_mapping_verified',False),('phy_address',16),('bcm_port',13),
-                          ('mac_speed_mbps',10000),('speed_mbps',True)]:
+                          ('mac_speed_mbps',10000),('speed_mbps',True),('packet_path_ready',False),('packet_path_ready',1)]:
             self.update();self.assertTrue(self.driver.allowed(2))
             row=observation();row[key]=value;self.update(row)
             self.assertFalse(self.driver.allowed(2),key)

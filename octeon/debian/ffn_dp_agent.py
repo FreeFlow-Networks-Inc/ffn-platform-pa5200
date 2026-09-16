@@ -8,11 +8,38 @@ from pathlib import Path
 import platform
 import socket
 import socketserver
+import sys
 import time
 import uuid
 from ffn_dp_boot_health import inspect_boot
 
 SOCKET = '/run/ffn-dp-agent/control.sock'
+sys.path.insert(0, '/usr/local/lib/ffn')
+
+
+def vif_status():
+    """Observe the running owner only; never instantiate or reconcile a VIF."""
+    if not Path('/run/ffn-vif.sock').exists():
+        return {'available': False, 'running': False, 'forwarding': False}
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.settimeout(3)
+            conn.connect('/run/ffn-vif.sock')
+            conn.sendall(b'{"op":"status","payload":{}}\n')
+            with conn.makefile('rb') as stream:
+                raw = stream.readline(1048577)
+        if len(raw) > 1048576 or not raw.endswith(b'\n'):
+            raise ValueError('invalid VIF response')
+        result = json.loads(raw)
+        if result.get('ok') is not True:
+            raise ValueError('VIF owner unavailable')
+        value = result['result']
+        return {'available': True, **{key: value.get(key) for key in
+            ('running', 'forwarding', 'generation', 'runtime_error', 'recovery_required',
+             'vif_links', 'counters')}, 'revision': value.get('config', {}).get('revision')}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {'available': False, 'running': None, 'forwarding': False,
+                'error': 'VIF observation unavailable'}
 
 
 def snapshot(nonce):
@@ -103,8 +130,18 @@ def handshake(path=SOCKET):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['serve', 'status', 'diagnose'])
+    parser.add_argument('action', choices=['serve', 'status', 'diagnose', 'stream'])
     args = parser.parse_args()
+    if args.action == 'stream':
+        from ffn_agent_protocol import serve
+        def report():
+            # Observe the managed readiness agent, not a second independent
+            # readiness process. VIF counters come from the packet owner.
+            value = handshake()
+            value['vifs'] = vif_status()
+            return value
+        serve(report, 'dp', 'pa5200')
+        return
     if args.action == 'diagnose':
         print(json.dumps(snapshot(str(uuid.uuid4())), indent=2))
         return

@@ -28,6 +28,7 @@ COMMANDS = {
     ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
+    ('network', 'validate'): ('/usr/local/sbin/ffn-network', 'validate'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
@@ -40,6 +41,13 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+for _action, _op in (('status', 'status'), ('set', 'replace')):
+    COMMANDS[('fe100-policy', _action)] = ('/usr/local/sbin/ffn-cp',
+        'env LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 '
+        'LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:'
+        '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64 '
+        'python3 /usr/local/sbin/ffn_fe100_policy_control.py ' + _op)
 
 # These operations are consumed only by the explicitly mounted hardware
 # harness. They are not generic FFN resources or an arbitrary shell API.

@@ -45,6 +45,22 @@ LIMIT = 1024 * 1024
 
 
 def before_policy_commit(candidate_bytes):
+    if os.environ.get('FFN_CONTROL_GATEWAY') == 'controld':
+        import hashlib
+        from ffn_controld_client import ControldClient
+        if not isinstance(candidate_bytes, bytes): raise ValueError('candidate bytes required')
+        client = ControldClient(timeout=130)
+        def request(action, payload):
+            msg = {'v':1,'id':str(uuid.uuid4()),'resource':'fe100-policy','action':action,'payload':payload}
+            response = client.plane_request(msg)
+            if not response.get('ok'):
+                raise RuntimeError('FE100 policy barrier failed; request ID ' + msg['id'])
+            return response['result']
+        state = request('status', {})
+        result = request('apply', {'revision':state['revision'], 'digest':hashlib.sha256(candidate_bytes).hexdigest()})
+        if result.get('phase')!='blocked' or result.get('sessions')!=0 or result.get('recovery_required') is not False:
+            raise RuntimeError('Hardware sessions did not drain')
+        return {'revision':result['revision'],'drained':True,'admission_enabled':False}
     # Imported only by an explicitly selected extension at commit time.
     import importlib.util
     from pathlib import Path

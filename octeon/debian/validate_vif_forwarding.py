@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Bounded DP wire qualification of Linux VIF bridging/routing on the 5--13 DAC.
+"""Bounded DP wire qualification of Linux VIF bridging/routing.
 
-Requires fv4001=(13,3901), fv4002=(5,3902). Distinct return selectors prevent
+Requires fv4001=(13,3901), fv4002=(5,3902), or copper ports 4 and 3 respectively.
+Distinct return selectors prevent
 recirculation. No configuration writes: the MP harness owns setup and cleanup.
 """
 import argparse
@@ -14,6 +15,8 @@ import subprocess
 import time
 import uuid
 from ffn_dp_packet_transport import encode, decode_otmh_ssp, validate_trunk
+from pathlib import Path
+from validate_trunk_io import probe_mapping
 
 
 def checksum(data):
@@ -51,16 +54,19 @@ def main():
     parser.add_argument('mode', choices=('l2','ipv4','ipv6'))
     parser.add_argument('--expect', type=int, choices=(0,4), default=4)
     parser.add_argument('--resolve-neighbors', action='store_true')
+    parser.add_argument('--copper',action='store_true',help='use the commissioned copper 3/4 cable')
     args = parser.parse_args()
+    pair=(3,4) if args.copper else (5,13)
+    front=probe_mapping(list(pair),json.loads(Path('/etc/ffn/vif-copper.json').read_text()) if args.copper else None)
     validate_trunk('ffnpkt0')
     links = {p['ifname']:p for p in json.loads(subprocess.check_output(['ip','-n','ffn-data','-j','link']))}
     mac = lambda name: bytes.fromhex(links[name]['address'].replace(':',''))
-    report = {'mode':args.mode, 'directions':[]}
+    report = {'mode':args.mode,'physical_ports':pair, 'directions':[]}
     with socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(3)) as wire:
         wire.bind(('ffnpkt0',0)); wire.setblocking(False)
         for reverse in (False,True):
             src,dst = (('fv4002','fv4001') if reverse else ('fv4001','fv4002'))
-            input_port,returned_port = ((13,5) if reverse else (5,13))
+            input_port,returned_port = (tuple(reversed(pair)) if reverse else pair)
             ivlan,ovlan = ((3902,3901) if reverse else (3901,3902))
             src_sub,dst_sub = ((202,201) if reverse else (201,202))
             source_mac = bytes.fromhex('02ff00000002' if reverse else '02ff00000001')
@@ -93,20 +99,20 @@ def main():
                 inputs.append(tagged(frame,ivlan));expected.append(tagged(output,ovlan))
             seen=set();ingress=set();bad=[];replies=0
             for frame in inputs:
-                wire.send(encode(input_port,frame));time.sleep(.05)
+                wire.send(encode(input_port,frame,front));time.sleep(.05)
             deadline=time.monotonic()+3
             while time.monotonic()<deadline:
                 if not select.select([wire],[],[],.1)[0]:continue
                 raw,addr=wire.recvfrom(65536)
                 if addr[2]==socket.PACKET_OUTGOING:continue
-                decoded=decode_otmh_ssp(raw,{5,13})
+                decoded=decode_otmh_ssp(raw,set(pair),front)
                 if not decoded:continue
                 port,frame=decoded
                 if args.resolve_neighbors and args.mode!='l2' and port==returned_port and frame[12:16]==b'\x81\x00'+struct.pack('!H',ovlan):
                     gateway='2001:db8:%d::2'%dst_sub if args.mode=='ipv6' else '198.18.%d.2'%dst_sub
                     reply=neighbor_reply(frame[:12]+frame[16:],gateway,dest_mac)
                     if reply:
-                        wire.send(encode(returned_port,tagged(reply,ovlan)));replies+=1
+                        wire.send(encode(returned_port,tagged(reply,ovlan),front));replies+=1
                 if nonce not in frame:continue
                 if port==returned_port and frame in inputs:ingress.add(inputs.index(frame))
                 elif port==returned_port and frame in expected:seen.add(expected.index(frame))

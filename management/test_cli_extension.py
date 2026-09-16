@@ -5,6 +5,17 @@ from unittest.mock import Mock
 from cli_extension import handle
 
 class CLITests(unittest.TestCase):
+    def test_wan_probe_uses_observed_revision_and_dp_identity(self):
+        api=Mock(side_effect=[{'ok':True,'result':{'revision':8,'dp':{'boot_id':'current'}}},
+                              {'ok':True,'result':{'qualified':False}}])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(handle('request platform wan-path probe',api,'session'))
+        call=api.call_args
+        self.assertEqual(call.args,('/api/system/planes',))
+        self.assertEqual(call.kwargs['token'],'session')
+        self.assertEqual(call.kwargs['body']['resource'],'wan-path')
+        self.assertEqual(call.kwargs['body']['payload'],{'revision':8,'operation':'probe','expected_boot_id':'current'})
+        with self.assertRaises(ValueError):handle('request platform wan-path shell',api,'session')
     def test_copper_recovery_and_renegotiation_use_authenticated_mp_route(self):
         for action,field in [('recover-pairs','restore_pair_map'),('renegotiate','restart_autoneg')]:
             api=Mock(side_effect=[{'revision':42},{'activation':'verified'}])

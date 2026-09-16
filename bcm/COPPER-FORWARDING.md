@@ -120,7 +120,7 @@ own nonce. An explicit copper profile is required; there is no guessed copper
 mapping. Software regression tests cover mapping rejection, qualification
 preservation, tagged frame construction and source-port decoding.
 
-## State left behind and next integration requirements
+## State after the initial raw test
 
 Both temporary copper ingress return settings were **disabled and read back**
 after testing. The added BCM15 queue remains allocated but its test return is
@@ -135,6 +135,11 @@ Readiness must invalidate when that hardware state disappears; a saved PHY
 mapping or a successful probe from a previous switch lifetime is insufficient.
 Only then should the DP VIF/configuration owner activate a port and validate
 ARP, DHCP, VLANs, L2/L3 forwarding and policy on the actual wire.
+
+The subsequent runtime controller and bridge/routing integration are described
+in `management/COPPER-NETWORKING.md`. Its current-lifetime commissioning and
+hardware readiness checks supersede the initial raw-test-only state above;
+cold-boot allocation and WAN DHCP remain separate qualification work.
 
 FE100 uses separate BCM3/BCM20 links and its own control protocol. Sysroot
 `fe100.py` distinguishes SYSPORT packets from session-bind, flow-add/update,

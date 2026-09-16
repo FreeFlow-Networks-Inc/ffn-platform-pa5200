@@ -2,10 +2,12 @@
 """Fixed MP daemon adapters. Only the daemon executes these hardware helpers."""
 import asyncio
 import json
+import re
 import sys
 from hardware_backend import Controller, COMMANDS
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
+        'fe100-policy':{'revision','digest'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
         'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
 
@@ -39,6 +41,9 @@ async def execute(resource, action, payload, backend=None):
             observed=await backend.run(resource,'status')
             revision=observed.get('config',observed).get('revision')
             if revision!=payload['revision']: raise ValueError('revision conflict; refresh state')
+            if resource=='fe100-policy':
+                if set(payload)!=FIELDS[resource] or not isinstance(payload['digest'],str) or not re.fullmatch('[0-9a-f]{64}',payload['digest']):
+                    raise ValueError('exact candidate digest required')
             if resource=='phy':
                 if set(payload)!=FIELDS['phy'] or type(payload['phy']) is not int or payload['phy'] not in range(16,20) or payload['speed'] not in ('auto','100','1000','10000'):
                     raise ValueError('Invalid PHY configuration')
@@ -67,7 +72,9 @@ async def execute(resource, action, payload, backend=None):
             if resource=='inspection':
                 from ffn_inspection import validate
                 validate(payload)
-        if action=='validate': return {'validated':True}
+        if action=='validate':
+            if resource=='network':return await backend.run('network','validate',payload)
+            return {'validated':True}
         actual='patch' if resource=='network' else payload['operation'] if resource=='thermal' else 'set'
         return await backend.run(resource,actual,None if resource=='thermal' else payload)
     if action not in ('status','lookup') or (resource,action) not in COMMANDS:

@@ -15,7 +15,7 @@ import ffn_network as network
 import ffn_vif_runtime as runtime
 import ffn_dp_packet_transport as transport
 import ffn_inspection as inspection
-from ffn_copper_vif import CopperVif
+from ffn_copper_vif import LEASE_SECONDS, CopperVif
 from test_copper_vif import profile, observation
 
 
@@ -45,7 +45,7 @@ def main():
             def child():
                 fd=os.open('/run/netns/'+network.NS,os.O_RDONLY)
                 os.setns(fd,0);os.close(fd)
-                runtime.serve(owner,'cuvwire',18)
+                runtime.serve(owner,'cuvwire',LEASE_SECONDS+6)
             worker=multiprocessing.get_context('fork').Process(target=child);worker.start()
             deadline=time.monotonic()+5
             while not Path(runtime.SOCKET).exists():
@@ -64,7 +64,7 @@ def main():
             observed=runtime.rpc('links',{'token':down['link_token'],'ports':[observation()]})
             assert observed['forwarding'] and carrier()
             # No frontend polling can keep the physical lease alive by itself.
-            deadline=time.monotonic()+13
+            deadline=time.monotonic()+LEASE_SECONDS+1
             while time.monotonic()<deadline:time.sleep(.25)
             stale=runtime.rpc('status',{})
             assert not stale['forwarding'] and not carrier()

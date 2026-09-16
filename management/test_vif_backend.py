@@ -3,6 +3,37 @@ from vif_backend import execute
 
 
 class Backend(unittest.TestCase):
+    def test_recovery_stops_dp_before_clearing_pending_cp_state(self):
+        calls=[]
+        def remote(op,data):calls.append(op);return {'config':{'revision':4,'vifs':{}}}
+        def forward(op):
+            calls.append('copper_'+op)
+            return {'epoch':'current','state':{'epoch':'current','pending':'start'}}
+        execute('apply',{'operation':'recover','revision':4},remote,
+                lambda data:calls.append('drain'),forward=forward)
+        self.assertEqual(calls,['status','drain','recover','copper_status','copper_recover'])
+
+    def test_dp_failure_does_not_disable_under_a_running_owner(self):
+        calls=[]
+        def remote(op,data):
+            calls.append(op)
+            if op=='stop':raise RuntimeError('DP stop failed')
+            return {'config':{'revision':4,'vifs':{}}}
+        with self.assertRaises(RuntimeError):
+            execute('apply',{'operation':'stop','revision':4},remote,
+                    lambda data:None,forward=lambda op:calls.append('copper_'+op))
+        self.assertEqual(calls,['status','stop'])
+
+    def test_copper_start_is_after_policy_drain_before_dp_start(self):
+        calls=[]
+        def remote(op,data):
+            calls.append(op)
+            return {'config':{'revision':4,'vifs':{'fv3':{'port':3,'enabled':True}}}}
+        def forward(op):calls.append('copper_'+op)
+        execute('apply',{'operation':'start','revision':4},remote,
+                lambda data:calls.append('drain'),forward=forward)
+        self.assertEqual(calls,['status','drain','copper_start','start'])
+
     def test_physical_observation_uses_dp_challenge(self):
         calls=[]
         def remote(op,data):
