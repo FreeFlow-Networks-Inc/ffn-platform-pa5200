@@ -14,6 +14,14 @@ def handle(line, api, token):
     elif parts[:3]==['request','platform','bcm'] and len(parts)==5 and parts[3] in ('start','stop','restart') and parts[4]=='acknowledge-link-outage':
         observed=api('/api/system/runtime/bcm',token=token)
         result=api('/api/system/runtime/bcm/set',method='POST',token=token,body={'revision':observed['revision'],'operation':parts[3],'acknowledge_link_outage':True})
+    elif parts[:3]==['request','platform','interface'] and len(parts)==5 and parts[4] in ('renegotiate','recover-pairs'):
+        import re
+        match=re.fullmatch(r'ethernet1/([1-4])',parts[3])
+        if not match:raise ValueError('Mapped copper ethernet1/1..4 interface required')
+        observed=api('/api/system/runtime/faceplate',token=token)
+        field='restart_autoneg' if parts[4]=='renegotiate' else 'restore_pair_map'
+        result=api('/api/system/runtime/faceplate/set',method='POST',token=token,
+                   body={'revision':observed['revision'],'port':int(match[1]),field:True})
     elif parts[:3]==['request','platform','interface'] and len(parts)==6 and parts[4]=='link-speed':
         import re
         match=re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',parts[3])

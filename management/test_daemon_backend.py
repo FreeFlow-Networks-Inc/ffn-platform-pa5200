@@ -3,6 +3,19 @@ from unittest.mock import AsyncMock
 from daemon_backend import execute
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pair_recovery_requires_down_port_capability_and_standalone_request(self):
+        backend=AsyncMock();row={'port':4,'media':'copper','enabled':True,'pair_map_recovery':True}
+        backend.run.return_value={'revision':8,'ports':[row]}
+        payload={'revision':8,'port':4,'restore_pair_map':True}
+        self.assertEqual(await execute('faceplate','validate',payload,backend),{'validated':True})
+        backend.run.assert_awaited_once_with('faceplate','status')
+        for changes in ({'enabled':False},{'pair_map_recovery':False},{'phy_pending':True}):
+            backend.run.return_value={'revision':8,'ports':[row|changes]}
+            with self.assertRaises(ValueError):await execute('faceplate','apply',payload,backend)
+        backend.run.return_value={'revision':8,'ports':[row]}
+        for changes in ({'restore_pair_map':1},{'speed':'auto'},{'restart_autoneg':True}):
+            with self.assertRaises(ValueError):await execute('faceplate','apply',payload|changes,backend)
+
     async def test_renegotiation_is_copper_only_and_validation_is_read_only(self):
         backend=AsyncMock();row={'port':3,'enabled':True,'media':'copper','renegotiate_configuration':True}
         backend.run.return_value={'revision':8,'ports':[row]}

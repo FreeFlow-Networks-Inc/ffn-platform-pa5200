@@ -1,4 +1,4 @@
-import unittest,tempfile
+import unittest,tempfile,json
 from pathlib import Path
 from unittest.mock import patch
 import ffn_phy_control as phy
@@ -11,6 +11,49 @@ class Bus:
         if value is not None:self.values[p,d,r]=value;self.writes.append((p,d,r,value))
         return self.values.get((p,d,r),0)
 class PhyTests(unittest.TestCase):
+    def test_pair_recovery_follows_sysroot_sequence_only_on_selected_down_port(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);gate=root/'gate';gate.write_text('N');mapping=root/'map'
+            mapping.write_text(json.dumps({'4':{'phy':18,'bcm_port':15}}))
+            with patch.object(phy,'STATE',root/'state'),patch.object(phy,'GATE',gate),patch.object(phy,'MAPPING',mapping):
+                bus=Bus();bus.values[18,30,0x400d]=0x4400;bus.values[18,30,0x4009]=0x1b
+                result=phy.apply(bus,{'revision':phy.inventory(bus)['revision'],'phy':18,'restore_pair_map':True})
+                self.assertEqual(bus.writes,[(18,30,0x4005,2),(18,30,0x4009,0xe4),(18,30,0x4005,0x52),
+                                            (18,7,0xffe0,0x1340),(18,7,0,0x1200)])
+                self.assertEqual(result['data']['phys'][2]['pair_map_register'],0xe4)
+                self.assertFalse(result['forwarding_verified']);self.assertEqual(gate.read_text(),'N')
+                self.assertNotIn('pending',result['data']['saved'])
+                self.assertEqual(result['data']['saved']['pair_maps'],{'18':0xe4})
+                bus.writes.clear();bus.values[18,30,0x400d]=0x443a
+                phy.restore_pair_maps(bus)
+                self.assertFalse(bus.writes,'warm restart must not touch a working link')
+                bus.values[18,30,0x400d]=0x4400;bus.values[18,30,0x4009]=0x1b
+                phy.restore_pair_maps(bus)
+                self.assertEqual(bus.values[18,30,0x4009],0xe4)
+
+    def test_pair_recovery_rejects_live_link_unmapped_or_other_firmware(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);mapping=root/'map';mapping.write_text(json.dumps({'4':{'phy':18,'bcm_port':15}}))
+            with patch.object(phy,'STATE',root/'state'),patch.object(phy,'MAPPING',mapping):
+                for address,link,fw in [(18,0x443a,0x1089),(19,0x4400,0x1089),(18,0x4400,0x1090)]:
+                    bus=Bus();bus.values[address,30,0x400d]=link;bus.values[address,30,0x400f]=fw
+                    with self.assertRaises(ValueError):phy.apply(bus,{'revision':phy.inventory(bus)['revision'],'phy':address,'restore_pair_map':True})
+                    self.assertFalse(bus.writes)
+
+    def test_pair_recovery_failure_retains_previous_mapping_and_protection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);gate=root/'gate';gate.write_text('N');mapping=root/'map'
+            mapping.write_text(json.dumps({'4':{'phy':18,'bcm_port':15}}))
+            with patch.object(phy,'STATE',root/'state'),patch.object(phy,'GATE',gate),patch.object(phy,'MAPPING',mapping):
+                bus=Bus();bus.values[18,30,0x400d]=0x4400;bus.values[18,30,0x4009]=0x1b;original=bus.transfer
+                def transfer(p,d,r,value=None):
+                    if value==0x52:raise OSError('command write failed')
+                    return original(p,d,r,value)
+                bus.transfer=transfer
+                with self.assertRaises(OSError):phy.apply(bus,{'revision':phy.inventory(bus)['revision'],'phy':18,'restore_pair_map':True})
+                self.assertEqual(phy.inventory(bus)['saved']['pending']['pair_map_before'],0x1b)
+                self.assertEqual(gate.read_text(),'N')
+
     def test_renegotiation_uses_both_vendor_controls_in_order_for_each_phy(self):
         with tempfile.TemporaryDirectory() as temp:
             gate=Path(temp)/'gate';gate.write_text('N')

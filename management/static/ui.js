@@ -349,6 +349,16 @@
             if(root.isConnected)await faceplate(parent);
           }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
         },!writable||!port.renegotiate_configuration||!port.enabled||port.phy_pending);
+        if(port.pair_map_recovery)button(action,'Recover copper wiring',async()=>{
+          if(!confirm('Apply the PA-5220 cable-pair mapping to '+port.name+' and restart negotiation?'))return;
+          root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
+          message.textContent='Recovering '+port.name+' copper wiring...';
+          try {
+            const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,restore_pair_map:true})});
+            if(result.activation!=='verified')throw new Error('Pair mapping command was not verified');
+            if(root.isConnected)await faceplate(parent);
+          }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
+        },!writable||!port.enabled||port.phy_pending);
       }
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});

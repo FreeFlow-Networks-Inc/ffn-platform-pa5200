@@ -22,12 +22,12 @@ def call(action,payload):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('status','renegotiate'))
+    parser.add_argument('action',choices=('status','renegotiate','recover-pairs'))
     parser.add_argument('--port',type=int,choices=range(1,5),required=True)
     args=parser.parse_args()
     state=call('status',{})
-    if args.action=='renegotiate':
-        result=call('apply',{'revision':state['revision'],'port':args.port,'restart_autoneg':True})
+    if args.action!='status':
+        result=call('apply',{'revision':state['revision'],'port':args.port,('restart_autoneg' if args.action=='renegotiate' else 'restore_pair_map'):True})
         print(json.dumps(result,indent=2))
     else:
         print(json.dumps(next(p for p in state['ports'] if p['port']==args.port),indent=2))

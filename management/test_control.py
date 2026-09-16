@@ -59,6 +59,14 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/pa5200/faceplate/set',json=data).status_code,403)
         self.controller.run.assert_not_called()
 
+    def test_pair_recovery_uses_admin_faceplate_route(self):
+        data={'revision':7,'port':4,'restore_pair_map':True}
+        self.assertEqual(self.client.post('/api/pa5200/faceplate/set',json=data).status_code,200)
+        self.controller.run.assert_awaited_once_with('faceplate','set',data)
+        self.controller.run.reset_mock();self.role='read-only'
+        self.assertEqual(self.client.post('/api/pa5200/faceplate/set',json=data).status_code,403)
+        self.controller.run.assert_not_called()
+
     def test_unknown_action_no_dispatch(self):
         self.assertEqual(self.client.post('/api/pa5200/thermal/reboot', json={}).status_code,404)
         self.controller.run.assert_not_called()

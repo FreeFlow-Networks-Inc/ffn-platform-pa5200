@@ -5,6 +5,15 @@ from unittest.mock import Mock
 from cli_extension import handle
 
 class CLITests(unittest.TestCase):
+    def test_copper_recovery_and_renegotiation_use_authenticated_mp_route(self):
+        for action,field in [('recover-pairs','restore_pair_map'),('renegotiate','restart_autoneg')]:
+            api=Mock(side_effect=[{'revision':42},{'activation':'verified'}])
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(handle('request platform interface ethernet1/4 '+action,api,'session'))
+            api.assert_called_with('/api/system/runtime/faceplate/set',method='POST',token='session',body={'revision':42,'port':4,field:True})
+            api.reset_mock()
+            with self.assertRaises(ValueError):handle('request platform interface ethernet1/5 '+action,api,'session')
+            api.assert_not_called()
     def test_interface_speed_uses_mp_api_and_current_revision(self):
         api=Mock(side_effect=[{'revision':42},{'activation':'verified'}])
         with contextlib.redirect_stdout(io.StringIO()):

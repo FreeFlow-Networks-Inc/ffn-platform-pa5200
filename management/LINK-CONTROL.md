@@ -237,7 +237,53 @@ has been commissioned. It backs up and corrects the DP profile before updating
 the CP mapping. The CP writes no PHY registers. The MP journal preserves an
 uncertain outcome rather than retrying a partial cross-plane change blindly.
 
-Live validation on 2026-09-16: MP-authenticated renegotiation on ports 3 and 4
+Initial validation on 2026-09-16, before cable-pair recovery: MP-authenticated renegotiation on ports 3 and 4
 returned verified control readback. Three subsequent samples showed no copper
 link or completed partner exchange on either port; the WAN remained linked at
 1 Gbps. Neither the control sequence nor these observations certify forwarding.
+
+## Cable-pair recovery and the RJ45 loop
+
+The sysroot `bcm_copper_phy_initialize` routine at
+`0x126102ac..0x12610330` programs device 30 register `0x4005` to `2`,
+waits 35 ms, writes `0xe4` to `0x4009`, writes `0x52` to `0x4005` and
+waits another 35 ms. This is the board's mapping of the four differential
+cable pairs inside each copper PHY; the panel-to-PHY/MAC map is unchanged.
+The source family also documents the MDI pair-map initialization in
+[phy8481.c](https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c).
+
+Live port 4 initially reported command-data value `0x1b`; ports 1 and 3
+reported `0xe4`. Applying the sysroot sequence to port 4, followed by
+negotiation, established **10 Gbps PHY and MAC links on the physical 3-to-4
+RJ45 cable**. Both MACs report XFI, full duplex and synchronized rates.
+Port 1 WAN stayed linked at 1 Gbps. Packet forwarding remains unqualified.
+
+The existing MP resource accepts a standalone
+`{"revision":123,"port":4,"restore_pair_map":true}` request. The CP requires
+verified identity, firmware `0x1089`, a commissioned mapping, an enabled but
+down PHY, valid negotiation observations and no pending transaction. It checks
+link again immediately before the command. There is no caller-selected pair
+value or raw register access. A failure retains the prior command-data value
+in the journal and restores the kernel write gate; generic resolve cannot
+silently accept an uncertain pair-recovery operation.
+
+WebUI **Recover copper wiring** is available on eligible down copper ports.
+Authenticated FFN-CLI commands use the same MP-owned route:
+
+```text
+request platform interface ethernet1/4 recover-pairs
+request platform interface ethernet1/4 renegotiate
+show platform faceplate
+```
+
+Successful recovery stores `pair_maps` in `/etc/ffn/phy.json`. The existing
+copper service's `ExecStartPost` restores those settings before saved speed and
+admin intent. A matching setting is left alone on a warm service restart;
+a changed setting on a linked port is rejected. Simulated cold restoration
+and live warm restoration were tested; the latter made zero PHY writes.
+No reboot or BCM restart was needed for deployment.
+
+The same authenticated FFN-CLI recovery was then applied to unused port 2.
+Its command data now matches the board setting and its restore intent is saved;
+with no attached peer it remains down. Ports 3/4 stayed at 10 Gbps and WAN port 1
+stayed at 1 Gbps throughout this operation.
