@@ -297,6 +297,7 @@
     catch(e) { message.textContent=e.message;return; }
     if (!root.isConnected) return;
     const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
+    if(writable && window.ffnCopperIdentify)await window.ffnCopperIdentify.render(root,()=>faceplate(parent));
     message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
       'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Copper Auto advertises all supported speeds; optical Auto retains its advertisement. Copper link reflects the external PHY; switch link and forwarding are reported separately.';
     const table=element('table',undefined,root);table.className='data-table';

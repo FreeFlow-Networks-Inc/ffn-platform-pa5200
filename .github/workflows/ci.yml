@@ -138,12 +138,13 @@ jobs:
       - name: MP VIF observation and configuration ordering
         run: cd management && python3 -m unittest test_vif_backend
       - name: all four copper PHY and MAC control paths
-        run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link
+        run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify
       - name: management UI controls
         run: |
           node management/test_ui.cjs
           node management/test_ui_forwarding.cjs
           node management/test_vif_ui.cjs
+          node management/test_copper_identify_ui.cjs
       - name: overlay
         run: cd octeon/debian && python3 test_overlay.py
 

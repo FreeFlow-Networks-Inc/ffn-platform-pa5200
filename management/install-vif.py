@@ -57,7 +57,11 @@ if "'pa5200_vif_api'" not in control:
     compile(control,str(extension/'control.py'),'exec')
     write(extension/'control.py',control.encode())
 ui=(extension/'static/ui.js').read_text();marker='/* FFN PA5200 VIF UI v1:'
-ui=ui.split(marker)[0].rstrip()+'\n'+(source/'vif-ui.js').read_text()
+vif_ui=(source/'vif-ui.js').read_text().rstrip()
+if marker in ui:
+    start=ui.index(marker);end=ui.index('\n})();',start)+len('\n})();')
+    ui=ui[:start]+vif_ui+ui[end:]
+else:ui=ui.rstrip()+'\n'+vif_ui+'\n'
 write(extension/'static/ui.js',ui.encode())
 manifest['pages']=[p for p in manifest['pages'] if p['id']!='vifs']+[{'id':'vifs','label':'Virtual Interfaces','tab':'network','after':'interfaces'}]
 write(extension/'extension.json',(json.dumps(manifest,indent=2)+'\n').encode())

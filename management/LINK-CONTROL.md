@@ -143,3 +143,38 @@ uncertain state.
 Reference: Broadcom's `phy_8481_link_up` in
 https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c
 selects SGMII and follows the negotiated rate for 100M/1G copper links.
+
+## Identify all four copper panel ports
+
+The MP resource `copper-identify` records physical panel associations through
+the CP controller `ffn_copper_identify.py`. Install it with
+`management/install-copper-identify.py`; the script stages its listed files,
+preserves other MP commands and UI sections, and reloads the MP daemon and
+manager API when its router changes.
+It neither restarts BCM/PHY services nor changes a physical mapping on install.
+
+Administrators use **Network → Faceplate Ports → Identify copper ports**:
+
+1. Select an unmapped port with no cable attached and start identification.
+2. Connect one spare active Ethernet peer to that exact port. Leave existing
+   links, especially WAN port2, in place.
+3. Refresh and confirm the detected PHY. Repeat for each remaining port.
+
+The root CLI `/usr/local/sbin/ffn-copper-identify` uses the same MP resource:
+`begin --port 1` starts a probe, `status` shows its token and candidate, and
+`confirm --token TOKEN` records it. `cancel --token TOKEN` abandons the probe.
+The generic MP request has resource `copper-identify`, action `apply`, and
+payload `{operation, revision, port}` for begin or `{operation, revision,
+token}` for confirm/cancel. All mutations are journaled by the MP daemon.
+
+Identification requires a single stable down-to-up PHY transition. Multiple
+link changes, no new link, changes to hardware configuration, stale tokens,
+reboot, and overwrite of an existing panel mapping are rejected. Probes expire
+after 15 minutes. The PHY-to-MAC board wiring is read from the documented vendor
+association (PHY16→BCM13, PHY17→BCM28, PHY18→BCM15, PHY19→BCM14); this table
+does not establish panel numbering. The corresponding MAC must also be present.
+The previous mapping is backed up before an atomic update under the same locks
+used by the PHY and faceplate controllers. No PHY registers are written by
+identification. Once mapped, the existing faceplate enable/disable and speed
+controls operate the matching PHY and MAC, and the copper link service follows
+its negotiated speed. This does not mark a VIF packet path as commissioned.

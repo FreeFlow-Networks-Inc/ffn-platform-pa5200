@@ -14,6 +14,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('copper-identify','status'): ('/usr/local/sbin/ffn-copper-identify','status'),
+    ('copper-identify','set'): ('/usr/local/sbin/ffn-copper-identify','apply'),
     ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
     ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
     ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),
@@ -191,10 +193,10 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
     async def change(resource: str, action: str, request: Request, user=Depends(current_user)):
         require_admin(user)
         if (resource, action) not in {('network', 'patch'), ('overlay', 'set'), ('lacp','set'), ('lacp','activate'), ('lacp','deactivate'),
-                ('inspection', 'set'), ('faceplate', 'set'), ('bcm','set'), ('phy','set'), ('thermal', 'auto'), ('thermal', 'full')}:
+                ('inspection', 'set'), ('faceplate', 'set'), ('bcm','set'), ('phy','set'), ('copper-identify','set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'copper-identify': {'revision','operation','port','token'}, 'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
                    'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set(), 'lacp': {'revision','groups'} if action=='set' else {'revision','group'}}[resource]
         if set(data) - allowed:

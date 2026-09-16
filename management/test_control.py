@@ -37,8 +37,17 @@ class APITests(unittest.TestCase):
 
     def test_readonly_cannot_write(self):
         self.role = 'read-only'
-        for path in ('network/patch','overlay/set','inspection/set','thermal/full','lacp/set','lacp/activate','lacp/deactivate'):
+        for path in ('network/patch','overlay/set','inspection/set','thermal/full','lacp/set','lacp/activate','lacp/deactivate','copper-identify/set'):
             self.assertEqual(self.client.post('/api/pa5200/'+path, json={'revision':7}).status_code,403)
+        self.controller.run.assert_not_called()
+
+    def test_copper_identification_uses_the_same_controller_and_audit_path(self):
+        data={'revision':7,'operation':'begin','port':1}
+        self.assertEqual(self.client.post('/api/pa5200/copper-identify/set',json=data).status_code,200)
+        self.controller.run.assert_awaited_once_with('copper-identify','set',data)
+        self.assertEqual(self.audit.call_args.args[1],'pa5200_completed')
+        self.controller.run.reset_mock()
+        self.assertEqual(self.client.post('/api/pa5200/copper-identify/set',json=data|{'register':1}).status_code,422)
         self.controller.run.assert_not_called()
 
     def test_unknown_action_no_dispatch(self):
