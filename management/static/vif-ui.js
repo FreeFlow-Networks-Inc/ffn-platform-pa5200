@@ -71,6 +71,43 @@
         return change('set',{vifs:{...state.config.vifs,[name.value]:{port:Number(port.value),vlan:vlan.value.trim()?Number(vlan.value):null,enabled:enabled.value==='true',network}}});
       }catch(e){notice.textContent=e.message;}
     },!writable||state.recovery_required);
+    if(writable){
+      const wan=el('details',undefined,root);el('summary','WAN1 packet-path test',wan);
+      el('p','Sends up to three DHCP Discover packets on copper port 1 while transport is stopped. Does not acquire a lease. The test redirect is removed afterward.',wan);
+      const message=el('p','Read WAN status to check test availability.',wan);
+      let observed;
+      async function request(action,payload){
+        const id=crypto.randomUUID();
+        try{
+          const response=await api('/api/system/planes',{method:'POST',body:JSON.stringify({v:1,id,resource:'wan-path',action,payload})});
+          if(!response.ok)throw new Error(response.error||'Operation failed');
+          return response.result;
+        }catch(e){throw new Error(e.message+' · Request '+id);}
+      }
+      const read=el('button','Read WAN status',wan),probe=el('button','Test DHCP packet path',wan),recover=el('button','Recover WAN test',wan);
+      for(const b of [read,probe,recover]){b.className='btn btn-sm';controls.push(b);}
+      probe.disabled=true;recover.disabled=true;
+      async function operate(operation){
+        if(busy)return;busy=true;const disabled=controls.map(b=>b.disabled);controls.forEach(b=>b.disabled=true);
+        message.textContent=operation==='recover'?'Recovering WAN test…':operation?'Testing WAN path…':'Reading WAN status…';
+        try{
+          observed=operation?await request('apply',{operation,revision:observed.revision,expected_boot_id:observed.dp.boot_id}):await request('status',{});
+          if(operation)observed=await request('status',{});
+          const report=(observed.qualification||{}).report;
+          message.textContent=(observed.qualified?'DHCP Offer verified':report&&report.dhcp_offer_verified?'Historical DHCP Offer; retest required':report?'No valid DHCP Offer received':'WAN path not tested')+
+            ' · Redirect '+(observed.hardware.enabled?'enabled':'disabled')+' · Internet forwarding not qualified'+
+            (report?' · Discover sent: '+report.discover_sent+' · WAN frames received: '+((report.counters||{}).wan_rx||0):'');
+        }catch(e){observed=null;message.textContent=e.message+' Read status before retrying.';}
+        finally{
+          busy=false;
+          controls.forEach((b,i)=>b.disabled=disabled[i]);
+          refresh.disabled=false;read.disabled=false;
+          probe.disabled=!observed||!observed.dp.fabric_available||observed.state.enabled||!!observed.state.pending;
+          recover.disabled=!observed||!observed.dp.fabric_available||!observed.state.pending;
+        }
+      }
+      read.onclick=()=>operate();probe.onclick=()=>operate('probe');recover.onclick=()=>operate('recover');
+    }
     const details=el('details',undefined,root);el('summary','Runtime counters and configuration',details);
     const pre=el('pre',JSON.stringify(state,null,2),details);pre.style.whiteSpace='pre-wrap';
   }

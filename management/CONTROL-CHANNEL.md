@@ -24,7 +24,7 @@ Stale observations are labelled historical and their old counters are hidden.
 FFN-CLI offers `show platform control`, `agents`, `fe100`, and `control-events`.
 These CLI views use the authenticated API, with the same administrator check.
 
-The journal worker adds two resources:
+The journal worker adds these resources:
 
 - `fe100-policy`: status, validate and apply. Apply requires the current revision
   and exact candidate SHA256 digest, and invokes the existing session-drain
@@ -33,6 +33,8 @@ The journal worker adds two resources:
   an allowlisted operation, and the current DP boot UUID. The worker executes
   the complete hardware harness operation, including prerequisite checks and
   live readback, within the durable request journal.
+- `wan-path`: a bounded WAN1 DHCP Discover/Offer test and recovery, with CP-owned
+  cleanup and no lease acquisition. See [WAN qualification](WAN-QUALIFICATION.md).
 
 The WebUI pre-commit policy barrier delegates its drain to controld. Internal
 VIF execution still calls the policy owner from inside the worker, avoiding

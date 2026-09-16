@@ -48,6 +48,8 @@ def main():
                                      for a in ('status','validate','apply')}
     worker['commands']['fe100-policy']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'fe100-policy',a]
                                        for a in ('status','validate','apply')}
+    worker['commands']['wan-path']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'wan_backend.py'),a]
+                                   for a in ('status','validate','apply')}
     backup=Path('/var/backups/ffn/control-channel-'+str(time.time_ns()))
     def write(path,data,mode=0o644):
         path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
