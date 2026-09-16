@@ -53,7 +53,7 @@ def copper_apply(port,request):
             if not row or row['phy']!=port['phy_address'] or row.get('bcm_port')!=port['bcm_port'] or current['revision']!=port['phy_revision']:
                 raise ValueError('Copper state or mapping changed; refresh ports')
             payload={'revision':current['revision'],'phy':row['phy']}
-            payload.update({k:request[k] for k in ('speed','enabled') if k in request})
+            payload.update({k:request[k] for k in ('speed','enabled','restart_autoneg') if k in request})
             return phy.apply(bus,payload)
         finally:bus.close()
 
@@ -91,6 +91,7 @@ def observe():
                  link=phy.get('link'),speed_mbps=phy.get('speed_mbps'),configured_speed=phy.get('configured_speed'),
                  supported_speeds=phy.get('supported_speeds',[]),admin_configuration=ready,speed_configuration=ready,
                  phy_pending=bool(copper['saved'].get('pending')),
+                 negotiation=phy.get('negotiation'),renegotiate_configuration=ready and phy.get('enabled',False) and bool(phy.get('negotiation',{}).get('valid')),
                  datapath_link=bool(p['mac_link'] and phy.get('link')))
         if ready:p.pop('speed_error',None)
     revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled')) for p in ports]).encode()).hexdigest()[:12],16)
@@ -102,7 +103,7 @@ def observe():
 
 
 def apply(request):
-    if (not isinstance(request,dict) or set(request)-{'revision','port','enabled','speed'} or not {'revision','port'}<=set(request) or not {'enabled','speed'}&set(request) or
+    if (not isinstance(request,dict) or set(request)-{'revision','port','enabled','speed','restart_autoneg'} or not {'revision','port'}<=set(request) or not {'enabled','speed','restart_autoneg'}&set(request) or
             type(request['revision']) is not int or type(request['port']) is not int or
             not 1<=request['port']<=24 or ('enabled' in request and type(request['enabled']) is not bool)):
         raise ValueError('expected revision, faceplate port 1..24 and boolean enabled')
@@ -112,6 +113,9 @@ def apply(request):
     if not port['available']: raise ValueError('port unavailable')
     if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
         raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
+    if 'restart_autoneg' in request and (request['restart_autoneg'] is not True or set(request)!={'revision','port','restart_autoneg'}
+            or not port.get('renegotiate_configuration') or not port.get('enabled')):
+        raise ValueError('Renegotiation requires an enabled, ready copper port and a standalone request')
     if 'speed' in request and (not port.get('speed_configuration') or request['speed'] not in ['auto']+[str(v) for v in port['supported_speeds']]):
         raise ValueError('Requested speed unavailable for this port')
     saved=before['saved']

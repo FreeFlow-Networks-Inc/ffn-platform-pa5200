@@ -196,7 +196,7 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
                 ('inspection', 'set'), ('faceplate', 'set'), ('bcm','set'), ('phy','set'), ('copper-identify','set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'copper-identify': {'revision','operation','port','token'}, 'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'copper-identify': {'revision','operation','port','token'}, 'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed','restart_autoneg'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
                    'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set(), 'lacp': {'revision','groups'} if action=='set' else {'revision','group'}}[resource]
         if set(data) - allowed:

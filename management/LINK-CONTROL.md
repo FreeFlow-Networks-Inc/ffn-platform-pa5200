@@ -35,9 +35,8 @@ Copper PHY support uses the CP's locked SMI bus 0 and verifies identity
 preserved; half-duplex advertisement is removed. The kernel write gate is restored
 on success and failure. No firmware image or flash write is introduced.
 `phy/set` accepts revision, phy (16..19), speed (auto/100/1000/10000). The UI
-shows PHY addresses separately from faceplate port numbers. Port 2 to PHY 17
-was confirmed by the appliance operator on 2026-09-11; the other three copper
-port mappings are not yet verified. PHY settings alone do not prove WAN forwarding. Copper control requires a
+shows PHY addresses separately from faceplate port numbers. The corrected mapping is
+port 1/PHY17, port 2/PHY16, port 3/PHY19 and port 4/PHY18. PHY settings alone do not prove WAN forwarding. Copper control requires a
 commissioned PHY-to-MAC association; the rate follower handles MAC synchronization.
 
 Install the CP PHY helper beside ffn_mdio.py and the copper service drop-in to
@@ -48,6 +47,47 @@ existing resolve command and boot restore unit.
 
 SDK reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/include/bcm/port.h
 PHY register reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.h
+
+## Sysroot negotiation integration
+
+The owner's sysroot `usr/local/lib64/libpanbcm_cp.so.1.0` was inspected
+read-only. `_phy_8481_copper_an_set` at `0x12736410` enables/restarts both
+the legacy MII control (`7.0xffe0`) and 10G AN control (`7.0x0000`), in that
+order, using mask `0x1200`. The same sequence is documented in Broadcom's
+[PHY8481 driver](https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c).
+Our former speed controller only restarted the second register. The CP driver
+now follows both steps, preserving unrelated bits and checking the enable bit
+after each write. The restart bit may self-clear and is excluded from revisions.
+No vendor binary is distributed or executed by this integration.
+
+The MP-owned `faceplate` resource accepts a standalone request:
+
+```json
+{"revision":123,"port":3,"restart_autoneg":true}
+```
+
+Use the current faceplate revision. The operation requires a mapped, enabled
+copper port, running firmware, valid register observations and no pending
+configuration. It changes only the selected PHY's negotiation controls, retains
+its advertisement, and never resets the chip, reloads firmware or starts packet
+forwarding. A partial failure leaves the existing PHY/faceplate journals pending.
+Restart actions are not persisted as boot intent.
+
+Network > Faceplate Ports exposes **Renegotiate** and negotiation status.
+The API returns separate legacy MII and 10G AN control/status observations. The privileged MP CLI uses the same daemon:
+
+```sh
+ffn-copper-port status --port 3
+ffn-copper-port renegotiate --port 3
+ffn-copper-port renegotiate --port 4
+```
+
+Install `copper-port-cli.py` as `/usr/local/sbin/ffn-copper-port`. Update the
+CP PHY and faceplate helpers, MP `daemon_backend.py`, `control.py` and the
+Faceplate Ports UI together; preserve other installed UI extensions. Only the
+API process needs reloading; BCM, the PHY firmware and the firewall need no
+restart. The test cable connects physical ports **3 and 4**; port **1 is WAN**.
+Control readback verifies the request, not cable continuity or packet delivery.
 
 
 ## BCM activation and restart recovery
@@ -112,8 +152,8 @@ include both PHY and MAC mapping so stale requests cannot hit a different socket
 
 All four port mappings are now installed on this appliance and covered by
 controller tests. The authenticated MP API exposes admin and speed controls for
-all four. Auto negotiation and enable were verified on ports 2 and 4; the WAN
-on port1 remained at 1G. The reported 2-to-4 cable loop still had no PHY link
+all four. Auto negotiation and enable were verified on ports 3 and 4; the WAN
+on port1 remained at 1G. The reported 3-to-4 cable loop still had no PHY link
 after negotiation; control readback does not certify an external connection.
 
 The faceplate page reports copper wire speed/link separately from switch-side
@@ -196,3 +236,8 @@ the DP VIF service is stopped, assignments are empty and no copper packet path
 has been commissioned. It backs up and corrects the DP profile before updating
 the CP mapping. The CP writes no PHY registers. The MP journal preserves an
 uncertain outcome rather than retrying a partial cross-plane change blindly.
+
+Live validation on 2026-09-16: MP-authenticated renegotiation on ports 3 and 4
+returned verified control readback. Three subsequent samples showed no copper
+link or completed partner exchange on either port; the WAN remained linked at
+1 Gbps. Neither the control sequence nor these observations certify forwarding.

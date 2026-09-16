@@ -291,7 +291,7 @@
     const header=element('div',undefined,root);header.className='page-header';
     element('h2','Faceplate Ports',header);
     const refresh=button(header,'Refresh',()=>faceplate(parent));
-    const message=element('p','Reading faceplate hardwareâ€¦',root);
+    const message=element('p','Reading faceplate hardware…',root);
     let data, user;
     try { [data,user]=await Promise.all([api(prefix+'/faceplate'),api('/api/auth/me')]); }
     catch(e) { message.textContent=e.message;return; }
@@ -335,9 +335,24 @@
         element('small','Switch rate: '+(state==='synchronized'?'matches copper PHY':state||'not observed'),speedCell);
       }
       const action=element('td',undefined,row);
+      if(port.media==='copper') {
+        const n=port.negotiation;
+        if(n)element('small',!n.valid?'Negotiation status unavailable':
+          (n.complete_1000||n.complete_10000?'Negotiation complete':'Negotiating / no completed partner exchange'),action);
+        button(action,'Renegotiate',async()=>{
+          if(!confirm('Restart copper negotiation on '+port.name+'? This interrupts this port.'))return;
+          root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
+          message.textContent='Restarting '+port.name+' negotiation...';
+          try {
+            const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,restart_autoneg:true})});
+            if(result.activation!=='verified')throw new Error('Negotiation control was not verified');
+            if(root.isConnected)await faceplate(parent);
+          }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
+        },!writable||!port.renegotiate_configuration||!port.enabled||port.phy_pending);
+      }
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});
-        refresh.disabled=true;message.textContent='Applying and verifying '+port.name+'â€¦';
+        refresh.disabled=true;message.textContent='Applying and verifying '+port.name+'…';
         try {
           const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,enabled:!port.enabled})});
           if(result.activation!=='verified') throw new Error('Hardware change was not verified');

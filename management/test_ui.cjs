@@ -27,12 +27,12 @@ async function check(writable) {
     if(path==='/api/auth/me') return {role:writable?'admin':'viewer'};
     if(path.endsWith('/bcm'))return {revision:1,operation_complete:true,service:{ActiveState:'active',SubState:'running',MainPID:'12'},chip:{state:'ready'},warning:'Interrupts links'};
     if(path.endsWith('/phy'))return {revision:1,saved:{},phys:[{phy:17,interface:'ethernet1/2',identified:true,ready:true,firmware:0x1089,link:true,speed_mbps:1000,supported_speeds:[100,1000,10000],configured_speed:'auto'}],warning:'PHY settings only'};
-    if(path.endsWith('/faceplate')&&copper) return {revision:11,saved:{},copper_sync:{ports:{'ethernet1/2':{state:'synchronized'}}},ports:[{port:2,name:'ethernet1/2',media:'copper',available:true,enabled:true,link:true,mac_link:false,speed_mbps:1000,configured_speed:'auto',supported_speeds:[100,1000,10000],speed_configuration:true,admin_configuration:true}]};
+    if(path.endsWith('/faceplate')&&copper) return {revision:11,saved:{},copper_sync:{ports:{'ethernet1/2':{state:'synchronized'}}},ports:[{port:2,name:'ethernet1/2',media:'copper',available:true,enabled:true,link:true,mac_link:false,speed_mbps:1000,configured_speed:'auto',supported_speeds:[100,1000,10000],speed_configuration:true,admin_configuration:true,renegotiate_configuration:true}]};
     if(path.endsWith('/faceplate')) return {revision:10,saved:{ports:{}},ports:[{port:1,name:'ethernet1/1',available:true,enabled:true,link:false,speed_mbps:10000}]};
     return options ? {revision:10} : snapshot;
   };
   const context={window:{ffnExtensions:{request,registerPage:(id,label,fn)=>{ assert.equal(id,'pa5200');pages[label]=fn; }}},
-    document:{createElement:tag=>new Node(tag),createTextNode:text=>{const n=new Node('text');n.textContent=text;return n;}},Date,JSON,Object,setTimeout(){}};
+    document:{createElement:tag=>new Node(tag),createTextNode:text=>{const n=new Node('text');n.textContent=text;return n;}},confirm:()=>true,Date,JSON,Object,setTimeout(){}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/ui.js','utf8'),context);
   assert.equal(calls.length,0,'loading the asset must not probe');
   const parent=new Node('main'); await pages.interfaces(parent);
@@ -72,6 +72,13 @@ async function check(writable) {
   assert.ok(parent.all().some(n=>n.textContent==='Switch rate: matches copper PHY'));
   assert.equal(parent.all().find(n=>n.textContent==='Apply speed').disabled,!writable);
   assert.ok(parent.all().some(n=>n.tag==='option'&&n.value==='100'));
+  const renegotiate=parent.all().find(n=>n.textContent==='Renegotiate');
+  assert.equal(renegotiate.disabled,!writable);
+  if(writable){
+    await renegotiate.onclick();
+    const call=calls.find(c=>c.options&&JSON.parse(c.options.body).restart_autoneg);
+    assert.deepEqual(JSON.parse(call.options.body),{revision:11,port:2,restart_autoneg:true});
+  }
   await pages.bcm(parent);
   const restart=parent.all().find(n=>n.textContent==='restart');
   assert.equal(restart.disabled,true);

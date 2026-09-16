@@ -37,7 +37,13 @@ def inventory(bus):
              'interface':next(('ethernet1/'+p for p,v in mapping.items() if v['phy']==phy),None)}
         if row['identified']:
             firmware=read(30,0x400f);reset=bool(read(1,0)&0x8000)
-            link=read(30,0x400d);an=bool(read(7,0)&0x1000)
+            link=read(30,0x400d)
+            controls=[read(7,0xffe0),read(7,0)]
+            an=all(value!=0xffff and value&0x1000 for value in controls)
+            # Both status registers latch link loss; use the second observation.
+            for reg in (0xffe1,1):read(7,reg)
+            status=[read(7,0xffe1),read(7,1)]
+            partner=[read(7,0xffe5),read(7,0xffea),read(7,0x21)]
             control=read(30,0x401a)
             ads=[read(7,0xffe4),read(7,0xffe9),read(7,0x20)]
             advertised=[speed for speed,value in [(100,ads[0]&0x100),(1000,ads[1]&0x200),(10000,ads[2]&0x1000)] if value]
@@ -46,9 +52,15 @@ def inventory(bus):
                        advertised_speeds=advertised,advertisement_registers=ads,
                        configured_speed=str(advertised[0]) if an and len(advertised)==1 else 'auto' if an else 'unmanaged',
                        supported_speeds=[100,1000,10000])
+            row['negotiation']={'enabled_1000':controls[0]!=0xffff and bool(controls[0]&0x1000),
+                'enabled_10000':controls[1]!=0xffff and bool(controls[1]&0x1000),
+                'complete_1000':status[0]!=0xffff and bool(status[0]&0x20),
+                'complete_10000':status[1]!=0xffff and bool(status[1]&0x20),
+                'partner_registers':partner,'valid':all(v!=0xffff for v in controls+status+partner)}
+            row['autoneg_controls']=[v&~0x200 for v in controls]
         ports.append(row)
     saved=json.loads(STATE.read_text()) if STATE.exists() else {'speeds':{}}
-    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','advertisement_registers','control_register','interface','bcm_port')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
+    revision=int(hashlib.sha256(json.dumps([[p.get(k) for k in ('phy','id','firmware','ready','autoneg','autoneg_controls','advertisement_registers','control_register','interface','bcm_port')] for p in ports]+[saved],sort_keys=True).encode()).hexdigest()[:12],16)
     return {'revision':revision,'phys':ports,'saved':saved,'forwarding_verified':False,
             'warning':'PHY speed selection limits auto-negotiation advertisement. MAC synchronization and physical port mapping must also be commissioned.'}
 
@@ -58,11 +70,12 @@ def persist(value):
     os.replace(temp,STATE)
 
 def apply(bus,request):
-    if (not isinstance(request,dict) or set(request)-{'revision','phy','speed','enabled'} or not {'revision','phy'}<=set(request)
-            or not {'speed','enabled'}&set(request) or type(request['revision']) is not int
+    if (not isinstance(request,dict) or set(request)-{'revision','phy','speed','enabled','restart_autoneg'} or not {'revision','phy'}<=set(request)
+            or not {'speed','enabled','restart_autoneg'}&set(request) or type(request['revision']) is not int
             or type(request['phy']) is not int or request['phy'] not in range(16,20)
             or ('speed' in request and request['speed'] not in ('auto','100','1000','10000'))
-            or ('enabled' in request and type(request['enabled']) is not bool)):
+            or ('enabled' in request and type(request['enabled']) is not bool)
+            or ('restart_autoneg' in request and (request['restart_autoneg'] is not True or set(request)!={'revision','phy','restart_autoneg'}))):
         raise ValueError('Revision, PHY 16..19 and supported speed or boolean enabled required')
     before=inventory(bus)
     if request['revision']!=before['revision']:raise ValueError('revision conflict; refresh PHY inventory')
@@ -70,6 +83,9 @@ def apply(bus,request):
     if not row.get('ready'):raise ValueError('Identified BCM84848 with running firmware required')
     if saved.get('pending'):raise ValueError('Previous PHY operation unresolved')
     if row['control_register']&0x8000:raise ValueError('PHY is super-isolated; recover firmware before applying port configuration')
+    restart=request.get('restart_autoneg',False)
+    if restart and (not row['enabled'] or not row['negotiation']['valid'] or not row['advertised_speeds']):
+        raise ValueError('Enabled PHY with valid negotiation registers and advertisement required')
     masks=(0x1e0,0x700,0x1000)
     expected=[bit if request.get('speed') in ('auto',speed) else 0
               for bit,speed in ((0x100,'100'),(0x200,'1000'),(0x1000,'10000'))]
@@ -80,7 +96,9 @@ def apply(bus,request):
         if 'enabled' in request:saved.setdefault('admin',{})[str(phy)]=request['enabled']
         saved.pop('pending',None);persist(saved)
         return {'activation':'verified','scope':'phy-control','forwarding_verified':False,'data':inventory(bus)}
-    if not speed_change and not admin_change:return finish()
+    if (speed_change or restart) and not row['negotiation']['valid']:
+        raise ValueError('Invalid negotiation register readback')
+    if not speed_change and not admin_change and not restart:return finish()
     saved['pending']=request;persist(saved)
     previous_gate=GATE.read_text()
     try:
@@ -95,7 +113,15 @@ def apply(bus,request):
                 handshake();old=bus.transfer(phy,7,reg);value=(old&~mask)|value
                 bus.transfer(phy,7,reg,value)
                 if bus.transfer(phy,7,reg)!=value:raise RuntimeError('PHY advertisement readback mismatch')
-            handshake();bus.transfer(phy,7,0,bus.transfer(phy,7,0)|0x1200);handshake()
+        if speed_change or restart:
+            # Sysroot _phy_8481_copper_an_set: legacy MII first, then 10G AN.
+            # Preserve unrelated bits; never reset the PHY or reload firmware.
+            for reg in (0xffe0,0):
+                handshake();old=bus.transfer(phy,7,reg)
+                if old==0xffff:raise RuntimeError('Invalid autonegotiation control readback')
+                bus.transfer(phy,7,reg,old|0x1200);handshake()
+                actual=bus.transfer(phy,7,reg)
+                if actual==0xffff or not actual&0x1000:raise RuntimeError('Autonegotiation enable readback mismatch')
         if admin_change:
             # Broadcom phy8481 copper_enable_set: change only XGPH_DISABLE bit 7.
             handshake();value=bus.transfer(phy,30,0x401a)

@@ -33,7 +33,7 @@ class FourCopperPorts(unittest.TestCase):
             def copper_apply(port,request):
                 writes.append(('phy',port['phy_address'],request.get('enabled')))
                 return phy.apply(bus,{'revision':inventory()['revision'],'phy':port['phy_address'],
-                                      **{k:v for k,v in request.items() if k in ('speed','enabled')}})
+                                      **{k:v for k,v in request.items() if k in ('speed','enabled','restart_autoneg')}})
             with patch.object(face,'STATE',root/'faceplate'),patch.object(phy,'STATE',root/'phy'),\
                  patch.object(phy,'MAPPING',mapfile),patch.object(phy,'GATE',gate),\
                  patch.object(face,'call',side_effect=call),patch.object(face,'copper_inventory',side_effect=inventory),\
@@ -57,6 +57,9 @@ class FourCopperPorts(unittest.TestCase):
                         self.assertTrue(bus.writes)
                         self.assertTrue(all(address==entry['phy'] for address,_,_,_ in bus.writes))
                         self.assertFalse(any(operation[0]=='mac' for operation in writes))
+                    bus.writes.clear()
+                    face.apply({'revision':face.observe()['revision'],'port':int(front),'restart_autoneg':True})
+                    self.assertEqual([(p,d,r) for p,d,r,v in bus.writes],[(entry['phy'],7,0xffe0),(entry['phy'],7,0)])
                     self.assertEqual(gate.read_text(),'N')
                 saved=json.loads(face.STATE.read_text())
                 self.assertEqual(saved['ports'],{p:True for p in mapping})

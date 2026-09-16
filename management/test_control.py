@@ -50,6 +50,15 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/pa5200/copper-identify/set',json=data|{'register':1}).status_code,422)
         self.controller.run.assert_not_called()
 
+    def test_copper_renegotiation_uses_admin_audited_faceplate_route(self):
+        data={'revision':7,'port':3,'restart_autoneg':True}
+        self.assertEqual(self.client.post('/api/pa5200/faceplate/set',json=data).status_code,200)
+        self.controller.run.assert_awaited_once_with('faceplate','set',data)
+        self.assertEqual(self.audit.call_args.args[1],'pa5200_completed')
+        self.controller.run.reset_mock();self.role='read-only'
+        self.assertEqual(self.client.post('/api/pa5200/faceplate/set',json=data).status_code,403)
+        self.controller.run.assert_not_called()
+
     def test_unknown_action_no_dispatch(self):
         self.assertEqual(self.client.post('/api/pa5200/thermal/reboot', json={}).status_code,404)
         self.controller.run.assert_not_called()
