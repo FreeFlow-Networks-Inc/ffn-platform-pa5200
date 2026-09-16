@@ -119,6 +119,8 @@ jobs:
         run: cd fe100 && python3 test_lookup_health.py
       - name: fe100 parser codec
         run: cd fe100 && python3 test_parser_codec.py
+      - name: FE100 profile and native configuration
+        run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing

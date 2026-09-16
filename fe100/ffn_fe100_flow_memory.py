@@ -6,6 +6,7 @@ appliance's audited ELF and one writable register block. Each training attempt
 is journaled before hardware I/O; an interrupted attempt is never retried.
 """
 import argparse
+from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
 import fcntl
 import hashlib
@@ -83,9 +84,8 @@ class FlowMemory:
         self.shim.fe100_reg_rd.argtypes = [C.c_uint32, C.c_uint32, C.POINTER(C.c_uint32)]
         self.shim.fe100_reg_wr.argtypes = [C.c_uint32, C.c_uint32, C.c_uint32]
         self.lib = C.CDLL(LIB, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
-        self.cfg = C.create_string_buffer(bytes((C.c_char*2812).in_dll(self.lib, 'fe100_cfg1')), 2812)
-        struct.pack_into('>II', self.cfg, 0, 1, 0)
-        struct.pack_into('>II', self.cfg, 1400, 4, 2)
+        self.cfg = C.create_string_buffer(native_configuration(bytes((C.c_char*2812).in_dll(self.lib, 'fe100_cfg1')),load_profile()),2812)
+        struct.pack_into('>I', self.cfg, 4, 0)
         self.pll = C.create_string_buffer(84)
         self.call('fe100_pll_initialize_config', (C.c_uint32,C.c_uint32,C.c_void_p), 0, self.pll_type, self.pll)
         self.plan = pll_override(self.pll)
