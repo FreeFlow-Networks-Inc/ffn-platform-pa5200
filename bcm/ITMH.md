@@ -1,5 +1,9 @@
 # The BCM88375 TM-port header
 
+For the subsequently verified OCTEON/copper path, including distinct injection
+and return envelopes, see [Copper forwarding](COPPER-FORWARDING.md). The
+experiments below describe earlier investigation and their original limits.
+
 Ports whose `tm_port_header_type_in` is `TM` — on this board **4, 5, 8, 9, 12, 17, 20, 24**, i.e.
 every CP, DP and MP link — do not carry plain Ethernet. The chip parses the first four bytes of
 every frame as a Traffic Manager header and takes the forwarding destination from it. Sending

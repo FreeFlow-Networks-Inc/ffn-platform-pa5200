@@ -256,7 +256,10 @@ Live port 4 initially reported command-data value `0x1b`; ports 1 and 3
 reported `0xe4`. Applying the sysroot sequence to port 4, followed by
 negotiation, established **10 Gbps PHY and MAC links on the physical 3-to-4
 RJ45 cable**. Both MACs report XFI, full duplex and synchronized rates.
-Port 1 WAN stayed linked at 1 Gbps. Packet forwarding remains unqualified.
+Port 1 WAN stayed linked at 1 Gbps. That link-recovery test alone did not
+qualify packet forwarding. Subsequent [copper forwarding validation](../bcm/COPPER-FORWARDING.md)
+proved bounded bidirectional packet transport, including VLAN-tagged frames;
+persistent runtime activation and routed/policy forwarding remain unqualified.
 
 The existing MP resource accepts a standalone
 `{"revision":123,"port":4,"restore_pair_map":true}` request. The CP requires
