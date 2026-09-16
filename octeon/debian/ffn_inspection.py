@@ -27,8 +27,8 @@ def validate(cfg):
         raise ValueError('invalid revision')
     if cfg['mode'] not in ('off', 'alert', 'block'):
         raise ValueError('mode must be off, alert or block')
-    if not isinstance(cfg['ports'], list) or any(type(p) is not int or p not in (1, 3, 5, 13) for p in cfg['ports']):
-        raise ValueError('ports must be a list drawn from 1, 3, 5, 13')
+    if not isinstance(cfg['ports'], list) or any(type(p) is not int or p not in range(1, 25) for p in cfg['ports']):
+        raise ValueError('inspection ports must be physical ports 1 through 24')
     if len(set(cfg['ports'])) != len(cfg['ports']):
         raise ValueError('duplicate port')
     literal = cfg['literal']

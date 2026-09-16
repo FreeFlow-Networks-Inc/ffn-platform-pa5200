@@ -2,7 +2,9 @@
 """Install staged VIF files on the selected PA5200 MP; do not start forwarding.
 
 Stage this script, vif_api.py, vif_backend.py, vif-ui.js, ffn_vif.py,
-ffn_vif_runtime.py and ffn-vif.service together. Run as root on the MP.
+ffn_vif_runtime.py, ffn_copper_vif.py, ffn_dp_packet_transport.py and
+ffn-vif.service together. Run as root on the MP. Install the MP link timer
+with install-copper-vif.py before commissioning copper packet paths.
 Preserves other installed platform functions and creates timestamped backups.
 """
 import json
@@ -18,7 +20,7 @@ dp=Path('/opt/ffn-cproot-owrt/opt/dproot')
 config=Path('/etc/ffn/planes/mp.json')
 manifest=json.loads((extension/'extension.json').read_text())
 assert manifest['id']=='pa5200' and dp.is_dir()
-for name in ('vif_api.py','vif_backend.py','ffn_vif.py','ffn_vif_runtime.py'):
+for name in ('vif_api.py','vif_backend.py','ffn_vif.py','ffn_vif_runtime.py','ffn_copper_vif.py','ffn_dp_packet_transport.py'):
     py_compile.compile(str(source/name),doraise=True)
 backup=Path('/var/backups/ffn/vifs-'+str(time.time_ns()))
 def write(path,data):
@@ -28,7 +30,7 @@ def write(path,data):
     temp=path.with_name(path.name+'.vif-new');temp.write_bytes(data);temp.replace(path)
 for name in ('vif_api.py','vif_backend.py'):
     write(extension/name,(source/name).read_bytes())
-for name in ('ffn_vif.py','ffn_vif_runtime.py'):
+for name in ('ffn_vif.py','ffn_vif_runtime.py','ffn_copper_vif.py','ffn_dp_packet_transport.py'):
     write(dp/'usr/local/sbin'/name,(source/name).read_bytes())
 write(dp/'etc/systemd/system/ffn-vif.service',(source/'ffn-vif.service').read_bytes())
 network_path=dp/'usr/local/sbin/ffn_network.py'
@@ -55,7 +57,11 @@ if "'pa5200_vif_api'" not in control:
     compile(control,str(extension/'control.py'),'exec')
     write(extension/'control.py',control.encode())
 ui=(extension/'static/ui.js').read_text();marker='/* FFN PA5200 VIF UI v1:'
-ui=ui.split(marker)[0].rstrip()+'\n'+(source/'vif-ui.js').read_text()
+vif_ui=(source/'vif-ui.js').read_text().rstrip()
+if marker in ui:
+    start=ui.index(marker);end=ui.index('\n})();',start)+len('\n})();')
+    ui=ui[:start]+vif_ui+ui[end:]
+else:ui=ui.rstrip()+'\n'+vif_ui+'\n'
 write(extension/'static/ui.js',ui.encode())
 manifest['pages']=[p for p in manifest['pages'] if p['id']!='vifs']+[{'id':'vifs','label':'Virtual Interfaces','tab':'network','after':'interfaces'}]
 write(extension/'extension.json',(json.dumps(manifest,indent=2)+'\n').encode())

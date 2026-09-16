@@ -291,12 +291,13 @@
     const header=element('div',undefined,root);header.className='page-header';
     element('h2','Faceplate Ports',header);
     const refresh=button(header,'Refresh',()=>faceplate(parent));
-    const message=element('p','Reading faceplate hardwareâ€¦',root);
+    const message=element('p','Reading faceplate hardware…',root);
     let data, user;
     try { [data,user]=await Promise.all([api(prefix+'/faceplate'),api('/api/auth/me')]); }
     catch(e) { message.textContent=e.message;return; }
     if (!root.isConnected) return;
     const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
+    if(writable && window.ffnCopperIdentify)await window.ffnCopperIdentify.render(root,()=>faceplate(parent));
     message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
       'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Copper Auto advertises all supported speeds; optical Auto retains its advertisement. Copper link reflects the external PHY; switch link and forwarding are reported separately.';
     const table=element('table',undefined,root);table.className='data-table';
@@ -334,9 +335,34 @@
         element('small','Switch rate: '+(state==='synchronized'?'matches copper PHY':state||'not observed'),speedCell);
       }
       const action=element('td',undefined,row);
+      if(port.media==='copper') {
+        const n=port.negotiation;
+        if(n)element('small',!n.valid?'Negotiation status unavailable':
+          (n.complete_1000||n.complete_10000?'Negotiation complete':'Negotiating / no completed partner exchange'),action);
+        button(action,'Renegotiate',async()=>{
+          if(!confirm('Restart copper negotiation on '+port.name+'? This interrupts this port.'))return;
+          root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
+          message.textContent='Restarting '+port.name+' negotiation...';
+          try {
+            const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,restart_autoneg:true})});
+            if(result.activation!=='verified')throw new Error('Negotiation control was not verified');
+            if(root.isConnected)await faceplate(parent);
+          }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
+        },!writable||!port.renegotiate_configuration||!port.enabled||port.phy_pending);
+        if(port.pair_map_recovery)button(action,'Recover copper wiring',async()=>{
+          if(!confirm('Apply the PA-5220 cable-pair mapping to '+port.name+' and restart negotiation?'))return;
+          root.querySelectorAll('button,select').forEach(node=>{node.disabled=true;});
+          message.textContent='Recovering '+port.name+' copper wiring...';
+          try {
+            const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,restore_pair_map:true})});
+            if(result.activation!=='verified')throw new Error('Pair mapping command was not verified');
+            if(root.isConnected)await faceplate(parent);
+          }catch(e){if(root.isConnected){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}}
+        },!writable||!port.enabled||port.phy_pending);
+      }
       const b=button(action,port.enabled?'Disable':'Enable',async()=>{
         root.querySelectorAll('button').forEach(node=>{node.disabled=true;});
-        refresh.disabled=true;message.textContent='Applying and verifying '+port.name+'â€¦';
+        refresh.disabled=true;message.textContent='Applying and verifying '+port.name+'…';
         try {
           const result=await api(prefix+'/faceplate/set',{method:'POST',body:JSON.stringify({revision:data.revision,port:port.port,enabled:!port.enabled})});
           if(result.activation!=='verified') throw new Error('Hardware change was not verified');

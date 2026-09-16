@@ -2,7 +2,8 @@
 """Install staged VIF routing modules on the MP with the DP VIF service stopped.
 
 Stage ffn_linux_network.py from the pinned core commit alongside ffn_network.py,
-ffn_vif_runtime.py, this script, and ui.js. Saves originals before replacement;
+ffn_vif_runtime.py, ffn_copper_vif.py, ffn_dp_packet_transport.py, this script,
+and ui.js. Saves originals before replacement;
 does not change port assignments, route configuration, or start services.
 """
 import json
@@ -21,7 +22,9 @@ status=subprocess.run(['python3','/tmp/ffn-dp-ssh.py','systemctl','is-active','f
 if status.stdout.strip()!='inactive':raise RuntimeError('stop VIF transport before installing')
 files={'ffn_linux_network.py':dp/'usr/local/lib/ffn/ffn_linux_network.py',
        'ffn_network.py':dp/'usr/local/sbin/ffn_network.py',
-       'ffn_vif_runtime.py':dp/'usr/local/sbin/ffn_vif_runtime.py'}
+       'ffn_vif_runtime.py':dp/'usr/local/sbin/ffn_vif_runtime.py',
+       'ffn_copper_vif.py':dp/'usr/local/sbin/ffn_copper_vif.py',
+       'ffn_dp_packet_transport.py':dp/'usr/local/sbin/ffn_dp_packet_transport.py'}
 for name in files:compile((source/name).read_text(),name,'exec')
 core=(source/'ffn_linux_network.py').read_text()
 assert 'def routing_interfaces(cfg):' in core and 'def attached_interfaces(attachment):' in core

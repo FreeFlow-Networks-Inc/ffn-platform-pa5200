@@ -22,6 +22,7 @@ import time
 import uuid
 from ffn_vif import Assignments,validate
 import ffn_network as network
+from ffn_copper_vif import CopperVif
 
 STATE=Path('/etc/ffn/vifs.json')
 INTENT=Path('/etc/ffn/vifs.pending.json')
@@ -122,13 +123,18 @@ class Linux:
                 network.configure_port(name,settings)
         self.verify(new)
 
-    def open(self,name):
+    def carrier(self,fd,up):
+        ioctl=0x800454e2 if platform.machine().startswith('mips') else 0x400454e2
+        fcntl.ioctl(fd,ioctl,struct.pack('i',int(up)))
+
+    def open(self,name,copper=False):
         original=os.open('/proc/self/ns/net',os.O_RDONLY);target=os.open('/run/netns/'+network.NS,os.O_RDONLY)
         fd=None
         try:
             os.setns(target,0);fd=os.open('/dev/net/tun',os.O_RDWR|os.O_NONBLOCK)
             ioctl=0x800454ca if platform.machine().startswith('mips') else 0x400454ca
-            fcntl.ioctl(fd,ioctl,struct.pack('16sH',name.encode(),0x1002))
+            fcntl.ioctl(fd,ioctl,struct.pack('16sH',name.encode(),0x1042 if copper else 0x1002))
+            if copper:self.carrier(fd,False)
             # Discard queued frames before publishing any new port binding.
             for _ in range(8192):
                 try:os.read(fd,65536)
@@ -142,7 +148,11 @@ class Linux:
 
 
 class Owner:
-    def __init__(self,backend,ports,state=STATE,intent=INTENT):
+    def __init__(self,backend,ports,state=STATE,intent=INTENT,copper=None):
+        self.copper=copper if copper is not None else CopperVif()
+        if set(ports)&({1,2,3,4}-self.copper.ports):
+            raise ValueError('copper packet path is not commissioned')
+        ports=set(ports)|self.copper.ports
         self.backend,self.ports,self.path,self.intent=backend,set(ports),state,intent
         self.config=validate(json.loads(state.read_text())) if state.exists() else {'revision':0,'vifs':{}}
         self.recovery_required=intent.exists()
@@ -150,7 +160,19 @@ class Owner:
 
     def status(self):
         return {'config':self.config,'recovery_required':self.recovery_required,
-                'ports':sorted(self.ports),'physical_link':None,'hardware_session_offload':False}
+                'ports':sorted(self.ports),'physical_link':None,'hardware_session_offload':False,
+                'copper_ports':self.copper.inventory(),'vif_links':self.vif_links(())}
+
+    def vif_links(self,attached):
+        links={}
+        for name,binding in self.config['vifs'].items():
+            link=self.copper.status(binding['port']) if binding['port']<=4 else {'carrier':None,'reason':'see Faceplate Ports'}
+            if not binding['enabled'] or binding['network']['mode']=='disabled':
+                link.update(carrier=False,reason='VIF administratively disabled')
+            elif name not in attached:
+                link.update(carrier=False,reason='VIF driver not attached')
+            links[name]=link
+        return links
 
     def replace(self,request):
         if self.recovery_required:raise RuntimeError('VIF recovery required')
@@ -213,24 +235,44 @@ def rpc(op,payload):
 
 
 def serve(owner,trunk,seconds):
-    from ffn_dp_packet_transport import validate_trunk,encode,decode_otmh_ssp
+    from ffn_dp_packet_transport import FRONT,validate_trunk,encode,decode_otmh_ssp
     from ffn_inspection import Inspector
     validate_trunk(trunk)
+    front=owner.copper.wire_map(FRONT)
     handles={};counts=collections.Counter();generation=str(uuid.uuid4());runtime_error=None;running=True
+    carriers={}
     def close():
         for fd in handles.values():os.close(fd)
         handles.clear()
+        carriers.clear()
+    def refresh_carriers():
+        for name,fd in handles.items():
+            binding=owner.config['vifs'][name]
+            if binding['port']>4:continue
+            up=binding['enabled'] and binding['network']['mode']!='disabled' and owner.copper.allowed(binding['port'])
+            if carriers.get(name)!=up:
+                # Discard TAP backlog from the previous carrier state before
+                # allowing transmission on the newly observed physical link.
+                owner.backend.carrier(fd,False)
+                for _ in range(8192):
+                    try:os.read(fd,65536);counts['copper_transition_tx_drop']+=1
+                    except BlockingIOError:break
+                else:raise RuntimeError('copper VIF queue did not drain')
+                owner.backend.carrier(fd,up);carriers[name]=up
     def attach():
         close()
         if owner.recovery_required:return
         try:
             owner.backend.verify(owner.config)
-            for name in owner.config['vifs']:handles[name]=owner.backend.open(name)
+            for name,b in owner.config['vifs'].items():handles[name]=owner.backend.open(name,copper=b['port']<=4)
+            refresh_carriers()
         except BaseException:close();raise
     def status():
         return owner.status()|{'running':running,'runtime_error':runtime_error,'generation':generation,'trunk':trunk,
             'forwarding':bool(handles) and not owner.recovery_required and len(handles)==len(owner.config['vifs'])
-                and any(b['enabled'] and b['network']['mode']!='disabled' for b in owner.config['vifs'].values()),
+                and any(b['enabled'] and b['network']['mode']!='disabled' and owner.copper.allowed(b['port']) for b in owner.config['vifs'].values()),
+            'link_token':owner.copper.challenge(),
+            'vif_links':owner.vif_links(handles),
             'counters':dict(counts)}
     # The lifetime fabric lock prevents a second TAP/physical packet consumer.
     with open('/run/ffn-fabric.lock','a') as fabric,open('/run/ffn-network.lock','a') as netlock:
@@ -250,6 +292,8 @@ def serve(owner,trunk,seconds):
             next_verify=time.monotonic()+2
             try:
                 while time.monotonic()<deadline:
+                    try:refresh_carriers()
+                    except Exception as e:close();runtime_error='carrier update failed: '+str(e)
                     if handles and time.monotonic()>=next_verify:
                         try:owner.backend.verify(owner.config)
                         except Exception as e:close();runtime_error=str(e)
@@ -263,6 +307,11 @@ def serve(owner,trunk,seconds):
                             try:
                                 request=read_request(conn);op=request['op'];payload=request['payload']
                                 if op=='status' and not payload:result=status()
+                                elif op=='links':
+                                    owner.copper.observe(payload)
+                                    try:refresh_carriers()
+                                    except Exception as e:close();runtime_error='carrier update failed: '+str(e);raise
+                                    result=status()
                                 elif op=='check':
                                     Assignments(payload,owner.ports)
                                     if payload['revision']!=owner.config['revision']:raise ValueError('revision conflict')
@@ -294,7 +343,8 @@ def serve(owner,trunk,seconds):
                             if source is wire:
                                 raw,addr=wire.recvfrom(65536)
                                 if addr[2]==socket.PACKET_OUTGOING:continue
-                                decoded=decode_otmh_ssp(raw,owner.ports)
+                                decoded=decode_otmh_ssp(raw,owner.ports,front)
+                                if decoded and not owner.copper.allowed(decoded[0]):counts['copper_carrier_rx_drop']+=1;continue
                                 item=owner.assignment.ingress(*decoded) if decoded and not owner.recovery_required else None
                                 if not item:counts['unassigned_or_invalid_rx']+=1;continue
                                 name,frame=item
@@ -305,7 +355,8 @@ def serve(owner,trunk,seconds):
                                 name=byfd[source];frame=os.read(source,1519)
                                 item=owner.assignment.egress(name,frame) if not owner.recovery_required else None
                                 if not item:counts['unassigned_or_invalid_tx']+=1;continue
-                                packet=encode(*item)
+                                if not owner.copper.allowed(item[0]):counts['copper_carrier_tx_drop']+=1;continue
+                                packet=encode(*item,front=front)
                                 if wire.send(packet)!=len(packet):raise OSError('short trunk TX')
                                 counts['tx_'+name]+=1
                         except (OSError,ValueError):counts['io_drop']+=1
@@ -317,7 +368,7 @@ def serve(owner,trunk,seconds):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=('status','check','set','recover','serve','start','stop'))
+    p.add_argument('action',choices=('status','check','set','recover','serve','start','stop','links'))
     p.add_argument('--ports',default='5,13');p.add_argument('--trunk',default='ffnpkt0')
     p.add_argument('--seconds',type=int,default=0);a=p.parse_args()
     ports={int(x) for x in a.ports.split(',')}
@@ -332,13 +383,14 @@ def main():
             raise RuntimeError('VIF service did not become ready')
         a.action='status'
     payload={}
-    if a.action in ('set','check'):
+    if a.action in ('set','check','links'):
         raw=sys.stdin.buffer.read(65537)
         if len(raw)>65536:raise ValueError('request too large')
         payload=json.loads(raw)
     if a.action not in ('serve','recover') and Path(SOCKET).exists():
         try:print(json.dumps(rpc(a.action,payload)));return
         except (ConnectionRefusedError,FileNotFoundError):pass
+    if a.action=='links':raise RuntimeError('VIF driver is not running')
     with open('/run/ffn-vif.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         if Path(SOCKET).exists():
@@ -358,7 +410,7 @@ def main():
                 fcntl.flock(netlock,fcntl.LOCK_EX)
                 result=owner.replace(payload) if a.action=='set' else owner.recover()
         elif a.action=='check':
-            Assignments(payload,ports)
+            Assignments(payload,owner.ports)
             if payload['revision']!=owner.config['revision']:raise ValueError('revision conflict')
             owner.backend.preflight(owner.config,payload);result={'validated':True}
         else:result=owner.status()

@@ -8,11 +8,16 @@ class Node {
 async function test(role){
   let render;const calls=[];
   const request=async(path,options)=>{calls.push({path,options});return path==='/api/auth/me'?{role}:
-    {config:{revision:7,vifs:{}},ports:[5,13],running:false,forwarding:false};};
+    {config:{revision:7,vifs:{}},ports:[5,13],running:false,forwarding:false,
+      copper_ports:{2:{phy:17,bcm_port:28,speed_mbps:1000,reason:'packet path not commissioned'}}};};
   const context={document:{createElement:t=>new Node(t)},window:{ffnExtensions:{request,registerPage:(id,page,fn)=>{assert.equal(page,'vifs');render=fn;}}}};
   vm.runInNewContext(fs.readFileSync(__dirname+'/static/vif-ui.js','utf8'),context);
   assert.equal(calls.length,0);const root=new Node('main');await render(root);
   const all=root.all(),field=name=>all.find(n=>n['aria-label']===name);
+  assert(all.some(n=>n.textContent==='packet path not commissioned'));
+  assert(all.some(n=>n.textContent==='17 / 28'));
+  assert(all.some(n=>n.textContent==='1000 Mbps'));
+  assert(!field('Front port').children.some(n=>n.value==='2'),'uncommissioned copper must not be selectable');
   const save=all.find(n=>n.textContent==='Save assignment');assert.equal(save.disabled,role!=='admin');
   assert.equal(field('VIF name').value,'');assert.equal(field('Front port').value,'');
   if(role==='admin'){

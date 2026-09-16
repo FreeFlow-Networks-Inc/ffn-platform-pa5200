@@ -8,7 +8,7 @@ import sys
 
 
 def remote(op,payload):
-    if op not in ('status','check','set','start','stop','recover'):raise ValueError('invalid DP operation')
+    if op not in ('status','check','set','start','stop','recover','links'):raise ValueError('invalid DP operation')
     argv=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=10',
           '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
           '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp',
@@ -25,10 +25,29 @@ def barrier(data):
     return module.before_commit(data)
 
 
-def execute(action,payload,call=remote,drain=barrier):
+def faceplate():
+    result=subprocess.run(['/usr/local/sbin/ffn-faceplate','status'],text=True,capture_output=True,timeout=8)
+    if result.returncode:raise RuntimeError('faceplate observation failed')
+    return json.loads(result.stdout)['ports']
+
+
+def observe(call,read_links):
+    result=call('status',{})
+    if result.get('running') and result.get('link_token'):
+        try:
+            return call('links',{'token':result['link_token'],'ports':read_links()})
+        except (OSError,ValueError,RuntimeError,KeyError,subprocess.TimeoutExpired) as e:
+            # The DP lease expires against its original challenge time even
+            # when SSH or the CP hangs; an old response cannot revive carrier.
+            result=call('status',{})
+            result['link_observation_error']=str(e)[:512]
+    return result
+
+
+def execute(action,payload,call=remote,drain=barrier,read_links=faceplate):
     if action=='status':
         if payload:raise ValueError('status takes no payload')
-        return call('status',{})
+        return observe(call,read_links)
     if action not in ('validate','apply') or not isinstance(payload,dict):raise ValueError('invalid VIF action')
     operation=payload.get('operation')
     if operation not in ('set','start','stop','recover'):raise ValueError('invalid VIF operation')

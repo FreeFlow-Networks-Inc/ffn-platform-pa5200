@@ -7,7 +7,7 @@ from hardware_backend import Controller, COMMANDS
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
-        'faceplate':{'revision','port','enabled','speed'},'thermal':{'revision','operation'}}
+        'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
 
 
 async def execute(resource, action, payload, backend=None):
@@ -49,12 +49,18 @@ async def execute(resource, action, payload, backend=None):
                     raise ValueError('Invalid BCM service request')
                 if not observed.get('operation_complete'):raise ValueError('BCM operation still pending')
             if resource=='faceplate':
-                if (not {'port','revision'}<=set(payload) or not {'enabled','speed'}&set(payload) or type(payload['port']) is not int or
+                if (not {'port','revision'}<=set(payload) or not {'enabled','speed','restart_autoneg','restore_pair_map'}&set(payload) or type(payload['port']) is not int or
                         not 1<=payload['port']<=24 or ('enabled' in payload and type(payload['enabled']) is not bool)):
                     raise ValueError('invalid faceplate change')
                 port=next((p for p in observed.get('ports',[]) if p['port']==payload['port']),{})
                 if port.get('media')=='copper' and (port.get('admin_configuration') is False or port.get('phy_pending')):
                     raise ValueError('Copper control unavailable or pending')
+                if 'restart_autoneg' in payload and (payload['restart_autoneg'] is not True or set(payload)!={'revision','port','restart_autoneg'}
+                        or not port.get('renegotiate_configuration') or not port.get('enabled') or observed.get('saved',{}).get('pending')):
+                    raise ValueError('Renegotiation requires an enabled, ready copper port and a standalone request')
+                if 'restore_pair_map' in payload and (payload['restore_pair_map'] is not True or set(payload)!={'revision','port','restore_pair_map'}
+                        or not port.get('pair_map_recovery') or not port.get('enabled') or observed.get('saved',{}).get('pending')):
+                    raise ValueError('Pair map recovery requires an enabled, down copper port and a standalone request')
                 if 'speed' in payload:
                     if not port.get('speed_configuration') or payload['speed'] not in ['auto']+[str(v) for v in port.get('supported_speeds',[])]:
                         raise ValueError('Unsupported link speed')

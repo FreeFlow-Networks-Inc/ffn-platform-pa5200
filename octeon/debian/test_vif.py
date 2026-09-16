@@ -26,6 +26,20 @@ class Fake:
 class Vifs(unittest.TestCase):
     def setUp(self):self.frame=bytes.fromhex('02ff0000000202ff0000000188b5')+bytes(range(46))
 
+    def test_vif_carrier_respects_attachment_and_administrative_state(self):
+        from ffn_copper_vif import CopperVif
+        from test_copper_vif import profile,observation
+        driver=CopperVif(profile())
+        driver.observe({'token':driver.challenge(),'ports':[observation()]})
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp);owner=Owner(Fake(),{2},path/'state',path/'intent',copper=driver)
+            c=config();c['vifs']={'fv1':c['vifs']['fv1']};c['vifs']['fv1']['port']=2
+            owner.replace(c)
+            self.assertFalse(owner.status()['vif_links']['fv1']['carrier'])
+            self.assertTrue(owner.vif_links({'fv1'})['fv1']['carrier'])
+            owner.config['vifs']['fv1']['enabled']=False
+            self.assertFalse(owner.vif_links({'fv1'})['fv1']['carrier'])
+
     def test_tag_mapping_and_unknown_isolation(self):
         a=Assignments(config(),{5,13});port,wire=a.egress('fv1',self.frame)
         self.assertEqual(port,5);self.assertEqual(wire[12:18].hex(),'8100006488b5')

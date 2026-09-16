@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh copper VIF carrier through the MP control daemon
+After=ffn-plane@mp.service
+Requires=ffn-plane@mp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/ffn-platforms/pa5200-management/vif-link-poll.py
+TimeoutStartSec=30
+UMask=0077

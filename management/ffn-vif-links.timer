@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep copper VIF physical carrier observations fresh
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=2
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

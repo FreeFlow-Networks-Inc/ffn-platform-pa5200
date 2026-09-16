@@ -6,7 +6,8 @@ from ffn_dp_packet_transport import decode, decode_otmh_ssp, encode, FRONT
 class PacketTransport(unittest.TestCase):
     def test_all_ports(self):
         payload=bytes(range(60))
-        self.assertEqual(len(set(FRONT.values())),24)
+        self.assertEqual(len(set(FRONT.values())),20)
+        self.assertFalse(set(FRONT)&{1,2,3,4})
         for port,bcm in FRONT.items():
             cmh=bytearray(32); cmh[0]=16; cmh[3]=3
             struct.pack_into('!HH',cmh,24,port<<6,len(payload))

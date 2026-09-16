@@ -35,9 +35,8 @@ Copper PHY support uses the CP's locked SMI bus 0 and verifies identity
 preserved; half-duplex advertisement is removed. The kernel write gate is restored
 on success and failure. No firmware image or flash write is introduced.
 `phy/set` accepts revision, phy (16..19), speed (auto/100/1000/10000). The UI
-shows PHY addresses separately from faceplate port numbers. Port 2 to PHY 17
-was confirmed by the appliance operator on 2026-09-11; the other three copper
-port mappings are not yet verified. PHY settings alone do not prove WAN forwarding. Copper control requires a
+shows PHY addresses separately from faceplate port numbers. The corrected mapping is
+port 1/PHY17, port 2/PHY16, port 3/PHY19 and port 4/PHY18. PHY settings alone do not prove WAN forwarding. Copper control requires a
 commissioned PHY-to-MAC association; the rate follower handles MAC synchronization.
 
 Install the CP PHY helper beside ffn_mdio.py and the copper service drop-in to
@@ -48,6 +47,47 @@ existing resolve command and boot restore unit.
 
 SDK reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/include/bcm/port.h
 PHY register reference: https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.h
+
+## Sysroot negotiation integration
+
+The owner's sysroot `usr/local/lib64/libpanbcm_cp.so.1.0` was inspected
+read-only. `_phy_8481_copper_an_set` at `0x12736410` enables/restarts both
+the legacy MII control (`7.0xffe0`) and 10G AN control (`7.0x0000`), in that
+order, using mask `0x1200`. The same sequence is documented in Broadcom's
+[PHY8481 driver](https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c).
+Our former speed controller only restarted the second register. The CP driver
+now follows both steps, preserving unrelated bits and checking the enable bit
+after each write. The restart bit may self-clear and is excluded from revisions.
+No vendor binary is distributed or executed by this integration.
+
+The MP-owned `faceplate` resource accepts a standalone request:
+
+```json
+{"revision":123,"port":3,"restart_autoneg":true}
+```
+
+Use the current faceplate revision. The operation requires a mapped, enabled
+copper port, running firmware, valid register observations and no pending
+configuration. It changes only the selected PHY's negotiation controls, retains
+its advertisement, and never resets the chip, reloads firmware or starts packet
+forwarding. A partial failure leaves the existing PHY/faceplate journals pending.
+Restart actions are not persisted as boot intent.
+
+Network > Faceplate Ports exposes **Renegotiate** and negotiation status.
+The API returns separate legacy MII and 10G AN control/status observations. The privileged MP CLI uses the same daemon:
+
+```sh
+ffn-copper-port status --port 3
+ffn-copper-port renegotiate --port 3
+ffn-copper-port renegotiate --port 4
+```
+
+Install `copper-port-cli.py` as `/usr/local/sbin/ffn-copper-port`. Update the
+CP PHY and faceplate helpers, MP `daemon_backend.py`, `control.py` and the
+Faceplate Ports UI together; preserve other installed UI extensions. Only the
+API process needs reloading; BCM, the PHY firmware and the firewall need no
+restart. The test cable connects physical ports **3 and 4**; port **1 is WAN**.
+Control readback verifies the request, not cable continuity or packet delivery.
 
 
 ## BCM activation and restart recovery
@@ -90,23 +130,31 @@ PHY firmware busy checks and the kernel write gate protect MDIO mutations.
 
 Physical mapping is separate from the MDIO address. The vendor address array is
 pair-swapped, so consecutive addresses alone are not evidence of panel numbering.
-The live measured path is the operator's ethernet1/2 -> PHY 17 -> BCM port 28.
-The old table had selected BCM 13, whose SerDes had no incoming signal. BCM 28
-reported signal without lock at 10G XFI, then linked at 1G after SGMII selection.
-Do not treat the vendor enable-list ordering as commissioned connector numbering.
+The operator corrected the WAN label from ethernet1/2 to ethernet1/1. Its live
+path is PHY17 -> BCM28, linked at 1G after SGMII selection. This agrees with the
+vendor panel map; the earlier apparent mismatch came from the physical label.
+The complete PA-5220 board map is:
+
+| Panel port | PHY | BCM MAC |
+|---|---:|---:|
+| ethernet1/1 (WAN) | 17 | 28 |
+| ethernet1/2 | 16 | 13 |
+| ethernet1/3 | 19 | 14 |
+| ethernet1/4 | 18 | 15 |
 
 Store measured associations in `/etc/ffn/copper-map.json`. Each physical port key
 (1..4) requires a `phy` (16..19) and `bcm_port` (28,13,14,15). Both sets must be
-unique. Example for this commissioned path: `{"2":{"phy":17,"bcm_port":28}}`.
+unique. The WAN entry is `{"1":{"phy":17,"bcm_port":28}}`.
 There is no global mapping default: appliance-specific evidence stays local.
 Legacy integer PHY-only entries remain readable but cannot authorize MAC writes.
 Unknown associations disable copper faceplate writes. Configuration revisions
 include both PHY and MAC mapping so stale requests cannot hit a different socket.
 
-All four port mappings are covered by controller tests. Live validation reapplied
-port 2's Auto advertisement through the authenticated CLI and MP daemon, leaving
-its 1G external link and advertisement unchanged. Ports 1, 3 and 4 still need a
-physical cable/link correlation before commissioning their mapping on this unit.
+All four port mappings are now installed on this appliance and covered by
+controller tests. The authenticated MP API exposes admin and speed controls for
+all four. Auto negotiation and enable were verified on ports 3 and 4; the WAN
+on port1 remained at 1G. The reported 3-to-4 cable loop still had no PHY link
+after negotiation; control readback does not certify an external connection.
 
 The faceplate page reports copper wire speed/link separately from switch-side
 link. A wire link alone does not establish PHY-to-MAC synchronization, a dataplane
@@ -143,3 +191,99 @@ uncertain state.
 Reference: Broadcom's `phy_8481_link_up` in
 https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c
 selects SGMII and follows the negotiated rate for 100M/1G copper links.
+
+## Identify all four copper panel ports
+
+The MP resource `copper-identify` records physical panel associations through
+the CP controller `ffn_copper_identify.py`. Install it with
+`management/install-copper-identify.py`; the script stages its listed files,
+preserves other MP commands and UI sections, and reloads the MP daemon and
+manager API when its router changes.
+It neither restarts BCM/PHY services nor changes a physical mapping on install.
+
+Administrators use **Network → Faceplate Ports → Identify copper ports**:
+
+1. Select an unmapped port with no cable attached and start identification.
+2. Connect one spare active Ethernet peer to that exact port. Leave existing
+   links, especially WAN port1, in place.
+3. Refresh and confirm the detected PHY. Repeat for each remaining port.
+
+The root CLI `/usr/local/sbin/ffn-copper-identify` uses the same MP resource:
+`begin --port 1` starts a probe, `status` shows its token and candidate, and
+`confirm --token TOKEN` records it. `cancel --token TOKEN` abandons the probe.
+The generic MP request has resource `copper-identify`, action `apply`, and
+payload `{operation, revision, port}` for begin or `{operation, revision,
+token}` for confirm/cancel. All mutations are journaled by the MP daemon.
+
+Identification requires a single stable down-to-up PHY transition. Multiple
+link changes, no new link, changes to hardware configuration, stale tokens,
+reboot, and overwrite of an existing panel mapping are rejected. Probes expire
+after 15 minutes. The PHY-to-MAC board wiring is read from the documented vendor
+association (PHY16→BCM13, PHY17→BCM28, PHY18→BCM15, PHY19→BCM14); this table
+does not establish panel numbering. The corresponding MAC must also be present.
+The previous mapping is backed up before an atomic update under the same locks
+used by the PHY and faceplate controllers. No PHY registers are written by
+identification. Once mapped, the existing faceplate enable/disable and speed
+controls operate the matching PHY and MAC, and the copper link service follows
+its negotiated speed. This does not mark a VIF packet path as commissioned.
+
+The one-time MP operation `correct-wan-label` migrates only the former single
+`port2 -> PHY17/BCM28` mapping to the vendor panel map above, following the
+operator's corrected identification. Other mappings and active identification
+probes are rejected. Its payload contains only `operation` and current
+`revision`; callers cannot supply replacement wiring. The MP first verifies
+the DP VIF service is stopped, assignments are empty and no copper packet path
+has been commissioned. It backs up and corrects the DP profile before updating
+the CP mapping. The CP writes no PHY registers. The MP journal preserves an
+uncertain outcome rather than retrying a partial cross-plane change blindly.
+
+Initial validation on 2026-09-16, before cable-pair recovery: MP-authenticated renegotiation on ports 3 and 4
+returned verified control readback. Three subsequent samples showed no copper
+link or completed partner exchange on either port; the WAN remained linked at
+1 Gbps. Neither the control sequence nor these observations certify forwarding.
+
+## Cable-pair recovery and the RJ45 loop
+
+The sysroot `bcm_copper_phy_initialize` routine at
+`0x126102ac..0x12610330` programs device 30 register `0x4005` to `2`,
+waits 35 ms, writes `0xe4` to `0x4009`, writes `0x52` to `0x4005` and
+waits another 35 ms. This is the board's mapping of the four differential
+cable pairs inside each copper PHY; the panel-to-PHY/MAC map is unchanged.
+The source family also documents the MDI pair-map initialization in
+[phy8481.c](https://github.com/Broadcom-Network-Switching-Software/OpenBCM/blob/master/sdk-6.5.16/src/soc/phy/phy8481.c).
+
+Live port 4 initially reported command-data value `0x1b`; ports 1 and 3
+reported `0xe4`. Applying the sysroot sequence to port 4, followed by
+negotiation, established **10 Gbps PHY and MAC links on the physical 3-to-4
+RJ45 cable**. Both MACs report XFI, full duplex and synchronized rates.
+Port 1 WAN stayed linked at 1 Gbps. Packet forwarding remains unqualified.
+
+The existing MP resource accepts a standalone
+`{"revision":123,"port":4,"restore_pair_map":true}` request. The CP requires
+verified identity, firmware `0x1089`, a commissioned mapping, an enabled but
+down PHY, valid negotiation observations and no pending transaction. It checks
+link again immediately before the command. There is no caller-selected pair
+value or raw register access. A failure retains the prior command-data value
+in the journal and restores the kernel write gate; generic resolve cannot
+silently accept an uncertain pair-recovery operation.
+
+WebUI **Recover copper wiring** is available on eligible down copper ports.
+Authenticated FFN-CLI commands use the same MP-owned route:
+
+```text
+request platform interface ethernet1/4 recover-pairs
+request platform interface ethernet1/4 renegotiate
+show platform faceplate
+```
+
+Successful recovery stores `pair_maps` in `/etc/ffn/phy.json`. The existing
+copper service's `ExecStartPost` restores those settings before saved speed and
+admin intent. A matching setting is left alone on a warm service restart;
+a changed setting on a linked port is rejected. Simulated cold restoration
+and live warm restoration were tested; the latter made zero PHY writes.
+No reboot or BCM restart was needed for deployment.
+
+The same authenticated FFN-CLI recovery was then applied to unused port 2.
+Its command data now matches the board setting and its restore intent is saved;
+with no attached peer it remains down. Ports 3/4 stayed at 10 Gbps and WAN port 1
+stayed at 1 Gbps throughout this operation.
