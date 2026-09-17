@@ -11,6 +11,19 @@ Interfaces > Aggregate Ethernet table displays mapped BCM member IDs, observed
 link speeds, candidate versus committed intent, and explicit activation blockers.
 It does not tell an operator to create a Linux bond on the MP for BCM ports.
 
+Member diagnostics distinguish administrative disablement from carrier loss.
+Down-port SDK speed readback is retained as `reported_speed_mbps`; the effective
+`speed_mbps` is null without carrier, so an idle hardware value cannot look like
+a negotiated speed. A disabled member can still have saved enabled intent.
+
+`partner_consistency` compares fresh actor system priority, system MAC and key,
+and rejects duplicate partner port identities. Different Ethernet source MACs
+are allowed: separate chassis may advertise one shared aggregate system ID.
+Missing or expired samples produce `incomplete`, not a mismatch. The WebUI shows
+the partner priority/key/port and advertised state flags; the CLI receives the
+same report. `consistent` describes advertisements only and does not establish
+vPC peer-link health, local negotiation or forwarding readiness.
+
 ## MP configuration contract
 
 `aggregate_config.py` parses the canonical candidate/running XML used by the WebUI
@@ -108,6 +121,11 @@ python3 -m unittest test_lacp_packets test_lacp_engine test_lacp_trunk
 The same suites run on x86 Linux and native MIPS64 big-endian Python. CI runs
 these explicitly, including port-envelope byte order and failed-send withdrawal.
 The trunk suite requires Linux; it uses fake sockets and no physical devices.
+
+The engine tests also model two independent peers with one advertised system
+and key but different source MACs and port IDs. They cover member loss/recovery
+and minimum-link enforcement. This is a protocol simulation, not physical vPC
+qualification.
 
 On a Linux test host with root, `ip`, `ping`, bonding, veth and TUN/TAP available:
 

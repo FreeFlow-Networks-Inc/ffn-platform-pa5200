@@ -31,6 +31,7 @@ class PacketTests(unittest.TestCase):
         observed=Observations();frame=bytearray(FRAME);frame[32]&=~2
         self.assertTrue(observed.receive(23,bytes(frame),10))
         row=observed.snapshot(12.9)['ports'][0]
+        self.assertEqual(row['source'],'02:00:00:00:00:01')
         self.assertFalse(row['expired']);self.assertFalse(row['negotiated']);self.assertFalse(row['forwarding_verified'])
         self.assertTrue(observed.snapshot(13)['ports'][0]['expired'])
         self.assertTrue(observed.snapshot(9)['ports'][0]['expired'])

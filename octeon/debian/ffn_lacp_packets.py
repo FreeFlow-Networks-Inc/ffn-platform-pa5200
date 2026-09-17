@@ -57,6 +57,6 @@ class Observations:
             expired=not 0<=age<timeout
             rows.append(dict(port=port,received=pdu['received'],age_seconds=max(0,age),
                              expired=expired,timeout_seconds=timeout,
-                             actor=pdu['actor'],partner=pdu['partner'],
+                             source=pdu['source'],actor=pdu['actor'],partner=pdu['partner'],
                              negotiated=False,forwarding_verified=False))
         return dict(ports=rows,received=self.received,invalid=self.invalid,observation_only=True)

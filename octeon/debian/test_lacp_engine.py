@@ -24,6 +24,36 @@ def run(a,b,end=10,start=0,drop=None):
     return now
 
 class NegotiationTests(unittest.TestCase):
+    def test_multi_chassis_partner_independent_sources_and_member_failure(self):
+        # Two independent peer engines share the advertised system/key, as a
+        # multi-chassis aggregate does, but use different physical source MACs.
+        for minimum in (1,2):
+            local=Engine('02:00:00:00:00:01',1,{23:'02:00:00:00:00:01',24:'02:00:00:00:00:01'},Gates(),min_links=minimum)
+            peers={23:Engine('02:00:00:00:00:02',100,{101:'02:00:00:00:01:01'},Gates()),
+                   24:Engine('02:00:00:00:00:02',100,{202:'02:00:00:00:02:02'},Gates())}
+            def exchange(start,end,failed=None):
+                for step in range(start*10,end*10):
+                    now=step/10
+                    for port,peer in peers.items():
+                        remote=next(iter(peer.members));up=port!=failed
+                        local.link(port,up,100000 if up else 0,now)
+                        peer.link(remote,up,100000 if up else 0,now)
+                    for port,frame in local.transmissions(now):
+                        peer=peers[port];peer.receive(next(iter(peer.members)),frame,now)
+                    for port,peer in peers.items():
+                        for _,frame in peer.transmissions(now):local.receive(port,frame,now)
+                return now
+            now=exchange(0,10)
+            self.assertEqual(local.status(now)['distributing'],[23,24])
+            now=exchange(10,15,23)
+            self.assertEqual(local.status(now)['distributing'],[24] if minimum==1 else [])
+            now=exchange(15,25)
+            self.assertEqual(local.status(now)['distributing'],[23,24])
+            now=exchange(25,30,24)
+            self.assertEqual(local.status(now)['distributing'],[23] if minimum==1 else [])
+            now=exchange(30,40)
+            self.assertEqual(local.status(now)['distributing'],[23,24])
+
     def test_two_active_peers_negotiate_two_acknowledged_members(self):
         a=engine();b=engine('02:00:00:00:00:02');now=run(a,b)
         self.assertEqual(a.status(now)['distributing'],[1,2]);self.assertEqual(b.status(now)['distributing'],[1,2])

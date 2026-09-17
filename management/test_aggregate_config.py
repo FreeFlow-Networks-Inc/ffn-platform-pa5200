@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -49,6 +50,33 @@ class AggregateTests(unittest.TestCase):
         result=readiness(group,FACE,{},peers)
         self.assertIn('partner-mismatch',[b['code'] for b in result['blockers']])
         self.assertEqual(sum(b['code']=='member-unavailable' for b in readiness(group,{}, {},{})['blockers']),2)
+
+    def test_down_member_speed_is_not_negotiated_speed(self):
+        face=copy.deepcopy(FACE);face['ports'][0].update(enabled=False,link=False,speed_mbps=20000)
+        face['ports'][1].update(link=False)
+        result=readiness(plan(XML)['aggregates'][0],face,{}, {})
+        self.assertIsNone(result['members'][0]['speed_mbps'])
+        self.assertEqual(result['members'][0]['reported_speed_mbps'],20000)
+        self.assertEqual([b['code'] for b in result['blockers']][:2],['member-admin-down','member-link-down'])
+        self.assertNotIn('member-speed',[b['code'] for b in result['blockers']])
+
+    def test_vpc_identity_checks_use_actor_not_frame_source(self):
+        group=plan(XML)['aggregates'][0]
+        peers={'available':True,'ports':[dict(port=p,expired=False,source='02:00:00:00:00:%02x'%p,
+            actor=dict(system='02:00:00:00:00:01',system_priority=32768,key=100,port=p)) for p in (23,24)]}
+        result=readiness(group,FACE,{},peers)
+        self.assertEqual(result['partner_consistency']['state'],'consistent')
+        self.assertFalse(result['applied']);self.assertFalse(result['partner_consistency']['negotiated'])
+        for change,code in (({'system_priority':1},'partner-mismatch'),({'system':'02:00:00:00:00:02'},'partner-mismatch'),
+                            ({'key':101},'partner-mismatch'),({'port':23},'partner-port-duplicate')):
+            altered=copy.deepcopy(peers);altered['ports'][1]['actor'].update(change)
+            result=readiness(group,FACE,{},altered)
+            self.assertEqual(result['partner_consistency']['state'],'mismatch')
+            self.assertIn(code,[b['code'] for b in result['blockers']])
+        peers['ports'][1]['expired']=True
+        result=readiness(group,FACE,{},peers)
+        self.assertEqual(result['partner_consistency']['state'],'incomplete')
+        self.assertEqual(result['partner_consistency']['missing_members'],['ethernet1/24'])
 
     def test_daemon_reads_both_configs_and_never_applies(self):
         with tempfile.TemporaryDirectory() as tmp:

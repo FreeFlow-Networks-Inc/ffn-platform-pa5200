@@ -5,6 +5,7 @@ This is the hardware contract. It does not translate BCM faceplate ports into
 management-CPU Linux NICs or treat a saved Linux LACP profile as an applied AE.
 """
 import hashlib
+from collections import Counter
 import ipaddress
 import re
 from xml.etree import ElementTree as ET
@@ -104,14 +105,33 @@ def readiness(group,faceplate,network,observations):
     members=[]
     for item in group['members']:
         live=ports.get(item['port'],{});peer=peers.get(item['port'])
+        speed=live.get('speed_mbps') if live.get('link') is True else None
         members.append(dict(item,link=live.get('link'),admin_enabled=live.get('enabled'),
-            speed_mbps=live.get('speed_mbps'),available=live.get('available',False),
+            speed_mbps=speed,reported_speed_mbps=live.get('speed_mbps'),available=live.get('available',False),
             partner_observation=peer,attached=item['port'] in network.get('backend',{}).get('ports',[])))
         if not live.get('available'):blocked.append(dict(code='member-unavailable',message=item['name']+': hardware observation unavailable'))
+        elif group['enabled'] and item['enabled']:
+            if live.get('enabled') is False:
+                blocked.append(dict(code='member-admin-down',message=item['name']+': hardware is administratively disabled despite enabled configuration'))
+            elif live.get('link') is False:
+                blocked.append(dict(code='member-link-down',message=item['name']+': physical carrier is down'))
+            elif live.get('link') is not True:
+                blocked.append(dict(code='member-link-unknown',message=item['name']+': physical carrier is unknown'))
     speeds={p['speed_mbps'] for p in members if p['link'] and p['speed_mbps']}
     if len(speeds)>1:blocked.append(dict(code='member-speed',message='Members have different negotiated speeds'))
-    systems={(p['partner_observation']['actor']['system'],p['partner_observation']['actor']['key']) for p in members if p['partner_observation']}
-    if len(systems)>1:blocked.append(dict(code='partner-mismatch',message='Members advertise different LACP partner systems or keys'))
+    actors=[p['partner_observation']['actor'] for p in members if p['partner_observation']]
+    systems={(p.get('system_priority'),p['system'],p['key']) for p in actors}
+    if len(systems)>1:blocked.append(dict(code='partner-mismatch',message='Members advertise different LACP partner system priorities, system MACs or keys'))
+    identities=Counter((p['system'],p.get('port')) for p in actors if p.get('port'))
+    duplicate=any(count>1 for count in identities.values())
+    if duplicate:blocked.append(dict(code='partner-port-duplicate',message='Multiple members advertise the same LACP partner port; separate peer port identities are required'))
+    complete=len(actors)==len(members) and all(p.get('port') and p.get('system_priority') is not None for p in actors)
+    partner_consistency=dict(state='mismatch' if len(systems)>1 or duplicate else 'consistent' if complete else 'incomplete',
+        observed_members=len(actors),expected_members=len(members),
+        missing_members=[p['name'] for p in members if not p['partner_observation']],
+        # Consistency is only a property of advertisements, never proof of vPC
+        # peer-link health, local selection or successful packet forwarding.
+        negotiated=False,forwarding_verified=False)
     # Only a real apply owner can replace these blockers with verified hardware
     # acknowledgments. Carrier or a peer PDU alone never enables forwarding.
     blocked.extend([
@@ -121,7 +141,7 @@ def readiness(group,faceplate,network,observations):
     if group['network']['dhcp']:blocked.append(dict(code='dhcp-client',message='Aggregate DHCP lease application is not commissioned'))
     if group['lldp']:blocked.append(dict(code='lldp',message='Aggregate LLDP transmission is not commissioned'))
     return dict(group,members=members,owner='ffn-controld',backend='pa5200-bcm',
-        state='blocked',applied=False,activation_supported=False,blockers=blocked,
+        state='blocked',applied=False,activation_supported=False,blockers=blocked,partner_consistency=partner_consistency,
         # Compatibility fields consumed by the common interface view.
         bond=None,kernel_exists=False,kernel_slaves=[],members_pan=[p['name'] for p in members],
         members_linux=[],operstate='BLOCKED',ip_addresses=[],observation_only=True)
