@@ -50,6 +50,14 @@ class PlatformApplier:
         from aggregate_config import compile_device,readiness
         groups,orphans=compile_device(device)
         aggregate_errors={g['ae_name']:'; '.join(b['message'] for b in readiness(g,faceplate,network,{})['blockers']) for g in groups}
+        aggregate_applied={}
+        if groups:
+            observed_aggregates=rpc('aggregates')
+            for row in observed_aggregates.get('aggregates',[]):
+                if row.get('applied') and row.get('committed'):
+                    aggregate_applied[row['ae_name']]=row
+                else:
+                    aggregate_errors[row['ae_name']]='; '.join(b['message'] for b in row.get('blockers',[])) or 'Activate the committed aggregate through the MP controller'
         patches={}
         requested=[]
         entries=device.findall('./network/interface/ethernet/entry')
@@ -69,7 +77,10 @@ class PlatformApplier:
             port=int(match[1]);key='p%d'%port
             if entry.find('aggregate-group') is not None:
                 group=entry.findtext('aggregate-group','')
-                status.fail(name,'pa5200',group+': '+aggregate_errors.get(group,'Aggregate definition does not exist'));continue
+                if group in aggregate_applied:
+                    status.ok(name,None,{'aggregate':group},'pa5200','Aggregate member owned by MP-supervised CP/DP agents')
+                else:status.fail(name,'pa5200',group+': '+aggregate_errors.get(group,'Aggregate definition does not exist'))
+                continue
             state=entry.findtext('link-state','auto')
             if state not in ('up','down','auto'):
                 status.fail(name,'pa5200','Unsupported link-state');continue
@@ -116,7 +127,9 @@ class PlatformApplier:
             patches[key]=desired;requested.append((name,key,enabled))
         for entry in device.findall('./network/interface/aggregate-ethernet/entry'):
             name=entry.get('name','aggregate')
-            status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))
+            if name in aggregate_applied:
+                status.ok(name,None,{'distributing':aggregate_applied[name]['distributing']},'pa5200','Aggregate packet attachment active; transit policy remains default-deny')
+            else:status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))
         if (patches.get('p1',{}).get('addresses') and 1 not in network.get('backend',{}).get('ports',[])):
             try:
                 wan=rpc('wan-path')

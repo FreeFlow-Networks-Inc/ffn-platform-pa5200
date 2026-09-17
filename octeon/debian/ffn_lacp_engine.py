@@ -36,7 +36,7 @@ def encode(actor,partner,source):
 
 
 class Engine:
-    def __init__(self,system,key,members,driver,*,activity='active',rate='fast',system_priority=32768,min_links=1):
+    def __init__(self,system,key,members,driver,*,activity='active',rate='fast',system_priority=32768,min_links=1,collecting=True):
         raw=mac_bytes(system)
         if raw==bytes(6) or raw[0]&1:raise ValueError('Unicast system MAC required')
         if type(key) is not int or not 1<=key<=65535:raise ValueError('Invalid actor key')
@@ -45,6 +45,8 @@ class Engine:
             any(type(p) is not int or not 1<=p<=65535 for p in members)):raise ValueError('Invalid members')
         if type(min_links) is not int or not 1<=min_links<=len(members):raise ValueError('Invalid minimum links')
         if activity not in ('active','passive') or rate not in ('fast','slow'):raise ValueError('Invalid LACP mode')
+        if type(collecting) is not bool:raise ValueError('Invalid collection permission')
+        self.collecting=collecting
         self.system=system.lower();self.key=key;self.priority=system_priority
         self.active=activity=='active';self.fast=rate=='fast';self.min_links=min_links;self.driver=driver
         self.members={}
@@ -149,7 +151,7 @@ class Engine:
             m['sync']=m['selected'] and now-m['selected_since']>=2 and not self.fault
             if was!=m['sync']:m['dirty']=True
             peer=m['peer']
-            if m['sync'] and m['matched'] and peer['state']&SYNC:
+            if self.collecting and m['sync'] and m['matched'] and peer['state']&SYNC:
                 desired[port]['collect']=True
                 if peer['state']&COLLECTING:eligible.append(port)
         if len(eligible)>=self.min_links:

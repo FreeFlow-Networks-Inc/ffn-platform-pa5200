@@ -97,7 +97,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: FreeFlow-Networks-Inc/FFN-NGFW
-          ref: 11386877aca78dc00860d24f76c3a0b37396b9c2
+          ref: f286c56cbdc877501a7e2a8c97f4b329ce54027c
           path: .core-runtime
           submodules: false
           persist-credentials: false
@@ -132,7 +132,7 @@ jobs:
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
       - name: LACP wire codec, negotiation and OCTEON member transport
-        run: cd octeon/debian && python3 -m unittest test_lacp_packets test_lacp_engine test_lacp_trunk
+        run: cd octeon/debian && python3 -m unittest test_lacp_packets test_lacp_engine test_lacp_trunk test_aggregate_datapath test_aggregate_dhcp test_aggregate_offload
       - name: network config
         run: cd octeon/debian && python3 test_network_config.py
       - name: VIF assignments and adapter guards
@@ -148,7 +148,7 @@ jobs:
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
       - name: central hardware control and FE100 policy barrier
-        run: cd management && python3 -m unittest test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension
+        run: cd management && python3 -m unittest test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation
       - name: all four copper PHY and MAC control paths
         run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify test_copper_identify_backend
       - name: management UI controls

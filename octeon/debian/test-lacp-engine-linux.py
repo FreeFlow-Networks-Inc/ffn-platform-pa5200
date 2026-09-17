@@ -30,9 +30,8 @@ def atomic(path,value):
 def worker(directory,activity):
     import fcntl,select,socket,struct
     from ffn_lacp_engine import Engine
-    class Gates:
-        def apply(self,value):self.state=value;return value
-    driver=Gates();sockets={};tap=None;counts={'rx':0,'tx':0,'dropped':0,'lacp_rx':0,'lacp_tx':0}
+    from ffn_aggregate_datapath import Gates
+    driver=Gates((1,2));sockets={};tap=None;counts={'rx':0,'tx':0,'dropped':0,'lacp_rx':0,'lacp_tx':0}
     def stop(*_):raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,stop)
     try:
@@ -71,15 +70,13 @@ def worker(directory,activity):
             for source in readable:
                 if source==tap:
                     frame=os.read(tap,2048)
-                    ports=[p for p,v in driver.state.items() if v['distribute']]
-                    if ports:
-                        # Stable L2 selection for this test data adapter only.
-                        port=ports[sum(frame[:12])%len(ports)]
-                        try:sockets[port].send(frame);counts['tx']+=1
+                    engine.tick(time.monotonic())
+                    def send(port,packet):
+                        try:sockets[port].send(packet);counts['tx']+=1
                         except OSError as error:
                             if error.errno!=errno.ENETDOWN:raise
                             engine.link(port,False,0,time.monotonic());counts['dropped']+=1
-                    else:counts['dropped']+=1
+                    if driver.transmit(frame,send) is None:counts['dropped']+=1
                     continue
                 try:frame,address=source.recvfrom(2048)
                 except OSError as error:
@@ -90,9 +87,10 @@ def worker(directory,activity):
                 if frame[12:14]==b'\x88\x09':
                     if port not in control.get('mute',[]):
                         engine.receive(port,frame,time.monotonic());counts['lacp_rx']+=1
-                elif driver.state[port]['collect']:
-                    os.write(tap,frame);counts['rx']+=1
-                else:counts['dropped']+=1
+                else:
+                    engine.tick(time.monotonic())
+                    if driver.receive(port,frame,lambda _,packet:os.write(tap,packet)):counts['rx']+=1
+                    else:counts['dropped']+=1
     except KeyboardInterrupt:pass
     finally:
         if 'engine' in locals():engine.stop(time.monotonic())

@@ -111,6 +111,10 @@ def apply(request):
     before=observe()
     if request['revision']!=before['revision']: raise ValueError('revision conflict; refresh ports')
     port=before['ports'][request['port']-1]
+    aggregate_state=Path('/etc/ffn/aggregate-hardware.json')
+    if aggregate_state.exists() and any(g.get('phase')!='stopped' and request['port'] in g.get('ports',[])
+        for g in json.loads(aggregate_state.read_text()).get('groups',{}).values()):
+        raise ValueError('Stop the aggregate owner before changing a member link')
     if not port['available']: raise ValueError('port unavailable')
     if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
         raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')

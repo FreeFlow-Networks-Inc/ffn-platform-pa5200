@@ -20,6 +20,17 @@ def handle(line, api, token):
     if parts==['show','platform','aggregates']:
         result=api('/api/interfaces/aggregate-status',token=token)
         print(json.dumps(result,indent=2));return True
+    if parts[:3]==['request','platform','aggregate'] and len(parts)==5:
+        import re
+        name,operation=parts[3:]
+        if not re.fullmatch(r'ae(?:[1-9]|1[0-2])',name) or operation not in ('activate','offload','negotiate','deactivate','recover'):
+            raise ValueError('usage: request platform aggregate aeN activate|offload|negotiate|deactivate|recover')
+        observed=api('/api/interfaces/aggregate-status',token=token)
+        payload={'group':name,'operation':operation,'running_revision':observed['running_revision'],'revision':observed['revision']}
+        result=api('/api/system/planes',method='POST',token=token,
+            body={'v':1,'id':str(uuid.uuid4()),'resource':'aggregates','action':'apply','payload':payload})
+        if not result.get('ok'):raise ValueError('Aggregate operation failed: '+str(result.get('error')))
+        print(json.dumps(result['result'],indent=2));return True
     if parts==['show','platform','wan-path'] or (len(parts)==4 and parts[:3]==['request','platform','wan-path']):
         def plane(action,payload):
             ident=str(uuid.uuid4())

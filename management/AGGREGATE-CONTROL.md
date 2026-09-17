@@ -1,5 +1,9 @@
 # Hardware aggregate control development
 
+The software activation owner is now documented in
+[AGGREGATE-ACTIVATION.md](AGGREGATE-ACTIVATION.md). The sections below describe
+the protocol and observation foundation; physical activation uses that owner.
+
 Aggregate Ethernet status now belongs to the selected platform and MP control
 daemon. The core endpoint `/api/interfaces/aggregate-status` invokes the platform
 hook declared by `aggregate_status_version: 1`. A selected provider failure
@@ -35,7 +39,8 @@ why a group/member cannot apply. Existing running intent is not silently rewritt
 `aggregate_backend.py status` reads both configuration revisions and obtains
 faceplate, network attachment and passive LACP observations through fixed helper
 commands. Configuration changes during sampling cause a retryable failure. Reads
-may run concurrently; there are no aggregate mutation commands in this version.
+may run concurrently. Lifecycle mutations are handled by `aggregate_activation.py`
+through the same MP resource.
 
 The MP worker configuration selects resource `aggregates`, action `status`, with
 argv `["/opt/ffn-ngfw-v2/venv/bin/python",
@@ -144,19 +149,17 @@ invocation. No physical port, production route or BCM setting is changed.
 These tests prove protocol/software interoperability, not hardware commissioning
 or aggregate throughput.
 
-## Work still required for activation
+## Hardware offload and physical qualification still required
 
-The tested engine and packet-envelope adapter do **not** make a physical
-aggregate operational. Activation continues to fail explicitly until all of
-these have a verified implementation:
+The engine and packet-envelope adapter alone do not make an aggregate
+operational. The new software owner supplies leased link observations, gates,
+packet attachment, DHCP and LLDP. Remaining production qualifications include:
 
 1. BCM aggregate ownership, hashing and selected-member readback/rollback.
-2. Attach the tested LACP engine to the real packet owner, per-member control
-   packet traps, leased hardware link observations and acknowledged hardware
-   data gates, including withdrawal on owner failure.
-3. Aggregate ingress/egress attachment to the OCTEON dataplane, preserving
-   inspection, routing and local management profiles.
-4. DHCP lease lifecycle and LLDP when requested by the configuration.
+2. Physical LACPDU ingress/egress and vPC agreement with the actual peer.
+3. Aggregate bindings in transit security, NAT and routing configuration;
+   the software owner currently enforces default-deny transit.
+4. DHCP and LLDP interoperability on the actual attached network.
 5. Physical peer qualification, traffic tests and single-member failure tests.
 
 Do not set a qualification flag to bypass these requirements. Hardware tests
