@@ -149,7 +149,7 @@ Install the following platform sources in the existing selected runtime:
   and the existing `ffn_copper_forwarding.py`/`ffn_wan_forwarding.py` dependencies.
   Install and enable `ffn-aggregate-watchdog.timer` with its service.
 - DP `/usr/local/sbin`: `ffn_aggregate_runtime.py`, `ffn_aggregate_datapath.py`,
-  `ffn_aggregate_offload.py`,
+  `ffn_aggregate_offload.py`, `ffn_aggregate_vlan.py`,
   executable `ffn_aggregate_dhcp.py`, and updated LACP, inspection and WAN owner
   modules. Retain the existing packet transport/fabric and core interface
   management libraries. Install and enable `ffn-aggregate-dp-watchdog.timer`.

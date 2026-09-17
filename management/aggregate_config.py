@@ -13,6 +13,37 @@ from xml.etree import ElementTree as ET
 PORTS=(28,13,14,15,16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35)
 
 
+def vlan_units(device,entry):
+    from ffn_interface_management import profile
+    result=[];nodes=[(mode,e) for mode in ('layer3','layer2') for e in entry.findall(mode+'/units/entry')]
+    names=Counter(e.get('name') for _,e in nodes);tags=Counter(e.findtext('tag') for _,e in nodes)
+    for mode,node in nodes:
+        row=dict(name=node.get('name',''),tag=node.findtext('tag',''),mode=mode,applied=False,state='pending',reason='Awaiting dataplane acknowledgement')
+        try:
+            if mode!='layer3':raise ValueError('Layer 2 aggregate VLAN attachment is not implemented')
+            if len(nodes)>64:raise ValueError('At most 64 aggregate VLAN units are supported')
+            if not re.fullmatch(re.escape(entry.get('name',''))+r'\.[1-9][0-9]{0,3}',row['name']):raise ValueError('Invalid aggregate unit name')
+            if names[row['name']]!=1 or tags[row['tag']]!=1:raise ValueError('Duplicate unit name or VLAN tag')
+            if set(node.attrib)!={'name'}:raise ValueError('Unsupported VLAN unit attributes')
+            if any(n.tag not in ('tag','ip','mtu','interface-management-profile','comment') for n in node):raise ValueError('Unsupported aggregate VLAN options')
+            if len({n.tag for n in node})!=len(node):raise ValueError('Duplicate aggregate VLAN settings')
+            for setting in node:
+                if setting.attrib or setting.tag!='ip' and len(setting):raise ValueError('Unsupported VLAN setting structure')
+                if setting.tag=='ip' and any(e.tag!='entry' or set(e.attrib)!={'name'} or len(e) for e in setting):raise ValueError('Unsupported VLAN IP settings')
+            if not re.fullmatch(r'[1-9][0-9]{0,3}',row['tag']):raise ValueError('Invalid VLAN tag')
+            row['tag']=int(row['tag'])
+            if not 1<=row['tag']<=4094:raise ValueError('VLAN tag must be 1..4094')
+            row['addresses']=[str(ipaddress.ip_interface(e.get('name',''))) for e in node.findall('ip/entry')]
+            if len(row['addresses'])>32 or len(set(row['addresses']))!=len(row['addresses']):raise ValueError('Invalid or duplicate VLAN addresses')
+            parent_mtu=int(entry.findtext('layer3/mtu','1500'));row['mtu']=int(node.findtext('mtu',str(parent_mtu)))
+            if not 576<=row['mtu']<=min(1500,parent_mtu) or any(':' in a for a in row['addresses']) and row['mtu']<1280:raise ValueError('VLAN MTU exceeds parent or protocol limits')
+            row['management']=profile(device,node.findtext('interface-management-profile',''))
+            row['supported']=True
+        except (ValueError,TypeError) as error:row.update(supported=False,state='unsupported',reason=str(error))
+        result.append(row)
+    return result
+
+
 def parse(raw):
     if isinstance(raw,bytes):raw=raw.decode('utf-8')
     if len(raw)>16*1024*1024 or re.search(r'<!\s*(DOCTYPE|ENTITY)\b',raw,re.I):raise ValueError('Unsafe aggregate XML')
@@ -77,11 +108,8 @@ def compile_device(device):
         if dhcp not in ('yes','no'):errors.append('DHCP enable must be yes or no')
         if dhcp=='yes' and addresses:errors.append('Choose DHCP or static addresses, not both')
         if l3 is not None and any(c.tag not in ('bond','lacp','ip','dhcp-client','mtu','interface-management-profile','units') for c in l3):errors.append('Unsupported aggregate Layer 3 options')
-        # VLAN units do not participate in LACP. Report their unsupported
-        # attachment separately instead of disabling the parent control protocol.
-        subinterfaces=[dict(name=e.get('name',''),tag=e.findtext('tag',''),applied=False,state='unsupported',
-                           reason='Tagged aggregate subinterface attachment is not implemented in the dataplane')
-                       for path in ('layer3/units/entry','layer2/units/entry') for e in entry.findall(path)]
+        # Unit failures are reported separately and never disable parent LACP.
+        subinterfaces=vlan_units(device,entry)
         def number(path,default,low,high):
             try:
                 value=int(entry.findtext(path,str(default)))

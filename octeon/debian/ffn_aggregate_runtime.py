@@ -22,6 +22,7 @@ sys.path.insert(0,'/usr/local/lib/ffn')
 from ffn_aggregate_datapath import Gates
 from ffn_lacp_engine import Engine
 from ffn_lacp_trunk import TrunkLACP
+import ffn_aggregate_vlan as vlan
 from ffn_dp_packet_transport import FRONT,validate_trunk,decode_otmh_ssp,encode
 
 NS='ffn-data'
@@ -95,6 +96,7 @@ def recover(name,token=None):
             if name in links:
                 if links[name].get('ifalias')!='ffn-aggregate:'+intent['token']:raise ValueError('Refusing to delete an unowned aggregate interface')
                 ip('link','set',name,'down')
+                vlan.cleanup(NS,name,intent['token'],ip)
                 from ffn_interface_management import apply
                 apply(NS,name,dict(mode='l3',addresses=[],management=intent['network']['management']),remove=True)
                 ip('link','delete',name)
@@ -115,7 +117,7 @@ def validate(intent):
         raise ValueError('Invalid optical members')
     if any(type(intent[k]) is not bool for k in ('control_only','lldp','offload')) or intent['control_only'] and intent['offload']:raise ValueError('Invalid owner flags')
     network=intent['network']
-    if set(network)-{'enabled'}!={'addresses','dhcp','dhcp_default_route','dhcp_route_metric','mtu','management'}:raise ValueError('Invalid aggregate network settings')
+    if set(network)-{'enabled','units'}!={'addresses','dhcp','dhcp_default_route','dhcp_route_metric','mtu','management'}:raise ValueError('Invalid aggregate network settings')
     if type(network.get('enabled',True)) is not bool:raise ValueError('Invalid parent network enable')
     if not network.get('enabled',True) and (network['addresses'] or network['dhcp'] or network['management'].get('profile')):raise ValueError('Link-only parent cannot carry network settings')
     if type(network['mtu']) is not int or not 576<=network['mtu']<=1500:raise ValueError('Aggregate packet path supports MTU 576..1500')
@@ -126,6 +128,7 @@ def validate(intent):
     if network['dhcp'] and network['addresses']:raise ValueError('Choose DHCP or static addressing')
     from ffn_interface_management import validate as validate_management
     validate_management(network['management'])
+    vlan.validate(intent['group'],network)
     lacp=intent['lacp']
     if set(lacp)!={'activity','rate','min_links','system_priority'}:raise ValueError('Invalid LACP settings')
     # Engine validates all protocol parameters and the stable system MAC.
@@ -182,9 +185,10 @@ def apply_network_update(request):
         ip('link','set',name,'mtu',str(network['mtu']))
         for address in network['addresses']:ip('address','add',address,'dev',name)
         lease_path.unlink(missing_ok=True)
-        if network.get('enabled',True):ip('link','set',name,'up')
+        units=vlan.reconcile(NS,name,intent['token'],network,ip,run)
+        if vlan.carrying(network):ip('link','set',name,'up')
         pending_path.unlink(missing_ok=True)
-    return dict(revision=network_revision(intent),ok=True)
+    return dict(revision=network_revision(intent),ok=True,subinterfaces=units)
 
 
 def lldp(system,group,port):
@@ -207,7 +211,7 @@ def serve(intent):
     from ffn_aggregate_offload import Offload
     offload=Offload(int(name[2:]),members) if intent['offload'] else None
     fd=None;wire=None;inspector=None;dhcp=None;created=False;guarded=False;counts=collections.Counter()
-    worker=None;worker_intent=None;network_error=None;retired_clients=[]
+    worker=None;worker_intent=None;network_error=None;retired_clients=[];unit_status=[];unit_counts={}
     applied_revision=network_revision(intent);attempted_revision=applied_revision;lease_generation=applied_revision
     requested=dict(revision=applied_revision,network=network,lldp=intent['lldp'])
     def halt(*_):raise KeyboardInterrupt()
@@ -231,14 +235,15 @@ def serve(intent):
                     ip('link','set',name,'address',intent['system'],'mtu',str(network['mtu']))
                     # Default-deny transit until the policy compiler supplies an
                     # aggregate binding. Interface-local management still works.
-                    script='table inet ffn_aggregate_'+name+' {\n chain forward {\n type filter hook forward priority -250; policy accept;\n iifname "'+name+'" counter drop;\n oifname "'+name+'" counter drop;\n }\n}\n'
+                    script=vlan.guard(name)
                     run('ip','netns','exec',NS,'nft','-f','-',input=script);guarded=True
                     from ffn_interface_management import apply
                     settings=dict(mode='l3',addresses=network['addresses'],management=network['management'])
                     apply(NS,name,settings)
                     for address in network['addresses']:ip('address','add',address,'dev',name)
+                    unit_status=vlan.reconcile(NS,name,intent['token'],network,ip,run)
                     fd=tap(name)
-                    if network.get('enabled',True):ip('link','set',name,'up')
+                    if vlan.carrying(network):ip('link','set',name,'up')
                 from ffn_inspection import Inspector
                 inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
             wire=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));wire.bind(('ffnpkt0',0));wire.setblocking(False)
@@ -258,6 +263,7 @@ def serve(intent):
                         if worker.returncode or not ack.get('ok') or ack.get('revision')!=network_revision(worker_intent):raise RuntimeError(error.decode(errors='replace')[-512:] or 'Network update failed')
                         intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network']
                         applied_revision=ack['revision'];network_error=None
+                        unit_status=ack.get('subinterfaces',[])
                         local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
                     except Exception as error:network_error=str(error)
                     worker.stdout.close();worker.stderr.close();worker=None
@@ -317,13 +323,14 @@ def serve(intent):
                         process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],updated_monotonic=now,
                         control_only=intent['control_only'],attachment_ready=bool(result['distributing']) and fd is not None and network.get('enabled',True) and network_current,
                         configuration_revision=applied_revision,network_error=network_error,network_update_pending=not network_current,
+                        subinterfaces=[dict(u,applied=network_current and bool(result['distributing']),state='active' if network_current and result['distributing'] else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
                         network=network,ports=members,hardware_offload=bool(offload and offload.ready(gates,now)),
                         offload_requested=intent['offload'],offload_tx=offload.transmitted if offload else 0,
                         offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),
                         data_rx=dict(gates.rx),data_tx=dict(gates.tx),gate_drops=gates.dropped,
                         network_ready=network_current and (not network['dhcp'] or bool(local) and not lease_data.get('error')),lease=lease_data)
                     atomic(state_path,row);print(json.dumps(row),flush=True)
-                ready,_,_=select.select([sys.stdin.fileno(),wire]+([fd] if fd is not None and network_current and network.get('enabled',True) else []),[],[],.05)
+                ready,_,_=select.select([sys.stdin.fileno(),wire]+([fd] if fd is not None and network_current and vlan.carrying(network) else []),[],[],.05)
                 # Drain control before packets so a withdrawal closes gates first.
                 if sys.stdin.fileno() in ready:
                     data=os.read(sys.stdin.fileno(),65536)
@@ -357,21 +364,27 @@ def serve(intent):
                         item=decode_otmh_ssp(raw,set(members))
                         if item is None:continue
                         port,frame=item
-                        if not network_current or applied_revision!=requested['revision'] or not network.get('enabled',True):counts['network_update_drop']+=1;continue
-                        if len(frame)>network['mtu']+18:counts['oversize_drop']+=1;continue
+                        if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
+                        attachment=vlan.classify(name,network,frame)
+                        if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
+                        unit_name,plain,unit_local=attachment
                         if fd is None:counts['control_only_drop']+=1;continue
                         if frame[12:14]==b'\x88\xcc':continue
                         destination=frame[30:34] if frame[12:14]==b'\x08\x00' and len(frame)>=34 else frame[38:54] if frame[12:14]==b'\x86\xdd' and len(frame)>=54 else None
-                        if destination not in local and not inspector.allow(port,frame):counts['inspection_drop']+=1;continue
+                        if not unit_local and not (unit_name==name and destination in local) and not inspector.allow(port,plain):counts['inspection_drop']+=1;continue
                         def deliver(_port,payload):
                             if os.write(fd,payload)!=len(payload):raise OSError('Short aggregate TAP write')
                         engine.tick(time.monotonic())
-                        try:gates.receive(port,frame,deliver)
+                        try:
+                            if gates.receive(port,frame,deliver):
+                                counter=unit_counts.setdefault(unit_name,collections.Counter());counter['rx_packets']+=1;counter['rx_bytes']+=len(frame)
                         except BlockingIOError:counts['rx_queue_drop']+=1
                 if fd is not None and fd in ready:
                     frame=os.read(fd,network['mtu']+19)
-                    if not network_current or applied_revision!=requested['revision'] or not network.get('enabled',True):counts['network_update_drop']+=1;continue
-                    if not 14<=len(frame)<=network['mtu']+18:counts['tx_length_drop']+=1;continue
+                    if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
+                    attachment=vlan.classify(name,network,frame)
+                    if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
+                    unit_name=attachment[0]
                     def send(port,payload):
                         packet=encode(port,payload)
                         if wire.send(packet)!=len(packet):raise OSError('Short aggregate data write')
@@ -380,7 +393,9 @@ def serve(intent):
                         if wire.send(packet)!=len(packet):raise OSError('Short hardware aggregate write')
                     try:
                         if not offload or not offload.transmit(frame,gates,time.monotonic(),send_hardware):
-                            gates.transmit(frame,send)
+                            sent=gates.transmit(frame,send)
+                            if sent is not None:
+                                counter=unit_counts.setdefault(unit_name,collections.Counter());counter['tx_packets']+=1;counter['tx_bytes']+=len(frame)
                     except BlockingIOError:counts['tx_queue_drop']+=1
         finally:
             engine.stop(time.monotonic())
@@ -402,6 +417,7 @@ def serve(intent):
                 with open('/run/ffn-network.lock','a') as lock:
                     fcntl.flock(lock,fcntl.LOCK_EX)
                     ip('link','set',name,'down')
+                    vlan.cleanup(NS,name,intent['token'],ip)
                     from ffn_interface_management import apply
                     apply(NS,name,dict(mode='l3',addresses=[],management=network['management']),remove=True)
                     ip('link','delete',name)

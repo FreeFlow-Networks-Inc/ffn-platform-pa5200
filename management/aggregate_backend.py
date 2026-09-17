@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import time
+sys.path.extend(['/opt/ffn-ngfw-v2','/opt/ffn-ngfw'])
 from aggregate_config import plan,readiness
 
 
@@ -43,8 +44,6 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             offload_ready=activation['offload_ready'],offload_blocker=activation['offload_blocker'])
         runtime=activation['groups'].get(group['ae_name'])
         row['activation']=runtime
-        for subinterface in group.get('subinterfaces',[]):
-            row['blockers'].append(dict(code='subinterface-attachment',message=subinterface['name']+': '+subinterface['reason']))
         if activation['activation_supported']:
             row['blockers']=[b for b in row['blockers'] if b['code'] not in ('bcm-membership','lacp-negotiation','dataplane-attachment','dhcp-client','lldp')]
             if not runtime or not runtime.get('fresh'):
@@ -67,11 +66,20 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             row['offload_scope']=dp.get('offload_scope')
             row['offload_tx']=dp.get('offload_tx',0)
             if runtime.get('control_only'):row['blockers'].append(dict(code='control-only',message='LACP qualification only; data collection, DHCP and routing are disabled'))
-            elif dp.get('network',{}).get('enabled',True):row['blockers'].append(dict(code='transit-policy',message='Aggregate transit defaults to deny until a security-policy binding is implemented'))
+            elif dp.get('network',{}).get('enabled',True) or dp.get('network',{}).get('units'):row['blockers'].append(dict(code='transit-policy',message='Aggregate and VLAN transit defaults to deny until a security-policy binding is implemented'))
             if dp.get('network_error'):row['blockers'].append(dict(code='network-apply',message=dp['network_error']))
             if runtime.get('configuration_error'):row['blockers'].append(dict(code='network-configuration',message=runtime['configuration_error']))
             elif dp.get('network_update_pending'):row['blockers'].append(dict(code='network-pending',message='Parent networking is updating; LACP is retained'))
             if not row['distributing'] and not runtime.get('control_only'):row['blockers'].append(dict(code='negotiating',message='No members are distributing; inspect physical links and partner negotiation'))
+        observed={u['name']:u for u in (runtime or {}).get('dataplane',{}).get('subinterfaces',[])}
+        row['subinterfaces']=[]
+        for unit in group.get('subinterfaces',[]):
+            current=observed.get(unit['name'],{})
+            ack=bool(runtime and runtime.get('configuration_revision') and runtime.get('configuration_revision')==runtime.get('dataplane',{}).get('configuration_revision'))
+            ready=bool(unit.get('supported') and ack and runtime.get('fresh') and row['committed'] and runtime.get('running_revision')==committed['revision'] and current.get('applied') and current.get('tag')==unit['tag'])
+            child=dict(unit,applied=ready,state='active' if ready else unit['state'],reason='Local VLAN attachment active; transit policy remains default-deny' if ready else unit['reason'],counters=current.get('counters',{}))
+            row['subinterfaces'].append(child)
+            if not ready:row['blockers'].append(dict(code='subinterface-attachment',message=unit['name']+': '+child['reason']))
         rows.append(row)
     if candidate!=(directory/'candidate-config.xml').read_bytes() or running!=(directory/'running-config.xml').read_bytes():
         raise ValueError('Configuration changed while reading aggregate status; refresh')

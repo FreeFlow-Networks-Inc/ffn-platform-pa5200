@@ -2,10 +2,11 @@
 
 The MP aggregate supervisor owns CP redirects and the OCTEON LACP process.
 Negotiation uses the physical members of the parent AE, independently of its
-VLAN subinterfaces. A Layer 3 `units` container is accepted by the parent intent
-compiler; each child is reported separately with `applied: false` and an explicit
-unsupported attachment reason. Configd reports that failure against the child
-name rather than describing parent LACP as unsupported.
+VLAN subinterfaces. Layer 3 units use owned 802.1Q devices on the OCTEON aggregate
+TAP. Static addresses and interface management profiles apply per child, with
+independent receive/transmit counters. An applied child requires a fresh matching
+configuration acknowledgement; saved XML alone does not establish readiness.
+Malformed or unsupported units are withdrawn and reported separately from LACP.
 
 The runtime tracks the complete running revision separately from member and
 LACP settings. Addressing, management profiles, LLDP and subinterface commits
@@ -31,6 +32,18 @@ can coexist with negotiated LACP: the parent DHCP client has not received a leas
 Check `distributing` and individual member synchronization/collection/distribution
 alongside physical link status.
 
-An existing VLAN interface in candidate/running XML is not proof of packet
-forwarding. Tagged AE attachment remains unsupported; parent transit remains
-default-deny until its security-policy binding is implemented.
+Only configured single-tag VLANs enter the TAP. Unknown, priority-only and stacked
+tags are dropped. Unit ID and VLAN tag are separate; units retain their netdevice
+on address/profile updates. The aggregate TAP remains up for children when parent
+mode is None. Ownership aliases protect unrelated interfaces from adoption or deletion.
+
+Supported attachment scope: up to 64 Layer 3 units, static IPv4/IPv6 addresses,
+MTU up to 1500 and no larger than the parent, and interface management profiles.
+Layer 2 units, DHCP on children, TCP MSS options and virtual-router isolation are
+not implemented. Parent and child routed transit remain default-deny until the
+aggregate security-policy binding is implemented; this is not Internet forwarding.
+
+`test-aggregate-vlan-linux.py` exercises the real kernel VLAN and nftables paths
+in disposable namespaces: tagged ping, profile denial, address replacement,
+stable netdevices, untagged isolation, transit blocking and unit removal. Packet
+classification and stale acknowledgement tests run separately.

@@ -132,6 +132,7 @@ def prepare(raw,group,control_only,dp_boot,offload=False):
     root=parse(raw);device=root.find("./devices/entry[@name='localhost.localdomain']")
     from ffn_interface_management import profile
     network=dict(row['network']);network['management']=profile(device,network.pop('management_profile'))
+    network['units']=[{k:u[k] for k in ('name','tag','addresses','mtu','management')} for u in row['subinterfaces'] if u['supported']]
     system='02:'+':'.join(hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[n:n+2] for n in range(0,10,2))
     intent=dict(group=group,token=str(uuid.uuid4()),boot_id=dp_boot,system=system,members=[p['port'] for p in row['members']],
         lacp=row['lacp'],network=network,lldp=row['lldp'],control_only=control_only,offload=offload)
@@ -248,7 +249,7 @@ def supervise(name):
                     # Unsupported network settings must not kill LACP or retain
                     # potentially stale interface-local access permissions.
                     from ffn_interface_management import profile
-                    intent['network']=dict(intent['network'],enabled=False,addresses=[],dhcp=False,management=profile(None,''))
+                    intent['network']=dict(intent['network'],enabled=False,addresses=[],dhcp=False,units=[],management=profile(None,''))
                     state['configuration_error']=str(error)
                 selected['running_revision']=current_revision;state['running_revision']=current_revision
             if sent is not None and now-sent>5:raise RuntimeError('CP link observation expired')
@@ -278,6 +279,7 @@ def supervise(name):
                         if row.get('boot_id')!=intent['boot_id']:raise RuntimeError('DP lifetime changed')
                         last_dp=time.monotonic();state['dataplane']=row;state['dp_received_monotonic']=last_dp
                         acknowledged=row.get('configuration_revision')==network_revision(intent)
+                        state['configuration_revision']=network_revision(intent)
                         ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('distributing'))
                         state['state']='control-only' if intent['control_only'] else 'apply-failed' if row.get('network_error') or state.get('configuration_error') else 'reconciling' if not acknowledged else ('active' if row.get('network_ready') else 'awaiting-address') if ready else 'negotiating'
                         state['applied']=bool(acknowledged and ready and row.get('network_ready')) and not intent['control_only'] and not state.get('configuration_error')

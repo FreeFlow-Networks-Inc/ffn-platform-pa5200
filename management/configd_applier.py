@@ -50,10 +50,11 @@ class PlatformApplier:
         from aggregate_config import compile_device,readiness
         groups,orphans=compile_device(device)
         aggregate_errors={g['ae_name']:'; '.join(b['message'] for b in readiness(g,faceplate,network,{})['blockers']) for g in groups}
-        aggregate_applied={}
+        aggregate_applied={};aggregate_units={}
         if groups:
             observed_aggregates=rpc('aggregates')
             for row in observed_aggregates.get('aggregates',[]):
+                aggregate_units.update({u['name']:u for u in row.get('subinterfaces',[])})
                 if row.get('applied') and row.get('committed'):
                     aggregate_applied[row['ae_name']]=row
                 else:
@@ -128,7 +129,9 @@ class PlatformApplier:
         for entry in device.findall('./network/interface/aggregate-ethernet/entry'):
             name=entry.get('name','aggregate')
             for unit in entry.findall('./layer3/units/entry')+entry.findall('./layer2/units/entry'):
-                status.fail(unit.get('name',name),'pa5200','Tagged aggregate subinterface attachment is not implemented; parent LACP is independent')
+                child=aggregate_units.get(unit.get('name'),{})
+                if child.get('applied'):status.ok(unit.get('name'),None,{'tag':child['tag']},'pa5200','VLAN local attachment and management profile active; transit policy remains default-deny')
+                else:status.fail(unit.get('name',name),'pa5200',child.get('reason','Aggregate VLAN attachment is awaiting dataplane acknowledgement'))
             if name in aggregate_applied:
                 message='Aggregate LACP active; parent has no network attachment' if not aggregate_applied[name]['network'].get('enabled',True) else 'Aggregate packet attachment active; transit policy remains default-deny'
                 status.ok(name,None,{'distributing':aggregate_applied[name]['distributing']},'pa5200',message)

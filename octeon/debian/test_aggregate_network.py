@@ -25,7 +25,7 @@ class NetworkUpdateTests(unittest.TestCase):
         if args[:3]==('-j','address','show'):return json.dumps([{'addr_info':[{'local':'192.0.2.1','prefixlen':24},{'local':'198.51.100.1','prefixlen':24}]}])
         return ''
     def apply(self):
-        with patch.object(runtime,'Path',side_effect=lambda p:self.root/Path(p).name),patch.object(runtime,'open',side_effect=lambda p,*a:builtins.open(self.root/Path(p).name,*a),create=True),patch.object(runtime,'boot',return_value='fixture'),patch.object(runtime,'ip',side_effect=self.ip),patch('ffn_interface_management.apply'):
+        with patch.object(runtime,'Path',side_effect=lambda p:self.root/Path(p).name),patch.object(runtime,'open',side_effect=lambda p,*a:builtins.open(self.root/Path(p).name,*a),create=True),patch.object(runtime,'boot',return_value='fixture'),patch.object(runtime,'ip',side_effect=self.ip),patch('ffn_interface_management.apply'),patch.object(runtime.vlan,'reconcile',return_value=[]):
             return runtime.apply_network_update(dict(intent=self.intent,previous=self.old))
     def test_update_changes_only_owned_addresses_without_recreating_link(self):
         ack=self.apply();self.assertTrue(ack['ok']);self.assertEqual(ack['revision'],runtime.network_revision(self.intent))

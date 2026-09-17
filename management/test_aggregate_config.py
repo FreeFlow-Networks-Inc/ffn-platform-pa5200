@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock,patch
 from aggregate_config import plan,readiness
 from aggregate_backend import execute
 
@@ -25,7 +25,14 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(group['errors'],[])
         self.assertEqual(group['subinterfaces'][0]['name'],'ae1.69')
         self.assertFalse(group['subinterfaces'][0]['applied'])
-        self.assertEqual(group['subinterfaces'][0]['state'],'unsupported')
+        self.assertEqual(group['subinterfaces'][0]['state'],'pending')
+        self.assertTrue(group['subinterfaces'][0]['supported'])
+
+    def test_bad_vlan_does_not_disable_lacp_or_claim_attachment(self):
+        for content in (b'<tag>0</tag>',b'<tag>069</tag>',b'<tag>69</tag><ip><entry name="192.0.2.1/24"><unsupported/></entry></ip>',b'<tag>69</tag><mtu>9000</mtu>',b'<tag>69</tag><dhcp-client/>',b'<tag>69</tag><interface-management-profile>missing</interface-management-profile>'):
+            raw=XML.replace(b'</bond>',b'</bond><units><entry name="ae1.69">'+content+b'</entry></units>')
+            row=plan(raw)['aggregates'][0]
+            self.assertEqual(row['errors'],[]);self.assertFalse(row['subinterfaces'][0]['supported']);self.assertFalse(row['subinterfaces'][0]['applied'])
 
     def test_disabled_member_lldp_from_interface_editor_is_accepted(self):
         raw=XML.replace(b'<aggregate-group>ae1</aggregate-group>',b'<aggregate-group>ae1</aggregate-group><lldp><enable>no</enable></lldp>')
@@ -108,6 +115,19 @@ class AggregateTests(unittest.TestCase):
             self.assertFalse(result['aggregates'][0]['committed'])
             self.assertEqual((path/'running-config.xml').read_bytes(),XML)
             with self.assertRaises(ValueError):asyncio.run(execute('apply',{},backend,path))
+
+    def test_child_apply_requires_fresh_matching_dataplane_ack(self):
+        raw=XML.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag></entry></units>')
+        runtime=dict(fresh=True,applied=True,state='active',running_revision=plan(raw)['revision'],configuration_revision='new',dataplane=dict(configuration_revision='new',distributing=[23,24],subinterfaces=[dict(name='ae1.69',tag=69,applied=True)]))
+        status=dict(groups={'ae1':runtime},revision=1,activation_supported=True,offload_ready=False,offload_blocker='unqualified')
+        with tempfile.TemporaryDirectory() as tmp,patch('aggregate_activation.status',return_value=status):
+            path=Path(tmp)
+            for source in ('candidate','running'):(path/(source+'-config.xml')).write_bytes(raw)
+            backend=AsyncMock();backend.run.return_value={}
+            def child():return asyncio.run(execute('status',{},backend,path))['aggregates'][0]['subinterfaces'][0]
+            self.assertTrue(child()['applied'])
+            runtime['dataplane']['configuration_revision']='old';self.assertFalse(child()['applied'])
+            runtime['dataplane']['configuration_revision']='new';runtime['fresh']=False;self.assertFalse(child()['applied'])
 
     def test_cli_uses_shared_authenticated_endpoint(self):
         from cli_extension import handle
