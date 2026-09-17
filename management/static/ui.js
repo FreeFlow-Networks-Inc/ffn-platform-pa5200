@@ -196,6 +196,11 @@
       }
     }
     if (section === 'chassis') {
+    try {
+      const rear=await import('/static/extensions/pa5200/chassis.js');
+      if(!root.isConnected)return;
+      rear.render(root,api,resources);
+    } catch(e) { element('p','Rear chassis view unavailable: '+e.message,root); }
     const health = card(root, 'Power supplies, cooling and fabric');
     for (const name of ['chassis', 'thermal', 'fabric']) {
       const r = resources[name];

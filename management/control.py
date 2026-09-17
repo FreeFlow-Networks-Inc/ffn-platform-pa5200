@@ -14,6 +14,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('chassis-storage','status'): ('/opt/ffn-ngfw-v2/venv/bin/python', '/opt/ffn-platforms/pa5200-management/chassis_storage.py'),
     ('copper-identify','status'): ('/usr/local/sbin/ffn-copper-identify','status'),
     ('copper-identify','set'): ('/usr/local/sbin/ffn-copper-identify','apply'),
     ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
@@ -42,6 +43,22 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+
+def mp_interfaces_status():
+    from ffn_controld_client import ControldClient
+    response=ControldClient(timeout=20).plane_request({'v':1,'id':str(uuid.uuid4()),
+        'resource':'mp-interfaces','action':'status','payload':{}})
+    if not response.get('ok'): raise RuntimeError('Management interface controller unavailable')
+    return response['result']
+
+
+def data_port_stats():
+    from ffn_controld_client import ControldClient
+    response=ControldClient(timeout=20).plane_request({'v':1,'id':str(uuid.uuid4()),
+        'resource':'front-traffic','action':'status','payload':{}})
+    if not response.get('ok'): raise RuntimeError('Front data-port telemetry unavailable')
+    return response['result']
 
 
 def aggregate_status():

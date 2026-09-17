@@ -7,6 +7,16 @@ import uuid
 def handle(line, api, token):
     parts=shlex.split(line)
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
+    if parts==['show','platform','mp-interfaces']:
+        print(json.dumps(api('/api/system/mp-interfaces',token=token),indent=2));return True
+    if parts[:3]==['request','platform','mp-interface'] and len(parts)==5:
+        from urllib.parse import quote
+        current=api('/api/system/mp-interfaces',token=token)
+        port=next((p for p in current['ports'] if p['name']==parts[3]),None)
+        if port is None:raise ValueError('Detected external management interface required')
+        result=api('/api/system/mp-interfaces/'+quote(parts[3],safe=''),method='PUT',token=token,
+            body={'revision':port['revision'],'config':json.loads(parts[4])})
+        print(json.dumps(result,indent=2));return True
     if parts==['show','platform','aggregates']:
         result=api('/api/interfaces/aggregate-status',token=token)
         print(json.dumps(result,indent=2));return True

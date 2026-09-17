@@ -29,12 +29,22 @@ class PlatformApplier:
     def claims(self, xpath):
         return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath
                 or '.network.profiles.interface-management-profile.' in xpath
-                or '.network.virtual-router.' in xpath)
+                or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
 
     def reconcile(self, status):
         root=ET.parse(self.config).getroot()
         device=root.find("./devices/entry[@name='localhost.localdomain']")
         if device is None: return
+        if device.find('./deviceconfig/system/mp-interfaces/entry') is not None:
+            import hashlib
+            observed=rpc('mp-interfaces')
+            try:
+                result=rpc('mp-interfaces','apply',{'revision':observed['revision'],
+                    'digest':hashlib.sha256(Path(self.config).read_bytes()).hexdigest()})
+                for entry in device.findall('./deviceconfig/system/mp-interfaces/entry'):
+                    status.ok(entry.get('name'),None,{'state':'networkd-reconfigured'},'pa5200-mp','Committed networkd settings reconciled; link/lease shown in Device Setup')
+            except Exception as error:
+                status.fail('mp-interfaces','pa5200-mp',str(error))
         faceplate=rpc('faceplate')
         network=rpc('network')
         from aggregate_config import compile_device,readiness
