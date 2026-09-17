@@ -67,7 +67,10 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             row['offload_scope']=dp.get('offload_scope')
             row['offload_tx']=dp.get('offload_tx',0)
             if runtime.get('control_only'):row['blockers'].append(dict(code='control-only',message='LACP qualification only; data collection, DHCP and routing are disabled'))
-            else:row['blockers'].append(dict(code='transit-policy',message='Aggregate transit defaults to deny until a security-policy binding is implemented'))
+            elif dp.get('network',{}).get('enabled',True):row['blockers'].append(dict(code='transit-policy',message='Aggregate transit defaults to deny until a security-policy binding is implemented'))
+            if dp.get('network_error'):row['blockers'].append(dict(code='network-apply',message=dp['network_error']))
+            if runtime.get('configuration_error'):row['blockers'].append(dict(code='network-configuration',message=runtime['configuration_error']))
+            elif dp.get('network_update_pending'):row['blockers'].append(dict(code='network-pending',message='Parent networking is updating; LACP is retained'))
             if not row['distributing'] and not runtime.get('control_only'):row['blockers'].append(dict(code='negotiating',message='No members are distributing; inspect physical links and partner negotiation'))
         rows.append(row)
     if candidate!=(directory/'candidate-config.xml').read_bytes() or running!=(directory/'running-config.xml').read_bytes():

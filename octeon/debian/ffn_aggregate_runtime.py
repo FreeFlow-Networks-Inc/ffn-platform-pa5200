@@ -100,7 +100,7 @@ def recover(name,token=None):
                 ip('link','delete',name)
             tables=json.loads(run('ip','netns','exec',NS,'nft','-j','list','tables'))['nftables']
             if any(t.get('table',{}).get('name')=='ffn_aggregate_'+name for t in tables):run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
-        for suffix in ('status.json','lease.json','dhcp.pid','intent.json'):
+        for suffix in ('status.json','lease.json','network-pending.json','dhcp.pid','intent.json'):
             Path('/run/ffn-aggregate-'+name+'-'+suffix).unlink(missing_ok=True)
 
 
@@ -115,7 +115,9 @@ def validate(intent):
         raise ValueError('Invalid optical members')
     if any(type(intent[k]) is not bool for k in ('control_only','lldp','offload')) or intent['control_only'] and intent['offload']:raise ValueError('Invalid owner flags')
     network=intent['network']
-    if set(network)!={'addresses','dhcp','dhcp_default_route','dhcp_route_metric','mtu','management'}:raise ValueError('Invalid aggregate network settings')
+    if set(network)-{'enabled'}!={'addresses','dhcp','dhcp_default_route','dhcp_route_metric','mtu','management'}:raise ValueError('Invalid aggregate network settings')
+    if type(network.get('enabled',True)) is not bool:raise ValueError('Invalid parent network enable')
+    if not network.get('enabled',True) and (network['addresses'] or network['dhcp'] or network['management'].get('profile')):raise ValueError('Link-only parent cannot carry network settings')
     if type(network['mtu']) is not int or not 576<=network['mtu']<=1500:raise ValueError('Aggregate packet path supports MTU 576..1500')
     if any(type(network[k]) is not bool for k in ('dhcp','dhcp_default_route')):raise ValueError('Invalid DHCP settings')
     if type(network['dhcp_route_metric']) is not int or not 1<=network['dhcp_route_metric']<=65535:raise ValueError('Invalid route metric')
@@ -144,6 +146,47 @@ def tap(name):
     finally:os.setns(original,0);os.close(original);os.close(target)
 
 
+def network_revision(intent):
+    return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
+
+
+def apply_network_update(request):
+    """Separate process: IP/nft/lease work must never block the LACP loop."""
+    intent=validate(request['intent']);name=intent['group'];network=intent['network'];old=request['previous']
+    path=Path('/run/ffn-aggregate-'+name+'-intent.json')
+    with open('/run/ffn-network.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        current=json.loads(path.read_text())
+        if current['token']!=intent['token'] or current.get('network_generation')!=network_revision(intent):raise ValueError('Network update superseded')
+        link=json.loads(ip('-j','link','show','dev',name))[0]
+        if link.get('ifalias')!='ffn-aggregate:'+intent['token']:raise ValueError('Aggregate network ownership changed')
+        lease_path=Path('/run/ffn-aggregate-'+name+'-lease.json')
+        lease=json.loads(lease_path.read_text()) if lease_path.exists() else {}
+        if lease and lease.get('token')!=intent['token']:raise ValueError('Foreign DHCP lease')
+        pending_path=Path('/run/ffn-aggregate-'+name+'-network-pending.json')
+        pending=json.loads(pending_path.read_text()) if pending_path.exists() else {}
+        if pending and pending.get('token')!=intent['token']:raise ValueError('Foreign network update journal')
+        addresses=set(old['addresses'])|set(pending.get('addresses',[]))|({lease['address']} if lease.get('address') else set())
+        # A failed worker can leave part of its address update installed. Keep
+        # the exact owned set so the next update can remove that partial state.
+        atomic(pending_path,dict(token=intent['token'],addresses=sorted(addresses|set(network['addresses']))))
+        if lease.get('router'):
+            routes=json.loads(ip('-j','route','show','default','dev',name))
+            if any(route.get('gateway')==lease['router'] and str(route.get('protocol'))=='186' and route.get('metric')==old['dhcp_route_metric'] for route in routes):
+                ip('route','del','default','via',lease['router'],'dev',name,'proto','186','metric',str(old['dhcp_route_metric']))
+        ip('link','set',name,'down')
+        actual={str(ipaddress.ip_interface(str(a['local'])+'/'+str(a['prefixlen']))) for n in json.loads(ip('-j','address','show','dev',name)) for a in n.get('addr_info',[])}
+        for address in addresses&actual:ip('address','del',address,'dev',name)
+        from ffn_interface_management import apply
+        apply(NS,name,dict(mode='l3',addresses=network['addresses'],management=network['management']))
+        ip('link','set',name,'mtu',str(network['mtu']))
+        for address in network['addresses']:ip('address','add',address,'dev',name)
+        lease_path.unlink(missing_ok=True)
+        if network.get('enabled',True):ip('link','set',name,'up')
+        pending_path.unlink(missing_ok=True)
+    return dict(revision=network_revision(intent),ok=True)
+
+
 def lldp(system,group,port):
     mac=bytes.fromhex(system.replace(':',''))
     def tlv(kind,value):return struct.pack('!H',(kind<<9)|len(value))+value
@@ -164,6 +207,9 @@ def serve(intent):
     from ffn_aggregate_offload import Offload
     offload=Offload(int(name[2:]),members) if intent['offload'] else None
     fd=None;wire=None;inspector=None;dhcp=None;created=False;guarded=False;counts=collections.Counter()
+    worker=None;worker_intent=None;network_error=None;retired_clients=[]
+    applied_revision=network_revision(intent);attempted_revision=applied_revision;lease_generation=applied_revision
+    requested=dict(revision=applied_revision,network=network,lldp=intent['lldp'])
     def halt(*_):raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,halt)
     with contextlib.ExitStack() as stack:
@@ -175,7 +221,7 @@ def serve(intent):
         try:
             # Persist ownership before any netdevice mutation so the watchdog
             # can recover a crash during initialization as well as normal work.
-            atomic(intent_path,intent)
+            atomic(intent_path,dict(intent,network_generation=applied_revision))
             if not intent['control_only']:
                 with open('/run/ffn-network.lock','a') as lock:
                     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -191,7 +237,8 @@ def serve(intent):
                     settings=dict(mode='l3',addresses=network['addresses'],management=network['management'])
                     apply(NS,name,settings)
                     for address in network['addresses']:ip('address','add',address,'dev',name)
-                    fd=tap(name);ip('link','set',name,'up')
+                    fd=tap(name)
+                    if network.get('enabled',True):ip('link','set',name,'up')
                 from ffn_inspection import Inspector
                 inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
             wire=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));wire.bind(('ffnpkt0',0));wire.setblocking(False)
@@ -204,6 +251,48 @@ def serve(intent):
                 engine.tick(now)
                 adapter.service(now)
                 if engine.fault:raise RuntimeError(engine.fault)
+                if worker is not None and worker.poll() is not None:
+                    output=worker.stdout.read(65536);error=worker.stderr.read(4096)
+                    try:
+                        ack=json.loads(output)
+                        if worker.returncode or not ack.get('ok') or ack.get('revision')!=network_revision(worker_intent):raise RuntimeError(error.decode(errors='replace')[-512:] or 'Network update failed')
+                        intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network']
+                        applied_revision=ack['revision'];network_error=None
+                        local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
+                    except Exception as error:network_error=str(error)
+                    worker.stdout.close();worker.stderr.close();worker=None
+                if worker is None and requested['revision']!=attempted_revision:
+                    retry_network=network_error is not None
+                    attempted_revision=requested['revision'];network_error=None
+                    worker_intent=dict(intent,network=requested['network'],lldp=requested['lldp'])
+                    if intent['control_only'] or worker_intent['network']==network and not retry_network:
+                        intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network'];applied_revision=attempted_revision
+                        atomic(intent_path,dict(intent,network_generation=lease_generation))
+                    else:
+                        try:
+                            # Reject old DHCP hooks before signaling the previous client.
+                            atomic(intent_path,dict(worker_intent,network_generation=attempted_revision))
+                            lease_generation=attempted_revision
+                            if dhcp is not None:
+                                if dhcp.poll() is None:
+                                    try:os.killpg(dhcp.pid,signal.SIGTERM)
+                                    except ProcessLookupError:pass
+                                retired_clients.append((dhcp,time.monotonic()));dhcp=None
+                            worker_started=time.monotonic()
+                            worker=subprocess.Popen([sys.executable,__file__,'network-update'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                            worker.stdin.write((json.dumps(dict(intent=worker_intent,previous=network))+'\n').encode());worker.stdin.close()
+                        except (OSError,ValueError) as error:
+                            network_error='Could not start network update: '+str(error)
+                            if worker is not None:
+                                if worker.poll() is None:worker.kill()
+                                if worker.stdin and not worker.stdin.closed:worker.stdin.close()
+                if worker is not None and time.monotonic()-worker_started>30:
+                    worker.kill();network_error='Network update timed out; LACP retained, data delivery blocked'
+                for process,retired_at in list(retired_clients):
+                    if process.poll() is not None:retired_clients.remove((process,retired_at))
+                    elif time.monotonic()-retired_at>2:
+                        try:os.killpg(process.pid,signal.SIGKILL)
+                        except ProcessLookupError:pass
                 if inspector:inspector.tick()
                 if now>=next_lldp and intent['lldp']:
                     for p,m in engine.members.items():
@@ -212,9 +301,12 @@ def serve(intent):
                             if wire.send(packet)!=len(packet):raise OSError('Short LLDP write')
                     next_lldp=now+30
                 result=engine.status(now)
-                if not intent['control_only'] and network['dhcp'] and result['distributing'] and dhcp is None:
-                    dhcp=subprocess.Popen(['ip','netns','exec',NS,'udhcpc','-f','-i',name,'-s','/usr/local/sbin/ffn_aggregate_dhcp.py','-p','/run/ffn-aggregate-'+name+'-dhcp.pid'],stdout=sys.stderr,stderr=sys.stderr,start_new_session=True)
-                if dhcp is not None and dhcp.poll() is not None:raise RuntimeError('Aggregate DHCP client exited')
+                network_current=applied_revision==requested['revision'] and worker is None and network_error is None
+                if network_current and not intent['control_only'] and network['dhcp'] and result['distributing'] and dhcp is None:
+                    try:dhcp=subprocess.Popen(['ip','netns','exec',NS,'udhcpc','-f','-i',name,'-s','/usr/local/sbin/ffn_aggregate_dhcp.py','-p','/run/ffn-aggregate-'+name+'-dhcp.pid'],stdout=sys.stderr,stderr=sys.stderr,start_new_session=True,env=dict(os.environ,FFN_AGGREGATE_NETWORK_REVISION=lease_generation))
+                    except OSError as error:network_error='Aggregate DHCP client could not start: '+str(error)
+                if dhcp is not None and dhcp.poll() is not None:network_error='Aggregate DHCP client exited'
+                network_current=network_current and network_error is None
                 if now>=next_status:
                     next_status=now+1
                     lease=Path('/run/ffn-aggregate-'+name+'-lease.json')
@@ -223,14 +315,15 @@ def serve(intent):
                         local={ipaddress.ip_interface(lease_data['address']).ip.packed} if lease_data.get('token')==intent['token'] and lease_data.get('address') else set()
                     row=dict(result,group=name,token=intent['token'],boot_id=boot(),pid=os.getpid(),
                         process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],updated_monotonic=now,
-                        control_only=intent['control_only'],attachment_ready=bool(result['distributing']) and fd is not None,
+                        control_only=intent['control_only'],attachment_ready=bool(result['distributing']) and fd is not None and network.get('enabled',True) and network_current,
+                        configuration_revision=applied_revision,network_error=network_error,network_update_pending=not network_current,
                         network=network,ports=members,hardware_offload=bool(offload and offload.ready(gates,now)),
                         offload_requested=intent['offload'],offload_tx=offload.transmitted if offload else 0,
                         offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),
                         data_rx=dict(gates.rx),data_tx=dict(gates.tx),gate_drops=gates.dropped,
-                        network_ready=not network['dhcp'] or bool(local) and not lease_data.get('error'),lease=lease_data)
+                        network_ready=network_current and (not network['dhcp'] or bool(local) and not lease_data.get('error')),lease=lease_data)
                     atomic(state_path,row);print(json.dumps(row),flush=True)
-                ready,_,_=select.select([sys.stdin.fileno(),wire]+([fd] if fd is not None else []),[],[],.05)
+                ready,_,_=select.select([sys.stdin.fileno(),wire]+([fd] if fd is not None and network_current and network.get('enabled',True) else []),[],[],.05)
                 # Drain control before packets so a withdrawal closes gates first.
                 if sys.stdin.fileno() in ready:
                     data=os.read(sys.stdin.fileno(),65536)
@@ -248,6 +341,12 @@ def serve(intent):
                         for p in links:engine.link(p['port'],p['up'],p['speed_mbps'] if p['up'] else 0,stamp,lease_seconds=6-age)
                         if offload:offload.acknowledge(msg.get('offload'),stamp,age)
                         last_input=stamp
+                        if 'config' in msg:
+                            config=msg['config']
+                            if not isinstance(config,dict) or set(config)!={'revision','network','lldp'}:raise ValueError('Invalid network update')
+                            updated=validate(dict(intent,network=config['network'],lldp=config['lldp']))
+                            if config['revision']!=network_revision(updated):raise ValueError('Network revision mismatch')
+                            requested=config
                 if wire in ready:
                     for _ in range(128):
                         try:raw,address=wire.recvfrom(16384)
@@ -258,6 +357,7 @@ def serve(intent):
                         item=decode_otmh_ssp(raw,set(members))
                         if item is None:continue
                         port,frame=item
+                        if not network_current or applied_revision!=requested['revision'] or not network.get('enabled',True):counts['network_update_drop']+=1;continue
                         if len(frame)>network['mtu']+18:counts['oversize_drop']+=1;continue
                         if fd is None:counts['control_only_drop']+=1;continue
                         if frame[12:14]==b'\x88\xcc':continue
@@ -270,6 +370,7 @@ def serve(intent):
                         except BlockingIOError:counts['rx_queue_drop']+=1
                 if fd is not None and fd in ready:
                     frame=os.read(fd,network['mtu']+19)
+                    if not network_current or applied_revision!=requested['revision'] or not network.get('enabled',True):counts['network_update_drop']+=1;continue
                     if not 14<=len(frame)<=network['mtu']+18:counts['tx_length_drop']+=1;continue
                     def send(port,payload):
                         packet=encode(port,payload)
@@ -283,6 +384,12 @@ def serve(intent):
                     except BlockingIOError:counts['tx_queue_drop']+=1
         finally:
             engine.stop(time.monotonic())
+            if worker is not None:
+                if worker.poll() is None:worker.kill()
+                worker.wait(timeout=5)
+            for process,_ in retired_clients:
+                if process.poll() is None:os.killpg(process.pid,signal.SIGKILL)
+                process.wait(timeout=5)
             if dhcp is not None:
                 if dhcp.poll() is None:
                     os.killpg(dhcp.pid,signal.SIGTERM)
@@ -299,13 +406,14 @@ def serve(intent):
                     apply(NS,name,dict(mode='l3',addresses=[],management=network['management']),remove=True)
                     ip('link','delete',name)
             if guarded:run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
-            for suffix in ('lease.json','dhcp.pid'):
+            for suffix in ('lease.json','network-pending.json','dhcp.pid'):
                 Path('/run/ffn-aggregate-'+name+'-'+suffix).unlink(missing_ok=True)
             state_path.unlink(missing_ok=True);intent_path.unlink(missing_ok=True)
 
 
 if __name__=='__main__':
     if sys.argv[1]=='status':print(json.dumps(status()))
+    elif sys.argv[1]=='network-update':print(json.dumps(apply_network_update(json.load(sys.stdin))))
     elif sys.argv[1]=='recover':
         request=json.load(sys.stdin)
         if set(request)!={'group','token','boot_id'} or request['boot_id']!=boot():raise ValueError('Fresh DP recovery identity required')

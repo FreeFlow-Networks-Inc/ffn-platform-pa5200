@@ -135,8 +135,18 @@ def prepare(raw,group,control_only,dp_boot,offload=False):
     system='02:'+':'.join(hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[n:n+2] for n in range(0,10,2))
     intent=dict(group=group,token=str(uuid.uuid4()),boot_id=dp_boot,system=system,members=[p['port'] for p in row['members']],
         lacp=row['lacp'],network=network,lldp=row['lldp'],control_only=control_only,offload=offload)
-    return dict(group=group,running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),intent=intent,
+    return dict(group=group,running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),link_revision=link_revision(row),intent=intent,
         speeds={str(p['port']):p['speed'] for p in row['members']})
+
+
+def link_revision(row):
+    value={key:row[key] for key in ('ae_name','members','bonding_mode','enabled','lacp')}
+    value['members']=sorted(value['members'],key=lambda member:member['port'])
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
+def network_revision(intent):
+    return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
 
 
 def execute(action,payload,call=remote):
@@ -227,8 +237,19 @@ def supervise(name):
             if now-last_dp>5:raise RuntimeError('DP observation expired')
             raw=RUNNING.read_bytes();current_revision=hashlib.sha256(raw).hexdigest()
             if current_revision!=selected['running_revision']:
-                if parent_revision(raw,name)!=selected.get('parent_revision'):
-                    raise RuntimeError('Committed configuration changed; reconciliation required')
+                groups=[g for g in plan(raw)['aggregates'] if g['ae_name']==name]
+                if len(groups)!=1 or link_revision(groups[0])!=selected.get('link_revision'):
+                    raise RuntimeError('Aggregate members or link settings changed; reconciliation required')
+                try:
+                    update=prepare(raw,name,intent['control_only'],intent['boot_id'],intent['offload'])
+                    intent.update(network=update['intent']['network'],lldp=update['intent']['lldp'])
+                    state.pop('configuration_error',None)
+                except ValueError as error:
+                    # Unsupported network settings must not kill LACP or retain
+                    # potentially stale interface-local access permissions.
+                    from ffn_interface_management import profile
+                    intent['network']=dict(intent['network'],enabled=False,addresses=[],dhcp=False,management=profile(None,''))
+                    state['configuration_error']=str(error)
                 selected['running_revision']=current_revision;state['running_revision']=current_revision
             if sent is not None and now-sent>5:raise RuntimeError('CP link observation expired')
             if sent is None and now>=next_send:
@@ -250,13 +271,16 @@ def supervise(name):
                         if row.get('sequence')!=sequence or sent is None or row.get('epoch')!=selected['epoch'] or row.get('phase')!='active':raise RuntimeError('CP observation identity changed')
                         age=time.monotonic()-sent
                         if age>=5:raise RuntimeError('CP response too old')
-                        dp.stdin.write((json.dumps(dict(token=intent['token'],sequence=sequence,age_seconds=age,links=row['links'],offload=row.get('offload')))+'\n').encode());dp.stdin.flush()
+                        config=dict(revision=network_revision(intent),network=intent['network'],lldp=intent['lldp'])
+                        dp.stdin.write((json.dumps(dict(token=intent['token'],sequence=sequence,age_seconds=age,links=row['links'],offload=row.get('offload'),config=config))+'\n').encode());dp.stdin.flush()
                         state['hardware']=row;sent=None;next_send=time.monotonic()+.5
                     else:
                         if row.get('boot_id')!=intent['boot_id']:raise RuntimeError('DP lifetime changed')
                         last_dp=time.monotonic();state['dataplane']=row;state['dp_received_monotonic']=last_dp
-                        state['state']='control-only' if intent['control_only'] else ('active' if row.get('network_ready') else 'awaiting-address') if row.get('attachment_ready') else 'negotiating'
-                        state['applied']=bool(row.get('attachment_ready') and row.get('network_ready')) and not intent['control_only']
+                        acknowledged=row.get('configuration_revision')==network_revision(intent)
+                        ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('distributing'))
+                        state['state']='control-only' if intent['control_only'] else 'apply-failed' if row.get('network_error') or state.get('configuration_error') else 'reconciling' if not acknowledged else ('active' if row.get('network_ready') else 'awaiting-address') if ready else 'negotiating'
+                        state['applied']=bool(acknowledged and ready and row.get('network_ready')) and not intent['control_only'] and not state.get('configuration_error')
                     save()
     except KeyboardInterrupt:state.update(state='stopping',applied=False);save()
     except BaseException as error:state.update(state='failed',error=str(error),applied=False);save()

@@ -7,6 +7,14 @@ import ffn_aggregate_dhcp as dhcp
 
 
 class DHCPTests(unittest.TestCase):
+    def test_replaced_client_cannot_reinstall_old_lease(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);intent={'boot_id':'fixture','token':'owner','control_only':False,'network_generation':'new','network':{'dhcp':True}}
+            (root/'ffn-aggregate-ae1-intent.json').write_text(json.dumps(intent))
+            with patch.object(dhcp,'RUNDIR',root),patch.object(dhcp,'boot',return_value='fixture'),patch.object(dhcp,'ip') as ip:
+                with self.assertRaisesRegex(ValueError,'Stale aggregate DHCP client'):
+                    dhcp.execute('bound',{'interface':'ae1','FFN_AGGREGATE_NETWORK_REVISION':'old'})
+                ip.assert_not_called()
     def test_invalid_offer_cannot_supply_arbitrary_commands_or_offlink_gateway(self):
         for env in ({'ip':'192.0.2.4;bad','subnet':'255.255.255.0'},
                     {'ip':'192.0.2.4','subnet':'255.255.255.0','router':'198.51.100.1'},

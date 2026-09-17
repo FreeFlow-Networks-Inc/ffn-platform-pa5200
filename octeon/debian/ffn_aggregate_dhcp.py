@@ -30,6 +30,11 @@ def execute(action,env):
     path=RUNDIR/('ffn-aggregate-'+name+'-lease.json');cfg=intent['network']
     with (RUNDIR/'ffn-network.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
+        current=json.loads((RUNDIR/('ffn-aggregate-'+name+'-intent.json')).read_text())
+        if current.get('token')!=intent['token'] or current.get('network_generation')!=intent.get('network_generation'):
+            raise ValueError('DHCP configuration changed while waiting for the network lock')
+        if current.get('network_generation') is not None and env.get('FFN_AGGREGATE_NETWORK_REVISION')!=current['network_generation']:
+            raise ValueError('Stale aggregate DHCP client generation')
         link=json.loads(ip('-j','link','show','dev',name))[0]
         if link.get('ifalias')!='ffn-aggregate:'+intent['token']:raise ValueError('DHCP netdevice ownership changed')
         previous=json.loads(path.read_text()) if path.exists() else {}

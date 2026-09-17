@@ -10,6 +10,24 @@ from test_aggregate_config import XML
 
 
 class ActivationTests(unittest.TestCase):
+    def test_network_and_unit_edits_do_not_change_link_identity(self):
+        old=activation.plan(XML)['aggregates'][0];fingerprint=activation.link_revision(old)
+        for change in (dict(network=dict(old['network'],addresses=['192.0.2.1/24'],dhcp=False)),dict(network=dict(old['network'],enabled=False,dhcp=False)),dict(lldp=False),dict(subinterfaces=[{'name':'ae1.69'}])):
+            self.assertEqual(fingerprint,activation.link_revision(dict(old,**change)))
+        self.assertNotEqual(fingerprint,activation.link_revision(dict(old,enabled=False)))
+        self.assertNotEqual(fingerprint,activation.link_revision(dict(old,lacp=dict(old['lacp'],rate='slow'))))
+        members=copy.deepcopy(old['members']);members[0]['speed']='40000'
+        self.assertNotEqual(fingerprint,activation.link_revision(dict(old,members=members)))
+
+    def test_link_only_aggregate_needs_no_parent_layer3(self):
+        root=activation.parse(XML);entry=root.find('.//aggregate-ethernet/entry');l3=entry.find('layer3')
+        bond=l3.find('bond');l3.remove(bond);entry.append(bond);entry.remove(l3)
+        activation.ET.SubElement(entry,'aggregate-only').text='yes'
+        raw=activation.ET.tostring(root)
+        result=activation.prepare(raw,'ae1',False,str(uuid.uuid4()))
+        self.assertFalse(result['intent']['network']['enabled']);self.assertFalse(result['intent']['network']['dhcp'])
+        self.assertEqual(result['intent']['members'],[23,24])
+
     def test_only_inactive_unit_changes_can_preserve_parent_owner(self):
         base=XML.replace(b'</interface></network>',b'</interface><virtual-router><entry name="default"/></virtual-router></network><vsys><entry name="vsys1"><zone><entry name="LAN"><network><layer3/></network></entry></zone></entry></vsys>')
         changed=base.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag></entry></units>')

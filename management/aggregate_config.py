@@ -44,13 +44,19 @@ def compile_device(device):
                 errors.append(pan+': aggregate member LLDP must be disabled')
         if not 2<=len(rows)<=8:errors.append('Aggregate requires 2..8 members')
         if len({r['port'] for r in rows})!=len(rows):errors.append('Duplicate aggregate member')
-        l3=entry.find('layer3');mode=entry.findtext('layer3/bond/mode','802.3ad')
-        if l3 is None:errors.append('Hardware aggregate Layer 3 mode is required by this adapter')
+        l3=entry.find('layer3');bond='bond' if entry.find('bond') is not None else 'layer3/bond'
+        lacp='lacp' if entry.find('lacp') is not None else 'layer3/lacp'
+        mode=entry.findtext(bond+'/mode','802.3ad')
+        network_enabled=l3 is not None and entry.findtext('aggregate-only')!='yes'
+        if entry.find('layer2') is not None and entry.findtext('aggregate-only')!='yes':errors.append('Aggregate Layer 2 attachment is not implemented in the dataplane')
+        if entry.findtext('aggregate-only','no') not in ('yes','no'):errors.append('Invalid aggregate-only flag')
         if mode not in ('802.3ad','lacp'):errors.append('Hardware aggregate mode '+mode+' is not implemented')
-        if any(c.tag not in ('comment','layer3','lldp','link-state') for c in entry):errors.append('Unsupported aggregate options')
+        if any(c.tag not in ('comment','layer3','layer2','lldp','link-state','bond','lacp','aggregate-only') for c in entry):errors.append('Unsupported aggregate options')
         for path,allowed in (
             ('layer3/bond',('mode','miimon')),
+            ('bond',('mode','miimon')),
             ('layer3/lacp',('mode','transmission-rate','min-links','system-priority')),
+            ('lacp',('mode','transmission-rate','min-links','system-priority')),
             ('layer3/dhcp-client',('enable','create-default-route','default-route-metric')),
             ('lldp',('enable',)),
         ):
@@ -62,6 +68,8 @@ def compile_device(device):
         ):
             if entry.findtext(path,default) not in allowed:errors.append('Invalid '+path)
         addresses=[n.get('name','') for n in entry.findall('./layer3/ip/entry')]
+        if not network_enabled and (addresses or entry.findtext('layer3/dhcp-client/enable')=='yes' or entry.findtext('layer3/interface-management-profile')):
+            errors.append('Link-only aggregates cannot have parent addressing or management profiles')
         for address in addresses:
             try:ipaddress.ip_interface(address)
             except ValueError:errors.append('Invalid aggregate IP address')
@@ -73,21 +81,22 @@ def compile_device(device):
         # attachment separately instead of disabling the parent control protocol.
         subinterfaces=[dict(name=e.get('name',''),tag=e.findtext('tag',''),applied=False,state='unsupported',
                            reason='Tagged aggregate subinterface attachment is not implemented in the dataplane')
-                       for e in entry.findall('layer3/units/entry')]
+                       for path in ('layer3/units/entry','layer2/units/entry') for e in entry.findall(path)]
         def number(path,default,low,high):
             try:
                 value=int(entry.findtext(path,str(default)))
                 if not low<=value<=high:raise ValueError()
                 return value
             except ValueError:errors.append('Invalid '+path);return default
-        activity=entry.findtext('layer3/lacp/mode','active');rate=entry.findtext('layer3/lacp/transmission-rate','fast')
+        activity=entry.findtext(lacp+'/mode','active');rate=entry.findtext(lacp+'/transmission-rate','fast')
         if activity not in ('active','passive'):errors.append('Invalid LACP activity')
         if rate not in ('fast','slow'):errors.append('Invalid LACP transmission rate')
         result.append(dict(ae_name=name,members=rows,bonding_mode=mode,
-            enabled=entry.findtext('link-state','auto')!='down',miimon_ms=number('layer3/bond/miimon',100,1,10000),
-            lacp=dict(activity=activity,rate=rate,min_links=number('layer3/lacp/min-links',1,1,max(1,len(rows))),
-                      system_priority=number('layer3/lacp/system-priority',32768,1,65535)),
+            enabled=entry.findtext('link-state','auto')!='down',miimon_ms=number(bond+'/miimon',100,1,10000),
+            lacp=dict(activity=activity,rate=rate,min_links=number(lacp+'/min-links',1,1,max(1,len(rows))),
+                      system_priority=number(lacp+'/system-priority',32768,1,65535)),
             network=dict(addresses=addresses,dhcp=dhcp=='yes',
+                         enabled=network_enabled,
                          dhcp_default_route=entry.findtext('layer3/dhcp-client/create-default-route','no')=='yes',
                          dhcp_route_metric=number('layer3/dhcp-client/default-route-metric',10,1,65535),
                          mtu=number('layer3/mtu',1500,576,9216),
