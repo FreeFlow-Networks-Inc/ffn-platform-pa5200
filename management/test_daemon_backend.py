@@ -1,8 +1,24 @@
 import unittest
-from unittest.mock import AsyncMock
-from daemon_backend import execute
+from unittest.mock import AsyncMock,patch
+from pathlib import Path
+import tempfile
+from daemon_backend import execute,require_front_mode
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_none_cannot_be_bypassed_by_direct_hardware_enable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml'
+            def config(content):path.write_text('<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>'+content+'</ethernet></interface></network></entry></devices></config>')
+            for entry in ('','<entry name="ethernet1/2"/>','<entry name="ethernet1/2"><aggregate-group/></entry>','<entry name="ethernet1/2"><layer3/><link-state>down</link-state></entry>'):
+                config(entry)
+                with self.assertRaisesRegex(ValueError,'None/disabled'):require_front_mode(2,path)
+            config('<entry name="ethernet1/2"><layer3/></entry>')
+            require_front_mode(2,path)
+        backend=AsyncMock();backend.run.return_value={'revision':7,'ports':[{'port':2}]}
+        with patch('daemon_backend.require_front_mode',side_effect=ValueError('None/disabled')):
+            with self.assertRaisesRegex(ValueError,'None/disabled'):
+                await execute('faceplate','apply',{'revision':7,'port':2,'enabled':True},backend)
+        backend.run.assert_awaited_once_with('faceplate','status')
     async def test_network_validation_checks_physical_attachment_before_apply(self):
         backend=AsyncMock()
         backend.run.side_effect=[{'config':{'revision':7}},ValueError('physical port unattached')]

@@ -4,12 +4,23 @@ import asyncio
 import json
 import re
 import sys
+from pathlib import Path
 from hardware_backend import Controller, COMMANDS
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
         'fe100-policy':{'revision','digest'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
         'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
+
+
+def require_front_mode(port,config=Path('/var/lib/ffn-ngfw/config/running-config.xml')):
+    """A hardware enable cannot bypass the committed interface mode."""
+    from aggregate_config import parse
+    root=parse(config.read_bytes())
+    entry=root.find("./devices/entry[@name='localhost.localdomain']/network/interface/ethernet/entry[@name='ethernet1/%d']"%port)
+    if (entry is None or entry.findtext('link-state','auto')=='down' or
+        not (any(entry.find(mode) is not None for mode in ('layer3','layer2','virtual-wire','tap','ha','decrypt-mirror')) or entry.findtext('aggregate-group','').strip())):
+        raise ValueError('Front interface is None/disabled; select and commit an interface mode before enabling its link')
 
 
 async def execute(resource, action, payload, backend=None):
@@ -57,6 +68,7 @@ async def execute(resource, action, payload, backend=None):
                 if (not {'port','revision'}<=set(payload) or not {'enabled','speed','restart_autoneg','restore_pair_map'}&set(payload) or type(payload['port']) is not int or
                         not 1<=payload['port']<=24 or ('enabled' in payload and type(payload['enabled']) is not bool)):
                     raise ValueError('invalid faceplate change')
+                if payload.get('enabled') is True:require_front_mode(payload['port'])
                 port=next((p for p in observed.get('ports',[]) if p['port']==payload['port']),{})
                 if port.get('media')=='copper' and (port.get('admin_configuration') is False or port.get('phy_pending')):
                     raise ValueError('Copper control unavailable or pending')

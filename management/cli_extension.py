@@ -41,6 +41,18 @@ def handle(line, api, token):
     elif parts[:3]==['request','platform','bcm'] and len(parts)==5 and parts[3] in ('start','stop','restart') and parts[4]=='acknowledge-link-outage':
         observed=api('/api/system/runtime/bcm',token=token)
         result=api('/api/system/runtime/bcm/set',method='POST',token=token,body={'revision':observed['revision'],'operation':parts[3],'acknowledge_link_outage':True})
+    elif parts[:3]==['request','platform','interface'] and len(parts)==6 and parts[4]=='mode':
+        import re
+        from urllib.parse import quote
+        if not re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',parts[3]) or parts[5] not in ('none','default','off','disabled'):
+            raise ValueError('usage: request platform interface ethernet1/N mode none')
+        configured=api('/api/interfaces/configured',token=token)
+        current=next((row for row in configured['ethernet'] if row['name']==parts[3]),{})
+        body={'name':parts[3],'mode':'none'}
+        for key in ('comment','link_speed','link_duplex','link_state'):
+            if key in current:body[key]=current[key]
+        result=api('/api/interfaces/'+quote(parts[3],safe=''),method='PUT',token=token,body=body)
+        result=dict(result,staged=True,requires_commit=True)
     elif parts[:3]==['request','platform','interface'] and len(parts)==5 and parts[4] in ('renegotiate','recover-pairs'):
         import re
         match=re.fullmatch(r'ethernet1/([1-4])',parts[3])

@@ -5,6 +5,18 @@ from unittest.mock import Mock
 from cli_extension import handle
 
 class CLITests(unittest.TestCase):
+    def test_none_mode_stages_candidate_and_preserves_explicit_link_settings(self):
+        for mode in ('none','off','disabled'):
+            api=Mock(side_effect=[{'ethernet':[{'name':'ethernet1/2','mode':'layer3','link_state':'down','link_speed':'1000','comment':'Spare'}]},
+                                  {'status':'created'}])
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertTrue(handle('request platform interface ethernet1/2 mode '+mode,api,'session'))
+            api.assert_called_with('/api/interfaces/ethernet1%2F2',method='PUT',token='session',
+                body={'name':'ethernet1/2','mode':'none','link_state':'down','link_speed':'1000','comment':'Spare'})
+            self.assertIn('"requires_commit": true',output.getvalue())
+        api=Mock()
+        with self.assertRaises(ValueError):handle('request platform interface mgt mode none',api,'session')
+        api.assert_not_called()
     def test_wan_probe_uses_observed_revision_and_dp_identity(self):
         api=Mock(side_effect=[{'ok':True,'result':{'revision':8,'dp':{'boot_id':'current'}}},
                               {'ok':True,'result':{'qualified':False}}])
