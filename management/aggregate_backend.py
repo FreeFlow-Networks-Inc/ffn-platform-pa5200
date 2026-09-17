@@ -43,6 +43,8 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             offload_ready=activation['offload_ready'],offload_blocker=activation['offload_blocker'])
         runtime=activation['groups'].get(group['ae_name'])
         row['activation']=runtime
+        for subinterface in group.get('subinterfaces',[]):
+            row['blockers'].append(dict(code='subinterface-attachment',message=subinterface['name']+': '+subinterface['reason']))
         if activation['activation_supported']:
             row['blockers']=[b for b in row['blockers'] if b['code'] not in ('bcm-membership','lacp-negotiation','dataplane-attachment','dhcp-client','lldp')]
             if not runtime or not runtime.get('fresh'):

@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import uuid
+from xml.etree import ElementTree as ET
 sys.path.extend(['/opt/ffn-ngfw','/opt/ffn-ngfw-v2'])
 from aggregate_config import plan,parse
 
@@ -79,6 +80,47 @@ def revision():
     return json.loads(path.read_text())['revision'] if path.exists() else 0
 
 
+def parent_revision(raw,group):
+    """Fingerprint all config except this aggregate's unimplemented VLAN units.
+
+    Active network, member, profile and policy edits must still withdraw the
+    owner. Adding/editing a VLAN unit must not stop parent LACP negotiation.
+    """
+    valid_name(group)
+    root=parse(raw)
+    path="./devices/entry[@name='localhost.localdomain']/network/interface/aggregate-ethernet/entry"
+    for entry in root.findall(path):
+        if entry.get('name')!=group:continue
+        l3=entry.find('layer3')
+        if l3 is not None:
+            for units in l3.findall('units'):l3.remove(units)
+    device=root.find("./devices/entry[@name='localhost.localdomain']")
+    if device is not None:
+        # The candidate editor also imports units and assigns existing zones/VRs.
+        # Ignore only these unit memberships, never parent or policy references.
+        containers=[]
+        def last_child(parent,tag):
+            node=parent.find(tag)
+            if node is None:node=ET.Element(tag)
+            else:parent.remove(node)
+            parent.append(node)
+            return node
+        for owner in device.findall('vsys/entry'):
+            node=owner
+            for tag in ('import','network','interface'):
+                node=last_child(node,tag)
+            containers.append(node)
+            containers.extend(owner.findall('zone/entry/network/layer3'))
+        for router in device.findall('network/virtual-router/entry'):
+            containers.append(last_child(router,'interface'))
+        for container in containers:
+            for member in list(container):
+                if member.tag=='member' and re.fullmatch(re.escape(group)+r'\.[0-9]+',member.text or ''):
+                    container.remove(member)
+    canonical=ET.canonicalize(ET.tostring(root,encoding='unicode'),strip_text=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def prepare(raw,group,control_only,dp_boot,offload=False):
     compiled=plan(raw);rows=[g for g in compiled['aggregates'] if g['ae_name']==group]
     if len(rows)!=1:raise ValueError('One committed aggregate definition required')
@@ -93,7 +135,7 @@ def prepare(raw,group,control_only,dp_boot,offload=False):
     system='02:'+':'.join(hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[n:n+2] for n in range(0,10,2))
     intent=dict(group=group,token=str(uuid.uuid4()),boot_id=dp_boot,system=system,members=[p['port'] for p in row['members']],
         lacp=row['lacp'],network=network,lldp=row['lldp'],control_only=control_only,offload=offload)
-    return dict(group=group,running_revision=compiled['revision'],intent=intent,
+    return dict(group=group,running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),intent=intent,
         speeds={str(p['port']):p['speed'] for p in row['members']})
 
 
@@ -183,7 +225,11 @@ def supervise(name):
             now=time.monotonic()
             if any(p.poll() is not None for p in (cp,dp)):raise RuntimeError('Aggregate agent exited')
             if now-last_dp>5:raise RuntimeError('DP observation expired')
-            if hashlib.sha256(RUNNING.read_bytes()).hexdigest()!=selected['running_revision']:raise RuntimeError('Committed configuration changed; reconciliation required')
+            raw=RUNNING.read_bytes();current_revision=hashlib.sha256(raw).hexdigest()
+            if current_revision!=selected['running_revision']:
+                if parent_revision(raw,name)!=selected.get('parent_revision'):
+                    raise RuntimeError('Committed configuration changed; reconciliation required')
+                selected['running_revision']=current_revision;state['running_revision']=current_revision
             if sent is not None and now-sent>5:raise RuntimeError('CP link observation expired')
             if sent is None and now>=next_send:
                 sequence+=1;sent=now

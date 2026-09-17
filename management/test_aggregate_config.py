@@ -19,6 +19,19 @@ FACE={'ports':[{'port':p,'available':True,'enabled':True,'link':True,'speed_mbps
 
 
 class AggregateTests(unittest.TestCase):
+    def test_vlan_units_do_not_block_parent_lacp(self):
+        raw=XML.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag><ip><entry name="192.0.2.1/24"/></ip></entry></units>')
+        group=plan(raw)['aggregates'][0]
+        self.assertEqual(group['errors'],[])
+        self.assertEqual(group['subinterfaces'][0]['name'],'ae1.69')
+        self.assertFalse(group['subinterfaces'][0]['applied'])
+        self.assertEqual(group['subinterfaces'][0]['state'],'unsupported')
+
+    def test_disabled_member_lldp_from_interface_editor_is_accepted(self):
+        raw=XML.replace(b'<aggregate-group>ae1</aggregate-group>',b'<aggregate-group>ae1</aggregate-group><lldp><enable>no</enable></lldp>')
+        self.assertEqual(plan(raw)['aggregates'][0]['errors'],[])
+        self.assertTrue(plan(raw.replace(b'<enable>no',b'<enable>yes'))['aggregates'][0]['errors'])
+
     def test_current_webui_xml_compiles_to_physical_members(self):
         result=plan(XML);group=result['aggregates'][0]
         self.assertEqual(group['errors'],[]);self.assertEqual(result['orphan_members'],[])

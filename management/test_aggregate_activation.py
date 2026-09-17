@@ -10,6 +10,17 @@ from test_aggregate_config import XML
 
 
 class ActivationTests(unittest.TestCase):
+    def test_only_inactive_unit_changes_can_preserve_parent_owner(self):
+        base=XML.replace(b'</interface></network>',b'</interface><virtual-router><entry name="default"/></virtual-router></network><vsys><entry name="vsys1"><zone><entry name="LAN"><network><layer3/></network></entry></zone></entry></vsys>')
+        changed=base.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag></entry></units>')
+        changed=changed.replace(b'<entry name="vsys1">',b'<entry name="vsys1"><import><network><interface><member>ae1.69</member></interface></network></import>')
+        changed=changed.replace(b'<layer3/>',b'<layer3><member>ae1.69</member></layer3>').replace(b'<entry name="default"/>',b'<entry name="default"><interface><member>ae1.69</member></interface></entry>')
+        old=activation.parent_revision(base,'ae1')
+        self.assertEqual(old,activation.parent_revision(changed,'ae1'))
+        self.assertEqual(old,activation.parent_revision(changed.replace(b'<tag>69',b'<tag>70'),'ae1'))
+        for raw in (base.replace(b'802.3ad',b'active-backup'),base.replace(b'ethernet1/24',b'ethernet1/22'),base.replace(b'<enable>yes',b'<enable>no'),base.replace(b'</config>',b'<shared><policy/></shared></config>')):
+            self.assertNotEqual(old,activation.parent_revision(raw,'ae1'))
+
     def test_intent_is_compiled_from_committed_xml_and_not_client_network(self):
         result=activation.prepare(XML,'ae1',True,str(uuid.uuid4()))
         self.assertEqual(result['intent']['members'],[23,24])

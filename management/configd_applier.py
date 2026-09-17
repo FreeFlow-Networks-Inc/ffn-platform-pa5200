@@ -127,6 +127,8 @@ class PlatformApplier:
             patches[key]=desired;requested.append((name,key,enabled))
         for entry in device.findall('./network/interface/aggregate-ethernet/entry'):
             name=entry.get('name','aggregate')
+            for unit in entry.findall('./layer3/units/entry'):
+                status.fail(unit.get('name',name),'pa5200','Tagged aggregate subinterface attachment is not implemented; parent LACP is independent')
             if name in aggregate_applied:
                 status.ok(name,None,{'distributing':aggregate_applied[name]['distributing']},'pa5200','Aggregate packet attachment active; transit policy remains default-deny')
             else:status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))

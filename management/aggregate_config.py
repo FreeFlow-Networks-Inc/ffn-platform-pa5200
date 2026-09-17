@@ -37,8 +37,11 @@ def compile_device(device):
                 enabled=member.findtext('link-state','auto')!='down',speed=member.findtext('link-speed','auto')))
             if member.findtext('link-state','auto') not in ('auto','up','down'):errors.append(pan+': invalid link state')
             if member.findtext('link-duplex','auto') not in ('auto','full'):errors.append(pan+': full duplex required')
-            if any(c.tag not in ('comment','aggregate-group','link-state','link-speed','link-duplex') for c in member):
+            if any(c.tag not in ('comment','aggregate-group','link-state','link-speed','link-duplex','lldp') for c in member):
                 errors.append(pan+': aggregate members cannot carry independent interface settings')
+            lldp=member.find('lldp')
+            if lldp is not None and (lldp.attrib or any(n.tag!='enable' or n.text!='no' or n.attrib or len(n) for n in lldp)):
+                errors.append(pan+': aggregate member LLDP must be disabled')
         if not 2<=len(rows)<=8:errors.append('Aggregate requires 2..8 members')
         if len({r['port'] for r in rows})!=len(rows):errors.append('Duplicate aggregate member')
         l3=entry.find('layer3');mode=entry.findtext('layer3/bond/mode','802.3ad')
@@ -65,7 +68,12 @@ def compile_device(device):
         dhcp=entry.findtext('layer3/dhcp-client/enable','no')
         if dhcp not in ('yes','no'):errors.append('DHCP enable must be yes or no')
         if dhcp=='yes' and addresses:errors.append('Choose DHCP or static addresses, not both')
-        if l3 is not None and any(c.tag not in ('bond','lacp','ip','dhcp-client','mtu','interface-management-profile') for c in l3):errors.append('Unsupported aggregate Layer 3 options')
+        if l3 is not None and any(c.tag not in ('bond','lacp','ip','dhcp-client','mtu','interface-management-profile','units') for c in l3):errors.append('Unsupported aggregate Layer 3 options')
+        # VLAN units do not participate in LACP. Report their unsupported
+        # attachment separately instead of disabling the parent control protocol.
+        subinterfaces=[dict(name=e.get('name',''),tag=e.findtext('tag',''),applied=False,state='unsupported',
+                           reason='Tagged aggregate subinterface attachment is not implemented in the dataplane')
+                       for e in entry.findall('layer3/units/entry')]
         def number(path,default,low,high):
             try:
                 value=int(entry.findtext(path,str(default)))
@@ -84,7 +92,7 @@ def compile_device(device):
                          dhcp_route_metric=number('layer3/dhcp-client/default-route-metric',10,1,65535),
                          mtu=number('layer3/mtu',1500,576,9216),
                          management_profile=entry.findtext('layer3/interface-management-profile','')),
-            lldp=entry.findtext('lldp/enable','no')=='yes',errors=errors))
+            lldp=entry.findtext('lldp/enable','no')=='yes',subinterfaces=subinterfaces,errors=errors))
     for name,entries in members.items():
         if name not in names:
             orphans.extend(dict(name=e.get('name',''),group=name,error='Aggregate '+name+' does not exist') for e in entries)
