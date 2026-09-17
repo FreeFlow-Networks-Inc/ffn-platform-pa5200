@@ -131,6 +131,8 @@ jobs:
         run: cd octeon/bcmagent && python3 test_psparse.py
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
+      - name: LACP wire codec, negotiation and OCTEON member transport
+        run: cd octeon/debian && python3 -m unittest test_lacp_packets test_lacp_engine test_lacp_trunk
       - name: network config
         run: cd octeon/debian && python3 test_network_config.py
       - name: VIF assignments and adapter guards

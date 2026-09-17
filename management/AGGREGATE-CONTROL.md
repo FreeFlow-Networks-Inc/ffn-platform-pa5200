@@ -54,15 +54,88 @@ no LACP frame reached the observer during that window, not that no peer exists.
 The observer sends no packets, provisions no redirects, and changes no interfaces,
 registers, packet-owner state or configuration. The existing WAN owner stays up.
 
+## Negotiation engine and OCTEON transport
+
+`octeon/debian/ffn_lacp_engine.py` implements original, transport-independent
+LACP receive, periodic transmit, selection and collection/distribution logic.
+It supports active/passive operation, fast/slow receive timers, the peer's
+requested transmit period, a two-second aggregation wait, minimum links and
+member withdrawal on carrier loss, speed change, lease expiry or peer timeout.
+Selection keeps a consistent partner system/key and speed; duplicate partner
+port identities are excluded. A peer must echo the local identity and advertise
+synchronization before collection; distribution additionally requires the peer
+to advertise collection. Transmissions are limited to three attempts per second.
+
+The engine does not program hardware. Its owner must supply:
+
+- One stable unicast system MAC, a unique aggregate key and physical member IDs.
+- Monotonic timestamps and fresh, verified full-duplex carrier/speed observations.
+  `link(port, up, speed_mbps, now)` grants a three-second observation lease.
+- A synchronous gate driver whose `apply()` programs **and reads back** each
+  member's collection/distribution state. Returning the requested mapping without
+  enforcing the data gates is not a valid hardware driver.
+- A regularly serviced event loop. `transmissions(now)` advances timers and
+  yields Ethernet LACPDUs; `receive(port, frame, now)` advances the receive state.
+
+Initialization first closes all gates. Driver failure/readback mismatch latches
+a fault and attempts withdrawal, stops advertisements and never automatically
+re-enables members. `stop()` retries withdrawal even after a fault. A stopped
+owner cannot enforce future timeouts: hardware activation also needs a watchdog
+or equivalent lease-enforced data gate that closes if the owner stops running.
+
+`ffn_lacp_trunk.py` adapts this engine to the existing packet owner's commissioned
+OTMH_SSP ingress and ITMH/RAW_DSA egress. It accepts the optical member map only,
+preserves physical ingress identity, ignores outgoing observations, consumes
+invalid slow-protocol frames and directs every LACPDU to its physical member
+instead of hashing it through an aggregate. Short/failed sends fault the engine
+and attempt gate withdrawal. It opens no second packet socket and installs no
+BCM redirect. The packet owner must call it before data inspection/delivery;
+the adapter does not itself supply a hardware gate driver or packet-owner loop.
+
+Install `ffn_lacp_engine.py` and `ffn_lacp_trunk.py` beside the packet codec and
+existing DP packet transport. Installing these modules starts no service and
+does not change the passive observer, configuration, BCM programming or packet
+ownership. They are building blocks for the commissioned aggregate owner.
+
+## Repeatable negotiation tests
+
+Run the unprivileged suites from `octeon/debian`:
+
+```sh
+python3 -m unittest test_lacp_packets test_lacp_engine test_lacp_trunk
+```
+
+The same suites run on x86 Linux and native MIPS64 big-endian Python. CI runs
+these explicitly, including port-envelope byte order and failed-send withdrawal.
+The trunk suite requires Linux; it uses fake sockets and no physical devices.
+
+On a Linux test host with root, `ip`, `ping`, bonding, veth and TUN/TAP available:
+
+```sh
+sudo python3 test-lacp-engine-linux.py --activity active
+sudo python3 test-lacp-engine-linux.py --activity passive
+```
+
+This creates two temporary network namespaces. The FFN engine gates a software
+TAP adapter on one side; the other side uses the real Linux bonding driver.
+The test verifies two-member agreement on both ends, bidirectional IPv4 traffic,
+withdrawal after missing LACPDUs without a carrier change, renegotiation, and IP
+forwarding with each member as the only surviving link. Its TAP ioctl uses the
+native MIPS ABI where required. Cleanup deletes only namespaces created by that
+invocation. No physical port, production route or BCM setting is changed.
+These tests prove protocol/software interoperability, not hardware commissioning
+or aggregate throughput.
+
 ## Work still required for activation
 
-This increment provides configuration validation, accurate status and passive
-protocol decoding. It does **not** make an aggregate operational. Activation
-continues to fail explicitly until all of these have a verified implementation:
+The tested engine and packet-envelope adapter do **not** make a physical
+aggregate operational. Activation continues to fail explicitly until all of
+these have a verified implementation:
 
 1. BCM aggregate ownership, hashing and selected-member readback/rollback.
-2. LACP packet delivery/transmission, receive/periodic/selection/mux state
-   machines, partner agreement, timeout withdrawal and link-event handling.
+2. Attach the tested LACP engine to the real packet owner, per-member control
+   packet traps, leased hardware link observations and acknowledged hardware
+   data gates, including withdrawal on owner failure.
 3. Aggregate ingress/egress attachment to the OCTEON dataplane, preserving
    inspection, routing and local management profiles.
 4. DHCP lease lifecycle and LLDP when requested by the configuration.
