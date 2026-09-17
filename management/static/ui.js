@@ -106,6 +106,17 @@
           'Agent unavailable or stale; last observation is historical', box);
         if (state.age_seconds !== null) element('p', 'Last observation: ' + Math.floor(state.age_seconds) + ' seconds ago', box);
         if (!state.fresh) continue;
+        if (report.fe100_driver) {
+          const driver = report.fe100_driver;
+          const userspace = driver.userspace || {};
+          element('p', 'FE100 userspace driver: ' + (userspace.installed ? 'installed' : 'unavailable') +
+            '; register access: ' + (userspace.read_verified === true ? 'responding' : 'unverified'), box);
+          for (const device of driver.devices || []) {
+            element('p', device.pci + ' kernel driver: ' + (device.kernel_state === 'bound' ? device.kernel_driver :
+              device.kernel_state === 'unbound' ? 'unbound (userspace access)' : 'unknown'), box);
+          }
+          element('p', 'Driver communication does not establish hardware flow offload.', box);
+        }
         if (report.bcm) element('p', 'BCM owner: ' + (report.bcm.available ? 'responding' : 'unavailable'), box);
         if (report.policy?.available) element('p', 'FE100 policy revision: ' + report.policy.configured_revision +
           '. Configured phase: ' + report.policy.configured_phase + '. Journaled sessions: ' + report.policy.journaled_sessions, box);
