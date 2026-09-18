@@ -12,12 +12,17 @@ tools/ffn_nfsd.sh already states the threat, and states it correctly:
     traffic addressed to the MP (the CP has to route it) and neither looks at
     protocol or port, so DP -> MP:2049 is permitted by design.
 
-That reasoning was written once, applied in one file, and three other places
-kept handing out the /16 anyway:
+That reasoning was written once, applied in one file, and three other places in
+this repository kept handing out the /16 anyway:
 
     octeon/cp-6.18/exports.ffn-cproot   /opt/ffn-cproot  127.1.0.0/16
     octeon/cp-6.18/exports.ffn-dproot   /opt/dproot      127.1.0.0/16
     octeon/dpboot/dp-mount-dpfs.sh      exportfs -o ...  127.1.0.0/16:$EXPORT
+
+A fourth is in the superproject -- FFN-NGFW `image/provision.sh` writes the same
+five wide exports into every freshly built appliance, under a comment saying
+"the client scoping below is what actually gates mounting". That one is fixed
+there, and this gate belongs there too; it is out of reach from here.
 
 A prose security note in one script cannot stop that. This test can.
 
@@ -40,6 +45,7 @@ considered.
 """
 import os
 import re
+import subprocess
 import sys
 import unittest
 
@@ -61,16 +67,49 @@ EXPORTFS_CMD = re.compile(
 SINGLE_HOST = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}(?:/32)?$")
 
 
+def interesting(name):
+    if name.startswith("exports.") or name.endswith(".exports"):
+        return True
+    return os.path.splitext(name)[1] in TEXT_SUFFIX
+
+
 def candidate_files():
+    """Files COMMITTED TO THIS REPOSITORY -- deliberately not everything on disk.
+
+    CI checks the FFN-NGFW superproject out into `.core-runtime/` inside this
+    workspace, so a filesystem walk audits a sibling repository's files and
+    reports them against this repo's gate. That is how the first version of
+    this test failed: it flagged five exports in
+    `.core-runtime/image/provision.sh`, which are real and are FFN-NGFW's to
+    fix (its own copy of this gate covers them), but are not this repository's
+    content and cannot be fixed from here.
+
+    `git ls-files` is the precise expression of what the docstring claims to
+    check. It also excludes build output and anything untracked, which a walk
+    would happily audit.
+    """
+    names = None
+    try:
+        out = subprocess.run(["git", "-C", REPO, "ls-files", "-z"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             check=True).stdout.decode("utf-8", "replace")
+        names = [n for n in out.split("\0") if n]
+    except (OSError, subprocess.CalledProcessError):
+        names = None
+
+    if names is not None:
+        for rel in names:
+            if interesting(os.path.basename(rel)):
+                yield os.path.join(REPO, rel.replace("/", os.sep))
+        return
+
+    # No git (an exported tarball): fall back to a walk, and skip every dotted
+    # directory so a nested checkout is still not mistaken for our own content.
     for root, dirs, files in os.walk(REPO):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for name in files:
-            path = os.path.join(root, name)
-            if name.startswith("exports.") or name.endswith(".exports"):
-                yield path
-                continue
-            if os.path.splitext(name)[1] in TEXT_SUFFIX:
-                yield path
+            if interesting(name):
+                yield os.path.join(root, name)
 
 
 def read(path):
