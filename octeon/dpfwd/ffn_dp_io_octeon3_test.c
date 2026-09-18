@@ -43,7 +43,7 @@ static void chk(int cond, const char *msg)
 #define IP(a, b, c, d) (((uint32_t)(a) << 24) | ((b) << 16) | ((c) << 8) | (d))
 
 /* ---------------- mock FPA3 + PKI + PKO3 ---------------- */
-#define MOCK3_MAX    8
+#define MOCK3_MAX    (OCT_TX_DEPTH + 2)
 #define MOCK3_AURAS  8
 
 /* A global aura on a two-node part: node 1, local aura 3 -> (1 << 10) | 3.
@@ -96,6 +96,7 @@ struct mock3_hw {
     struct mock3_aura auras[MOCK3_AURAS];
     int n, next;
     int fail_send;
+    int busy_sends, send_calls;
     int init_rc;
 };
 
@@ -170,6 +171,11 @@ static int mock3_send(struct oct_ctx *c, struct oct_wqe *w, uint16_t port)
     struct mock3_hw *m = (struct mock3_hw *)c->hw_priv;
     struct mock3_buf *b = (struct mock3_buf *)w->hw;
     (void)port;
+    m->send_calls++;
+    if (m->busy_sends) {
+        m->busy_sends--;
+        return OCT_SEND_BUSY;
+    }
 
     /* Exercise the real descriptor builder, then behave as PKO3 would. */
     if (oct3_build_desc(&b->desc, w, /*keep_data*/ 0) != DP_OK) {
@@ -517,7 +523,84 @@ int main(void)
     }
     free(region);
 
-    /* ---------- 9. generation selection ---------- */
+    printf("\n[9] bounded queues retain DMA ownership until submission\n");
+    setup(&dp, &oc, &m, &region, 2);
+    {
+        struct dp_pkt packet;
+        struct mock3_buf *b = push3(&m, IP(10,0,0,1), IP(8,8,8,8), 443, 16, 0);
+        chk(OCT_IO.rx(&oc, &packet, 1) == 1, "dequeued PKI buffer");
+        packet.egress = 1;
+        chk(OCT_IO.tx(&oc, &packet, 1) == 1, "software queue accepted buffer");
+        OCT_IO.free_pkt(&oc, &packet);
+        chk(b->data_freed_by_us == 0 && b->sent_to_pko == 0,
+            "queue owns buffer after caller release; no premature DMA/free");
+        m.busy_sends = 2;
+        oct_tx_flush(&oc);
+        chk(m.send_calls == 3 && b->sent_to_pko == 1, "two busy retries then exactly one DMA");
+        chk(oc.stat_tx_busy == 2 && oc.stat_tx == 1, "busy and DMA counters distinguished");
+        chk(auras_balanced(&m) && b->use_after_free == 0, "shared WQE released exactly once");
+    }
+    dp_fini(&dp); free(region);
+
+    printf("\n[10] persistent backpressure is bounded\n");
+    setup(&dp, &oc, &m, &region, 2);
+    {
+        m.busy_sends = 100;
+        struct mock3_buf *b = push3(&m, IP(10,0,0,1), IP(8,8,8,8), 443, 16, 1);
+        dp_poll_once(&dp);
+        chk(m.send_calls == OCT_TX_PASSES, "bounded DMA retry budget");
+        chk(oc.stat_tx_expired == 1 && oc.txq[1].count == 0, "no backlog across policy boundary");
+        chk(b->sent_to_pko == 0 && auras_balanced(&m), "expired WQE and data returned to aura");
+    }
+    dp_fini(&dp); free(region);
+
+    printf("\n[11] shutdown releases queued work without new DMA\n");
+    setup(&dp, &oc, &m, &region, 2);
+    {
+        struct dp_pkt packet;
+        push3(&m, IP(10,0,0,1), IP(8,8,8,8), 443, 16, 1);
+        OCT_IO.rx(&oc, &packet, 1); packet.egress = 1;
+        OCT_IO.tx(&oc, &packet, 1);
+        dp_fini(&dp);
+        chk(m.send_calls == 0 && auras_balanced(&m), "shutdown reclaimed only software-owned work");
+        chk(oc.bug_double_dispose == 0, "queued metadata and inflight copy not double freed");
+    }
+    free(region);
+
+    printf("\n[12] queue capacity, wrap, and receive work budget\n");
+    setup(&dp, &oc, &m, &region, 2);
+    {
+        struct dp_pkt packet;
+        for (int i = 0; i < OCT_TX_DEPTH + 1; i++) {
+            push3(&m, IP(10,0,0,1), IP(8,8,8,8), 443, 16, i & 1);
+            OCT_IO.rx(&oc, &packet, 1); packet.egress = 1;
+            OCT_IO.tx(&oc, &packet, 1);
+            OCT_IO.free_pkt(&oc, &packet);
+        }
+        chk(oc.txq[1].count == OCT_TX_DEPTH && oc.stat_tx_overflow == 1,
+            "queue full drops exactly one buffer without overwriting ownership");
+        oct_tx_flush(&oc);
+        chk(oc.stat_tx == OCT_TX_DEPTH && oc.txq[1].head == 0,
+            "full ring drains and wraps");
+        chk(auras_balanced(&m) && oc.bug_double_dispose == 0,
+            "all DMA and overflow buffers accounted for");
+    }
+    dp_fini(&dp); free(region);
+    setup(&dp, &oc, &m, &region, 2);
+    {
+        struct dp_pkt packet;
+        for (int i = 0; i < OCT_BURST + 1; i++) {
+            struct mock3_buf *b = push3(&m, IP(10,0,0,1), IP(8,8,8,8), 443, 16, 0);
+            b->in_port = 65535;
+        }
+        chk(OCT_IO.rx(&oc, &packet, 1) == 0 && m.next == OCT_BURST,
+            "invalid ingress consumes only one bounded receive budget");
+        OCT_IO.rx(&oc, &packet, 1);
+        chk(auras_balanced(&m), "invalid ingress buffers reclaimed");
+    }
+    dp_fini(&dp); free(region);
+
+    /* ---------- generation selection ---------- */
     printf("\n[9] generation selection\n");
     chk(oct_hw_for_gen(OCT_GEN_II) == &OCT_HW_CVMX, "gen II selects the OCTEON-II ops");
     chk(oct_hw_for_gen(OCT_GEN_III) == &OCT_HW_CVMX3, "gen III selects the OCTEON-III ops");

@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN aggregate dataplane watchdog
+
+[Timer]
+OnBootSec=2s
+OnUnitInactiveSec=2s
+AccuracySec=1s
+Unit=ffn-aggregate-dp-watchdog.service
+
+[Install]
+WantedBy=timers.target

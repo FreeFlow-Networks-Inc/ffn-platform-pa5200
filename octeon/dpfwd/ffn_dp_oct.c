@@ -977,6 +977,8 @@ int dp_poll_once(struct dp_ctx *c)
         if (c->io->free_pkt)
             c->io->free_pkt(c->io_arg, &burst[i]);
     }
+    if (c->io->tx)
+        c->io->tx(c->io_arg, NULL, 0);
     return n;
 }
 

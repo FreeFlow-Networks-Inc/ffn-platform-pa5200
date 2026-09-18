@@ -207,6 +207,43 @@ static void oct_dispose_sent(struct oct_ctx *c, struct oct_wqe *w)
     w->disp = OCT_DISP_SENT;
 }
 
+/* Each pass visits every egress; a congested port cannot monopolize a core.
+ * FIFO heads remain owned by FFN on BUSY. Never retry an issued descriptor.
+ * Software backlog cannot survive a poll/control-plane boundary. */
+void oct_tx_flush(struct oct_ctx *c)
+{
+    for (unsigned pass = 0; pass < OCT_TX_PASSES; pass++) {
+        for (int port = 0; port < c->nports; port++) {
+            while (c->txq[port].count) {
+                struct oct_wqe *w = &c->txq[port].entries[c->txq[port].head];
+                int rc = c->hw->pkt_send(c, w, (uint16_t)port);
+                if (rc == OCT_SEND_BUSY) {
+                    c->stat_tx_busy++;
+                    break;
+                }
+                if (rc == 0) {
+                    oct_dispose_sent(c, w);
+                    c->stat_tx++;
+                } else {
+                    oct_dispose_free(c, w);
+                    c->stat_tx_fail++;
+                }
+                c->txq[port].head = (c->txq[port].head + 1) % OCT_TX_DEPTH;
+                c->txq[port].count--;
+            }
+        }
+    }
+    for (int port = 0; port < c->nports; port++) {
+        while (c->txq[port].count) {
+            oct_dispose_free(c, &c->txq[port].entries[c->txq[port].head]);
+            c->txq[port].head = (c->txq[port].head + 1) % OCT_TX_DEPTH;
+            c->txq[port].count--;
+            c->stat_tx_expired++;
+            c->stat_tx_fail++;
+        }
+    }
+}
+
 /* ================================================================== *
  * 3. dp_io_ops glue                                                  *
  * ================================================================== */
@@ -230,6 +267,14 @@ static int oct_io_init(void *arg)
 static void oct_io_fini(void *arg)
 {
     struct oct_ctx *c = (struct oct_ctx *)arg;
+    /* Shutdown drops queued work without submitting fresh DMA. */
+    for (int p = 0; p < c->nports; p++) {
+        while (c->txq[p].count) {
+            oct_dispose_free(c, &c->txq[p].entries[c->txq[p].head]);
+            c->txq[p].head = (c->txq[p].head + 1) % OCT_TX_DEPTH;
+            c->txq[p].count--;
+        }
+    }
     /* Anything still held at teardown must go back to the FPA pools. */
     for (int i = 0; i < c->n_inflight; i++)
         if (c->inflight[i].disp == OCT_DISP_HELD)
@@ -245,8 +290,9 @@ static int oct_io_rx(void *arg, struct dp_pkt *burst, int max)
         max = OCT_BURST;
     c->n_inflight = 0;
 
-    int n = 0;
-    while (n < max) {
+    int n = 0, examined = 0;
+    /* Bad/unknown ingress traffic must not starve commands or egress. */
+    while (n < max && examined++ < OCT_BURST) {
         struct oct_wqe *w = &c->inflight[n];
         if (!c->hw->work_get(c, w))
             break;
@@ -290,6 +336,10 @@ static int oct_io_rx(void *arg, struct dp_pkt *burst, int max)
 static int oct_io_tx(void *arg, struct dp_pkt *burst, int n)
 {
     struct oct_ctx *c = (struct oct_ctx *)arg;
+    if (n == 0) {
+        oct_tx_flush(c);
+        return 0;
+    }
     int ok = 0;
     for (int i = 0; i < n; i++) {
         struct oct_wqe *w = (struct oct_wqe *)burst[i].cookie;
@@ -313,14 +363,18 @@ static int oct_io_tx(void *arg, struct dp_pkt *burst, int n)
             continue;
         }
 
-        if (c->hw->pkt_send(c, w, out) == 0) {
-            oct_dispose_sent(c, w);                    /* PKO owns the data  */
-            c->stat_tx++;
-            ok++;
-        } else {
+        if (c->txq[out].count == OCT_TX_DEPTH) {
+            c->stat_tx_overflow++;
             c->stat_tx_fail++;
-            oct_dispose_free(c, w);                    /* still ours -> free */
+            oct_dispose_free(c, w);
+            continue;
         }
+        unsigned tail = (c->txq[out].head + c->txq[out].count) % OCT_TX_DEPTH;
+        c->txq[out].entries[tail] = *w;
+        c->txq[out].count++;
+        w->disp = OCT_DISP_QUEUED;
+        c->stat_tx_queued++;
+        ok++;                  /* accepted by software; stat_tx tracks DMA */
     }
     return ok;
 }
@@ -339,9 +393,17 @@ static void oct_io_to_local(void *arg, struct dp_pkt *p)
 static void oct_io_to_offload(void *arg, struct dp_pkt *p)
 {
     struct oct_ctx *c = (struct oct_ctx *)arg;
-    /* FE100/FPGA punt is a later milestone; count and release. */
-    c->stat_offload++;
     struct oct_wqe *w = (struct oct_wqe *)p->cookie;
+    if (!w || w->disp != OCT_DISP_HELD)
+        return;
+    if (!c->offload_copy)
+        c->stat_offload_unavailable++;
+    else if (c->offload_copy(c->offload_arg, p) != 0)
+        c->stat_offload_rejected++;
+    else
+        c->stat_offload++;
+    /* No implicit FORWARD fallback: PUNT may request mandatory inspection.
+     * Release only after the adapter copied/accepted or explicitly rejected. */
     if (w) oct_dispose_free(c, w);
 }
 
@@ -395,6 +457,11 @@ int oct_add_port(struct oct_ctx *c, const char *name, int ipd_port,
 
 void oct_dump_stats(const struct oct_ctx *c, FILE *f)
 {
+    fprintf(f, "  tx queues: accepted=%llu busy=%llu overflow=%llu expired=%llu\n",
+            (unsigned long long)c->stat_tx_queued,
+            (unsigned long long)c->stat_tx_busy,
+            (unsigned long long)c->stat_tx_overflow,
+            (unsigned long long)c->stat_tx_expired);
     fprintf(f, "octeon(%s): ports=%d avail=%d rx=%llu rx_err=%llu tx=%llu tx_fail=%llu "
                "drop_freed=%llu local=%llu offload=%llu no_egress=%llu "
                "bad_egress=%llu\n",
@@ -408,6 +475,9 @@ void oct_dump_stats(const struct oct_ctx *c, FILE *f)
             (unsigned long long)c->stat_offload,
             (unsigned long long)c->stat_no_egress,
             (unsigned long long)c->stat_bad_egress);
+    fprintf(f, "  offload adapter: unavailable=%llu rejected=%llu\n",
+            (unsigned long long)c->stat_offload_unavailable,
+            (unsigned long long)c->stat_offload_rejected);
     fprintf(f, "  fpa accounting: wqe_freed=%llu data_freed=%llu "
                "double_dispose_bugs=%llu%s\n",
             (unsigned long long)c->stat_wqe_freed,

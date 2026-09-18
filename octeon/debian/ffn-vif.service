@@ -1,0 +1,13 @@
+[Unit]
+Description=FFN PA-5200 logical VIF packet transport
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_vif_runtime.py serve --trunk ffnpkt0 --ports 5,13
+TimeoutStopSec=15
+Restart=no
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

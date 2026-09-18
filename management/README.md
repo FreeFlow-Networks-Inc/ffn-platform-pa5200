@@ -5,7 +5,8 @@ module load. Install only on the PA-5220 MP after the Debian controllers have be
 commissioned. Copy this directory to `/opt/ffn-platforms/pa5200-management`, owned
 by root and not writable by unprivileged users.
 
-The core must include `opt/ffn_extensions.py` and its manager/WebUI hooks.
+The core must include `opt/ffn_extensions.py`, `opt/ffn_policy_barrier.py`, and
+their manager/WebUI hooks. Keep `policy_guard.py` alongside `control.py`.
 Select the extension using a systemd drop-in for `ffn-manager-v2.service`:
 
 ```ini
@@ -16,6 +17,26 @@ Environment=FFN_PLATFORM_EXTENSION=/opt/ffn-platforms/pa5200-management
 Reload systemd and restart only the manager. To remove it, remove this environment
 setting and restart the manager; forwarding and thermal services remain separate.
 No platform-selection file or code is installed on generic FFN hosts.
+
+## Optional hardware policy barrier
+
+The manifest declares `policy_barrier_version: 1`. Before an XML configuration
+commit, the selected extension drains CP-owned hardware sessions and leaves
+admission blocked. Failure prevents the running-configuration write. This is
+separate from the immediate controller mutation endpoints described below.
+
+Install `fe100/ffn_fe100_policy_control.py`, `ffn_fe100_policy.py`,
+`ffn_fe100_sessions.py`, and `ffn_fe100_journal.py` in the CP's
+`/usr/local/sbin`, alongside the commissioned live-session adapter dependencies.
+The owner stores its journal in `/var/lib/ffn/fe100/policy-sessions.sqlite3`.
+Debian's SQLite library is required; the MP guard pins it to avoid the obsolete
+library in the vendor search path. The CLI exposes only `status` and `replace`
+(drain), with JSON on stdin. It does not enable production flow admission.
+
+Physical front 5/13 FE100 egress and separate tests of both distinct-port
+directions passed. Concurrent policy-pair admission and continuous invalidation
+for all direct-controller writers remain unqualified. See
+[`FRONT-EGRESS-POLICY-20260915.md`](../fe100/FRONT-EGRESS-POLICY-20260915.md).
 
 ## Control surface
 
@@ -29,6 +50,8 @@ All endpoints below use the core bearer authentication and live account checks.
 | POST `/network/lookup` | Read-only IPv4/IPv6 route lookup, optional source/VRF |
 | POST `/overlay/set` | Revisioned VXLAN, Geneve, GRE/IPIP and MACsec link configuration |
 | POST `/inspection/set` | Revisioned literal payload off/alert/block configuration |
+| GET `/lacp` | Saved LACP groups, activation capability and kernel partner/member diagnostics |
+| POST `/lacp/{set,activate,deactivate}` | Save profiles separately from explicit group activation; current relay rejects activation |
 | POST `/thermal/{auto,full}` | Automatic cooling or full-speed fans; empty JSON object |
 
 Mutations require admin/superuser. API payloads follow the controller schemas in
@@ -54,6 +77,11 @@ Tests: `python -m unittest discover -s management -p test_control.py` using the
 core's FastAPI test dependencies; `node management/test_ui.cjs` for rendered
 controls, read-only behavior, text escaping and submitted port configuration.
 
+LACP installation: copy `../octeon/debian/ffn_lacp.py` alongside `ffn_network.py`
+on the DP and install `ffn-lacp-mp` as executable `/usr/local/sbin/ffn-lacp` on
+the MP. See `../octeon/debian/LACP.md` for the schema and qualification limits.
+No LACP profile or member assignment is created by installation.
+
 ## Live verification, 2026-09-10
 
 Installed and selected on the MP at 172.19.0.70. The running core received only
@@ -75,6 +103,16 @@ Rollback on this MP: remove only
 systemd and restart the manager to unload the module. Pre-integration manager
 and HTML copies have `.before-extensions-20260910` suffixes if the generic hooks
 also need reverting. This does not stop forwarding or cooling controllers.
+
+## VIF assignment controls
+
+The optional **Virtual Interfaces** page and `/api/system/runtime/vifs` API
+connect MP assignment controls to the DP TAP/PKI/PKO transport. Configure a
+front-port/VLAN binding, L2 bridge membership or L3 addresses/VRF; start forwarding
+separately. No assignments are installed automatically. The current commissioned
+port allowlist is 5 and 13. See
+[`VIF-INTEGRATION-20260915.md`](../octeon/debian/VIF-INTEGRATION-20260915.md)
+for installation, recovery, references, test evidence and qualification limits.
 # Core runtime and page integration
 
 This module requires the core's `runtime_api_version: 1` and `registerPage`

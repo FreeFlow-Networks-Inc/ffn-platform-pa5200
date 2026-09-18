@@ -4,6 +4,17 @@ set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 C=/opt/ffn-compat
 K=${FFN_DP_KERNEL:-/opt/ffn/ffn-vmlinux-systemd-dp-20260909}
+# Validate before interrupting the existing DP root transport.
+chroot "$C" sha256sum -c "$K.sha256"
+test -x "$C/usr/local/bin/ffn_dpnetd"
+test -r "$C/opt/ffn/dpboot8.sh"
+restore_transport() {
+    rc=$?
+    trap - EXIT
+    systemctl start ffn-dpnet.service || true
+    exit "$rc"
+}
+trap restore_transport EXIT
 systemctl stop ffn-dpnet.service
 # A previous manual test may have left an unmanaged instance.
 for p in $(/usr/bin/busybox pidof ffn_dpnetd 2>/dev/null); do kill "$p"; done
@@ -17,8 +28,7 @@ if ! mountpoint -q "$C/tmp/dpfs"; then
         ro,nolock,vers=3,addr=127.1.1.1,proto=tcp,mountproto=tcp,hard
 fi
 cp "$C/usr/local/bin/ffn_dpnetd" /run/ffn-dp/ffn_dpnetd
-chroot "$C" sha256sum -c "$K.sha256"
-chroot "$C" /usr/bin/env PATH="$PATH" FFN_DP_KERNEL="$K" /bin/bash /opt/ffn/dpboot8.sh
+chroot "$C" /usr/bin/env PATH="$PATH" FFN_DP_KERNEL="$K" FFN_DP_SKIP_AGENT_WAIT=1 /bin/bash /opt/ffn/dpboot8.sh
 systemctl start ffn-dpnet.service
 for i in $(seq 1 45); do
     if /usr/bin/busybox ping -c1 -W1 127.1.2.2 >/dev/null 2>&1; then exit 0; fi

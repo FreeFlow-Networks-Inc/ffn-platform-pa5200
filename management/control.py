@@ -14,6 +14,14 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('chassis-storage','status'): ('/opt/ffn-ngfw-v2/venv/bin/python', '/opt/ffn-platforms/pa5200-management/chassis_storage.py'),
+    ('copper-identify','status'): ('/usr/local/sbin/ffn-copper-identify','status'),
+    ('copper-identify','set'): ('/usr/local/sbin/ffn-copper-identify','apply'),
+    ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
+    ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
+    ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),
+    ('lacp', 'activate'): ('/usr/local/sbin/ffn-lacp', 'activate'),
+    ('lacp', 'deactivate'): ('/usr/local/sbin/ffn-lacp', 'deactivate'),
     ('phy','status'): ('/usr/local/sbin/ffn-phy','status'),
     ('phy','set'): ('/usr/local/sbin/ffn-phy','set'),
     ('bcm','status'): ('/usr/local/sbin/ffn-bcm-service','status'),
@@ -35,6 +43,55 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+
+def mp_interfaces_status():
+    from ffn_controld_client import ControldClient
+    response=ControldClient(timeout=20).plane_request({'v':1,'id':str(uuid.uuid4()),
+        'resource':'mp-interfaces','action':'status','payload':{}})
+    if not response.get('ok'): raise RuntimeError('Management interface controller unavailable')
+    return response['result']
+
+
+def data_port_stats():
+    from ffn_controld_client import ControldClient
+    response=ControldClient(timeout=20).plane_request({'v':1,'id':str(uuid.uuid4()),
+        'resource':'front-traffic','action':'status','payload':{}})
+    if not response.get('ok'): raise RuntimeError('Front data-port telemetry unavailable')
+    return response['result']
+
+
+def aggregate_status():
+    from ffn_controld_client import ControldClient
+    request={'v':1,'id':str(uuid.uuid4()),'resource':'aggregates','action':'status','payload':{}}
+    response=ControldClient(timeout=55).plane_request(request)
+    if not response.get('ok'):raise RuntimeError('Aggregate controller unavailable; request '+request['id'])
+    return response['result']
+
+
+def before_policy_commit(candidate_bytes):
+    if os.environ.get('FFN_CONTROL_GATEWAY') == 'controld':
+        import hashlib
+        from ffn_controld_client import ControldClient
+        if not isinstance(candidate_bytes, bytes): raise ValueError('candidate bytes required')
+        client = ControldClient(timeout=130)
+        def request(action, payload):
+            msg = {'v':1,'id':str(uuid.uuid4()),'resource':'fe100-policy','action':action,'payload':payload}
+            response = client.plane_request(msg)
+            if not response.get('ok'):
+                raise RuntimeError('FE100 policy barrier failed; request ID ' + msg['id'])
+            return response['result']
+        state = request('status', {})
+        result = request('apply', {'revision':state['revision'], 'digest':hashlib.sha256(candidate_bytes).hexdigest()})
+        if result.get('phase')!='blocked' or result.get('sessions')!=0 or result.get('recovery_required') is not False:
+            raise RuntimeError('Hardware sessions did not drain')
+        return {'revision':result['revision'],'drained':True,'admission_enabled':False}
+    # Imported only by an explicitly selected extension at commit time.
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('pa5200_policy_guard',Path(__file__).with_name('policy_guard.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.before_commit(candidate_bytes)
 
 
 def legacy_router(current_user, require_admin, record_audit):
@@ -70,6 +127,9 @@ class Controller:
         target = os.environ.get('FFN_PLANE_SOCKET', '/run/ffn-plane-mp/control.sock')
         data = dict(payload or {})
         operation = 'apply' if action in ('patch','set','auto','full') else action
+        if resource == 'lacp' and action != 'status':
+            operation = 'apply'
+            data['operation'] = action
         if resource == 'thermal' and operation == 'apply':
             data = {'revision':0, 'operation':action}
         request = {'v':1, 'id':str(uuid.uuid4()), 'resource':resource, 'action':operation, 'payload':data}
@@ -131,6 +191,11 @@ async def inspection_activation(ctl, result, attempts=10):
 
 def router(current_user, require_admin, record_audit, controller=None, prefix='/api/pa5200'):
     api = APIRouter(prefix=prefix, tags=['PA-5220 controls'])
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('pa5200_vif_api',Path(__file__).with_name('vif_api.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    api.include_router(module.router(current_user,require_admin,record_audit))
     ctl = controller or Controller()
     lock = asyncio.Lock()
 
@@ -144,7 +209,7 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
             except OSError:
                 return resource, {'available': False, 'error': 'Controller unavailable'}
         resources = dict(await asyncio.gather(*(one(r) for r in (
-            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric', 'dataplane'))))
+            'network', 'overlay', 'inspection', 'thermal', 'chassis', 'fabric', 'dataplane', 'lacp', 'port-events'))))
         return {'collected_at': time.time(), 'resources': resources,
                 'can_write': user.get('role') in ('admin', 'superuser'),
                 'provider': 'pa5200', 'cpu_role': 'management',
@@ -168,13 +233,13 @@ def router(current_user, require_admin, record_audit, controller=None, prefix='/
     @api.post('/{resource}/{action}')
     async def change(resource: str, action: str, request: Request, user=Depends(current_user)):
         require_admin(user)
-        if (resource, action) not in {('network', 'patch'), ('overlay', 'set'),
-                ('inspection', 'set'), ('bcm', 'set'), ('phy', 'set'), ('faceplate', 'set'), ('thermal', 'auto'), ('thermal', 'full')}:
+        if (resource, action) not in {('network', 'patch'), ('overlay', 'set'), ('lacp','set'), ('lacp','activate'), ('lacp','deactivate'),
+                ('inspection', 'set'), ('faceplate', 'set'), ('bcm','set'), ('phy','set'), ('copper-identify','set'), ('thermal', 'auto'), ('thermal', 'full')}:
             raise HTTPException(404, 'Unknown appliance operation')
         data = await body(request)
-        allowed = {'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
+        allowed = {'copper-identify': {'revision','operation','port','token'}, 'phy': {'revision','phy','speed'}, 'bcm': {'revision','operation','acknowledge_link_outage'}, 'faceplate': {'revision','port','enabled','speed','restart_autoneg','restore_pair_map'}, 'network': {'revision', 'ports', 'routes', 'vrfs', 'rules'},
                    'overlay': {'revision', 'links'},
-                   'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set()}[resource]
+                   'inspection': {'revision', 'mode', 'ports', 'literal', 'detectors'}, 'thermal': set(), 'lacp': {'revision','groups'} if action=='set' else {'revision','group'}}[resource]
         if set(data) - allowed:
             raise HTTPException(422, 'Unknown configuration fields')
         if resource != 'thermal' and (type(data.get('revision')) is not int or data['revision'] < 0):

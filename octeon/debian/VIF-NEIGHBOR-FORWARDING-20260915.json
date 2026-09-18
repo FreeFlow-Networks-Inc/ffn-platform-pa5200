@@ -1,0 +1,707 @@
+{
+  "started": 1789494155.3532662,
+  "steps": [
+    {
+      "label": "before",
+      "result": {
+        "network": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 64,
+          "routes": [],
+          "rules": [],
+          "vrfs": {}
+        },
+        "vifs": {
+          "config": {
+            "revision": 15,
+            "vifs": {}
+          },
+          "forwarding": false,
+          "hardware_session_offload": false,
+          "physical_link": null,
+          "ports": [
+            5,
+            13
+          ],
+          "recovery_required": false,
+          "running": false
+        },
+        "front": {
+          "5": {
+            "available": true,
+            "bcm_port": 16,
+            "configured_speed": "auto",
+            "enabled": false,
+            "link": false,
+            "name": "ethernet1/5",
+            "port": 5,
+            "speed_configuration": true,
+            "speed_mbps": null,
+            "supported_speeds": [
+              1000,
+              10000
+            ]
+          },
+          "13": {
+            "available": true,
+            "bcm_port": 7,
+            "configured_speed": "auto",
+            "enabled": false,
+            "link": false,
+            "name": "ethernet1/13",
+            "port": 13,
+            "speed_configuration": true,
+            "speed_mbps": null,
+            "supported_speeds": [
+              1000,
+              10000
+            ]
+          }
+        }
+      }
+    },
+    {
+      "label": "front_5",
+      "result": {
+        "activation": "verified"
+      }
+    },
+    {
+      "label": "front_13",
+      "result": {
+        "activation": "verified"
+      }
+    },
+    {
+      "label": "network_apply",
+      "result": {
+        "changed_ports": [],
+        "config": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 65,
+          "routes": [],
+          "rules": [],
+          "vrfs": {
+            "vrf-viflab": 4090
+          }
+        },
+        "revision": 65
+      }
+    },
+    {
+      "label": "vif_set",
+      "result": {
+        "config": {
+          "revision": 16,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.201.1/24",
+                  "2001:db8:201::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 13,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.202.1/24",
+                  "2001:db8:202::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 5,
+              "vlan": 3902
+            }
+          }
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 26
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "vif_start",
+      "result": {
+        "config": {
+          "revision": 16,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.201.1/24",
+                  "2001:db8:201::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 13,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.202.1/24",
+                  "2001:db8:202::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 5,
+              "vlan": 3902
+            }
+          }
+        },
+        "counters": {
+          "tx_fv4001": 1,
+          "tx_fv4002": 2,
+          "unassigned_or_invalid_rx": 3
+        },
+        "forwarding": true,
+        "generation": "12fc3957-ecf2-4812-869c-a2b536218258",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 27
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "network_apply",
+      "result": {
+        "changed_ports": [],
+        "config": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 66,
+          "routes": [
+            {
+              "dev": "fv4001",
+              "dst": "198.19.201.0/24",
+              "table": 4090,
+              "via": "198.18.201.2"
+            },
+            {
+              "dev": "fv4001",
+              "dst": "2001:db8:301::/64",
+              "table": 4090,
+              "via": "2001:db8:201::2"
+            },
+            {
+              "dev": "fv4002",
+              "dst": "198.19.202.0/24",
+              "table": 4090,
+              "via": "198.18.202.2"
+            },
+            {
+              "dev": "fv4002",
+              "dst": "2001:db8:302::/64",
+              "table": 4090,
+              "via": "2001:db8:202::2"
+            }
+          ],
+          "rules": [
+            {
+              "from": "198.18.201.0/24",
+              "iif": "fv4001",
+              "priority": 601,
+              "table": 4090
+            },
+            {
+              "from": "2001:db8:201::/64",
+              "iif": "fv4001",
+              "priority": 601,
+              "table": 4090
+            },
+            {
+              "from": "198.18.202.0/24",
+              "iif": "fv4002",
+              "priority": 602,
+              "table": 4090
+            },
+            {
+              "from": "2001:db8:202::/64",
+              "iif": "fv4002",
+              "priority": 602,
+              "table": 4090
+            }
+          ],
+          "vrfs": {
+            "vrf-viflab": 4090
+          }
+        },
+        "revision": 66
+      }
+    },
+    {
+      "label": "wire_ipv4",
+      "result": {
+        "mode": "ipv4",
+        "directions": [
+          {
+            "ingress_vif": "fv4001",
+            "egress_vif": "fv4002",
+            "sent": 4,
+            "physical_ingress": 4,
+            "exact_forwarded": 4,
+            "expected": 4,
+            "unexpected": [],
+            "neighbor_replies": 1
+          },
+          {
+            "ingress_vif": "fv4002",
+            "egress_vif": "fv4001",
+            "sent": 4,
+            "physical_ingress": 4,
+            "exact_forwarded": 4,
+            "expected": 4,
+            "unexpected": [],
+            "neighbor_replies": 1
+          }
+        ],
+        "passed": true
+      }
+    },
+    {
+      "label": "wire_ipv6",
+      "result": {
+        "mode": "ipv6",
+        "directions": [
+          {
+            "ingress_vif": "fv4001",
+            "egress_vif": "fv4002",
+            "sent": 4,
+            "physical_ingress": 4,
+            "exact_forwarded": 4,
+            "expected": 4,
+            "unexpected": [],
+            "neighbor_replies": 1
+          },
+          {
+            "ingress_vif": "fv4002",
+            "egress_vif": "fv4001",
+            "sent": 4,
+            "physical_ingress": 4,
+            "exact_forwarded": 4,
+            "expected": 4,
+            "unexpected": [],
+            "neighbor_replies": 1
+          }
+        ],
+        "passed": true
+      }
+    },
+    {
+      "label": "learned_neighbors",
+      "result": [
+        {
+          "dst": "198.18.202.2",
+          "dev": "fv4002",
+          "lladdr": "02:ff:00:00:00:02",
+          "state": [
+            "REACHABLE"
+          ]
+        },
+        {
+          "dst": "198.18.201.2",
+          "dev": "fv4001",
+          "lladdr": "02:ff:00:00:00:01",
+          "state": [
+            "REACHABLE"
+          ]
+        },
+        {
+          "dst": "2001:db8:201::2",
+          "dev": "fv4001",
+          "lladdr": "02:ff:00:00:00:01",
+          "state": [
+            "REACHABLE"
+          ]
+        },
+        {
+          "dst": "2001:db8:202::2",
+          "dev": "fv4002",
+          "lladdr": "02:ff:00:00:00:02",
+          "state": [
+            "REACHABLE"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "route_lookup",
+      "result": {
+        "lookup": [
+          {
+            "cache": [],
+            "dev": "fv4002",
+            "dst": "198.19.202.2",
+            "flags": [],
+            "gateway": "198.18.202.2",
+            "prefsrc": "198.18.202.1",
+            "table": "4090",
+            "uid": 0
+          }
+        ]
+      }
+    },
+    {
+      "label": "dependent_assignment_rejected",
+      "result": true
+    },
+    {
+      "label": "runtime",
+      "result": {
+        "config": {
+          "revision": 16,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.201.1/24",
+                  "2001:db8:201::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 13,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [
+                  "198.18.202.1/24",
+                  "2001:db8:202::1/64"
+                ],
+                "mode": "l3",
+                "vrf": "vrf-viflab"
+              },
+              "port": 5,
+              "vlan": 3902
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 10,
+          "rx_fv4002": 10,
+          "tx_fv4001": 18,
+          "tx_fv4002": 18,
+          "unassigned_or_invalid_rx": 36
+        },
+        "forwarding": true,
+        "generation": "12fc3957-ecf2-4812-869c-a2b536218258",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "network_apply",
+      "result": {
+        "changed_ports": [],
+        "config": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 67,
+          "routes": [],
+          "rules": [],
+          "vrfs": {
+            "vrf-viflab": 4090
+          }
+        },
+        "revision": 67
+      }
+    },
+    {
+      "label": "vif_set",
+      "result": {
+        "config": {
+          "revision": 17,
+          "vifs": {}
+        },
+        "counters": {
+          "rx_fv4001": 10,
+          "rx_fv4002": 10,
+          "tx_fv4001": 18,
+          "tx_fv4002": 18,
+          "unassigned_or_invalid_rx": 36
+        },
+        "forwarding": false,
+        "generation": "12fc3957-ecf2-4812-869c-a2b536218258",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 28
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "vif_stop",
+      "result": {
+        "config": {
+          "revision": 17,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 29
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "network_apply",
+      "result": {
+        "changed_ports": [],
+        "config": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 68,
+          "routes": [],
+          "rules": [],
+          "vrfs": {}
+        },
+        "revision": 68
+      }
+    },
+    {
+      "label": "after",
+      "result": {
+        "network": {
+          "ports": {
+            "p1": {
+              "addresses": [],
+              "mode": "l3"
+            },
+            "p13": {
+              "mode": "disabled"
+            },
+            "p3": {
+              "mode": "l2",
+              "pvid": 100,
+              "vlans": [
+                100
+              ]
+            },
+            "p5": {
+              "mode": "disabled"
+            }
+          },
+          "revision": 68,
+          "routes": [],
+          "rules": [],
+          "vrfs": {}
+        },
+        "vifs": {
+          "config": {
+            "revision": 17,
+            "vifs": {}
+          },
+          "forwarding": false,
+          "hardware_session_offload": false,
+          "physical_link": null,
+          "ports": [
+            5,
+            13
+          ],
+          "recovery_required": false,
+          "running": false
+        }
+      }
+    },
+    {
+      "label": "front_13",
+      "result": {
+        "activation": "verified"
+      }
+    },
+    {
+      "label": "front_5",
+      "result": {
+        "activation": "verified"
+      }
+    },
+    {
+      "label": "front_restored",
+      "result": {
+        "5": {
+          "available": true,
+          "bcm_port": 16,
+          "configured_speed": "auto",
+          "enabled": false,
+          "link": false,
+          "name": "ethernet1/5",
+          "port": 5,
+          "speed_configuration": true,
+          "speed_mbps": null,
+          "supported_speeds": [
+            1000,
+            10000
+          ]
+        },
+        "13": {
+          "available": true,
+          "bcm_port": 7,
+          "configured_speed": "auto",
+          "enabled": false,
+          "link": false,
+          "name": "ethernet1/13",
+          "port": 13,
+          "speed_configuration": true,
+          "speed_mbps": null,
+          "supported_speeds": [
+            1000,
+            10000
+          ]
+        }
+      }
+    }
+  ],
+  "passed": true,
+  "finished": 1789494374.4167824
+}

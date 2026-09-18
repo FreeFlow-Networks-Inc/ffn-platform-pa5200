@@ -23,13 +23,20 @@ THREE RULES THAT SHAPE EVERY RENDERER HERE
 ------------------------------------------
 
 1. **Emit the vocabulary the DP already parses.** `ffn_dp_l3_config.c` matches
-   on exactly three prefixes -- `dp.l3.route.`, `dp.l3.neigh.`, `dp.l3.iface.`
-   -- with an iproute2-shaped value. Inventing a tidier key would mean changing
-   C on the dataplane, so the route renderer reproduces that grammar verbatim:
+   on three prefixes -- `dp.l3.route.`, `dp.l3.neigh.`, `dp.l3.iface.` -- with
+   an iproute2-shaped value, and `ffn_dp_l3_v6_config.c` matches the `6`-suffixed
+   forms. Inventing a tidier key would mean changing C on the dataplane, so the
+   route renderer reproduces that grammar verbatim:
 
        dp.l3.route.<id>=<prefix>/<len> [via <gateway>] dev <egress>
        dp.l3.neigh.<id>=<ip> lladdr <mac>
        dp.l3.iface.<egress>.mac=<mac>
+       dp.l3.route6.<id>=... dp.l3.neigh6.<id>=... dp.l3.iface6.<egress>.mac=...
+
+   **The address family picks the key, not the value.** The DP keeps two
+   separate FIBs behind two separate namespaces, so a v6 prefix under the v4
+   key does not half-work -- the v4 parser rejects it as a malformed address
+   and the v6 parser never sees it.
 
 2. **Output must be deterministic.** ffn_cfgd bumps its version from the file's
    mtime, and every bump makes the CP re-pull and re-push to the DP over a
@@ -145,6 +152,17 @@ def _emit(out, key, value):
 # without taking the rest of the config with it -- see render().
 # ---------------------------------------------------------------------------
 
+def _is_v6(addr):
+    """Address family by inspection, which is all that is needed here.
+
+    A ':' cannot appear in an IPv4 address or prefix and must appear in an IPv6
+    one, so this separates the two without validating either -- validation
+    belongs to the DP's own parser, which rejects far more thoroughly than the
+    renderer could and is the thing that actually has to agree.
+    """
+    return ":" in (addr or "")
+
+
 def render_routes(out, db, root, portmap, problems, base):
     """static_routes -> dp.l3.route.<id>, in the DP's own grammar.
 
@@ -178,6 +196,23 @@ def render_routes(out, db, root, portmap, problems, base):
         # missing DP mapping would stop the control plane routing over a
         # dataplane detail.
         nh = _clean(nh)
+
+        # MIXED FAMILIES ARE INVALID EVERYWHERE, so this is checked before
+        # either plane's copy is emitted rather than only before the DP's.
+        # `ip route add 2001:db8::/32 via 10.0.0.254` is rejected by the CP's
+        # kernel exactly as the prefix is rejected by the DP's parser, so the
+        # usual rule -- publish the CP route even when the DP copy cannot be
+        # built -- does not apply. That rule exists so a missing portmap entry,
+        # a dataplane detail, cannot stop the control plane routing; it is not
+        # a licence to publish a route that cannot be installed at all.
+        if nh and _is_v6(cidr) != _is_v6(nh):
+            problems.append(
+                "route %s: destination %s is %s but next hop %s is %s -- no "
+                "plane can install that, so neither copy is published"
+                % (rid, cidr, "IPv6" if _is_v6(cidr) else "IPv4",
+                   nh, "IPv6" if _is_v6(nh) else "IPv4"))
+            continue
+
         if nh:
             cp_val = "%s via %s dev %s" % (cidr, nh, dev)
         else:
@@ -196,9 +231,20 @@ def render_routes(out, db, root, portmap, problems, base):
                 "reject 'dev %s' as a syntax error, so the DP copy is not "
                 "published (the CP route still is)" % (rid, PORTMAP_PREFIX, dev, dev))
             continue
+        # ADDRESS FAMILY PICKS THE KEY. The DP keeps two separate FIBs and
+        # reaches them through two separate key namespaces -- dp.l3.route.* is
+        # parsed by ffn_dp_l3_config.c into struct dp_l3, dp.l3.route6.* by
+        # ffn_dp_l3_v6_config.c into struct dp_l3_v6. Emitting a v6 prefix
+        # under the v4 key does not half-work: the v4 parser rejects it as a
+        # malformed address and the v6 parser never sees it, so the route is
+        # counted as an error on the dataplane and exists nowhere. Every IPv6
+        # static route on this box did exactly that until now.
+        key = ("dp.l3.route6.%s%s" % (MGR_ID, rid) if _is_v6(cidr)
+               else "dp.l3.route.%s%s" % (MGR_ID, rid))
+
         val = ("%s via %s dev %s" % (cidr, nh, idx) if nh
                else "%s dev %s" % (cidr, idx))
-        _emit(out, "dp.l3.route.%s%s" % (MGR_ID, rid), val)
+        _emit(out, key, val)
 
 
 def _alias_map(root):

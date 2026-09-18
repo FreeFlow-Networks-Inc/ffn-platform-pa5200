@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "rx_format": "bcm-otmh-ssp",
+  "boot_id": "fe8d6e21-6f43-4e7c-b94a-de9c4f75a840",
+  "ports": [
+    5,
+    13
+  ],
+  "expected_peers": {
+    "5": 13,
+    "13": 5
+  },
+  "frame_size": 1514,
+  "sent": 16,
+  "matched_rx": [
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 0
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 0
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 1
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 1
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 2
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 2
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 3
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 3
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 4
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 4
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 5
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 5
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 6
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 6
+    },
+    {
+      "sent_port": 5,
+      "received_port": 13,
+      "sequence": 7
+    },
+    {
+      "sent_port": 13,
+      "received_port": 5,
+      "sequence": 7
+    }
+  ],
+  "other_rx": 0,
+  "raw_rx_samples": [
+    {
+      "length": 1518,
+      "prefix_hex": "0018000702ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0500000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcc"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018001002ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0d00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcc"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018000702ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc05010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccd"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018001002ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0d010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccd"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018000702ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc050202030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdce"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018001002ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0d0202030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdce"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018000702ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0503030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf"
+    },
+    {
+      "length": 1518,
+      "prefix_hex": "0018001002ff0000000202ff0000000188b546464e2d5452554e4b2d544553543a80040264200d4cad942393e00c00ccdc0d03030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf"
+    }
+  ],
+  "tx_accepted_delta": 16,
+  "tx_completed_delta": 16,
+  "wire_tx_delta": 16,
+  "wire_rx_delta": 16,
+  "rx_delta": 16,
+  "before": {
+    "dma_published": true,
+    "dma_ready": true,
+    "dma_error": 0,
+    "sso_xaq_prepared": true,
+    "pko_memory_ready": true,
+    "pko_queues_prepared": true,
+    "dma_pools": [
+      {
+        "pool": 61,
+        "aura": 1021,
+        "block_size": 4096,
+        "capacity": 512,
+        "tested": true,
+        "available": 512,
+        "aura_count": 32
+      },
+      {
+        "pool": 62,
+        "aura": 1022,
+        "block_size": 4096,
+        "capacity": 570,
+        "tested": true,
+        "available": 298,
+        "aura_count": 304
+      },
+      {
+        "pool": 63,
+        "aura": 1023,
+        "block_size": 4096,
+        "capacity": 1024,
+        "tested": true,
+        "available": 1000,
+        "aura_count": 56
+      }
+    ],
+    "trunk": {
+      "interface": "ffnpkt0",
+      "running": true,
+      "error": 0,
+      "stage": "running",
+      "dq_open": true,
+      "last_ack": "0x0000000000000001",
+      "rx": 121,
+      "tx_accepted": 80,
+      "tx_completed": 80,
+      "wire_tx": 80,
+      "wire_rx": 121,
+      "tx_rejected": 0,
+      "bad_dma": 0,
+      "physical_forwarding_verified": false
+    },
+    "trunk_registered": true,
+    "schema": 1,
+    "pki_reset_busy": false,
+    "pki_active": 0,
+    "pki_enabled": 1,
+    "pko_enabled": 1,
+    "sso_aw_cfg": "0x000000000000000f",
+    "enabled_fpa_pools": 3,
+    "pki_microcode_prepared": true,
+    "microcode_words": 1001,
+    "ready": false
+  },
+  "after": {
+    "dma_published": true,
+    "dma_ready": true,
+    "dma_error": 0,
+    "sso_xaq_prepared": true,
+    "pko_memory_ready": true,
+    "pko_queues_prepared": true,
+    "dma_pools": [
+      {
+        "pool": 61,
+        "aura": 1021,
+        "block_size": 4096,
+        "capacity": 512,
+        "tested": true,
+        "available": 512,
+        "aura_count": 32
+      },
+      {
+        "pool": 62,
+        "aura": 1022,
+        "block_size": 4096,
+        "capacity": 570,
+        "tested": true,
+        "available": 298,
+        "aura_count": 304
+      },
+      {
+        "pool": 63,
+        "aura": 1023,
+        "block_size": 4096,
+        "capacity": 1024,
+        "tested": true,
+        "available": 1000,
+        "aura_count": 56
+      }
+    ],
+    "trunk": {
+      "interface": "ffnpkt0",
+      "running": true,
+      "error": 0,
+      "stage": "running",
+      "dq_open": true,
+      "last_ack": "0x0000000000000001",
+      "rx": 137,
+      "tx_accepted": 96,
+      "tx_completed": 96,
+      "wire_tx": 96,
+      "wire_rx": 137,
+      "tx_rejected": 0,
+      "bad_dma": 0,
+      "physical_forwarding_verified": false
+    },
+    "trunk_registered": true,
+    "schema": 1,
+    "pki_reset_busy": false,
+    "pki_active": 0,
+    "pki_enabled": 1,
+    "pko_enabled": 1,
+    "sso_aw_cfg": "0x000000000000000f",
+    "enabled_fpa_pools": 3,
+    "pki_microcode_prepared": true,
+    "microcode_words": 1001,
+    "ready": false
+  },
+  "session_offload_verified": false,
+  "round_trip_verified": true
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FFN-owned PA-5220 profile. Loading this file does not initialize hardware. -->
+<configdb>
+  <entry name="hw.fe100">
+    <value>+ {"usecase": 1, "cfg_mode": 4, "v4_v6_choice": 2}</value>
+  </entry>
+</configdb>

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+exec ssh -o BatchMode=yes -o ConnectTimeout=5 \
+    -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \
+    -o 'ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp' \
+    root@127.1.2.2 'python3 /usr/local/sbin/ffn_lacp_observer.py'

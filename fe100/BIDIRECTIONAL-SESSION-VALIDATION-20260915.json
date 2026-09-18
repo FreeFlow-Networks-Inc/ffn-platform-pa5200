@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "sequential_both_directions_verified": true,
+  "simultaneous_pair_verified": false,
+  "production_admission_enabled": false,
+  "directions": [
+    {
+      "ingress": 13,
+      "egress": 5,
+      "packets": 1,
+      "frames": [
+        0
+      ],
+      "report": "/var/log/ffn-front-session-1789487955229711287.json",
+      "journal": "/var/lib/ffn/fe100/packet-session-1789487956264174169.json",
+      "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+      "restored": true
+    },
+    {
+      "ingress": 5,
+      "egress": 13,
+      "packets": 4,
+      "frames": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "report": "/var/log/ffn-front-session-1789488104722885656.json",
+      "journal": "/var/lib/ffn/fe100/packet-session-1789488104964243368.json",
+      "cp_boot_id": "c3b75f79-b285-4a5c-ad61-489d1038a298",
+      "restored": true
+    }
+  ],
+  "bcm_final": {
+    "script": "ffn_bcm_forward_test.c",
+    "purpose": "lab: explicit front/NIF/Interlaken test mode; allocate only once per BCM initialization",
+    "path": "/tmp/bcmcfg/ffn_bcm_forward_test.c",
+    "markers": [
+      "FFN_DP_VOQ physical=0x8000018 gport=0x24000004 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x800081c gport=0x2400000c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x800080e gport=0x24000014 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000010 gport=0x2400001c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000007 gport=0x24000024 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000822 gport=0x2400002c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000823 gport=0x24000034 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000803 gport=0x2400003c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000008 gport=0x24000044 queues=8 flags=0x8 rv=0",
+      "FFN_SESSION_PATH port=3 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=3 sysport=0x6c000003",
+      "FFN_SESSION_HEADER port=3 type=2 rv=0",
+      "FFN_SESSION_PATH port=7 destination=24 enabled=1 rv=0",
+      "FFN_SESSION_SYSTEM port=7 sysport=0x6c000007",
+      "FFN_SESSION_HEADER port=7 type=2 rv=0",
+      "FFN_SESSION_PATH port=8 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=8 sysport=0x6c000008",
+      "FFN_SESSION_HEADER port=8 type=1 rv=0",
+      "FFN_SESSION_PATH port=16 destination=24 enabled=1 rv=0",
+      "FFN_SESSION_SYSTEM port=16 sysport=0x6c000010",
+      "FFN_SESSION_HEADER port=16 type=2 rv=0",
+      "FFN_SESSION_PATH port=20 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=20 sysport=0x6c000014",
+      "FFN_SESSION_HEADER port=20 type=11 rv=0",
+      "FFN_SESSION_PATH port=24 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=24 sysport=0x6c000018",
+      "FFN_SESSION_HEADER port=24 type=11 rv=0",
+      "FFN_SESSION_PATH port=14 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=14 sysport=0x6c00000e",
+      "FFN_SESSION_HEADER port=14 type=2 rv=0",
+      "FFN_SESSION_PATH port=28 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=28 sysport=0x6c00001c",
+      "FFN_SESSION_HEADER port=28 type=2 rv=0",
+      "FFN_DONE"
+    ],
+    "completed": true,
+    "output_lines": 34,
+    "output": [
+      "FFN_DP_VOQ physical=0x8000018 gport=0x24000004 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x800081c gport=0x2400000c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x800080e gport=0x24000014 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000010 gport=0x2400001c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000007 gport=0x24000024 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000822 gport=0x2400002c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000823 gport=0x24000034 queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000803 gport=0x2400003c queues=8 flags=0x8 rv=0",
+      "FFN_DP_VOQ physical=0x8000008 gport=0x24000044 queues=8 flags=0x8 rv=0",
+      "FFN_SESSION_PATH port=3 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=3 sysport=0x6c000003",
+      "FFN_SESSION_HEADER port=3 type=2 rv=0",
+      "FFN_SESSION_PATH port=7 destination=24 enabled=1 rv=0",
+      "FFN_SESSION_SYSTEM port=7 sysport=0x6c000007",
+      "FFN_SESSION_HEADER port=7 type=2 rv=0",
+      "FFN_SESSION_PATH port=8 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=8 sysport=0x6c000008",
+      "FFN_SESSION_HEADER port=8 type=1 rv=0",
+      "FFN_SESSION_PATH port=16 destination=24 enabled=1 rv=0",
+      "FFN_SESSION_SYSTEM port=16 sysport=0x6c000010",
+      "FFN_SESSION_HEADER port=16 type=2 rv=0",
+      "FFN_SESSION_PATH port=20 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=20 sysport=0x6c000014",
+      "FFN_SESSION_HEADER port=20 type=11 rv=0",
+      "FFN_SESSION_PATH port=24 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=24 sysport=0x6c000018",
+      "FFN_SESSION_HEADER port=24 type=11 rv=0",
+      "FFN_SESSION_PATH port=14 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=14 sysport=0x6c00000e",
+      "FFN_SESSION_HEADER port=14 type=2 rv=0",
+      "FFN_SESSION_PATH port=28 destination=0 enabled=0 rv=0",
+      "FFN_SESSION_SYSTEM port=28 sysport=0x6c00001c",
+      "FFN_SESSION_HEADER port=28 type=2 rv=0",
+      "FFN_DONE"
+    ],
+    "truncated": false,
+    "ok": true
+  },
+  "bcm_test_group_removed": {
+    "script": "ffn_bcm_forward_test.c",
+    "purpose": "lab: explicit front/NIF/Interlaken test mode; allocate only once per BCM initialization",
+    "path": "/tmp/bcmcfg/ffn_bcm_forward_test.c",
+    "markers": [
+      "FFN_GROUP_ABSENT group=0 rv=-7",
+      "FFN_DONE"
+    ],
+    "completed": true,
+    "output_lines": 2,
+    "output": [
+      "FFN_GROUP_ABSENT group=0 rv=-7",
+      "FFN_DONE"
+    ],
+    "truncated": false,
+    "ok": true
+  },
+  "manager_service": "active",
+  "mp_rx_all_restored": true,
+  "automated_tests": {
+    "fe100": 44,
+    "core_and_guard": 11,
+    "passed": 55
+  },
+  "artifacts_sha256": {
+    "/usr/local/sbin/validate_front_sessions.py": "4488c0f18cac7ed0480a6292efd1f26ab868615ea2d9f826f82cebe60712ea7a",
+    "/opt/ffn-platforms/pa5200-management/policy_guard.py": "a1e2e02e29fdcb638c08c714a9925f8af2983d5ff06347292839d3b42bef7d80",
+    "/opt/ffn-ngfw-v2/ffn_policy_barrier.py": "07bd348e8f9c5eb4b554ffac0afcbf670e1c5ee04c372b8ad2649161fe7010f1"
+  }
+}

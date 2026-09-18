@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 static volatile uint32_t *regs;
-static int allowed(unsigned offset)
+static int allowed(unsigned offset, int writing)
 {
     unsigned bases[] = {0x20000, 0x21000, 0x29000};
     unsigned i;
@@ -14,6 +14,9 @@ static int allowed(unsigned offset)
     for (i = 0; i < 3; i++) {
         unsigned d = offset - bases[i];
         if (d == 0 || (d >= 0x400 && d < 0xc00)) return 1;
+        /* Status, input remap and serial configuration are read-only here. */
+        if (!writing && (d == 4 || d == 8 || (d >= 0x10 && d <= 0x4c) || d == 0x50 ||
+                         d == 0x54 || d == 0x58 || d == 0x5c)) return 1;
     }
     return 0;
 }
@@ -30,13 +33,13 @@ int led_open(void)
 }
 int led_read(unsigned offset, uint32_t *value)
 {
-    if (!regs || !allowed(offset)) return -EINVAL;
+    if (!regs || !allowed(offset, 0)) return -EINVAL;
     *value = regs[offset / 4];
     return 0;
 }
 int led_write(unsigned offset, uint32_t value)
 {
-    if (!regs || !allowed(offset)) return -EINVAL;
+    if (!regs || !allowed(offset, 1)) return -EINVAL;
     regs[offset / 4] = value;
     __sync_synchronize();
     return 0;

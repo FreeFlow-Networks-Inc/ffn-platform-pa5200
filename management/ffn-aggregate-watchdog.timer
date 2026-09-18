@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN aggregate link ownership watchdog
+
+[Timer]
+OnBootSec=2s
+OnUnitInactiveSec=2s
+AccuracySec=1s
+Unit=ffn-aggregate-watchdog.service
+
+[Install]
+WantedBy=timers.target

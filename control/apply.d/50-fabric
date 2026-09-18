@@ -25,13 +25,21 @@ single-session and a second bcm.user wedges it.
 
 KEYS
     dp.fabric.port.<name>.enable = 1|0
-    dp.fabric.vlan.<vid>.ports   = xe5,xe8      (recorded; see NOT YET below)
-    dp.fabric.stp.forward        = xe5,xe8      (recorded; see NOT YET below)
+    dp.fabric.vlan.<vid>.ports   = xe5,xe8      (applied, untagged)
+    dp.fabric.stp.forward        = xe5,xe8      (applied)
+    dp.fabric.trunk.<tid>.members = xe8,xe9     (applied; not yet silicon-proven)
 
-NOT YET APPLIED: VLAN membership and STP state. ffn-bcmd exposes port enable and
-loopback today, not VLAN/STP, so this hook REPORTS those keys as unapplied
-rather than pretending. A hook that silently ignores half its config is worse
-than one that says what it skipped.
+VLAN AND STP ARE APPLIED NOW. They were recorded-but-skipped for as long as
+ffn-bcmd exposed only port enable and loopback; it now has vlan.create,
+vlan.port.add and stp.set, so this hook programs them.
+
+ONE FAILURE HERE IS NOT A BUG IN THIS HOOK. bcm_port_stp_set returns -18
+(BCM_E_PORT) for any port that is not in the Ethernet class, and the class comes
+from tm_port_header_type_in/out_<port> in config.bcm, which is read at init. So
+a refused stp.forward means "edit config.bcm and re-init", never "retry". As
+shipped ONLY PORT 3 is ETH; ports 5, 8 and 24 are TM/RAW. ffn-bcmd's stp.set
+puts that explanation in its error text and this hook surfaces it verbatim
+rather than reducing it to "failed". See bcm/ffn_bcm_l2.c.
 """
 import json
 import os
@@ -172,7 +180,114 @@ def main():
             else:
                 warn("port %s: %s" % (name, r.get("error")))
 
-        elif rest.startswith("vlan.") or rest.startswith("stp."):
+        elif rest.startswith("vlan.") and rest.endswith(".ports"):
+            # dp.fabric.vlan.<vid>.ports = xe5,xe8
+            #
+            # Two calls, in this order: the VLAN has to exist before ports can
+            # join it. vlan.create treats BCM_E_EXISTS as success, so a
+            # re-applied configuration converges instead of erroring.
+            #
+            # Membership is untagged by default -- vlan.port.add puts every
+            # listed port in both the member and untagged bitmaps unless told
+            # otherwise. This chip's only working L2 domain has always been the
+            # flat untagged VLAN 1, and a silently-tagged access port is a
+            # much worse failure than an explicit one.
+            vid_s = rest[len("vlan."):-len(".ports")]
+            if not vid_s.isdigit():
+                warn("bad vlan key (vid must be numeric): %s" % key)
+                continue
+            names = [x.strip() for x in str(val).split(",") if x.strip()]
+            ports, unknown = [], []
+            for n in names:
+                p = by_name.get(n)
+                (ports.append(p["port"]) if p else unknown.append(n))
+            if unknown:
+                warn("vlan %s: no such fabric port(s): %s"
+                     % (vid_s, ", ".join(unknown)))
+            if not ports:
+                continue
+            r = call({"op": "vlan.create", "vid": int(vid_s)})
+            if not r.get("ok"):
+                warn("vlan %s create: %s" % (vid_s, r.get("error")))
+                continue
+            r = call({"op": "vlan.port.add", "vid": int(vid_s), "ports": ports})
+            if r.get("ok"):
+                log("vlan %s: members %s (untagged)" % (vid_s, ports))
+                changed += 1
+            else:
+                warn("vlan %s membership: %s" % (vid_s, r.get("error")))
+
+        elif rest == "stp.forward":
+            # dp.fabric.stp.forward = xe5,xe8
+            #
+            # A -18 from every port is not a transient error: the port is not
+            # in the Ethernet class, which comes from
+            # tm_port_header_type_in/out_<port> in config.bcm and is read at
+            # init. ffn-bcmd's stp.set says so in its error, and that text is
+            # surfaced verbatim rather than reduced to "failed", because the
+            # fix is a config edit plus a re-init and nothing else.
+            names = [x.strip() for x in str(val).split(",") if x.strip()]
+            ports, unknown = [], []
+            for n in names:
+                p = by_name.get(n)
+                (ports.append(p["port"]) if p else unknown.append(n))
+            if unknown:
+                warn("stp.forward: no such fabric port(s): %s" % ", ".join(unknown))
+            if not ports:
+                continue
+            r = call({"op": "stp.set", "ports": ports, "state": "forward"})
+            if r.get("ok"):
+                got, bad = r.get("set", []), r.get("failed", [])
+                log("stp forward: %s" % (got or "none"))
+                if bad:
+                    warn("stp forward refused for %s"
+                         % ", ".join("%s(rv=%s %s)" % (b.get("port"), b.get("rv"),
+                                                       b.get("meaning"))
+                                     for b in bad))
+                changed += len(got)
+            else:
+                warn("stp.forward: %s" % r.get("error"))
+
+        elif rest.startswith("trunk.") and rest.endswith(".members"):
+            # dp.fabric.trunk.<tid>.members = xe8,xe9
+            #
+            # HARDWARE link aggregation, on the switch. This is a different
+            # thing from octeon/debian/ffn_lacp.py, which manages Linux
+            # 802.3ad bonds on the MP: front ports are BCM switch ports and
+            # not Linux netdevs, so Linux bonding cannot aggregate them at all
+            # (its preflight correctly refuses, because the members do not
+            # exist as links). Aggregating faceplate ports has to happen here.
+            #
+            # NOT YET VALIDATED ON SILICON: the trunk calls cannot be
+            # exercised until ports reach the Ethernet class, the same
+            # config gate stp.forward hits. Failures are reported with the
+            # API status rather than retried.
+            tid_s = rest[len("trunk."):-len(".members")]
+            if not tid_s.isdigit():
+                warn("bad trunk key (tid must be numeric): %s" % key)
+                continue
+            names = [x.strip() for x in str(val).split(",") if x.strip()]
+            ports, unknown = [], []
+            for n in names:
+                p = by_name.get(n)
+                (ports.append(p["port"]) if p else unknown.append(n))
+            if unknown:
+                warn("trunk %s: no such fabric port(s): %s"
+                     % (tid_s, ", ".join(unknown)))
+            if len(ports) < 2:
+                warn("trunk %s needs at least 2 resolvable members; got %s"
+                     % (tid_s, ports))
+                continue
+            r = call({"op": "trunk.create", "tid": int(tid_s), "ports": ports})
+            if r.get("ok"):
+                log("trunk %s: members %s" % (tid_s, ports))
+                changed += 1
+            else:
+                warn("trunk %s: %s" % (tid_s, r.get("error")))
+
+        elif rest.startswith("vlan.") or rest.startswith("stp.") \
+                or rest.startswith("trunk."):
+            warn("unrecognised vlan/stp/trunk key: %s" % key)
             skipped += 1
 
         elif rest == "protected":
@@ -182,9 +297,8 @@ def main():
             warn("unrecognised fabric key: %s" % key)
 
     if skipped:
-        log("%d VLAN/STP key(s) NOT applied: ffn-bcmd exposes port control "
-            "only so far" % skipped)
-    log("%d port change(s)" % changed)
+        log("%d fabric key(s) not applied" % skipped)
+    log("%d fabric change(s)" % changed)
     return 0
 
 

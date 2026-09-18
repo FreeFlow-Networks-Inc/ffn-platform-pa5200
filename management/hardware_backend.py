@@ -14,6 +14,14 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 COMMANDS = {
+    ('chassis-storage','status'): ('/opt/ffn-ngfw-v2/venv/bin/python', '/opt/ffn-platforms/pa5200-management/chassis_storage.py'),
+    ('front-traffic','status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_front_traffic.py'),
+    ('lacp-observation','status'): ('/usr/local/sbin/ffn-lacp-observe',),
+    ('port-events', 'status'): ('/usr/local/sbin/ffn-cp', 'python3 /usr/local/sbin/ffn_port_events.py status'),
+    ('lacp', 'status'): ('/usr/local/sbin/ffn-lacp', 'status'),
+    ('lacp', 'set'): ('/usr/local/sbin/ffn-lacp', 'set'),
+    ('lacp', 'activate'): ('/usr/local/sbin/ffn-lacp', 'activate'),
+    ('lacp', 'deactivate'): ('/usr/local/sbin/ffn-lacp', 'deactivate'),
     ('phy','status'): ('/usr/local/sbin/ffn-phy','status'),
     ('phy','set'): ('/usr/local/sbin/ffn-phy','set'),
     ('bcm','status'): ('/usr/local/sbin/ffn-bcm-service','status'),
@@ -23,6 +31,7 @@ COMMANDS = {
     ('dataplane', 'status'): ('/usr/local/sbin/ffn-dp-agent', 'status'),
     ('network', 'status'): ('/usr/local/sbin/ffn-network', 'status'),
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
+    ('network', 'validate'): ('/usr/local/sbin/ffn-network', 'validate'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
@@ -35,6 +44,23 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+for _action, _op in (('status', 'status'), ('set', 'replace')):
+    COMMANDS[('fe100-policy', _action)] = ('/usr/local/sbin/ffn-cp',
+        'env LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 '
+        'LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:'
+        '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64 '
+        'python3 /usr/local/sbin/ffn_fe100_policy_control.py ' + _op)
+
+# These operations are consumed only by the explicitly mounted hardware
+# harness. They are not generic FFN resources or an arbitrary shell API.
+COMMANDS[('accelerator','status')]=('/usr/local/sbin/ffn-cp',
+    'env LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:'
+    '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64 '
+    'python3 /usr/local/sbin/ffn_fe100_hardware_status.py')
+for _stage in ('status','prepare-pki','prepare-dma','prepare-sso','prepare-pko-memory','prepare-pko-queues',
+               'prepare-trunk','start-trunk','stop-trunk'):
+    COMMANDS[('packet-init',_stage)]=('/usr/local/sbin/ffn-dp-prepare',_stage)
 
 
 class Controller:

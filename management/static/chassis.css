@@ -1,0 +1,39 @@
+.rear-view {margin-bottom:14px}
+.rear-scroll {overflow-x:auto;padding:10px 0}
+.rear-panel {display:grid;grid-template-columns:24fr 29fr 29fr 16fr;gap:8px;min-width:720px;padding:14px;border:5px ridge #6b7884;border-radius:6px;background:linear-gradient(130deg,#8996a2,#56626e);color:#eaf0f5;box-shadow:inset 0 0 0 2px #25303b,0 8px 20px #0002}
+.rear-left,.rear-right {display:flex;flex-direction:column;gap:10px;justify-content:space-between}
+.rear-drives {display:grid;gap:4px}
+.rear-drive,.rear-psu,.rear-tray {border:2px solid #303a44;border-radius:4px;box-shadow:inset 0 1px 1px #fff5;background:#333f4b;position:relative}
+.rear-drive {display:grid;grid-template-columns:1fr 10px 46px;align-items:center;gap:8px;min-height:42px;padding:4px 8px;background:repeating-linear-gradient(0deg,#242d35 0 3px,#424e59 4px 6px)}
+.rear-drive small {grid-column:1/-1;font-size:9px;color:#c3d1de}
+.rear-drive-label {padding:3px;background:#24664a;font-size:10px;white-space:nowrap}
+.rear-drive-label.log {background:#215c81}
+.rear-tray {padding:10px 8px;background:radial-gradient(#17232d 1px,transparent 1.5px) 0 0/5px 5px,#778692;display:flex;flex-direction:column;justify-content:space-between}
+.rear-tray-title {text-align:center;font-weight:bold;background:#263441;padding:5px;border-radius:2px}
+.rear-fans {display:grid;grid-template-columns:1fr 1fr;gap:10px 6px;margin:10px 0}
+.rear-fan {min-width:0;text-align:center}
+.rear-fan svg {width:100%;max-width:116px;display:block;margin:auto;filter:drop-shadow(0 2px 2px #0007)}
+.rear-fan .blades {transform-origin:50px 50px;animation:rear-spin var(--fan-period,1s) linear infinite;animation-play-state:paused}
+.rear-fan.running .blades {animation-play-state:running}
+.rear-fan small {display:block;background:#24323eee;border-radius:2px;padding:3px;font-size:10px}
+.rear-handle {height:10px;border:3px solid #c4cdd5;border-radius:10px;margin:2px 22% 10px;box-shadow:0 2px 2px #0008}
+.rear-psu {min-height:96px;padding:9px;background:repeating-linear-gradient(90deg,#141d25 0 4px,#4b5864 5px 9px)}
+.rear-psu-title {font-weight:bold;background:#263441;padding:3px;margin-bottom:8px}
+.rear-power {display:flex;gap:8px;align-items:center}
+.rear-socket {width:47px;height:37px;border:3px solid #8b979f;border-radius:5px 5px 12px 12px;background:#0c1116;display:flex;justify-content:center;align-items:center;gap:8px}
+.rear-socket i {width:3px;height:12px;background:#d0d8de}
+.rear-status {font-size:10px;background:#24323eee;padding:3px;margin-top:5px}
+.rear-led {display:inline-block;width:9px;height:9px;border:1px solid #17212a;border-radius:50%;background:#8c9ba9;flex:none}
+.rear-panel .good .rear-led {background:#65e999;box-shadow:0 0 7px #65e99999}
+.rear-panel .fault .rear-led {background:#ff795f;box-shadow:0 0 6px #ff795f99}
+.rear-panel .absent {opacity:.5}
+.rear-panel .active .rear-led {animation:rear-activity .7s ease-in-out infinite alternate}
+.rear-psu.good .rear-socket {box-shadow:0 0 10px #65e99955;animation:rear-power 2.4s ease-in-out infinite alternate}
+.rear-ground {display:flex;align-items:center;gap:8px;color:#19242e;font-size:26px;min-height:45px}
+.rear-ground span {border:4px double #303c48;border-radius:50%;width:27px;height:27px;text-align:center;font-size:18px;background:#b5c1cb}
+.rear-legend {display:flex;gap:16px;flex-wrap:wrap;margin:10px 0;color:var(--text-dim)}
+.rear-detail {margin-top:10px}
+@keyframes rear-spin {to{transform:rotate(360deg)}}
+@keyframes rear-activity {to{opacity:.3}}
+@keyframes rear-power {to{box-shadow:0 0 2px #65e99955}}
+@media(prefers-reduced-motion:reduce) {.rear-panel *,.rear-panel .blades {animation:none!important}}

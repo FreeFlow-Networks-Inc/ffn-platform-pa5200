@@ -97,6 +97,19 @@ int oct3_build_desc(struct pko3_desc *d, const struct oct_wqe *w, int keep_data)
  * the first thing to look at when cvmx3_hw_init reports one. */
 void cvmx3_probe_interfaces(FILE *f);
 
+/* Is this the one core that should do work exactly once?
+ *
+ * The SDK runtime forks appmain() onto EVERY core in the coremask before it
+ * runs -- 40 of them on this CN78XX -- so anything that prints, or that must
+ * happen a single time, has to ask. Without this the probe output above is 40
+ * interleaved copies of the same table, which is not a formatting complaint:
+ * the lines arrive shuffled between cores and the table cannot be read at all.
+ *
+ * Wrapped here rather than calling cvmx_is_init_core() from the caller, so
+ * main stays free of CVMX headers exactly as it is for everything else in this
+ * backend. Without the SDK there is one process and it is always the one. */
+int cvmx3_is_init_core(void);
+
 
 struct dp_vsys_plan;
 

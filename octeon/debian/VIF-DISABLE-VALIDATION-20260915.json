@@ -1,0 +1,584 @@
+{
+  "started": 1789490396.3450696,
+  "steps": [
+    {
+      "label": "before",
+      "result": {
+        "config": {
+          "revision": 7,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "front_before",
+      "result": {
+        "5": {
+          "port": 5,
+          "name": "ethernet1/5",
+          "bcm_port": 16,
+          "available": true,
+          "enabled": false,
+          "link": false,
+          "speed_mbps": null,
+          "speed_configuration": true,
+          "supported_speeds": [
+            1000,
+            10000
+          ],
+          "configured_speed": "auto"
+        },
+        "13": {
+          "port": 13,
+          "name": "ethernet1/13",
+          "bcm_port": 7,
+          "available": true,
+          "enabled": false,
+          "link": false,
+          "speed_mbps": null,
+          "speed_configuration": true,
+          "supported_speeds": [
+            1000,
+            10000
+          ],
+          "configured_speed": "auto"
+        }
+      }
+    },
+    {
+      "label": "faceplate_5",
+      "result": {
+        "activation": "verified",
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": true,
+            "link": false,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          }
+        ]
+      }
+    },
+    {
+      "label": "faceplate_13",
+      "result": {
+        "activation": "verified",
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": true,
+            "link": false,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": true,
+            "link": false,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          }
+        ]
+      }
+    },
+    {
+      "label": "front_test",
+      "result": {
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": true,
+            "link": true,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": true,
+            "link": true,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          }
+        ]
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 8,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 14
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "start",
+      "result": {
+        "config": {
+          "revision": 8,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 2,
+          "rx_fv4002": 1,
+          "tx_fv4001": 1,
+          "tx_fv4002": 2
+        },
+        "forwarding": true,
+        "generation": "63c62ce4-3244-45ad-8e91-138b2e738aa6",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 15
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 9,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": false,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 7,
+          "rx_fv4002": 7,
+          "tx_fv4001": 7,
+          "tx_fv4002": 7
+        },
+        "forwarding": true,
+        "generation": "63c62ce4-3244-45ad-8e91-138b2e738aa6",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 16
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4001",
+        "receiver": "fv4002",
+        "sent": 4,
+        "received": 0,
+        "wire_received": 4,
+        "receiver_admin_down": true,
+        "sequences": []
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 10,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 7,
+          "rx_fv4002": 7,
+          "tx_fv4001": 13,
+          "tx_fv4002": 7,
+          "unassigned_or_invalid_rx": 6
+        },
+        "forwarding": true,
+        "generation": "63c62ce4-3244-45ad-8e91-138b2e738aa6",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 17
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4002",
+        "receiver": "fv4001",
+        "sent": 4,
+        "received": 4,
+        "wire_received": 4,
+        "receiver_admin_down": false,
+        "sequences": [
+          0,
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 11,
+          "vifs": {}
+        },
+        "counters": {
+          "rx_fv4001": 18,
+          "rx_fv4002": 9,
+          "tx_fv4001": 15,
+          "tx_fv4002": 18,
+          "unassigned_or_invalid_rx": 6
+        },
+        "forwarding": false,
+        "generation": "63c62ce4-3244-45ad-8e91-138b2e738aa6",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 18
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "stop",
+      "result": {
+        "config": {
+          "revision": 11,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 19
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "after",
+      "result": {
+        "config": {
+          "revision": 11,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "faceplate_13",
+      "result": {
+        "activation": "verified",
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": true,
+            "link": true,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          }
+        ]
+      }
+    },
+    {
+      "label": "faceplate_5",
+      "result": {
+        "activation": "verified",
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          }
+        ]
+      }
+    },
+    {
+      "label": "front_after",
+      "result": {
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          }
+        ]
+      }
+    }
+  ],
+  "passed": true
+}

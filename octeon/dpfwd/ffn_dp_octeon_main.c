@@ -47,6 +47,22 @@
 #include "ffn_dp_oct.h"
 #include "ffn_dp_io_octeon.h"
 #include "ffn_dp_io_octeon3.h"
+#include "ffn_dp_l3_config.h"
+
+/* Where the config chain ends.
+ *
+ * The MP renders it, ffn_cfgd serves it, ffn_cfgagent on the CP relays it over
+ * the PCIe mailbox and writes it here. Until this file was read, that entire
+ * chain delivered keys to a dataplane that ignored them -- struct dp_ctx has
+ * carried a `struct dp_l3 *l3` with the comment "NULL disables routing
+ * entirely" since the L3 layer landed, and nothing ever set it.
+ *
+ * It lives in the DP's INITRAMFS, not in its NFS root, and that is deliberate:
+ * ffn-dpsh stays on the initramfs after the root switch so the control channel
+ * cannot be taken down by a bad export, and the config arrives over that same
+ * channel. See octeon/DP-NFSROOT.md.
+ */
+#define DEFAULT_CFG "/etc/ffn/dp.env"
 
 #define MAX_PORTS 8
 
@@ -73,8 +89,16 @@ static void usage(const char *me)
 		"  -v N   vsys tag applied to frames (default 1)\n"
 		"  -d D   verdict when no rule matches (default drop)\n"
 		"  -s N   print stats every N seconds (0 = only at exit)\n"
-		"  -c N   stop after N packets received (0 = until signalled)\n",
-		me, MAX_PORTS);
+		"  -c N   stop after N packets received (0 = until signalled)\n"
+		"  -C F   routing config to load (default %s).\n"
+		"         This is the file the MP renders and the CP relays over the\n"
+		"         PCIe mailbox; see octeon/NFS-LAYERING.md. Absent, the\n"
+		"         forwarder runs with routing DISABLED, which is L2 only.\n"
+		"  -N     do not load any routing config\n"
+		"  --check-config  load the routing config, report what it would\n"
+		"         install, and exit non-zero if any line was rejected.\n"
+		"         Touches no hardware and needs no -p.\n",
+		me, MAX_PORTS, DEFAULT_CFG);
 }
 
 int appmain(int argc, const char *argv[]);
@@ -88,6 +112,11 @@ int appmain(int argc, const char *argv[])
 	unsigned long long stop_after = 0;
 	int default_dec = FP_DROP_W;
 	int probe = 0;
+	int check_cfg = 0;
+	const char *cfg_path = DEFAULT_CFG;
+	int cfg_explicit = 0;
+	struct dp_l3 l3;
+	int have_l3 = 0;
 	int i;
 
 	/*
@@ -107,6 +136,8 @@ int appmain(int argc, const char *argv[])
 
 		if (!strcmp(a, "--probe")) {
 			probe = 1;
+		} else if (!strcmp(a, "--check-config")) {
+			check_cfg = 1;
 		} else if (!strcmp(a, "-p") && i + 1 < argc) {
 			if (n_ipd >= MAX_PORTS) {
 				fprintf(stderr, "too many ports (max %d)\n", MAX_PORTS);
@@ -119,6 +150,11 @@ int appmain(int argc, const char *argv[])
 			stats_sec = (int)strtol(argv[++i], NULL, 0);
 		} else if (!strcmp(a, "-c") && i + 1 < argc) {
 			stop_after = strtoull(argv[++i], NULL, 0);
+		} else if (!strcmp(a, "-C") && i + 1 < argc) {
+			cfg_path = argv[++i];
+			cfg_explicit = 1;
+		} else if (!strcmp(a, "-N")) {
+			cfg_path = NULL;
 		} else if (!strcmp(a, "-d") && i + 1 < argc) {
 			const char *d = argv[++i];
 
@@ -151,8 +187,63 @@ int appmain(int argc, const char *argv[])
 	 * calls appmain() only after cvmx_user_app_init() has returned.
 	 */
 	if (probe) {
-		cvmx3_probe_interfaces(stdout);
+		/* ONE core prints, not forty.
+		 *
+		 * cvmx_user_app_init() forks appmain() onto every core in the
+		 * coremask -- 0xffffffffff, all 40, on this CN78XX -- so without
+		 * this gate each of them probes and prints its own copy of the
+		 * table. The result is not merely 40x too long: the lines
+		 * interleave between cores mid-table, so the columns no longer
+		 * line up with the interface they belong to and the output cannot
+		 * be read at all. Measured: 29628 bytes of shuffled rows.
+		 *
+		 * The other cores still have to return from appmain() rather than
+		 * fall through into the forwarding path, which is why this returns
+		 * for everyone and only the printing differs.
+		 */
+		if (cvmx3_is_init_core())
+			cvmx3_probe_interfaces(stdout);
 		return 0;
+	}
+
+	/* --check-config answers "would the dataplane accept what the MP sent?"
+	 * without touching the datapath. Worth having as a mode rather than as
+	 * something you infer from a forwarding run: config arrives over a
+	 * one-way mailbox, so the MP cannot learn that a key was rejected, and
+	 * finding out by starting the forwarder means starting the forwarder.
+	 *
+	 * Runs BEFORE the port check because it needs no ports, same as --probe.
+	 * Exit status is the answer: non-zero if anything was rejected.
+	 */
+	if (check_cfg) {
+		struct dp_l3_config_stats st;
+		struct dp_l3 probe_l3;
+		int bad;
+
+		if (!cfg_path) {
+			fprintf(stderr, "--check-config with -N checks nothing\n");
+			return 2;
+		}
+		if (dp_l3_init(&probe_l3, DP_L3_MAX_ROUTES,
+			       DP_L3_MAX_NEIGH) != DP_L3_OK) {
+			fprintf(stderr, "dp_l3_init failed\n");
+			return 1;
+		}
+		if (dp_l3_config_apply(&probe_l3, cfg_path, &st)
+		    == DP_L3_CFG_ERR_OPEN) {
+			if (cvmx3_is_init_core())
+				fprintf(stderr, "cannot open %s\n", cfg_path);
+			dp_l3_fini(&probe_l3);
+			return 1;
+		}
+		if (cvmx3_is_init_core())
+			printf("%s: %u route(s), %u neighbour(s), %u iface(s), "
+			       "%u ignored, %u REJECTED\n",
+			       cfg_path, st.routes, st.neigh, st.ifaces,
+			       st.ignored, st.errors);
+		bad = st.errors != 0;
+		dp_l3_fini(&probe_l3);
+		return bad ? 1 : 0;
 	}
 
 	if (n_ipd == 0) {
@@ -174,6 +265,60 @@ int appmain(int argc, const char *argv[])
 	struct oct_ctx oct;
 
 	oct_ctx_init(&oct, &OCT_HW_CVMX3, NULL);
+
+	/* --- routing config: the last link in the chain -------------------- */
+	//
+	// Every core builds its OWN FIB and applies the same file to it. That
+	// matches how the rest of appmain() already works -- each core adds its
+	// own ports and calloc()s its own region -- and a read-mostly table per
+	// core needs no locking on the forwarding path, which is worth more here
+	// than the memory it costs.
+	//
+	// Failure to open is NOT fatal by default. struct oct_ctx documents
+	// l3 == NULL as "routing disabled entirely", so a DP that has not been
+	// configured yet still comes up and forwards at L2 rather than refusing
+	// to start. An explicit -C is different: the operator named a file, so
+	// silently ignoring it would be the worst of both.
+	if (cfg_path) {
+		struct dp_l3_config_stats st;
+		int crc;
+
+		if (dp_l3_init(&l3, DP_L3_MAX_ROUTES, DP_L3_MAX_NEIGH) != DP_L3_OK) {
+			fprintf(stderr, "dp_l3_init failed\n");
+			return 1;
+		}
+		crc = dp_l3_config_apply(&l3, cfg_path, &st);
+		if (crc == DP_L3_CFG_ERR_OPEN) {
+			dp_l3_fini(&l3);
+			if (cfg_explicit) {
+				fprintf(stderr, "cannot open %s\n", cfg_path);
+				return 1;
+			}
+			if (cvmx3_is_init_core())
+				printf("ffn-dp-octeon: no %s -- routing disabled "
+				       "(L2 only); pass -N to silence\n", cfg_path);
+		} else {
+			/* Attached to the dp_ctx below, NOT here: dp_init()
+			 * memsets the context, so an attach made before it is
+			 * silently erased and routing stays off with every
+			 * counter reading zero. */
+			have_l3 = 1;
+			if (cvmx3_is_init_core()) {
+				printf("ffn-dp-octeon: %s -> %u route(s), %u neighbour(s), "
+				       "%u iface(s), %u ignored\n",
+				       cfg_path, st.routes, st.neigh, st.ifaces,
+				       st.ignored);
+				/* Report rejects LOUDLY. A key the dataplane could
+				 * not parse is a route the operator believes is
+				 * installed and is not, and the MP has no way to
+				 * learn that -- the mailbox is one-way for config. */
+				if (st.errors)
+					fprintf(stderr, "ffn-dp-octeon: %u config line(s) "
+						"REJECTED -- those routes are NOT "
+						"installed\n", st.errors);
+			}
+		}
+	}
 
 	for (i = 0; i < n_ipd; i++) {
 		char name[32];
@@ -200,6 +345,14 @@ int appmain(int argc, const char *argv[])
 		return 1;
 	}
 	dp.default_decision = default_dec;
+
+	/* THE ATTACH. Everything above merely built a FIB; this is what makes
+	 * the forwarder consult it. dp_init() memsets the context, so it has to
+	 * happen after, and it is the line whose absence meant the whole config
+	 * chain -- MP render, cfgd, cfgagent, mailbox, dp.env -- ended in a
+	 * table nothing read. */
+	if (have_l3)
+		dp.l3 = &l3;
 
 	/* Same handshake/bank machinery the AF_PACKET build uses; ordinary
 	 * memory here rather than a PCIe BAR, because nothing on the far side
@@ -247,6 +400,11 @@ int appmain(int argc, const char *argv[])
 				fflush(stdout);
 			}
 		}
+	}
+
+	if (have_l3) {
+		dp.l3 = NULL;         /* nothing may look it up after the free */
+		dp_l3_fini(&l3);
 	}
 
 	printf("\n--- final ---\n");

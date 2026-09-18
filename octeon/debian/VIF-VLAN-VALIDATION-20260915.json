@@ -1,0 +1,2300 @@
+{
+  "started": 1789490008.7025568,
+  "steps": [
+    {
+      "label": "before",
+      "result": {
+        "config": {
+          "revision": 2,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "front_before",
+      "result": {
+        "5": {
+          "port": 5,
+          "name": "ethernet1/5",
+          "bcm_port": 16,
+          "available": true,
+          "enabled": false,
+          "link": false,
+          "speed_mbps": null,
+          "speed_configuration": true,
+          "supported_speeds": [
+            1000,
+            10000
+          ],
+          "configured_speed": "auto"
+        },
+        "13": {
+          "port": 13,
+          "name": "ethernet1/13",
+          "bcm_port": 7,
+          "available": true,
+          "enabled": false,
+          "link": false,
+          "speed_mbps": null,
+          "speed_configuration": true,
+          "supported_speeds": [
+            1000,
+            10000
+          ],
+          "configured_speed": "auto"
+        }
+      }
+    },
+    {
+      "label": "faceplate_5",
+      "result": {
+        "activation": "verified",
+        "data": {
+          "revision": 59849263665162,
+          "ports": [
+            {
+              "port": 1,
+              "name": "ethernet1/1",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 2,
+              "name": "ethernet1/2",
+              "bcm_port": 28,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 1000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                100,
+                1000,
+                10000
+              ],
+              "configured_speed": "auto",
+              "media": "copper",
+              "mac_enabled": true,
+              "mac_link": true,
+              "mac_speed_mbps": 1000,
+              "admin_configuration": true,
+              "phy_mapping_verified": true,
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false,
+              "phy_address": 17,
+              "phy_revision": 173507817950372,
+              "phy_enabled": true,
+              "phy_pending": false,
+              "datapath_link": true
+            },
+            {
+              "port": 3,
+              "name": "ethernet1/3",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 4,
+              "name": "ethernet1/4",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 5,
+              "name": "ethernet1/5",
+              "bcm_port": 16,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 6,
+              "name": "ethernet1/6",
+              "bcm_port": 1,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 7,
+              "name": "ethernet1/7",
+              "bcm_port": 18,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 8,
+              "name": "ethernet1/8",
+              "bcm_port": 19,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 9,
+              "name": "ethernet1/9",
+              "bcm_port": 6,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 10,
+              "name": "ethernet1/10",
+              "bcm_port": 21,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 11,
+              "name": "ethernet1/11",
+              "bcm_port": 22,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 12,
+              "name": "ethernet1/12",
+              "bcm_port": 23,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 13,
+              "name": "ethernet1/13",
+              "bcm_port": 7,
+              "available": true,
+              "enabled": false,
+              "link": false,
+              "speed_mbps": null,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 14,
+              "name": "ethernet1/14",
+              "bcm_port": 11,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 15,
+              "name": "ethernet1/15",
+              "bcm_port": 36,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 16,
+              "name": "ethernet1/16",
+              "bcm_port": 27,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 17,
+              "name": "ethernet1/17",
+              "bcm_port": 10,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 18,
+              "name": "ethernet1/18",
+              "bcm_port": 29,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 19,
+              "name": "ethernet1/19",
+              "bcm_port": 30,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 20,
+              "name": "ethernet1/20",
+              "bcm_port": 31,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 21,
+              "name": "ethernet1/21",
+              "bcm_port": 32,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 100000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 22,
+              "name": "ethernet1/22",
+              "bcm_port": 33,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 23,
+              "name": "ethernet1/23",
+              "bcm_port": 34,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 24,
+              "name": "ethernet1/24",
+              "bcm_port": 35,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            }
+          ],
+          "copper_sync": {
+            "ports": {
+              "ethernet1/2": {
+                "phy": 17,
+                "speed_mbps": 1000,
+                "link": true,
+                "mac": {
+                  "port": 28,
+                  "enabled": true,
+                  "speed_mbps": 1000,
+                  "autoneg": false,
+                  "full_duplex": true,
+                  "interface": "sgmii",
+                  "ok": true
+                },
+                "state": "synchronized"
+              }
+            },
+            "forwarding_verified": false,
+            "checked_at": 1789490018.4365048,
+            "state": "observed"
+          },
+          "capabilities": {
+            "admin_state": true,
+            "speed_configuration": true,
+            "link_is_forwarding": false
+          },
+          "saved": {
+            "ports": {
+              "1": true,
+              "5": true,
+              "13": false,
+              "6": true
+            },
+            "speeds": {
+              "6": "10000",
+              "2": "auto",
+              "21": "auto",
+              "22": "auto",
+              "23": "auto",
+              "24": "auto",
+              "5": "10000",
+              "13": "auto"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "faceplate_13",
+      "result": {
+        "activation": "verified",
+        "data": {
+          "revision": 103695944706228,
+          "ports": [
+            {
+              "port": 1,
+              "name": "ethernet1/1",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 2,
+              "name": "ethernet1/2",
+              "bcm_port": 28,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 1000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                100,
+                1000,
+                10000
+              ],
+              "configured_speed": "auto",
+              "media": "copper",
+              "mac_enabled": true,
+              "mac_link": true,
+              "mac_speed_mbps": 1000,
+              "admin_configuration": true,
+              "phy_mapping_verified": true,
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false,
+              "phy_address": 17,
+              "phy_revision": 173507817950372,
+              "phy_enabled": true,
+              "phy_pending": false,
+              "datapath_link": true
+            },
+            {
+              "port": 3,
+              "name": "ethernet1/3",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 4,
+              "name": "ethernet1/4",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 5,
+              "name": "ethernet1/5",
+              "bcm_port": 16,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 6,
+              "name": "ethernet1/6",
+              "bcm_port": 1,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 7,
+              "name": "ethernet1/7",
+              "bcm_port": 18,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 8,
+              "name": "ethernet1/8",
+              "bcm_port": 19,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 9,
+              "name": "ethernet1/9",
+              "bcm_port": 6,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 10,
+              "name": "ethernet1/10",
+              "bcm_port": 21,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 11,
+              "name": "ethernet1/11",
+              "bcm_port": 22,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 12,
+              "name": "ethernet1/12",
+              "bcm_port": 23,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 13,
+              "name": "ethernet1/13",
+              "bcm_port": 7,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 14,
+              "name": "ethernet1/14",
+              "bcm_port": 11,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 15,
+              "name": "ethernet1/15",
+              "bcm_port": 36,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 16,
+              "name": "ethernet1/16",
+              "bcm_port": 27,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 17,
+              "name": "ethernet1/17",
+              "bcm_port": 10,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 18,
+              "name": "ethernet1/18",
+              "bcm_port": 29,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 19,
+              "name": "ethernet1/19",
+              "bcm_port": 30,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 20,
+              "name": "ethernet1/20",
+              "bcm_port": 31,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 21,
+              "name": "ethernet1/21",
+              "bcm_port": 32,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 100000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 22,
+              "name": "ethernet1/22",
+              "bcm_port": 33,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 23,
+              "name": "ethernet1/23",
+              "bcm_port": 34,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 24,
+              "name": "ethernet1/24",
+              "bcm_port": 35,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            }
+          ],
+          "copper_sync": {
+            "ports": {
+              "ethernet1/2": {
+                "phy": 17,
+                "speed_mbps": 1000,
+                "link": true,
+                "mac": {
+                  "port": 28,
+                  "enabled": true,
+                  "speed_mbps": 1000,
+                  "autoneg": false,
+                  "full_duplex": true,
+                  "interface": "sgmii",
+                  "ok": true
+                },
+                "state": "synchronized"
+              }
+            },
+            "forwarding_verified": false,
+            "checked_at": 1789490025.6913705,
+            "state": "observed"
+          },
+          "capabilities": {
+            "admin_state": true,
+            "speed_configuration": true,
+            "link_is_forwarding": false
+          },
+          "saved": {
+            "ports": {
+              "1": true,
+              "5": true,
+              "13": true,
+              "6": true
+            },
+            "speeds": {
+              "6": "10000",
+              "2": "auto",
+              "21": "auto",
+              "22": "auto",
+              "23": "auto",
+              "24": "auto",
+              "5": "10000",
+              "13": "10000"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "front_test",
+      "result": {
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": true,
+            "link": true,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": true,
+            "link": true,
+            "speed_mbps": 10000,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "10000"
+          }
+        ]
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 3,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 7
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "start",
+      "result": {
+        "config": {
+          "revision": 3,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3901
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4002": 1,
+          "tx_fv4001": 1,
+          "tx_fv4002": 1
+        },
+        "forwarding": true,
+        "generation": "4a3ecc46-8a31-4fd9-badc-9ee9c7199b9c",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 8
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4001",
+        "receiver": "fv4002",
+        "sent": 4,
+        "received": 4,
+        "sequences": [
+          0,
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4002",
+        "receiver": "fv4001",
+        "sent": 4,
+        "received": 4,
+        "sequences": [
+          0,
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 4,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3901
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3902
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 11,
+          "rx_fv4002": 11,
+          "tx_fv4001": 11,
+          "tx_fv4002": 11
+        },
+        "forwarding": true,
+        "generation": "4a3ecc46-8a31-4fd9-badc-9ee9c7199b9c",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 9
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4001",
+        "receiver": "fv4002",
+        "sent": 4,
+        "received": 0,
+        "sequences": []
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 5,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3902
+            },
+            "fv4002": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3902
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 11,
+          "rx_fv4002": 11,
+          "tx_fv4001": 17,
+          "tx_fv4002": 18,
+          "unassigned_or_invalid_rx": 13
+        },
+        "forwarding": true,
+        "generation": "4a3ecc46-8a31-4fd9-badc-9ee9c7199b9c",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 10
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "physical_packet_test",
+      "result": {
+        "sender": "fv4001",
+        "receiver": "fv4002",
+        "sent": 4,
+        "received": 4,
+        "sequences": [
+          0,
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 6,
+          "vifs": {
+            "fv4001": {
+              "enabled": true,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 5,
+              "vlan": 3902
+            },
+            "fv4002": {
+              "enabled": false,
+              "network": {
+                "addresses": [],
+                "mode": "l3"
+              },
+              "port": 13,
+              "vlan": 3902
+            }
+          }
+        },
+        "counters": {
+          "rx_fv4001": 13,
+          "rx_fv4002": 22,
+          "tx_fv4001": 28,
+          "tx_fv4002": 20,
+          "unassigned_or_invalid_rx": 13
+        },
+        "forwarding": true,
+        "generation": "4a3ecc46-8a31-4fd9-badc-9ee9c7199b9c",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 11
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "set",
+      "result": {
+        "config": {
+          "revision": 7,
+          "vifs": {}
+        },
+        "counters": {
+          "rx_fv4001": 13,
+          "rx_fv4002": 22,
+          "tx_fv4001": 34,
+          "tx_fv4002": 20,
+          "unassigned_or_invalid_rx": 19
+        },
+        "forwarding": false,
+        "generation": "4a3ecc46-8a31-4fd9-badc-9ee9c7199b9c",
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 12
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": true,
+        "runtime_error": null,
+        "trunk": "ffnpkt0"
+      }
+    },
+    {
+      "label": "stop",
+      "result": {
+        "config": {
+          "revision": 7,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "policy_barrier": {
+          "admission_enabled": false,
+          "drained": true,
+          "revision": 13
+        },
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "after",
+      "result": {
+        "config": {
+          "revision": 7,
+          "vifs": {}
+        },
+        "forwarding": false,
+        "hardware_session_offload": false,
+        "physical_link": null,
+        "ports": [
+          5,
+          13
+        ],
+        "recovery_required": false,
+        "running": false
+      }
+    },
+    {
+      "label": "faceplate_13",
+      "result": {
+        "activation": "verified",
+        "data": {
+          "revision": 59849263665162,
+          "ports": [
+            {
+              "port": 1,
+              "name": "ethernet1/1",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 2,
+              "name": "ethernet1/2",
+              "bcm_port": 28,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 1000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                100,
+                1000,
+                10000
+              ],
+              "configured_speed": "auto",
+              "media": "copper",
+              "mac_enabled": true,
+              "mac_link": true,
+              "mac_speed_mbps": 1000,
+              "admin_configuration": true,
+              "phy_mapping_verified": true,
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false,
+              "phy_address": 17,
+              "phy_revision": 173507817950372,
+              "phy_enabled": true,
+              "phy_pending": false,
+              "datapath_link": true
+            },
+            {
+              "port": 3,
+              "name": "ethernet1/3",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 4,
+              "name": "ethernet1/4",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 5,
+              "name": "ethernet1/5",
+              "bcm_port": 16,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 6,
+              "name": "ethernet1/6",
+              "bcm_port": 1,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 7,
+              "name": "ethernet1/7",
+              "bcm_port": 18,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 8,
+              "name": "ethernet1/8",
+              "bcm_port": 19,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 9,
+              "name": "ethernet1/9",
+              "bcm_port": 6,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 10,
+              "name": "ethernet1/10",
+              "bcm_port": 21,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 11,
+              "name": "ethernet1/11",
+              "bcm_port": 22,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 12,
+              "name": "ethernet1/12",
+              "bcm_port": 23,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 13,
+              "name": "ethernet1/13",
+              "bcm_port": 7,
+              "available": true,
+              "enabled": false,
+              "link": false,
+              "speed_mbps": null,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 14,
+              "name": "ethernet1/14",
+              "bcm_port": 11,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 15,
+              "name": "ethernet1/15",
+              "bcm_port": 36,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 16,
+              "name": "ethernet1/16",
+              "bcm_port": 27,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 17,
+              "name": "ethernet1/17",
+              "bcm_port": 10,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 18,
+              "name": "ethernet1/18",
+              "bcm_port": 29,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 19,
+              "name": "ethernet1/19",
+              "bcm_port": 30,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 20,
+              "name": "ethernet1/20",
+              "bcm_port": 31,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 21,
+              "name": "ethernet1/21",
+              "bcm_port": 32,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 100000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 22,
+              "name": "ethernet1/22",
+              "bcm_port": 33,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 23,
+              "name": "ethernet1/23",
+              "bcm_port": 34,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 24,
+              "name": "ethernet1/24",
+              "bcm_port": 35,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            }
+          ],
+          "copper_sync": {
+            "ports": {
+              "ethernet1/2": {
+                "phy": 17,
+                "speed_mbps": 1000,
+                "link": true,
+                "mac": {
+                  "port": 28,
+                  "enabled": true,
+                  "speed_mbps": 1000,
+                  "autoneg": false,
+                  "full_duplex": true,
+                  "interface": "sgmii",
+                  "ok": true
+                },
+                "state": "synchronized"
+              }
+            },
+            "forwarding_verified": false,
+            "checked_at": 1789490326.6114056,
+            "state": "observed"
+          },
+          "capabilities": {
+            "admin_state": true,
+            "speed_configuration": true,
+            "link_is_forwarding": false
+          },
+          "saved": {
+            "ports": {
+              "1": true,
+              "5": true,
+              "13": false,
+              "6": true
+            },
+            "speeds": {
+              "6": "10000",
+              "2": "auto",
+              "21": "auto",
+              "22": "auto",
+              "23": "auto",
+              "24": "auto",
+              "5": "10000",
+              "13": "auto"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "faceplate_5",
+      "result": {
+        "activation": "verified",
+        "data": {
+          "revision": 147470964178915,
+          "ports": [
+            {
+              "port": 1,
+              "name": "ethernet1/1",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 2,
+              "name": "ethernet1/2",
+              "bcm_port": 28,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 1000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                100,
+                1000,
+                10000
+              ],
+              "configured_speed": "auto",
+              "media": "copper",
+              "mac_enabled": true,
+              "mac_link": true,
+              "mac_speed_mbps": 1000,
+              "admin_configuration": true,
+              "phy_mapping_verified": true,
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false,
+              "phy_address": 17,
+              "phy_revision": 173507817950372,
+              "phy_enabled": true,
+              "phy_pending": false,
+              "datapath_link": true
+            },
+            {
+              "port": 3,
+              "name": "ethernet1/3",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 4,
+              "name": "ethernet1/4",
+              "bcm_port": null,
+              "available": false,
+              "enabled": null,
+              "link": null,
+              "speed_mbps": null,
+              "speed_configuration": false,
+              "supported_speeds": [],
+              "configured_speed": null,
+              "media": "copper",
+              "mac_enabled": null,
+              "mac_link": null,
+              "mac_speed_mbps": null,
+              "admin_configuration": false,
+              "phy_mapping_verified": false,
+              "speed_error": "Copper PHY mapping or controller unavailable",
+              "control_scope": "copper-phy-and-switch-mac",
+              "forwarding_verified": false
+            },
+            {
+              "port": 5,
+              "name": "ethernet1/5",
+              "bcm_port": 16,
+              "available": true,
+              "enabled": false,
+              "link": false,
+              "speed_mbps": null,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 6,
+              "name": "ethernet1/6",
+              "bcm_port": 1,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 7,
+              "name": "ethernet1/7",
+              "bcm_port": 18,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 8,
+              "name": "ethernet1/8",
+              "bcm_port": 19,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 9,
+              "name": "ethernet1/9",
+              "bcm_port": 6,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 10,
+              "name": "ethernet1/10",
+              "bcm_port": 21,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 11,
+              "name": "ethernet1/11",
+              "bcm_port": 22,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 12,
+              "name": "ethernet1/12",
+              "bcm_port": 23,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 13,
+              "name": "ethernet1/13",
+              "bcm_port": 7,
+              "available": true,
+              "enabled": false,
+              "link": false,
+              "speed_mbps": null,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 14,
+              "name": "ethernet1/14",
+              "bcm_port": 11,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 15,
+              "name": "ethernet1/15",
+              "bcm_port": 36,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 16,
+              "name": "ethernet1/16",
+              "bcm_port": 27,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 17,
+              "name": "ethernet1/17",
+              "bcm_port": 10,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 18,
+              "name": "ethernet1/18",
+              "bcm_port": 29,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 19,
+              "name": "ethernet1/19",
+              "bcm_port": 30,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 20,
+              "name": "ethernet1/20",
+              "bcm_port": 31,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 10000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                1000,
+                10000
+              ],
+              "configured_speed": "10000"
+            },
+            {
+              "port": 21,
+              "name": "ethernet1/21",
+              "bcm_port": 32,
+              "available": true,
+              "enabled": true,
+              "link": true,
+              "speed_mbps": 100000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 22,
+              "name": "ethernet1/22",
+              "bcm_port": 33,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 23,
+              "name": "ethernet1/23",
+              "bcm_port": 34,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            },
+            {
+              "port": 24,
+              "name": "ethernet1/24",
+              "bcm_port": 35,
+              "available": true,
+              "enabled": true,
+              "link": false,
+              "speed_mbps": 20000,
+              "speed_configuration": true,
+              "supported_speeds": [
+                40000,
+                100000
+              ],
+              "configured_speed": "auto"
+            }
+          ],
+          "copper_sync": {
+            "ports": {
+              "ethernet1/2": {
+                "phy": 17,
+                "speed_mbps": 1000,
+                "link": true,
+                "mac": {
+                  "port": 28,
+                  "enabled": true,
+                  "speed_mbps": 1000,
+                  "autoneg": false,
+                  "full_duplex": true,
+                  "interface": "sgmii",
+                  "ok": true
+                },
+                "state": "synchronized"
+              }
+            },
+            "forwarding_verified": false,
+            "checked_at": 1789490333.549715,
+            "state": "observed"
+          },
+          "capabilities": {
+            "admin_state": true,
+            "speed_configuration": true,
+            "link_is_forwarding": false
+          },
+          "saved": {
+            "ports": {
+              "1": true,
+              "5": false,
+              "13": false,
+              "6": true
+            },
+            "speeds": {
+              "6": "10000",
+              "2": "auto",
+              "21": "auto",
+              "22": "auto",
+              "23": "auto",
+              "24": "auto",
+              "5": "auto",
+              "13": "auto"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "front_after",
+      "result": {
+        "ports": [
+          {
+            "port": 5,
+            "name": "ethernet1/5",
+            "bcm_port": 16,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          },
+          {
+            "port": 13,
+            "name": "ethernet1/13",
+            "bcm_port": 7,
+            "available": true,
+            "enabled": false,
+            "link": false,
+            "speed_mbps": null,
+            "speed_configuration": true,
+            "supported_speeds": [
+              1000,
+              10000
+            ],
+            "configured_speed": "auto"
+          }
+        ]
+      }
+    }
+  ]
+}

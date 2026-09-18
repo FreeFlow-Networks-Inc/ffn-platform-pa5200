@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN aggregate %i CP/DP owner
+After=network-online.target ffn-controld.service
+
+[Service]
+Type=simple
+ExecStart=/opt/ffn-ngfw-v2/venv/bin/python /opt/ffn-platforms/pa5200-management/aggregate_activation.py serve %i
+TimeoutStopSec=60
+KillMode=control-group
+# An uncertain hardware outcome requires explicit recovery, not blind restart.
+Restart=no

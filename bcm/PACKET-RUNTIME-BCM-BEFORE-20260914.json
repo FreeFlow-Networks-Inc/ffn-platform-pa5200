@@ -1,0 +1,48 @@
+{
+  "ports": [
+    "24",
+    "28",
+    "14",
+    "16",
+    "7",
+    "34",
+    "35"
+  ],
+  "counters": [
+    {
+      "port": "24",
+      "dir": "RX",
+      "counter": "snmpEtherStatsRXNoErrors",
+      "value": 12
+    },
+    {
+      "port": "28",
+      "dir": "RX",
+      "counter": "snmpIfInNUcastPkts",
+      "value": 3200169
+    },
+    {
+      "port": "28",
+      "dir": "RX",
+      "counter": "snmpEtherStatsRXNoErrors",
+      "value": 3200169
+    }
+  ],
+  "raw": [
+    "24 ||                         0 |                         0 |                         0 |                        12 |",
+    "28 ||                         0 |                 3,200,169 |                         0 |                 3,200,169 |"
+  ],
+  "truncated": false,
+  "output_lines": 17,
+  "sample": [
+    "NIF Ports",
+    "---------",
+    "RX",
+    "---",
+    "Port ||       snmpIfHCInUcastPkts |        snmpIfInNUcastPkts |            snmpIfInErrors |  snmpEtherStatsRXNoErrors |",
+    "-----------------------------------------------------------------------------------------------------------------------",
+    "  24 ||                         0 |                         0 |                         0 |                        12 |",
+    "  28 ||                         0 |                 3,200,169 |                         0 |                 3,200,169 |"
+  ],
+  "ok": true
+}

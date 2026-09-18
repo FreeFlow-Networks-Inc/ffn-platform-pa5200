@@ -1,0 +1,56 @@
+{
+  "captured_at_utc": "2026-09-14T18:46:35.7039775Z",
+  "kernel": "6.18.49-ffn-debian-dp-20260914+",
+  "packet_initializer": {
+    "dma_published": true,
+    "dma_ready": true,
+    "dma_error": 0,
+    "sso_xaq_prepared": true,
+    "pko_memory_ready": true,
+    "pko_queues_prepared": true,
+    "dma_pools": [
+      {
+        "pool": 61,
+        "aura": 1021,
+        "block_size": 4096,
+        "capacity": 512,
+        "tested": true,
+        "available": 512,
+        "aura_count": 32
+      },
+      {
+        "pool": 62,
+        "aura": 1022,
+        "block_size": 4096,
+        "capacity": 570,
+        "tested": true,
+        "available": 314,
+        "aura_count": 288
+      },
+      {
+        "pool": 63,
+        "aura": 1023,
+        "block_size": 4096,
+        "capacity": 1024,
+        "tested": true,
+        "available": 1004,
+        "aura_count": 52
+      }
+    ],
+    "schema": 1,
+    "pki_reset_busy": false,
+    "pki_active": 0,
+    "pki_enabled": 0,
+    "pko_enabled": 0,
+    "sso_aw_cfg": "0x000000000000000e",
+    "enabled_fpa_pools": 3,
+    "pki_microcode_prepared": true,
+    "microcode_words": 1001,
+    "ready": false
+  },
+  "native_owner_external_transactions_compared": 263,
+  "python_tests_passed": 8,
+  "hardware_external_tables_applied": false,
+  "ddr_training_verified": false,
+  "session_offload_verified": false
+}

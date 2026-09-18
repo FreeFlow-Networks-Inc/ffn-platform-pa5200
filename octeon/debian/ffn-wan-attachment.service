@@ -1,0 +1,10 @@
+[Unit]
+Description=FFN WAN1 direct OCTEON packet attachment
+Requires=ffn-network.service
+After=ffn-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_wan_runtime.py serve
+TimeoutStopSec=10
+# MP explicitly attaches after CP/DP lifetime and BCM readback checks.
