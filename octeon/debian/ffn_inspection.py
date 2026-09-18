@@ -84,7 +84,8 @@ def create_engine(lib, cfg):
 
 
 class Inspector:
-    def __init__(self):
+    def __init__(self,status_path=None):
+        self.status_path=STATUS if status_path is None else status_path
         self.lib = None
         self.handle = None
         self.cfg = dict(DEFAULT)
@@ -115,7 +116,7 @@ class Inspector:
         except Exception as error:
             # Retain the last successfully loaded policy; expose failure to MP.
             self.error = str(error)
-        atomic(STATUS, {'pid': os.getpid(), 'updated_at': time.time(),
+        atomic(self.status_path, {'pid': os.getpid(), 'updated_at': time.time(),
                         'revision': self.cfg['revision'], 'mode': self.cfg['mode'],
                         'ports': self.cfg['ports'], 'counters': dict(self.counts),
                         'detectors': self.cfg.get('detectors', []), 'execution': 'dataplane-cpu',
@@ -137,7 +138,7 @@ class Inspector:
         if self.handle:
             self.lib.ffn_inline_destroy(self.handle)
             self.handle = None
-        STATUS.unlink(missing_ok=True)
+        self.status_path.unlink(missing_ok=True)
 
 
 def main():

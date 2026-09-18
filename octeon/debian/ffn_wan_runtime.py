@@ -47,8 +47,9 @@ def serve():
     handles={};sockets=[];counts=collections.Counter();inspector=None
     def halt(*_):raise KeyboardInterrupt()
     signal.signal(signal.SIGTERM,halt)
-    with open('/run/ffn-fabric.lock','a') as owner:
-        fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with open('/run/ffn-fabric.lock','a') as owner, open('/run/ffn-aggregate-port-1.lock','a') as member_owner:
+        fcntl.flock(owner,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        fcntl.flock(member_owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
             with open('/run/ffn-network.lock','a') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX)
@@ -103,8 +104,9 @@ def execute(action,payload):
         raise ValueError('Current DP boot identity required')
     if action=='start':
         if status()['running']:return status()
-        with open('/run/ffn-fabric.lock','a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        with open('/run/ffn-fabric.lock','a') as lock, open('/run/ffn-aggregate-port-1.lock','a') as member_owner:
+            fcntl.flock(lock,fcntl.LOCK_SH|fcntl.LOCK_NB)
+            fcntl.flock(member_owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
             INTENT.write_text(json.dumps({'boot_id':boot(),'front':{'1':28}}));INTENT.chmod(0o600)
     subprocess.run(['systemctl',action,'ffn-wan-attachment.service'],check=True,timeout=20)
     if action=='start':

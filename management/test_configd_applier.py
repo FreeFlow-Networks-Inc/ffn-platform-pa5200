@@ -13,6 +13,40 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_none_and_omitted_front_ports_disable_data_and_physical_link(self):
+        xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>
+        <entry name="ethernet1/1"><layer3><ip><entry name="192.0.2.1/24"/></ip></layer3></entry>
+        <entry name="ethernet1/2"><comment>Unconfigured</comment><link-state>up</link-state></entry>
+        <entry name="ethernet1/24"/>
+        </ethernet></interface></network></entry></devices></config>'''
+        face={'revision':1,'ports':[{'port':p,'enabled':True,'available':True} for p in (1,2,3,24)]}
+        net={'config':{'revision':1,'ports':{
+            'p1':{'mode':'l3','addresses':['192.0.2.1/24']},
+            'p2':{'mode':'l3','addresses':['198.51.100.1/24']},
+            'p3':{'mode':'l2','vlans':[100],'pvid':100}}},'backend':{'ports':[1]}}
+        calls=[]
+        def rpc(resource,action='status',payload=None):
+            calls.append((resource,action,payload))
+            if action=='status':return copy.deepcopy(face if resource=='faceplate' else net)
+            if resource=='faceplate':
+                self.assertFalse(payload['enabled'])
+                next(row for row in face['ports'] if row['port']==payload['port'])['enabled']=False
+                face['revision']+=1
+                return {'data':copy.deepcopy(face)}
+            self.assertEqual(resource,'network')
+            net['config']['ports'].update(payload['ports']);net['config']['revision']+=1
+            return {}
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_text(xml)
+            status=Status()
+            with patch('configd_applier.rpc',side_effect=rpc):PlatformApplier(path).reconcile(status)
+        self.assertEqual(status.errors,[])
+        self.assertEqual(net['config']['ports']['p1']['addresses'],['192.0.2.1/24'])
+        self.assertEqual(net['config']['ports']['p2'],{'mode':'disabled'})
+        self.assertEqual(net['config']['ports']['p3'],{'mode':'disabled'})
+        self.assertEqual({p['port'] for r,a,p in calls if (r,a)==('faceplate','apply')},{2,3,24})
+        self.assertTrue(face['ports'][0]['enabled'])
+
     def test_routes_are_read_from_xml_and_deletions_do_not_use_legacy_sql(self):
         from xml.etree import ElementTree as ET
         dev=ET.fromstring('''<entry><network><virtual-router><ffn-candidate-managed>yes</ffn-candidate-managed>

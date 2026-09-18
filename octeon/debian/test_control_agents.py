@@ -10,6 +10,63 @@ import ffn_dp_agent as dp
 
 
 class Agents(unittest.TestCase):
+    def driver_fixture(self, root):
+        def write(name, value):
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(value if isinstance(value, bytes) else value.encode())
+        write('usr/local/sbin/ffn_fe100.py', "PCI_DEV = '0002:01:00.0'\nraise RuntimeError('must never execute')\n")
+        write('usr/local/sbin/ffn_fe100_lookup_health.py', '# fixture')
+        write('opt/ffn-compat/opt/ffn/fe100-csr.json', '[]')
+        write('dev/mem', b'')
+        prefix = 'sys/bus/pci/devices/0002:01:00.0/'
+        write(prefix + 'vendor', '0xfeed'); write(prefix + 'device', '0xfe1c')
+        write(prefix + 'resource', '100000 1fffff 200\n')
+        write(prefix + 'config', b'\0\0\0\0\x02\0')
+        return root / prefix
+
+    def test_fe100_userspace_installation_is_not_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); device = self.driver_fixture(root)
+            observed = cp.fe100_driver_status(root)
+            self.assertEqual(observed['devices'][0]['kernel_state'], 'unbound')
+            self.assertTrue(observed['userspace']['installed'])
+            self.assertEqual(observed['userspace']['state'], 'installed-unverified')
+            self.assertEqual(len(observed['userspace']['sha256']), 64)
+            cp.qualify_fe100_access(observed, {'available': True})
+            self.assertTrue(observed['userspace']['read_verified'])
+            self.assertFalse(observed['forwarding_verified'])
+            cp.qualify_fe100_access(observed, {'available': False})
+            self.assertFalse(observed['userspace']['read_verified'])
+            device.joinpath('config').write_bytes(b'\0'*6)
+            observed = cp.qualify_fe100_access(cp.fe100_driver_status(root), {'available':True})
+            self.assertFalse(observed['userspace']['read_verified'])
+
+    def test_kernel_binding_and_unreadable_or_wrong_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); device = self.driver_fixture(root)
+            with patch.object(Path, 'readlink', side_effect=[Path('/drivers/vfio-pci'), Path('/module/vfio_pci')]):
+                observed = cp.fe100_driver_status(root)
+            self.assertEqual(observed['devices'][0]['kernel_driver'], 'vfio-pci')
+            observed['userspace']['target_pci'] = '0002:02:00.0'
+            self.assertFalse(cp.qualify_fe100_access(observed, {'available':True})['userspace']['read_verified'])
+            device.joinpath('config').write_bytes(b'\0')
+            observed = cp.fe100_driver_status(root)
+            self.assertIsNone(observed['devices'][0]['memory_decode'])
+            self.assertTrue(observed['errors'])
+            root.joinpath('usr/local/sbin/ffn_fe100.py').unlink()
+            self.assertFalse(cp.fe100_driver_status(root)['userspace']['installed'])
+
+    def test_driver_probe_failure_does_not_hide_chip_or_counter_status(self):
+        with patch.object(cp.Path, 'read_text', return_value='octeon'), \
+             patch.object(cp, 'fe100_driver_status', side_effect=OSError), \
+             patch.object(cp, 'bcm_status', return_value={'available':True}), \
+             patch.object(cp, 'fe100_status', return_value={'available':True}), \
+             patch.object(cp, 'policy_status', return_value={'available':True}):
+            report = cp.snapshot()
+        self.assertTrue(report['fe100']['available'])
+        self.assertFalse(report['fe100_driver']['userspace']['read_verified'])
+
     def test_session_journal_is_read_only_and_not_activation(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'policy.db'

@@ -65,5 +65,8 @@
       "after": "interfaces"
     }
   ],
-  "policy_barrier_version": 1
+  "policy_barrier_version": 1,
+  "aggregate_status_version": 1,
+  "data_port_stats_version": 1,
+  "mp_interfaces_version": 1
 }

@@ -1,0 +1,7 @@
+[Unit]
+Description=Withdraw expired FFN aggregate hardware ownership
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo {} | /usr/bin/python3 /usr/local/sbin/ffn_aggregate_hardware.py sweep'
+TimeoutStartSec=60
