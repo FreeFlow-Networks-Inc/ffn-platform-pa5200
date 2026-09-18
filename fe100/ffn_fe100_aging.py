@@ -26,19 +26,22 @@ hardware wrote a counter or timestamp anywhere in that view, every install would
 already be failing its readback. It does not, so fetch says nothing about
 traffic.
 
-The real signal is the per-flow SEM counter -- PHYSICAL-SESSION-OFFLOAD-20260915
-counted "4 SEM increments" for four injected packets, and notes an action write
-requires an available counter ID. But **nothing in FFN records which counter ID
-a session got**: the native layer allocates from the FLU free list and
-SessionManager never sees it. Reading per-flow activity therefore needs a
-capability that does not exist yet.
+Nor from SEM's registers. 0x78000-0x78818 is 269 registers of aggregate status
+-- free-list levels, error logs, block throughput -- with no "read counter N"
+anywhere, because the counters live in FCM's external DDR and FCM's own block
+is a memory controller (BIST, request FIFOs, latency).
 
-So this module takes the probe as an interface and ships no hardware
-implementation. That is deliberate: the policy is the part that can be made
-correct and tested now, and writing a plausible-looking probe against an
-unverified register would be worse than having none.
+The FE100 pushes them instead, as MSG_TYPE_FLOWSTATS CPU messages carrying
+per-flow packet and octet totals keyed by flow_idx -- which is the flow ID
+SessionManager already writes into every entry. `ffn_fe100_flowstats` decodes
+those and implements this probe; see its docstring for the layout and for what
+is still unverified about the message header.
 
     probe(entry) -> hashable token, or None when activity cannot be read
+
+The probe stays an injected interface rather than a hard dependency, so the
+policy below can be tested without a message source and a different activity
+source could be substituted.
 
 Whatever the eventual implementation, it must return a token that CHANGES when
 the flow forwards a packet. A counter, a timestamp, anything comparable. The
