@@ -47,6 +47,59 @@ slip is detected, not acted on. Producer writes payload+crc+len then advances
 head with a `sync` between; consumer reads head, verifies, clears len, advances
 tail.
 
+### The ring is a trust boundary
+
+Both rings live in OCTEON DRAM, so every field either side reads -- head, tail,
+len, crc, payload, including the fields the protocol calls "ours" -- can hold
+whatever the other side wrote. Both endpoints therefore follow the same rules,
+and `tools/test_pcnet_ring_offline.py` checks them without hardware:
+
+* **Read once.** A shared field is read exactly once per operation into a local
+  and only the local is used afterwards. There is no second read that could
+  see a different value between the check and the use.
+* **Mask indices.** head and tail are masked with `NSLOTS - 1` before they
+  become an offset (`ffn_pcnet_slot_off` does it, so no caller can forget).
+  Without the mask a peer-written index past the ring was an access anywhere
+  within 4 GB of the mapping on the OCTEON, and an uncaught exception on the
+  host. NSLOTS must be a power of two; the header enforces it at compile time.
+* **Consume bad slots.** A slot with len 0, len out of range, or a CRC mismatch
+  is consumed -- len cleared, tail advanced -- and then reported. The first
+  version raised before advancing tail, so the host retried the same slot up to
+  64 times a millisecond forever: one corrupt frame from the CP took the
+  CP -> MP direction down until the daemon was restarted. len 0 inside
+  `[tail, head)` was likewise treated as "not visible yet" and left in place;
+  it is corruption, not a race, because both producers write len before head
+  with a barrier and both access paths (posted BAR writes, `sync`-ordered
+  stores) keep that order.
+* **Copy before release, check the copy.** The payload is copied out before
+  tail advances, and the CRC is verified on the private copy, so the producer
+  reusing the slot cannot race the check.
+* **Check geometry.** The OCTEON end compares version, slot count, slot size
+  and ring offsets in the host-written header against its own build and exits
+  on a mismatch rather than indexing DRAM with the wrong constants.
+
+### What the host admits from the ring
+
+The host interface runs with `route_localnet=1` because the addresses are in
+127/8. That sysctl also makes a packet arriving on the interface with
+destination 127.0.0.1 deliverable locally, so without a filter the CP -- and
+anything the CP forwards for, i.e. the DP -- could reach every service the MP
+binds to loopback. The nft input chain accepts the link wholesale, by design,
+because the control plane's root filesystem rides on it.
+
+`ffn_pcnetd.py` therefore filters every frame it takes out of the O2H ring,
+before the kernel sees it: IPv4 from a known peer address **to the host's link
+address only**, and ARP for that address from a known peer. Everything else --
+other ethertypes, VLAN tags, IPv6, broadcast, loopback destinations, spoofed
+sources -- is dropped and counted (`rxfilt`). The default peers are the CP
+(127.1.1.2) and the DP subnet it forwards for (127.1.2.0/24); `--allow-src`
+overrides. `--no-filter` exists for debugging and says so in its help text.
+
+`route_localnet` is set on the link interface only. It used to be set on
+`conf/all` as well, which lifts the martian check for 127/8 on every physical
+NIC and undoes the isolation the NFS export relies on. `rp_filter` is set
+strict on the link.
+
 Direction asymmetry is deliberate: host BAR writes are posted/fast, host BAR
 reads serialise/slow. Bulk NFS is files MP->OCTEON = host writes = the fast side.
 

@@ -531,25 +531,47 @@ static u64 ncores(void)
 	return 1;
 }
 
-static void handle(volatile u8 *req, volatile u8 *rsp)
+/*
+ * Private copy of the request being handled. The request slot is in DRAM the
+ * CP writes through the BAR at any time, so the header and payload are
+ * snapshotted here ONCE, and validation and execution both work on the copy.
+ * Without this the CRC would be checked against one version of the payload
+ * and the operation executed against another. Static, not stack: this is a
+ * freestanding binary with no guard page under it.
+ */
+static u8 lreq[FFN_CPDP_SLOT] __attribute__((aligned(8)));
+
+static void handle(const volatile u8 *sreq, volatile u8 *rsp)
 {
-	u32 seq = rd32(req + 0);
-	u16 op = *(const volatile u16 *)(req + 4);
-	u32 len = rd32(req + 8);
-	u32 crc = rd32(req + 12);
-	u64 a0 = rd64(req + 16);
-	u64 a1 = rd64(req + 24);
-	u64 a2 = rd64(req + 32);
-	u64 r1 = 0, r2 = 0;
-	u32 rlen = 0;
+	u8 *req = lreq;
+	u32 seq, len, crc, rlen = 0;
+	u16 op;
+	u64 a0, a1, a2, r1 = 0, r2 = 0;
 	int st = FFN_ST_OK;
 	u64 i = 0;
+
+	/* Header first: 48 bytes, six 64-bit moves, read from the ring once. */
+	for (i = 0; i < FFN_CPDP_HDR; i += 8)
+		*(u64 *)(req + i) = rd64(sreq + i);
+	seq = rd32(req + 0);
+	op = *(const u16 *)(req + 4);
+	len = rd32(req + 8);
+	crc = rd32(req + 12);
+	a0 = rd64(req + 16);
+	a1 = rd64(req + 24);
+	a2 = rd64(req + 32);
+	i = 0;
 
 	if (len > FFN_CPDP_MAXPAY) {
 		st = FFN_ST_TOOBIG;
 		goto reply;
 	}
-	if (len && crc32((const u8 *)(req + FFN_CPDP_HDR), len) != crc) {
+	/* Then the payload, bounded by the len we just validated. From here on
+	 * nothing reads the shared slot again. */
+	if (len)
+		bcopy_v((volatile u8 *)(req + FFN_CPDP_HDR),
+			sreq + FFN_CPDP_HDR, len);
+	if (len && crc32(req + FFN_CPDP_HDR, len) != crc) {
 		st = FFN_ST_BADCRC;
 		goto reply;
 	}
@@ -574,7 +596,10 @@ static void handle(volatile u8 *req, volatile u8 *rsp)
 		u64 cnt = a2 ? a2 : 1;
 		u64 stride = a1 / 8;
 
-		if (!stride || cnt * 8 > FFN_CPDP_MAXPAY) {
+		/* Compare the count, never count * width: the product wraps at
+		 * 2^64 and a wrapped product passed the old check with a count
+		 * that then wrote reply words past the slot. */
+		if (!stride || cnt > FFN_CPDP_MAXPAY / 8) {
 			st = FFN_ST_BADARG;
 			break;
 		}
@@ -633,7 +658,7 @@ static void handle(volatile u8 *req, volatile u8 *rsp)
 	case FFN_OP_FE100_RD: {
 		u64 cnt = a1 ? a1 : 1;
 
-		if (cnt * 4 > FFN_CPDP_MAXPAY) {
+		if (cnt > FFN_CPDP_MAXPAY / 4) {
 			st = FFN_ST_BADARG;
 			break;
 		}
@@ -664,7 +689,7 @@ static void handle(volatile u8 *req, volatile u8 *rsp)
 	case FFN_OP_BCM_RD: {
 		u64 cnt = a1 ? a1 : 1;
 
-		if (cnt * 4 > FFN_CPDP_MAXPAY) {
+		if (cnt > FFN_CPDP_MAXPAY / 4) {
 			st = FFN_ST_BADARG;
 			break;
 		}
@@ -688,7 +713,9 @@ static void handle(volatile u8 *req, volatile u8 *rsp)
 		st = schan_op(req + FFN_CPDP_HDR, (u32)a0,
 			      rsp + FFN_CPDP_HDR, (u32)a1, &ctrl);
 		r1 = ctrl;
-		rlen = (u32)(a1 * 4);
+		/* Only a count schan_op accepted can size the reply; a rejected
+		 * one must not turn a1 into a CRC over memory past the slot. */
+		rlen = (a1 <= FFN_SCHAN_NMSG) ? (u32)(a1 * 4) : 0;
 		break;
 	}
 	case FFN_OP_LED_LOAD:
@@ -837,9 +864,20 @@ void _start(void)
 		u32 head;
 
 		barrier();
-		head = rd32(cp2dp + 0);
+		head = rd32(cp2dp + 0);		/* read once per pass */
+		if (head - tail > FFN_CPDP_NSLOTS) {
+			/* More outstanding than the ring holds: the CP restarted
+			 * with a smaller head, or wrote garbage. Everything in
+			 * between was overwritten or never existed, so resync
+			 * rather than re-execute up to 4G stale requests. */
+			say("ffn_cpdpd: head/tail out of range, resynchronising\n");
+			tail = head;
+			wr32((volatile void *)(cp2dp + 4), tail);
+			barrier();
+			continue;
+		}
 		if (head != tail) {
-			volatile u8 *req = slot_of(cp2dp, tail);
+			const volatile u8 *req = slot_of(cp2dp, tail);
 			volatile u8 *rsp = slot_of(dp2cp, rhead);
 
 			handle(req, rsp);
