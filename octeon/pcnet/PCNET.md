@@ -113,7 +113,16 @@ reads serialise/slow. Bulk NFS is files MP->OCTEON = host writes = the fast side
 
 127.1.1.x is deliberate: 127/8 is non-routable, so the link cannot be reached
 from any physical topology -- the PCIe-only isolation the security constraint
-requires. NFS exports are already scoped to 127.1.0.0/16.
+requires.
+
+That isolation is about the *outside*. It says nothing about the DP, which is
+inside 127/8 and is the party this transport distrusts. NFS exports used to be
+scoped to `127.1.0.0/16` and that was offered here as if it were a second layer
+of isolation; it is not, because 127.1.2.2 is in that range and the exports are
+`rw,no_root_squash`. Each export is now scoped to the one client that mounts it
+-- everything the MP serves goes to 127.1.1.2, the CP alone. The ingress filters
+cannot substitute for that: both ends admit DP traffic addressed to the MP
+because the CP must route it, and neither inspects protocol or port.
 
 ## Validation
 

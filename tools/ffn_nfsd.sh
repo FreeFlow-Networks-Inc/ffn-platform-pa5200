@@ -13,8 +13,23 @@
 # /etc/ld.so.conf.d/ffn-vendor-nfs.conf. The library itself stays inside the
 # vendor area so the never-package gates still cover it.
 #
-# SECURITY: exports are restricted to 127.1.0.0/16, exactly as PAN does. NFS
-# listens on 0.0.0.0 but the bmfw input chain is policy-drop with a mgmt
+# SECURITY: every export is scoped to the ONE client that mounts it, which for
+# everything the MP serves is the CP at 127.1.1.2.
+#
+# It used to be 127.1.0.0/16 "exactly as PAN does". That range contains the DP
+# at 127.1.2.2, and these exports are rw,no_root_squash and include the CP's
+# live root filesystems -- so the DP could mount and rewrite the CP's root. The
+# PCIe ingress filters do not close this: both ends deliberately admit DP
+# traffic addressed to the MP (the CP has to route it) and neither looks at
+# protocol or port, so DP -> MP:2049 is permitted by design.
+#
+# The DP needs nothing from the MP. It roots on 127.1.2.1:/opt/dproot, which is
+# the CP's own NFS server -- verified on hardware from the DP's /proc/mounts.
+# If the legacy DP boot path is ever revived (dpboot6/7 and ffn-dp-bringup.sh
+# still pass nfsroot=/opt/dpfs, i.e. the MP), add 127.1.2.2 to /opt/dpfs
+# DELIBERATELY rather than widening everything back to a /16.
+#
+# NFS listens on 0.0.0.0 but the bmfw input chain is policy-drop with a mgmt
 # allow-list of 22/443/8443 only, so 111/2049/20048 are unreachable from the
 # management network. Do NOT add them to mgmt_tcp_ports.
 set -u
@@ -54,13 +69,14 @@ do_start() {
 
     if [ ! -s /etc/exports ] || ! grep -q '/opt/dpfs' /etc/exports; then
         cat > /etc/exports <<'EOF'
-# FFN: NFS root for the Octeon control/data planes.
-# 127.1.0.0/16 only -- the CP/DP address space, as PAN-OS restricts it.
-/opt/dpfs    127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.cp  127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp0 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp1 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp2 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
+# FFN: NFS root for the Octeon control plane.
+# 127.1.1.2 -- the CP, and only the CP. NOT the /16: that contains the DP, and
+# these are rw,no_root_squash. See the SECURITY note at the top of this file.
+/opt/dpfs    127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.cp  127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp0 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp1 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp2 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
 EOF
     fi
 

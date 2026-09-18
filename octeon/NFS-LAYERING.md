@@ -36,8 +36,11 @@ hash reconciliation.
 127.1.1.1:/opt/ffn-cproot-owrt / nfs rw,vers=3,nolock,proto=tcp
 ```
 
-The MP's `/etc/exports` carries `/opt/ffn-cproot-owrt 127.1.0.0/16(rw,sync,
-no_root_squash,no_subtree_check)`. Addresses are in 127/8 because the CP reaches
+The MP's `/etc/exports` carries `/opt/ffn-cproot-owrt 127.1.1.2(rw,sync,
+no_root_squash,no_subtree_check)` -- the CP's address, not the `127.1.0.0/16` it
+used to be. The DP is at 127.1.2.2, inside that /16, and these exports are
+`rw,no_root_squash`, so the wider scope let the DP mount and rewrite the CP's
+root. Addresses are in 127/8 because the CP reaches
 the world only across the PCIe virtual-ethernet link — see
 `ffn-owrt-mirror.conf` for why that shapes the package feed too.
 
