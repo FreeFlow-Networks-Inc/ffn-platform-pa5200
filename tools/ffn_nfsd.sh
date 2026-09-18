@@ -67,6 +67,16 @@ do_start() {
         mkdir -p "$d"
     done
 
+    # This writes the narrow exports only when there is nothing to lose. It
+    # deliberately does NOT correct an existing file: the CP's live root
+    # filesystem is served from one of these lines, and rewriting them under a
+    # mounted root is how you strand the CP.
+    #
+    # The cost of that caution is that a box which came up before the SECURITY
+    # note above was written keeps its old 127.1.0.0/16 file forever and is
+    # never told. check_export_scope (below, reported by `status`) is what
+    # closes that gap -- it reports the drift and leaves the fix to a human who
+    # can pick the moment.
     if [ ! -s /etc/exports ] || ! grep -q '/opt/dpfs' /etc/exports; then
         cat > /etc/exports <<'EOF'
 # FFN: NFS root for the Octeon control plane.
@@ -99,7 +109,36 @@ do_stop() {
     echo "stopped serving (rpcbind left running; it is harmless and shared)"
 }
 
+check_export_scope() {
+    # An export carrying no_root_squash must name exactly ONE host. See the
+    # SECURITY note at the top of this file: 127.1.0.0/16 contains the DP at
+    # 127.1.2.2, these exports are rw, and they include the CP's live roots --
+    # so a /16 lets the DP mount and rewrite the CP's root filesystem.
+    [ -f /etc/exports ] || { echo "  no /etc/exports"; return 0; }
+    wide=$(awk '
+        /^[[:space:]]*#/ { next }
+        /no_root_squash/ {
+            split($2, a, "(")
+            if (a[1] !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/32)?$/)
+                printf "    %s -> %s\n", $1, a[1]
+        }' /etc/exports)
+    if [ -n "$wide" ]; then
+        echo "  WARNING: no_root_squash exported to more than one host:"
+        printf '%s\n' "$wide"
+        echo "  Each of these trusts every UID on every host in that range,"
+        echo "  root included. Narrow them to the single client that mounts"
+        echo "  each one, then: exportfs -ra"
+        echo "  NOT corrected automatically -- the CP's live root is served"
+        echo "  from one of these lines and rewriting it under a mounted root"
+        echo "  strands the CP. Pick the moment."
+    else
+        echo "  ok: every no_root_squash export names a single host"
+    fi
+}
+
 do_status() {
+    echo "=== export scope ==="
+    check_export_scope
     echo "=== exports ==="
     "$B/exportfs" -v 2>/dev/null || echo "  exportfs unavailable"
     echo "=== nfsd threads ==="

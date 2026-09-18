@@ -45,7 +45,7 @@ if ! chroot "$C" /usr/sbin/exportfs -v 2>/dev/null | grep -q "^$EXPORT"; then
 	say "$EXPORT is not exported; publishing it now"
 	chroot "$C" /usr/sbin/exportfs \
 		-o ro,sync,no_root_squash,no_subtree_check,fsid=9 \
-		"127.1.0.0/16:$EXPORT" || { say "exportfs failed"; exit 3; }
+		"127.1.2.2:$EXPORT" || { say "exportfs failed"; exit 3; }
 fi
 
 # --- 2. the mountpoint, authored on the CP's view of the DP's root ---------

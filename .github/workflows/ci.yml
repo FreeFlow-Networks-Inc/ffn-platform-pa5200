@@ -133,6 +133,8 @@ jobs:
         run: cd octeon/bcmagent && python3 test_bcm_config_drift.py
       - name: queue provisioning convergence
         run: cd bcm && python3 -m unittest test_queue_provision
+      - name: NFS export scope (no_root_squash names one host)
+        run: cd octeon && python3 -m unittest test_nfs_export_scope
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
       - name: LACP wire codec, negotiation and OCTEON member transport
