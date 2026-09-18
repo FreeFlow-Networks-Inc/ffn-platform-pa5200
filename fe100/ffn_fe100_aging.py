@@ -201,6 +201,7 @@ def fetch_probe(_backend):
     entire table on the first sweep after the timeout.
     """
     raise NotImplementedError(
-        'backend.fetch() is byte-stable and cannot detect traffic; per-flow '
-        'activity needs the SEM counter for the session, which nothing '
-        'currently records. See the module docstring.')
+        'backend.fetch() is byte-stable and cannot detect traffic; use '
+        'ffn_fe100_flowstats.FlowStatsProbe, which is fed by the '
+        'MSG_TYPE_FLOWSTATS messages the FE100 pushes. See the module '
+        'docstring.')
