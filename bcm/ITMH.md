@@ -4,12 +4,19 @@ For the subsequently verified OCTEON/copper path, including distinct injection
 and return envelopes, see [Copper forwarding](COPPER-FORWARDING.md). The
 experiments below describe earlier investigation and their original limits.
 
-Ports whose `tm_port_header_type_in` is `TM` — on this board **4, 5, 8, 9, 12, 17, 20, 24**, i.e.
-every CP, DP and MP link — do not carry plain Ethernet. The chip parses the first four bytes of
+Ports whose `tm_port_header_type_in` is `TM` — as the vendor ships them, **4, 5, 8, 9, 12, 17, 20,
+24, 25, 26**, i.e. every CP, DP and MP link — do not carry plain Ethernet. The chip parses the first four bytes of
 every frame as a Traffic Manager header and takes the forwarding destination from it. Sending
 ordinary Ethernet at such a port makes the chip read the destination MAC as that header:
 `ff:ff:ff:ff` yields `snoop = 15`, and the frame is trapped as `bcmRxTrapItmhSnoop15`. That is not
 a malfunction, it is the port doing exactly what it is configured to do.
+
+> **Check the live class before trusting any result below.** Ports **5, 8 and 24** were later moved
+> to `ETH` for L2 bridging, and that change is hand-applied — it does **not** survive a switch
+> re-init. `BCM-CONFIG-20260914.json` shows 5 and 8 as `ETH` in both directions. Every experiment in
+> this file was run when port 5 was still `TM`; repeating one on an `ETH`-classed port yields a
+> confusing non-result rather than an error, which is why `ffn_itmhsend.py` now verifies the ingress
+> port's class and refuses by default.
 
 ## The header layout
 
@@ -54,11 +61,27 @@ The header **is** parsed: prepending one flips port 5's counters from `snmpIfInN
 `snmpIfHCInUcastPkts`, because the MAC the chip sees shifts by four bytes. The destination it
 resolves simply never names a valid queue.
 
-Next hypothesis. `config.bcm` configures `dtm_flow_mapping_mode_region_<N>` for regions **65..128
-only**, leaving the low flow-id space unconfigured, while our VOQ is auto-allocated at **qid 4**
-(decode the returned gport `0x241c0004`: qid = bits[13:0], sysport = bits[25:14] = 112). A queue
-below every configured region would never be valid. So allocate the VOQ with
-`BCM_COSQ_GPORT_WITH_ID` at a qid inside a configured region and name that qid in the header.
+**The sweep could not have hit it.** The vendor's `usr/share/broadcom/dsa_tag_support.c` documents
+the field: `dst_prt` is an L2 Destination, and an L2 Destination is *tagged*.
+
+    |8|7|6|5|4|3|2|1|0|9|8|7|6|5|4|3|2|1|0|    19 bits
+    |0|0|1|      System-Port-Agr          |
+    |0|0|1|0|      System-Port            |
+    |0|0|1|0|0|0|0|0|0|0|0|0|0| Dest-Port |
+
+Bits **[18:16] must be `0b001`**. Every value in the 0..1023 sweep leaves them `0b000`, so the whole
+sweep sat outside the encoding's valid space. The value to try is `dst_prt = 0x10000 | port` — for
+port 13 that is `itmh = 0x01000d00`. `ffn_itmhsend.py --dest-port N` now encodes this by default.
+
+Still worth testing afterwards, and unaffected by the above. `config.bcm` configures
+`dtm_flow_mapping_mode_region_<N>` for regions **65..128 only** (modes 0/1/2, not set/unset:
+65-68=0, 69-98=1, 99-128=2), leaving the low flow-id space unconfigured, while our VOQ is
+auto-allocated at **qid 4** (decode the returned gport `0x241c0004`: qid = bits[13:0],
+sysport = bits[25:14] = 112). A queue below every configured region would never be valid. Note the
+vendor's shipped `config.bcm` has the *same* 65..128 range and forwards fine, so this cannot be what
+separates their chip from ours — but it does imply their VOQs live inside a configured region. So
+allocate the VOQ with `BCM_COSQ_GPORT_WITH_ID` at a qid inside a configured region and name that
+qid in the header.
 
 Also unresolved: whether ingress and egress use the same structure at all. The egress header is
 plainly `[dest16][src16]`; the ingress `snoop` evidence fits `dune_itmh_v3_s`. ITMH and OTMH may
