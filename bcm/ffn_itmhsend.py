@@ -29,6 +29,19 @@ of that sweep sat outside the encoding's valid space and could not have hit.
 
     dst_prt = 0x10000 | port        ->  itmh = dst_prt << 8
 
+THIS IS NOT NEW, and the encoding below is not a proposal. `COPPER-FORWARDING.md`
+records the format already validated on hardware on 2026-09-16:
+
+    "four bytes `01 <BCM destination BE16> 00`"
+
+which is the same word. What this file adds is only that the encoding is now
+built into the tool with the tagged field named, instead of every caller
+hand-assembling a header and the 0..1023 form remaining the easy mistake to
+make. The bounded copper test also shows why the header alone was never the
+whole story: BCM15 had no VOQ bundle at all, and "a synchronized PHY/MAC and an
+enabled port cannot substitute for queue resources, scheduler connections and an
+ingress destination".
+
 ## Why this refuses to run by default
 
 The previous version of this file asserted in a comment that "port 5 is

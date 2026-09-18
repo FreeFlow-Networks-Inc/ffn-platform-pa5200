@@ -70,8 +70,18 @@ the field: `dst_prt` is an L2 Destination, and an L2 Destination is *tagged*.
     |0|0|1|0|0|0|0|0|0|0|0|0|0| Dest-Port |
 
 Bits **[18:16] must be `0b001`**. Every value in the 0..1023 sweep leaves them `0b000`, so the whole
-sweep sat outside the encoding's valid space. The value to try is `dst_prt = 0x10000 | port` — for
-port 13 that is `itmh = 0x01000d00`. `ffn_itmhsend.py --dest-port N` now encodes this by default.
+sweep sat outside the encoding's valid space. `dst_prt = 0x10000 | port` — for port 13,
+`itmh = 0x01000d00`.
+
+**This confirms rather than discovers.** [Copper forwarding](COPPER-FORWARDING.md) records the same
+word already validated on hardware on 2026-09-16 — *"four bytes `01 <BCM destination BE16> 00`"* —
+so the open status recorded above is stale for the commissioned path. The vendor source only
+supplies the *reason* the 0..1023 sweep could never have worked. `ffn_itmhsend.py --dest-port N`
+now encodes it so the wrong form is not the easy one to reach for.
+
+Note also what the copper work found alongside it: BCM15 had **no VOQ bundle at all**, and "a
+synchronised PHY/MAC and an enabled port cannot substitute for queue resources, scheduler
+connections and an ingress destination". The header was never the only missing piece.
 
 Still worth testing afterwards, and unaffected by the above. `config.bcm` configures
 `dtm_flow_mapping_mode_region_<N>` for regions **65..128 only** (modes 0/1/2, not set/unset:
