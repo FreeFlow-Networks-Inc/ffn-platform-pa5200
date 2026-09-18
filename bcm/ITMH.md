@@ -73,15 +73,13 @@ Bits **[18:16] must be `0b001`**. Every value in the 0..1023 sweep leaves them `
 sweep sat outside the encoding's valid space. The value to try is `dst_prt = 0x10000 | port` — for
 port 13 that is `itmh = 0x01000d00`. `ffn_itmhsend.py --dest-port N` now encodes this by default.
 
-Still worth testing afterwards, and unaffected by the above. `config.bcm` configures
-`dtm_flow_mapping_mode_region_<N>` for regions **65..128 only** (modes 0/1/2, not set/unset:
-65-68=0, 69-98=1, 99-128=2), leaving the low flow-id space unconfigured, while our VOQ is
-auto-allocated at **qid 4** (decode the returned gport `0x241c0004`: qid = bits[13:0],
-sysport = bits[25:14] = 112). A queue below every configured region would never be valid. Note the
-vendor's shipped `config.bcm` has the *same* 65..128 range and forwards fine, so this cannot be what
-separates their chip from ours — but it does imply their VOQs live inside a configured region. So
-allocate the VOQ with `BCM_COSQ_GPORT_WITH_ID` at a qid inside a configured region and name that
-qid in the header.
+The flow-region idea that used to be proposed here is **withdrawn** — see
+[below](#withdrawn-the-flow-region-hypothesis), which settles it on stronger evidence: qid 4 is a
+demonstrably valid queue because `force_forward` drives real traffic through it. One detail from the
+vendor's config is worth keeping as *support* for that withdrawal rather than as a plan: their
+shipped `config.bcm` has the **same** `dtm_flow_mapping_mode_region_` 65..128 range we do (modes
+0/1/2, not set/unset: 65-68=0, 69-98=1, 99-128=2) and forwards perfectly well, so the region map
+cannot be what separates their chip from ours.
 
 Also unresolved: whether ingress and egress use the same structure at all. The egress header is
 plainly `[dest16][src16]`; the ingress `snoop` evidence fits `dune_itmh_v3_s`. ITMH and OTMH may

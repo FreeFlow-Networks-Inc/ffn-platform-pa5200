@@ -131,6 +131,8 @@ jobs:
         run: cd octeon/bcmagent && python3 test_psparse.py
       - name: bcm agent -- SOC property drift (declared vs the chip we ran)
         run: cd octeon/bcmagent && python3 test_bcm_config_drift.py
+      - name: queue provisioning convergence
+        run: cd bcm && python3 -m unittest test_queue_provision
       - name: NFS export scope (no_root_squash names one host)
         run: cd octeon && python3 -m unittest test_nfs_export_scope
       - name: fabric codec
