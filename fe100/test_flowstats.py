@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 FreeFlow Networks, Inc.
-"""FLOWSTATS decoding, and the probe contract ffn_fe100_aging depends on.
+"""Statistics decoding, and the probe contract ffn_fe100_aging depends on.
 
 The decode tests pin the bit layout against the vendor's own field widths --
 flow_idx 32, packets 30, octets 42 -- because a silently wrong shift produces
 plausible small numbers rather than an error, and the symptom would be sessions
 expiring while they carry traffic.
+
+The demux tests pin BOTH halves of the message identity. Keying on the type
+byte alone is the mistake this module was written with: MSG_TYPE_FLOWSTATS (19)
+is defined in the vendor's enum and used nowhere, while sessionCount actually
+arrives as CONTROL/STATS_COUNTER. Type 19 must be ignored and CONTROL with some
+other code -- session ageout, say -- must be ignored too, or the decoder would
+read a session-teardown payload as counters.
 
 The probe tests are mostly about one distinction: an unknown flow returns None,
 not 0. Getting that wrong means a session whose first statistics message has not
@@ -23,10 +30,21 @@ import ffn_fe100_flowstats as FS  # noqa: E402
 from ffn_fe100_aging import SessionAging  # noqa: E402
 from ffn_fe100_sessions import key4, forwarding_entry4  # noqa: E402
 
+CTRL_CODE_SESS_AGEOUT = 4        # the neighbouring code in the same family
+MSG_TYPE_FLOWSTATS = 19          # the decoy; defined by the vendor, never used
+
 
 def record(flow_id, packets, octets):
     """Build a sessionCount record the way the FE100 lays it out."""
     return struct.pack('!QQ', (flow_id << 32) | packets, octets)
+
+
+def header(msg_type=FS.MSG_TYPE_CONTROL, code=FS.CTRL_CODE_STATS_COUNTER):
+    """A 32-byte fe100ToOcteonHdr with type at byte 3 and code at byte 23."""
+    head = bytearray(FS.HEADER_SIZE)
+    head[FS.TYPE_OFFSET] = msg_type
+    head[FS.CODE_OFFSET] = code
+    return bytes(head)
 
 
 class Decode(unittest.TestCase):
@@ -82,6 +100,54 @@ class Decode(unittest.TestCase):
         self.assertEqual(FS.decode_records(b''), [])
 
 
+class Demux(unittest.TestCase):
+    """Which messages carry sessionCount, and which only look like they do."""
+
+    def test_control_plus_stats_counter_is_the_statistics_message(self):
+        self.assertTrue(FS.is_stats_message(header()))
+
+    def test_the_flowstats_message_type_is_not_it(self):
+        """MSG_TYPE_FLOWSTATS is the decoy. Keying on it reads nothing.
+
+        The vendor defines type 19 and never emits or parses it; their own
+        decoder demuxes sessionCount on (CONTROL, STATS_COUNTER).
+        """
+        self.assertFalse(FS.is_stats_message(
+            header(msg_type=MSG_TYPE_FLOWSTATS)))
+        self.assertFalse(FS.is_stats_message(
+            header(msg_type=MSG_TYPE_FLOWSTATS, code=0)))
+
+    def test_control_with_another_code_is_not_it(self):
+        """CONTROL also carries setup, update, remove and ageout.
+
+        Decoding one of those as records would read a teardown payload as
+        packet counts.
+        """
+        for code in (1, 2, 3, CTRL_CODE_SESS_AGEOUT, 6):
+            with self.subTest(code=code):
+                self.assertFalse(FS.is_stats_message(header(code=code)))
+
+    def test_the_right_code_under_the_wrong_type_is_not_it(self):
+        """Code 5 means something else entirely outside CONTROL."""
+        for msg_type in (0, 1, 2, 15, 16, 17, 18, MSG_TYPE_FLOWSTATS):
+            with self.subTest(msg_type=msg_type):
+                self.assertFalse(FS.is_stats_message(header(msg_type=msg_type)))
+
+    def test_the_header_is_a_fixed_thirty_two_bytes(self):
+        """21 fields, 256 bits, no optional sections -- so records start at 32."""
+        self.assertEqual(FS.HEADER_SIZE, 32)
+        self.assertEqual(FS.header_length(header()), 32)
+        self.assertEqual(FS.header_length(header() + record(1, 2, 3)), 32)
+
+    def test_a_message_shorter_than_its_header_is_rejected(self):
+        for bad in (b'', b'\x00\x00', bytes(FS.HEADER_SIZE - 1)):
+            with self.subTest(length=len(bad)):
+                with self.assertRaises(ValueError):
+                    FS.is_stats_message(bad)
+                with self.assertRaises(ValueError):
+                    FS.header_length(bad)
+
+
 class Probe(unittest.TestCase):
     def setUp(self):
         self.probe = FS.FlowStatsProbe()
@@ -89,6 +155,7 @@ class Probe(unittest.TestCase):
         self.entry = forwarding_entry4(key, 0x1234, 31)
 
     def test_flow_id_is_read_from_the_entry(self):
+        """Byte 36 -- flowEntry.flowid in the vendor layout."""
         self.assertEqual(FS.flow_id_of(self.entry), 0x1234)
 
     def test_an_unknown_flow_is_None_not_zero(self):
@@ -115,21 +182,21 @@ class Probe(unittest.TestCase):
         self.probe.forget(0x1234)
         self.assertIsNone(self.probe(self.entry))
 
-    def test_non_flowstats_messages_are_ignored_without_decoding(self):
-        for other in (0, 1, 15, 16, 17, 18):
-            msg = bytes([0, 0, 0, other]) + b'garbage-not-records'
+    def test_a_whole_message_is_consumed_past_its_header(self):
+        taken = self.probe.consume_message(
+            header() + record(0x1234, 7, 700) + record(0x9999, 1, 100))
+        self.assertEqual(taken, 2)
+        self.assertEqual(self.probe(self.entry), 7)
+
+    def test_other_messages_are_ignored_without_decoding(self):
+        """Including ones whose payload is not records at all."""
+        for msg in (header(msg_type=MSG_TYPE_FLOWSTATS),
+                    header(code=CTRL_CODE_SESS_AGEOUT),
+                    header(msg_type=0) + b'not-a-record'):
             self.assertEqual(self.probe.consume_message(msg), 0)
-        self.assertEqual(self.probe.ignored, 6)
+        self.assertEqual(self.probe.ignored, 3)
         self.assertEqual(self.probe.records, 0)
-
-    def test_a_message_shorter_than_its_header_is_rejected(self):
-        with self.assertRaises(ValueError):
-            self.probe.consume_message(b'\x00\x00')
-
-    def test_header_length_refuses_rather_than_guessing(self):
-        """Unverified against real traffic; it must not invent an offset."""
-        with self.assertRaises(NotImplementedError):
-            FS.header_length(bytes([0, 0, 0, FS.MSG_TYPE_FLOWSTATS]))
+        self.assertIsNone(self.probe(self.entry))
 
 
 class WithAging(unittest.TestCase):
@@ -154,8 +221,9 @@ class WithAging(unittest.TestCase):
                                     'state': 'installed'}
 
     def report(self, packets):
-        self.probe.consume_payload(record(0x10, packets, packets * 100)
-                                   + record(0x11, packets, packets * 100))
+        self.probe.consume_message(
+            header() + record(0x10, packets, packets * 100)
+            + record(0x11, packets, packets * 100))
 
     def test_a_session_with_no_statistics_yet_is_never_expired(self):
         self.aging.sweep()
@@ -185,6 +253,19 @@ class WithAging(unittest.TestCase):
         self.aging.sweep()
         self.clock[0] += 20
         self.assertEqual(self.aging.sweep()['expired'], [])
+
+    def test_ignored_messages_do_not_keep_a_session_alive(self):
+        """A stream of non-statistics traffic must not read as activity."""
+        self.report(1)
+        self.aging.sweep()
+        for _ in range(2):
+            self.clock[0] += 10
+            self.probe.consume_message(header(code=CTRL_CODE_SESS_AGEOUT))
+            self.assertEqual(self.aging.sweep()['expired'], [])
+        self.assertEqual(self.probe.ignored, 2)
+        self.clock[0] += 11                       # 31 s since the last report
+        self.probe.consume_message(header(code=CTRL_CODE_SESS_AGEOUT))
+        self.assertEqual(self.aging.sweep()['expired'], [1])
 
 
 if __name__ == '__main__':
