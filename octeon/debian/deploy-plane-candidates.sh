@@ -31,7 +31,8 @@ printf 'ListenAddress 127.1.2.2\n' > "$DP/etc/ssh/sshd_config.d/plane.conf"
 awk '{print "[127.1.1.2]:2222 " $1 " " $2}' "$CP/etc/ssh/ssh_host_ed25519_key.pub" > "$KNOWN"
 awk '{print "[127.1.2.2]:2222 " $1 " " $2}' "$DP/etc/ssh/ssh_host_ed25519_key.pub" >> "$KNOWN"
 mkdir -p /etc/exports.d
-printf '%s 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)\n' "$CP" > /etc/exports.d/ffn-debian-candidate.exports
+# 127.1.1.2: a CP root, exported to the CP alone. Not the /16 -- it holds the DP.
+printf '%s 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)\n' "$CP" > /etc/exports.d/ffn-debian-candidate.exports
 exportfs -ra
 ssh -o BatchMode=yes root@127.1.1.2 'sh -s' <<'CP_SCRIPT'
 set -eu
@@ -45,7 +46,7 @@ if grep -q 'fsid=8' /etc/exports && ! grep -q '^/opt/dproot-debian-20260909 ' /e
     echo 'fsid=8 already assigned; choose another before exporting' >&2; exit 1
 fi
 grep -q '^/opt/dproot-debian-20260909 ' /etc/exports || \
-    echo '/opt/dproot-debian-20260909 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check,fsid=8)' >> /etc/exports
+    echo '/opt/dproot-debian-20260909 127.1.2.2(rw,sync,no_root_squash,no_subtree_check,fsid=8)' >> /etc/exports
 exportfs -ra
 ffn-dpsh -t 30 -c 'set -e; mkdir -p /mnt/debian-candidate; mount -t nfs -o nolock,vers=3,proto=tcp 127.1.2.1:/opt/dproot-debian-20260909 /mnt/debian-candidate; for d in proc sys dev; do mount --bind /$d /mnt/debian-candidate/$d; done; chroot /mnt/debian-candidate /usr/sbin/sshd -t; chroot /mnt/debian-candidate /usr/sbin/sshd -p 2222 -E /var/log/ffn-sshd-test.log -o PidFile=/run/sshd-candidate.pid'
 CP_SCRIPT

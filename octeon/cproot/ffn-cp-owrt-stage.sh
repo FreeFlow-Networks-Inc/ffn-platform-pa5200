@@ -112,6 +112,8 @@ chmod +x "$DEST/sbin/ffn-cp-prepare"
 echo "   /tmp/{lock,run,log,state,opkg-lists} + /sbin/ffn-cp-prepare"
 
 echo "== export =="
-grep -q "^$DEST " /etc/exports || echo "$DEST 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)" >> /etc/exports
+# 127.1.1.2, not the /16: this is a CP root, rw and no_root_squash, and the /16
+# contains the DP. See the SECURITY note in tools/ffn_nfsd.sh.
+grep -q "^$DEST " /etc/exports || echo "$DEST 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)" >> /etc/exports
 exportfs -ra
 echo "staged $DEST"

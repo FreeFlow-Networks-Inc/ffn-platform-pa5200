@@ -58,9 +58,23 @@
 #define FFN_PCNET_H2O_OFF	0x001000
 #define FFN_PCNET_O2H_OFF	0x200000
 
-#define FFN_PCNET_NSLOTS	256		/* per ring; power of two */
+#define FFN_PCNET_NSLOTS	256		/* per ring; MUST be a power of two */
 #define FFN_PCNET_SLOT		2048		/* bytes per slot; >= MTU+headroom */
 #define FFN_PCNET_MTU		1500
+#define FFN_PCNET_MAXFRAME	(FFN_PCNET_SLOT - 8)
+
+/*
+ * Every index read from the ring is masked with this before it is used as an
+ * offset. head and tail live in DRAM the peer can write, so a consumer must
+ * treat them as untrusted: without the mask a value >= NSLOTS becomes an
+ * access past the ring, and the C side's 32-bit slot arithmetic would wrap it
+ * anywhere within 4 GB of the mapping. Masking needs NSLOTS to be a power of
+ * two, which the #if below enforces.
+ */
+#define FFN_PCNET_SLOT_MASK	(FFN_PCNET_NSLOTS - 1)
+#if (FFN_PCNET_NSLOTS & (FFN_PCNET_NSLOTS - 1)) != 0
+#error "FFN_PCNET_NSLOTS must be a power of two"
+#endif
 
 /*
  * Region header, at FFN_PCNET_BASE. Written once by whichever side wins the
@@ -97,9 +111,16 @@ struct ffn_pcnet_ring {
 
 /*
  * One slot. len doubles as the ready flag on the wire: a producer writes the
- * payload and the CRC first, then len, then advances head; so a consumer that
- * races the head advance still sees len == 0 and waits. len is cleared by the
- * consumer once the frame is taken.
+ * payload and the CRC first, then len, then advances head, with a barrier
+ * before the head advance. Both access paths keep that order (the host's BAR
+ * writes are posted in order; the OCTEON's stores are `sync`-ordered), so a
+ * consumer that sees head advanced always sees the len that preceded it.
+ *
+ * Therefore len == 0 on a slot inside [tail, head) is corruption, not a race,
+ * and a consumer CONSUMES it -- clears len, advances tail -- exactly as it
+ * does for an out-of-range len or a CRC mismatch. The earlier "wait for len"
+ * reading left tail in place and wedged the ring on the first such slot.
+ * len is cleared by the consumer once the frame is taken.
  */
 struct ffn_pcnet_slot {
 	uint32_t len;			/* payload length; 0 = empty/not-ready */
@@ -109,10 +130,10 @@ struct ffn_pcnet_slot {
 
 #define FFN_PCNET_RING_HDR	64		/* sizeof(ring) header area */
 
-/* byte offset of slot i within a ring */
+/* byte offset of slot i within a ring; i is masked so no caller can forget */
 static inline uint32_t ffn_pcnet_slot_off(uint32_t i)
 {
-	return FFN_PCNET_RING_HDR + i * FFN_PCNET_SLOT;
+	return FFN_PCNET_RING_HDR + (i & FFN_PCNET_SLOT_MASK) * FFN_PCNET_SLOT;
 }
 
 #endif /* FFN_PCNET_H */

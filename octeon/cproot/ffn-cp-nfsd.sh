@@ -40,7 +40,11 @@
 set -eu
 
 DPROOT=${DPROOT:-/opt/dproot}
-NET=${NET:-127.1.0.0/16}
+# The DP, and only the DP -- it is the single client of the CP's /opt/dproot
+# (it roots on it, verified from the DP's /proc/mounts). A /16 here would also
+# admit the MP, and this export is rw,no_root_squash. See the SECURITY note in
+# tools/ffn_nfsd.sh.
+NET=${NET:-127.1.2.2}
 FSID=${FSID:-7}
 THREADS=${THREADS:-8}
 MOD=${MOD:-/lib/modules/nfsd.ko}

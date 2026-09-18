@@ -83,6 +83,38 @@ Producer order is payload, then `{len,crc}`, then a write barrier, then the
 slot. Every frame is CRC32'd (IEEE/zlib), so a coherency slip is detected rather
 than handed to the kernel.
 
+### The ring is a trust boundary
+
+The rings live in DP DRAM, so from the CP's side every field -- head, tail,
+len, crc, payload, and the fields the layout calls CP-owned -- can hold
+whatever the DP wrote. The CP-side code keeps that harmless by rule: a shared
+value is read exactly once per operation into a local (no time-of-check /
+time-of-use gap), an index is masked with `NSLOTS - 1` before it becomes an
+offset, a length is bounded by `MAXFRAME` and the caller's buffer before a byte
+is copied, the CRC is checked on the private copy after the slot is released,
+and a rejected slot is consumed rather than retried. The worst the DP can do to
+the ring is stall or corrupt its own link.
+
+### What the CP admits from the DP
+
+Whatever the CP pops from the D2C ring is handed to the CP's kernel as if it
+arrived on a NIC, and the CP forwards between this link and pcnet with
+`route_localnet` on both. Unfiltered, the DP could reach the CP's own loopback
+services (the shell on 127.1.1.2 among them), any 127.1.1.x address, or send as
+any source -- which is the DP owning the CP and, through it, the MP.
+
+So the CP end admits exactly what the link exists to carry: IPv4 **from the
+DP's address** to the CP's link address or to the MP (127.1.1.1), and ARP from
+the DP for the CP's link address. Everything else is dropped and counted
+(`filtered` in the `kill -USR1` stats). This is enforced in the daemon, on its
+private copy of the frame, and needs no netfilter on the CP. `--peer` and
+`--mp` override the addresses; `--no-filter` is for debugging and warns loudly.
+The DP end does not filter: the CP is the trusted side of that link. The MP's
+pcnet daemon applies its own filter to what arrives from the CP, so DP traffic
+crosses two independent checks before it reaches the MP.
+
+`rp_filter` is set strict on `ffndp0` at both ends as well.
+
 Neither side caches `head`/`tail` locally. That costs one extra access per
 operation and buys a real property: when the CP restarts and zeroes the
 counters, the DP picks it up on its very next look, with no reset handshake to
