@@ -1,0 +1,25 @@
+{
+  "description": "Ports that must own an eight-queue VOQ bundle for the commissioned datapath. This is INTENT, checked against an allocation capture by ffn_queue_provision.py -- it does not allocate anything itself.",
+  "derived_from": [
+    "DP-QUEUES-ALLOCATION-20260914.json -- ports 7, 14, 16, 24, 28, 34, 35",
+    "FE100-SESSION-QUEUES-20260915.json -- ports 3, 8",
+    "COPPER-FORWARDING.md -- port 15, added 2026-09-16, NOT yet in any capture here"
+  ],
+  "notes": [
+    "Every entry below was observed with queues=8; none of these counts is a design choice made here.",
+    "Roles come from FORWARDING-FABRIC.md and COPPER-FORWARDING.md. Where a capture records a port but no document names its purpose, the role says so rather than guessing.",
+    "Allocation handles (connector/VOQ gports) are deliberately NOT in this file. They are observations that change across a switch restart, and pinning them would invite reuse of a stale identifier."
+  ],
+  "ports": {
+    "3": {"queues": 8, "role": "FE100 / NIF session path"},
+    "7": {"queues": 8, "role": "faceplate 13"},
+    "8": {"queues": 8, "role": "management-plane link 0"},
+    "14": {"queues": 8, "role": "copper panel 3 (PHY 19)"},
+    "15": {"queues": 8, "role": "copper panel 4 (PHY 18)"},
+    "16": {"queues": 8, "role": "faceplate 5"},
+    "24": {"queues": 8, "role": "internal OCTEON link, core 0 / TM24"},
+    "28": {"queues": 8, "role": "faceplate 1 / copper panel 1 (WAN)"},
+    "34": {"queues": 8, "role": "core 1 TM34, purpose not documented"},
+    "35": {"queues": 8, "role": "core 1 TM35, purpose not documented"}
+  }
+}
