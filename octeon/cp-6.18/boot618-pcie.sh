@@ -102,6 +102,12 @@ echo "=== 6.18+PCIe boot attempt $(date) ==="
 # protects every other $ in the block from parent expansion.
 export K
 
+# Same child-shell rule as K: the INNER heredoc is quoted and `bash -s` does
+# not inherit an unexported variable, so the opt-out has to be exported to be
+# reachable inside. Default on; FFN_CP_FPGA=0 skips the FPGA step entirely.
+FFN_CP_FPGA="${FFN_CP_FPGA:-1}"
+export FFN_CP_FPGA
+
 flock -w 60 /run/ffn-octeon-ctl.lock bash -s <<'INNER'
 set -u
 cd /opt/ffn-ngfw-v2
@@ -110,6 +116,55 @@ python3 tools/ffn_octctl.py boot --dev 0 --force
 rc=$?
 echo "octctl rc=$rc"
 [ $rc -eq 0 ] || { echo "ABORT: reset/u-boot stage failed, not attempting the kernel"; exit 1; }
+
+# --- program the CE40 FPGA, before the kernel takes the machine -------------
+#
+# The FE100's register block is clocked by the CE40 FPGA. Its PCIe endpoint is
+# NOT: without this step the chip still enumerates, trains its link and
+# completes reads -- and every one of its registers reads 0x00000000, including
+# hardwired ID words. That is exactly how it sat from 2026-09-18 until this was
+# wired in; see fe100/FE100-CSR-WINDOW-DEAD-20260918.md. Earlier FE100 work did
+# not establish this, it inherited an FPGA left loaded by a vendor boot.
+#
+# This is the ONLY window. fpga_program exists solely in the CP bootloader, so
+# it needs the CP sitting in u-boot -- true here, and false the moment the
+# kernel below boots.
+#
+# NEVER FATAL. A firewall that boots without offload beats one that does not
+# boot, so every path below falls through to the kernel.
+#
+# No backslash continuations anywhere in this block: an earlier edit lost both
+# the backslash and the newline to heredoc escaping, which joined two pipeline
+# halves into one line that still passed bash -n and would have run tail with a
+# stray tab argument. One command per line cannot fail that way.
+if [ "$FFN_CP_FPGA" = 1 ]; then
+	echo "--- program the CE40 FPGA (u-boot fpga_program) ---"
+	fpga_log=/var/log/ffn-octeon-console.log
+	fpga_mark=$(( $(wc -l < "$fpga_log") + 1 ))
+	# Deliberately NOT passing --reprogram. u-boot skips an already-programmed
+	# FPGA without its own force flag, which is what we want on a warm re-run:
+	# only a cold boot clears DONE, and only then is a load needed.
+	timeout 600 python3 tools/ffn_octctl.py fpga --force
+	echo "octctl fpga rc=$?"
+	# The tool returns once the mailbox ACCEPTED the command. The bootloader
+	# programs afterwards -- up to 3 attempts, 1 s apart -- and reports only on
+	# its console, so the console is the real result. Waiting for it also keeps
+	# kernel staging from overlapping a load still in flight.
+	fpga_seen=0
+	for _ in $(seq 1 60); do
+		if tail -n +"$fpga_mark" "$fpga_log" 2>/dev/null | grep -qE "Full fpga programming (SUCCESS|FAILURE)"; then
+			fpga_seen=1
+			break
+		fi
+		sleep 5
+	done
+	tail -n +"$fpga_mark" "$fpga_log" 2>/dev/null | grep -E "Full fpga programming|Done' never asserted|already programmed|CE CPLD version check|CE board power up" | sed "s/^/    /"
+	if [ "$fpga_seen" = 0 ]; then
+		echo "    no FPGA outcome on the console -- unknown, continuing to the kernel"
+	fi
+else
+	echo "--- CE40 FPGA programming SKIPPED (FFN_CP_FPGA=0) ---"
+fi
 
 echo "--- stage kernel over the BAR window and boot ---"
 python3 tools/ffn_octboot.py \

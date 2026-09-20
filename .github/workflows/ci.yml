@@ -137,6 +137,8 @@ jobs:
         run: cd bcm && python3 -m unittest test_queue_provision
       - name: NFS export scope (no_root_squash names one host)
         run: cd octeon && python3 -m unittest test_nfs_export_scope
+      - name: CP boot script (harness contract + CE40 FPGA step)
+        run: cd octeon/cp-6.18 && python3 test_boot_script.py
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
       - name: LACP wire codec, negotiation and OCTEON member transport
