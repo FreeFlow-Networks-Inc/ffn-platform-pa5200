@@ -64,7 +64,7 @@ for those runs, or that a clock the FE100 depends on is gated behind a step that
 
 ---
 
-# ANSWERED — 2026-09-20: the CE FPGA is not programmed
+# 2026-09-20: the CE FPGA is not programmed — but that is NOT the cause
 
 ## The measurement
 
@@ -142,3 +142,41 @@ Not yet determined: whether `ce40.bin` can be loaded by own code through the CPL
 signed `fpga-images` manifest gates it. Note the related finding that `ca1.bin` has no loader on
 this platform — `ce40.bin` is a different bitstream and that conclusion does not transfer to it in
 either direction.
+
+---
+
+# DISPROVEN the same day, on hardware
+
+The section above reads as an answer. It is not. The FPGA really was unprogrammed, and that really
+was a missing bring-up step — but programming it does **not** revive the FE100.
+
+The load now runs from FFN's own boot path. The console printed `Full fpga programming SUCCESS`, and
+CE CPLD reg 2 went `0x20` → `0x60`, the whole file reading `0c ff 60 00 00 40 00 00` — byte for byte
+the 2026-09-02 value.
+
+**The FE100 still reads `0x00000000` across all 262,144 words.** Stable across repeated reads, with
+memory decode on, the link trained at 2.5 GT/s ×2, and the device in D0. PCI enumeration happened
+*after* the FPGA load on that boot, so it is not an ordering problem either.
+
+## Why the evidence looked conclusive and was not
+
+DONE was set on 2026-09-02/04 when the registers answered, and clear on 2026-09-18 when they did
+not. That correlation is real, and it is **coincidence**: both states tracked whether a vendor boot
+had last run, and a vendor boot does a great deal more than load a bitstream. Two things moving
+together, both downstream of a third.
+
+## What survives from the section above
+
+* An unclaimed address in domain 2 reads all-ones; the FE100 reads all-zeros. It claims and
+  completes the cycle. (Independently re-confirmed since: on a boot where memory decode happened to
+  be off, the same addresses read all-ones.)
+* The reads are not rejected — UR does not re-latch after clearing.
+* A register file reading zero rather than its documented non-zero reset values is unclocked or held
+  in reset, not merely uninitialised.
+
+## The next candidate, untried
+
+Loading the bitstream is not the whole vendor sequence. `brdagent/cp/libfpga.so` exports `ce40_init`,
+`ce40_interface_reset` and `octeon_spi_initialize` / `_interface_config` / `_do_work` — an SPI
+bring-up run against the now-configured FPGA. None of that happens on an FFN boot either. It is a
+different mechanism from the bitstream load, not a continuation of it, and it has not been attempted.
