@@ -16,7 +16,15 @@ that:
   CSR reads                vendor oct-remote  yes -- cross-checked
   CSR reads                FFN own code       NO: reads 0x60 vs vendor 0x3
   port inventory           vendor CSR reads   yes
-  FPGA program             FFN cmd + mailbox  command verified, not yet run
+  FPGA program             FFN cmd + console  see below -- NOT the mailbox
+
+The FPGA row is worth its own note. It used to read "FFN cmd + mailbox", and on
+2026-09-20 that was shown to be wrong in the worst way: the mailbox reported the
+command consumed and returned to READY, the console showed no trace of it, and
+CE CPLD reg 2 bit 0x40 (DONE) stayed clear. A completely silent no-op. The
+command now goes through the console broker, where bootoctlinux has always
+worked, and the tool waits for the bootloader's own SUCCESS/FAILURE line rather
+than reporting that a write was accepted.
 
 Vendor tools are used IN PLACE on hardware whose owner already has them; they
 are never packaged or redistributed.
@@ -31,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, "/opt/ffn-ngfw-v2")
 
@@ -421,10 +430,9 @@ def cmd_fpga(a):
         print("  1. stage %.2f MiB into Octeon DRAM at 0x%x, walking 4 MiB "
               "segments" % (size / (1 << 20), addr))
         print("  2. verify the readback by sha256")
-        print("  3. send %r through the mailbox" % cmd)
-        print("NOTE: the bootloader prints SUCCESS/FAILURE on the Octeon "
-              "CONSOLE, which FFN cannot read yet -- so step 3 confirms the "
-              "command was consumed, not that the FPGA came up.")
+        print("  3. wait for the u-boot prompt, then send %r through the "
+              "console broker" % cmd)
+        print("  4. wait for the bootloader's own SUCCESS/FAILURE line")
         return 0
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -455,22 +463,71 @@ def cmd_fpga(a):
             return 1
         print("    sha256 matches")
 
-    print("[3] sending %r" % cmd)
-    pci = _opt(a, "--pci", "0000:01:00.0")
-    mem = _SysfsMem(os.path.join(SYSFS, pci, "resource2"), bar_size(pci, 2))
-    try:
-        bb = ffn_oct.BootBar(mem, dry_run=False)
-        ok, msg, _tr = ffn_oct.oct_send_bootcmd(
-            bb, cmd, gen=ffn_oct._configured_octeon_gen(), force=True)
-        print("    %s: %s" % ("ok" if ok else "FAILED", msg))
-    finally:
-        mem.close()
-    print()
-    print("The bootloader retries up to %d times and prints "
-          "'Full fpga programming SUCCESS' or FAILURE on its console. That "
-          "console line is the real confirmation; this tool can only report "
-          "that the command was accepted." % ffn_oct.FPGA_ATTEMPTS)
-    return 0 if ok else 1
+    # THE COMMAND GOES THROUGH THE CONSOLE, NOT THE MAILBOX.
+    #
+    # This used to call oct_send_bootcmd(), and on 2026-09-20 that was proven
+    # not to work for this command. The mailbox reported the string consumed
+    # and returned to READY -- and the console showed no trace of it, nothing
+    # was printed, and CE CPLD reg 2 bit 0x40 (DONE) stayed clear. The kernel
+    # then booted normally, so the failure was completely silent.
+    #
+    # The reason is timing as much as transport: the mailbox is served by the
+    # remote-boot stub, and at the point this runs u-boot has not reached its
+    # interactive prompt yet -- it is still in the autoboot countdown, which
+    # only ends when autoboot fails with "No elf image at address 0x20000000".
+    # ffn_octboot drives u-boot through the console broker for exactly this
+    # reason, and bootoctlinux demonstrably works there. So does this.
+    import ffn_octboot as ob
+
+    if not os.path.exists(ob.FIFO):
+        print("[3] console broker is not running (%s missing); cannot send "
+              "the command -- start ffn-octconsoled" % ob.FIFO)
+        return 2
+
+    print("[3] waiting for the u-boot prompt")
+    deadline = time.time() + float(_opt(a, "--prompt-wait", "90"))
+    ready = False
+    why = "prompt wait elapsed before a single poll"
+    while time.time() < deadline:
+        ok, why = ob.prompt_ok(quiet=True)
+        if ok:
+            ready = True
+            print("    prompt: %s" % why)
+            break
+        time.sleep(3.0)
+    if not ready:
+        print("    no u-boot prompt (%s) -- not sending; the FPGA stays "
+              "unprogrammed" % why)
+        return 1
+
+    print("[4] sending %r" % cmd)
+    start = ob.logsize()
+    ob.fifo(cmd)
+
+    # The bootloader retries up to FPGA_ATTEMPTS times, 1 s apart, so allow for
+    # all of them plus the load itself before giving up on a verdict.
+    verdict = None
+    deadline = time.time() + float(_opt(a, "--outcome-wait", "300"))
+    while time.time() < deadline:
+        text = "\n".join(ob.clean(ob.logread(start)))
+        if "Full fpga programming SUCCESS" in text:
+            verdict = True
+            break
+        if "Full fpga programming FAILURE" in text:
+            verdict = False
+            break
+        time.sleep(3.0)
+
+    for line in ob.clean(ob.logread(start)):
+        if any(k in line for k in ("fpga", "FPGA", "Done", "CE CPLD",
+                                   "CE board", "programming")):
+            print("    | %s" % line)
+    if verdict is None:
+        print("    NO VERDICT within the wait -- treat the FPGA as "
+              "unprogrammed and check CE CPLD reg 2 bit 0x40")
+        return 1
+    print("    %s" % ("SUCCESS" if verdict else "FAILURE"))
+    return 0 if verdict else 1
 
 
 # ----------------------------------------------------------------- ports ----

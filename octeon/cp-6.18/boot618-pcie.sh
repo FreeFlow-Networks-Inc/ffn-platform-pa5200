@@ -119,19 +119,30 @@ echo "octctl rc=$rc"
 
 # --- program the CE40 FPGA, before the kernel takes the machine -------------
 #
-# The FE100's register block is clocked by the CE40 FPGA. Its PCIe endpoint is
-# NOT: without this step the chip still enumerates, trains its link and
-# completes reads -- and every one of its registers reads 0x00000000, including
-# hardwired ID words. That is exactly how it sat from 2026-09-18 until this was
-# wired in; see fe100/FE100-CSR-WINDOW-DEAD-20260918.md. Earlier FE100 work did
-# not establish this, it inherited an FPGA left loaded by a vendor boot.
+# The CE40 FPGA was simply never programmed on an FFN boot. The vendor programs
+# it from brdagent on the Octeon, which FFN does not run, so every FFN boot left
+# CE CPLD reg 2 bit 0x40 (DONE) clear. Earlier FE100 work inherited an FPGA left
+# loaded by a vendor boot rather than establishing one. This step establishes it:
+# verified 2026-09-20, "Full fpga programming SUCCESS" on the console and DONE
+# set afterwards.
+#
+# It does NOT revive the FE100. That was the hypothesis this step was built to
+# test, and it is disproven: with the FPGA programmed and DONE set, all 262144
+# words of the FE100's BAR still read 0x00000000. Whatever clocks its register
+# block, this is not it. The step stays because the FPGA genuinely was a missing
+# bring-up step, not because it fixes the FE100.
 #
 # This is the ONLY window. fpga_program exists solely in the CP bootloader, so
 # it needs the CP sitting in u-boot -- true here, and false the moment the
 # kernel below boots.
 #
-# NEVER FATAL. A firewall that boots without offload beats one that does not
-# boot, so every path below falls through to the kernel.
+# NEVER FATAL, as far as this script controls. Every path falls through to the
+# kernel. Note the limit of that promise: a malformed fpga_program can HANG
+# u-boot itself, and then nothing downstream can boot. Omitting the ce40=
+# selector did exactly that on 2026-09-20 -- u-boot printed "programming
+# unknown", stopped answering, and the CP never came up. The selector is not
+# optional; ffn_oct.build_fpga_program_cmd now refuses to build a command
+# without it.
 #
 # No backslash continuations anywhere in this block: an earlier edit lost both
 # the backslash and the newline to heredoc escaping, which joined two pipeline
@@ -144,7 +155,10 @@ if [ "$FFN_CP_FPGA" = 1 ]; then
 	# Deliberately NOT passing --reprogram. u-boot skips an already-programmed
 	# FPGA without its own force flag, which is what we want on a warm re-run:
 	# only a cold boot clears DONE, and only then is a load needed.
-	timeout 600 python3 tools/ffn_octctl.py fpga --force
+	# 900 s: staging ~60 s, plus the tool's own prompt wait (90 s) and
+	# outcome wait (300 s), with headroom. It now waits for the
+	# bootloader's verdict rather than for a write to be accepted.
+	timeout 900 python3 tools/ffn_octctl.py fpga --force
 	echo "octctl fpga rc=$?"
 	# The tool returns once the mailbox ACCEPTED the command. The bootloader
 	# programs afterwards -- up to 3 attempts, 1 s apart -- and reports only on
