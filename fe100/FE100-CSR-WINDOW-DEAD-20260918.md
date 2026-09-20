@@ -53,31 +53,92 @@ fine. The FE100 specifically is silent.
 ## What it means
 
 Completions return — there are no aborts — while the entire register space reads zero. The PCIe and
-PHY domain is alive; the CSR domain is not clocked.
+PHY domain is alive; the CSR domain is not.
 
 **Nothing in this directory can fix it.** `ffn_fe100.py`, `ffn_fe100_clocks.py` and
 `ffn_fe100_reset.py` all work by reading and writing CSRs, so they sit downstream of the thing that
-is broken. Whatever made the chip answer during the 2026-09-09 and 2026-09-15 physical-session runs
-is not running now.
+is broken.
 
-Two candidates worth investigating in order:
+Two candidates were worth investigating: that the control plane is on a different kernel than it was
+for those runs, or that a clock the FE100 depends on is gated behind a step that no longer runs.
 
-1. **The control plane is on a different kernel** than it was for those runs.
-2. **The CE FPGA is programmed by `brdagent` on the Octeon**, per the documented chainload order, so
-   a clock the FE100 depends on may be gated behind a step in that chain that no longer runs.
+---
 
-## The one obvious lever is a trap
+# ANSWERED — 2026-09-20: the CE FPGA is not programmed
 
-The platform CPLD's reg 4 bit 0 resets the DP **and** the FE100 together. Pulsing it would take down
-the running 40-core dataplane. `tools/ffn_mpcpld.py --pulse` preserves every other bit, but this is
-never a casual operation and should not be done to chase a register read.
+## The measurement
 
-## Consequence
+    CE CPLD 0x1b020000    0c ff 20 00 00 00 00 00      reg2 = 0x20   FPGA DONE (bit 0x40) CLEAR
+    recorded 2026-09-02   0c ff 60 00 00 40 00 00      reg2 = 0x60   FPGA DONE        SET
 
-Every FE100 item is blocked behind restoring CSR access — not only session aging, but the whole
-offload path. The open question in the aging work ("is the FE100 configured to emit statistics at
-all, and at what interval?") cannot be answered until the chip answers at all.
+DONE was set when the registers answered. It is clear now. The CPLDs sit on the Octeon's own boot
+bus, so reading them touches no part of the PCIe path that is in question.
 
-**Re-measure before planning any FE100 task.** A three-device BAR sweep takes seconds and
-distinguishes "the chip is dead" from "my reader is wrong" — which no handful of individual offsets
-can do.
+## Why that accounts for every symptom
+
+The FE100's PCIe endpoint and its register block are in different clock domains, and only the
+endpoint survives without the FPGA:
+
+| observation | explanation |
+|---|---|
+| link trains, device enumerates, config space reads fine | endpoint runs off the PCIe domain |
+| BAR reads return `0x00000000`, never `0xffffffff` | endpoint decodes and **claims** the cycle |
+| no abort, no Unsupported Request, no error of any kind | endpoint **completes** the read normally |
+| hardwired ID words read zero, not their values | the register array itself is not being driven |
+
+That last row is what rules out "merely uninitialised". `prom_chip_rev_num` is a hardwired revision
+word, and `nif_rst_ctrl` and `nif_p0_mac_pcs_cfg` have documented non-zero reset values. A block at
+reset shows its reset values. A block reading zero everywhere is unclocked.
+
+## Two controls that make it evidence rather than a story
+
+**An unclaimed address in the same domain reads all-ones.** Domain 2's bridge forwards only
+`0xf0000000–0xf00fffff`, so anything above that is unclaimed by construction:
+
+```
+bus 0xf0000000   FE100 BAR0                      00000000 00000000 ...
+bus 0xf0080000   FE100 BAR0 + 512K               00000000 00000000 ...
+bus 0xf0100000   just past the bridge window     ffffffff ffffffff ...
+bus 0xf0300000   well past it                    ffffffff ffffffff ...
+```
+
+`0x00000000` and `0xffffffff` are different failures. The FE100 is answering.
+
+**The reads are not being rejected.** `DEVSTA` showed `UnsupportedReqDetected`, which looked
+damning — but those bits are sticky and enumeration sets them too, so it proves nothing on its own.
+Clearing them, idling, then reading the BAR leaves them clear:
+
+```
+1. as found            0x000a NonFatalErr UnsupportedReq
+2. after clearing      0x0000 (all clear)
+3. idle, no BAR access 0x0000 (all clear)
+4. read 3 BAR words    00000000 00000000 00000000
+5. after BAR reads     0x0000 (all clear)
+```
+
+## Who programs it, and why nothing does now
+
+`cpldlib_fpga_program(file, id)` is defined in **`libpancommon_cp.so`** and is **absent from the MP
+build** — programming happens from the Octeon, not the host. Its caller is
+`brdagent/cp/libfpga.so`, and the CP carries a dedicated `_ce40lib.so` / `ce40lib.pyc` binding. The
+bitstream is `ce40.bin` (48 MB), shipped beside `ca1.bin` with an `fpga-images` manifest and
+detached signature.
+
+So the FPGA is programmed by the vendor's **brdagent, running on the Octeon control plane**. FFN's
+own control plane does not run brdagent, so on an FFN boot nothing programs it.
+
+**This was never fixed, only inherited.** The 2026-09-02 through 2026-09-15 runs found the FPGA
+already loaded — left over from an earlier vendor boot, since FPGA configuration is volatile but
+survives for as long as it is neither power-cycled nor reset. Once that was lost, the FE100 went
+with it. The chip did not break; the thing it was borrowing went away.
+
+## What this changes
+
+It moves the FE100 from "mysteriously dead" to a named missing bring-up step, and it means **every
+FE100 result on this appliance to date depended on a state FFN never established for itself**. Any
+plan that assumes the chip answers needs to own the FPGA load first.
+
+Not yet determined: whether `ce40.bin` can be loaded by own code through the CPLD, or whether the
+signed `fpga-images` manifest gates it. Note the related finding that `ca1.bin` has no loader on
+this platform — `ce40.bin` is a different bitstream and that conclusion does not transfer to it in
+either direction.
