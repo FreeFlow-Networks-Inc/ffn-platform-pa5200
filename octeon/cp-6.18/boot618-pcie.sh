@@ -102,6 +102,12 @@ echo "=== 6.18+PCIe boot attempt $(date) ==="
 # protects every other $ in the block from parent expansion.
 export K
 
+# Same child-shell rule as K: the INNER heredoc is quoted and `bash -s` does
+# not inherit an unexported variable, so the opt-out has to be exported to be
+# reachable inside. Default on; FFN_CP_FPGA=0 skips the FPGA step entirely.
+FFN_CP_FPGA="${FFN_CP_FPGA:-1}"
+export FFN_CP_FPGA
+
 flock -w 60 /run/ffn-octeon-ctl.lock bash -s <<'INNER'
 set -u
 cd /opt/ffn-ngfw-v2
@@ -110,6 +116,69 @@ python3 tools/ffn_octctl.py boot --dev 0 --force
 rc=$?
 echo "octctl rc=$rc"
 [ $rc -eq 0 ] || { echo "ABORT: reset/u-boot stage failed, not attempting the kernel"; exit 1; }
+
+# --- program the CE40 FPGA, before the kernel takes the machine -------------
+#
+# The CE40 FPGA was simply never programmed on an FFN boot. The vendor programs
+# it from brdagent on the Octeon, which FFN does not run, so every FFN boot left
+# CE CPLD reg 2 bit 0x40 (DONE) clear. Earlier FE100 work inherited an FPGA left
+# loaded by a vendor boot rather than establishing one. This step establishes it:
+# verified 2026-09-20, "Full fpga programming SUCCESS" on the console and DONE
+# set afterwards.
+#
+# It does NOT revive the FE100. That was the hypothesis this step was built to
+# test, and it is disproven: with the FPGA programmed and DONE set, all 262144
+# words of the FE100's BAR still read 0x00000000. Whatever clocks its register
+# block, this is not it. The step stays because the FPGA genuinely was a missing
+# bring-up step, not because it fixes the FE100.
+#
+# This is the ONLY window. fpga_program exists solely in the CP bootloader, so
+# it needs the CP sitting in u-boot -- true here, and false the moment the
+# kernel below boots.
+#
+# NEVER FATAL, as far as this script controls. Every path falls through to the
+# kernel. Note the limit of that promise: a malformed fpga_program can HANG
+# u-boot itself, and then nothing downstream can boot. Omitting the ce40=
+# selector did exactly that on 2026-09-20 -- u-boot printed "programming
+# unknown", stopped answering, and the CP never came up. The selector is not
+# optional; ffn_oct.build_fpga_program_cmd now refuses to build a command
+# without it.
+#
+# No backslash continuations anywhere in this block: an earlier edit lost both
+# the backslash and the newline to heredoc escaping, which joined two pipeline
+# halves into one line that still passed bash -n and would have run tail with a
+# stray tab argument. One command per line cannot fail that way.
+if [ "$FFN_CP_FPGA" = 1 ]; then
+	echo "--- program the CE40 FPGA (u-boot fpga_program) ---"
+	fpga_log=/var/log/ffn-octeon-console.log
+	fpga_mark=$(( $(wc -l < "$fpga_log") + 1 ))
+	# Deliberately NOT passing --reprogram. u-boot skips an already-programmed
+	# FPGA without its own force flag, which is what we want on a warm re-run:
+	# only a cold boot clears DONE, and only then is a load needed.
+	# 900 s: staging ~60 s, plus the tool's own prompt wait (90 s) and
+	# outcome wait (300 s), with headroom. It now waits for the
+	# bootloader's verdict rather than for a write to be accepted.
+	timeout 900 python3 tools/ffn_octctl.py fpga --force
+	echo "octctl fpga rc=$?"
+	# The tool returns once the mailbox ACCEPTED the command. The bootloader
+	# programs afterwards -- up to 3 attempts, 1 s apart -- and reports only on
+	# its console, so the console is the real result. Waiting for it also keeps
+	# kernel staging from overlapping a load still in flight.
+	fpga_seen=0
+	for _ in $(seq 1 60); do
+		if tail -n +"$fpga_mark" "$fpga_log" 2>/dev/null | grep -qE "Full fpga programming (SUCCESS|FAILURE)"; then
+			fpga_seen=1
+			break
+		fi
+		sleep 5
+	done
+	tail -n +"$fpga_mark" "$fpga_log" 2>/dev/null | grep -E "Full fpga programming|Done' never asserted|already programmed|CE CPLD version check|CE board power up" | sed "s/^/    /"
+	if [ "$fpga_seen" = 0 ]; then
+		echo "    no FPGA outcome on the console -- unknown, continuing to the kernel"
+	fi
+else
+	echo "--- CE40 FPGA programming SKIPPED (FFN_CP_FPGA=0) ---"
+fi
 
 echo "--- stage kernel over the BAR window and boot ---"
 python3 tools/ffn_octboot.py \
