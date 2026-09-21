@@ -31,13 +31,24 @@ output directory, enables the required kernel interfaces, builds an image and
 matching in-tree modules, and records a manifest. It verifies that the original
 configuration and symbol inputs remain unchanged. It does not select a boot image.
 
-A candidate was built on the VM with release
+A kernel was built on the VM with release
 `6.18.49-ffn-debian-dp-security-20260921+`. Its image SHA-256 is
-`8ed3709473e07e373c82ecc3a49927598deb08901c7dacfc553f15b0d459639a`.
-It is not hardware-boot verified. `build-security-drivers.py` rebuilt the external
+`8aca1befb85fd70ebf087a0d3f67056d38954be7a39da294fcae658ca9e992e3`.
+The final build includes the NAT FIB modules required by existing boot services.
+`build-security-drivers.py` rebuilt the external
 packet, link and crypto drivers from build directories whose prior module hashes
 exactly matched the live DP modules. Their new ABI/release and module dependencies
-were checked and included in the candidate module tree. Recovery checks, the
-session event collector, and the coordinated
-Security/NAT apply provider must be completed before production rollout.
-Using the new kernel will require a DP restart; no live boot selection changed.
+were checked and included in the candidate module tree.
+
+On 2026-09-21 the operator requested the DP restart. The CP boot service selected
+the hash-verified image while preserving the prior kernel and module tree.
+Debian/systemd, all 40 CPUs, SSH, the DP agent and the external drivers returned
+with zero failed DP services. The aggregate owner obtained a new boot-specific
+acknowledgment, both 40G members resumed distributing, and its VLAN attachment
+returned without changing candidate or running XML. Conntrack NEW and DESTROY
+netlink events were verified in a disposable namespace. Native NAT and Security
+packet suites passed on the new kernel; candidate NAT preflight also passed.
+
+The session event collector and coordinated Security/NAT apply provider remain
+unfinished. The successful restart does not commission Security rules or remove
+the production aggregate transit guard.

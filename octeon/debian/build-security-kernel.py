@@ -26,7 +26,8 @@ def main():
     S.run([str(tree/'scripts/config'),'--file',str(tree/'.config'),
            *[word for symbol in symbols for word in ('--enable',symbol)],
            '--set-str','LOCALVERSION',a.localversion,'--disable','LOCALVERSION_AUTO'],check=True)
-    for symbol in ('NFT_NUMGEN','NFT_HASH','NET_SCH_HTB','NET_SCH_FQ_CODEL','NET_CLS_FW'):
+    for symbol in ('NFT_NUMGEN','NFT_HASH','NFT_FIB_IPV4','NFT_FIB_IPV6','NFT_FIB_INET',
+                   'NET_SCH_HTB','NET_SCH_FQ_CODEL','NET_CLS_FW'):
         S.run([str(tree/'scripts/config'),'--file',str(tree/'.config'),'--module',symbol],check=True)
     make=['make','-C',str(tree),'ARCH=mips','CROSS_COMPILE='+a.cross]
     S.run(make+['olddefconfig'],check=True)
