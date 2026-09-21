@@ -21,7 +21,7 @@ import struct
 import subprocess
 import sys
 import time
-from ffn_fe100_sessions import key4, entry4, forwarding_entry4
+from ffn_fe100_sessions import key4, entry4, forwarding_entry4, nat_entry4, output_key4
 from ffn_fe100_session_adapter import encode_native, decode_native
 from ffn_fe100_nexthop import LIB, SHA, encode as next_hop
 
@@ -29,13 +29,21 @@ FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN','13'))
 if FRONT_RETURN not in (5,13):raise ValueError('unsupported front return')
 EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
+NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
 LAB_LIF=2 if FRONT_RETURN==5 else 1
 KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,17,4094) if FRONT_RETURN==5 else
        key4('198.18.0.1', '198.18.0.2', 49000, 49001, 17, 4094))
+if NAT_MODE:
+    if not VLAN_RETURN or EGRESS==FRONT_RETURN:raise ValueError('NAT lab requires isolated cross-port VLAN return')
+    from ffn_fe100_nat_lab import tuples
+    ORIGINAL,TRANSLATED=tuples(NAT_MODE,FRONT_RETURN==5)
+    KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],17,4094)
 IDENTITY = entry4(KEY, 1001)
-RETURN_KEY=KEY[:2]+(4093).to_bytes(2,'big')+KEY[4:]
+FORWARD = (nat_entry4(KEY,1001,31,TRANSLATED) if NAT_MODE else
+           forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN))
+RETURN_KEY=output_key4(FORWARD)
+RETURN_KEY=RETURN_KEY[:2]+(4093).to_bytes(2,'big')+RETURN_KEY[4:]
 RETURN_IDENTITY=entry4(RETURN_KEY,1002)
-FORWARD = forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN)
 DROP = forwarding_entry4(KEY, 1001, drop=True)
 ROOT = Path('/var/lib/ffn/fe100')
 WORKER_STATE = {}
@@ -44,6 +52,9 @@ WORKER_STATE = {}
 def worker(request, fd):
     from ffn_fe100 import Fe100, bar0_base_and_size, memory_decode_on
     kind = request['kind']
+    if kind=='readiness':
+        from ffn_fe100_live_sessions import LiveSessions
+        return LiveSessions(False,lock_fd=fd).status()
     if kind == 'session':
         from ffn_fe100_live_sessions import LiveSessions
         if 'live' not in WORKER_STATE: WORKER_STATE['live'] = LiveSessions(True, lock_fd=fd)
@@ -133,7 +144,7 @@ class Lab:
         fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         self.path = ROOT/('packet-session-'+str(time.time_ns())+'.json')
         self.record = {'schema':1,'owner_sha256':SHA,
-                       'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,
+                       'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
                                   'session_key':KEY.hex(),'return_key':RETURN_KEY.hex()},
                        'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                        'changes':[], 'snapshots':{}, 'stage':'preflight', 'session_offload_verified':False}
@@ -332,6 +343,14 @@ class Lab:
 
 
 def main():
+    if '--nat' in sys.argv:
+        index=sys.argv.index('--nat')
+        if (index!=len(sys.argv)-2 or sys.argv[index+1] not in ('address','port') or
+            sys.argv[1:index] not in (['--serve','--front13','--cross','--vlan-return'],
+                                     ['--serve','--front5','--cross','--vlan-return'])):
+            raise SystemExit('--nat address|port requires --serve --front5|--front13 --cross --vlan-return')
+        os.environ['FFN_FE100_NAT_LAB']=sys.argv[index+1]
+        del sys.argv[index:]
     if sys.argv[1:] in (['--serve','--front13','--cross','--vlan-return'],['--serve','--front5','--cross','--vlan-return']):
         os.environ['FFN_FE100_VLAN_RETURN']='1'
         sys.argv.remove('--vlan-return')
@@ -354,7 +373,12 @@ def main():
     if sys.argv[1:]!=['--serve']: raise SystemExit('use --serve for isolated commissioning')
     lab=Lab()
     try:
-        print(json.dumps({'ready':True,'journal':str(lab.path)}),flush=True)
+        health=lab.call('readiness')
+        if health['blockers'] or health['action_blockers']:
+            print(json.dumps({'ready':False,'blockers':health['blockers']+health['action_blockers'],
+                              'journal':str(lab.path)}),flush=True)
+            return
+        print(json.dumps({'ready':True,'journal':str(lab.path),'hardware':health}),flush=True)
         while select.select([sys.stdin],[],[],60)[0]:
             line=sys.stdin.readline()
             if not line:break

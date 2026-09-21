@@ -14,8 +14,9 @@ def capabilities():
                 address_families=['ipv4'], protocols=['tcp','udp'],
                 encoded_actions=['forward','drop','ttl-decrement','snat','dnat','snat-and-dnat','port-translation'],
                 native_nat_layout='ports-then-addresses', wire_nat_layout='addresses-then-ports',
+                session_planning='on-demand acknowledged DP observation via MP controld to CP',
                 nat_packet_qualification=False, production_admission=False,
-                pending=['NAT wire/checksum qualification','trusted applied-policy session feed',
+                pending=['NAT wire/checksum qualification','ordered session lifecycle and invalidation feed',
                          'aggregate/VLAN attachment qualification','hardware aging/counter handoff'])
 
 

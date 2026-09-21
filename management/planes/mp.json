@@ -223,6 +223,13 @@
         "/opt/ffn-platforms/pa5200-management/aggregate_backend.py",
         "apply"
       ]
+    },
+    "fe100-sessions": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/session_backend.py",
+        "status"
+      ]
     }
   },
   "role": "mp"

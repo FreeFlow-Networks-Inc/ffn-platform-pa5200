@@ -148,9 +148,9 @@ jobs:
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
       - name: FE100 NAT encoding, ownership and recovery (no hardware)
-        run: cd fe100 && python3 -m unittest test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions
+        run: cd fe100 && python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions
       - name: central hardware control and FE100 policy barrier
-        run: cd management && python3 -m unittest test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+        run: cd management && python3 -m unittest test_session_backend test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
       - name: all four copper PHY and MAC control paths
         run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify test_copper_identify_backend
       - name: management UI controls

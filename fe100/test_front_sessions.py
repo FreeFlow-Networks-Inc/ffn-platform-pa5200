@@ -2,11 +2,49 @@ import struct
 import unittest
 from ffn_fe100_nexthop import encode_front
 from ffn_fe100_packet_lab import Lab
-from validate_front_sessions import directional_frames, vlan_return_frame, qualifies_front
+from validate_front_sessions import directional_frames, vlan_return_frame, qualifies_front, expected_return
 from validate_physical_sessions import checksum
 
 
 class FrontEncoding(unittest.TestCase):
+    def test_nat_probe_roundtrip_and_independent_checksums_both_directions(self):
+        from ffn_fe100_nat_lab import tuples,rewrite
+        for mode in ('address','port'):
+            for front5 in (False,True):
+                original,translated=tuples(mode,front5)
+                packets=directional_frames('12'*16,4,front5,mode)
+                wanted=expected_return('12'*16,4,front5,mode)
+                for packet,tagged in zip(packets,wanted):
+                    output=tagged[:12]+tagged[16:]
+                    for raw in (packet,output):
+                        self.assertEqual(checksum(raw[14:34]),0)
+                        udp=raw[34:]
+                        self.assertEqual(checksum(raw[26:34]+struct.pack('!BBH',0,17,len(udp))+udp),0)
+                    self.assertEqual(output[22],63)
+                    self.assertEqual(output[26:],rewrite(packet,translated)[26:])
+                    self.assertNotEqual(packet[26:],output[26:])
+                back_in,back_out=tuples(mode,not front5)
+                self.assertEqual(translated['source'],back_in['destination'])
+                self.assertEqual(original['source_port'],back_out['destination_port'])
+
+    def test_nat_lab_return_cleanup_key_tracks_translated_packet(self):
+        # Import with isolated environment, without opening any hardware.
+        import os,subprocess,sys,json
+        from pathlib import Path
+        from ffn_fe100_nat_lab import tuples
+        from ffn_fe100_sessions import key4,validate_entry4
+        for mode in ('address','port'):
+            for front in ('5','13'):
+                env=dict(os.environ,FFN_FE100_FRONT_RETURN=front,FFN_FE100_CROSS='1',FFN_FE100_VLAN_RETURN='1',FFN_FE100_NAT_LAB=mode)
+                result=subprocess.check_output([sys.executable,'-c',
+                    'import ffn_fe100_packet_lab as x,json;print(json.dumps([x.KEY.hex(),x.RETURN_KEY.hex(),x.FORWARD.hex()]))'],
+                    env=env,cwd=Path(__file__).resolve().parent,text=True)
+                key,returned,forward=[bytes.fromhex(x) for x in json.loads(result)]
+                original,translated=tuples(mode,front=='5')
+                def packed(t,zone):return key4(t['source'],t['destination'],t['source_port'],t['destination_port'],17,zone)
+                self.assertEqual(key,packed(original,4094));self.assertEqual(returned,packed(translated,4093))
+                self.assertEqual(validate_entry4(forward),forward)
+
     def test_return_capture_does_not_hide_an_unexpected_dp_copy(self):
         from test_physical_sessions import Qualification
         fixture=Qualification();fixture.setUp()

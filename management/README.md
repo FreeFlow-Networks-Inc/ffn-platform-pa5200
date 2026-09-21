@@ -131,3 +131,7 @@ eight-second observation period. `activation: active` requires a running datapla
 with the accepted revision and no reload error. Otherwise the response reports
 pending, failed, superseded, or unknown. This observation does not roll back a
 saved policy, retry a write, restart forwarding, or change inspection semantics.
+
+Read-only session planning is exposed by `show platform fe100 sessions [json]`.
+See [session planning and isolated NAT qualification](../fe100/SESSION-PLANNING.md)
+for deployment, freshness checks and the remaining hardware admission gates.

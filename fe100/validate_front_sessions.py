@@ -21,8 +21,12 @@ import uuid
 from validate_physical_sessions import frames, DMAC, qualifies, checksum
 
 
-def directional_frames(token,count,front5=False):
+def directional_frames(token,count,front5=False,nat=None):
     result=frames(token,count)
+    if nat:
+        from ffn_fe100_nat_lab import tuples,rewrite
+        original,_=tuples(nat,front5)
+        return [rewrite(f,original) for f in result]
     if not front5:return result
     # Swapping source/destination words preserves IP and UDP one's-complement
     # sums; ports swap as well. Tests verify both resulting checksums.
@@ -39,8 +43,17 @@ def qualifies_front(phases):
     return qualifies(phases) and all(not p.get('unexpected_dp_packets') for p in phases.values())
 
 
-def capture_return(sock,argv,token,count,front5):
-    expected=[vlan_return_frame(f) for f in directional_frames(token,count,front5)]
+def expected_return(token,count,front5=False,nat=None):
+    packets=directional_frames(token,count,front5,nat)
+    if nat:
+        from ffn_fe100_nat_lab import tuples,rewrite
+        _,translated=tuples(nat,front5)
+        packets=[rewrite(f,translated) for f in packets]
+    return [vlan_return_frame(f) for f in packets]
+
+
+def capture_return(sock,argv,token,count,front5,nat=None):
+    expected=expected_return(token,count,front5,nat)
     while select.select([sock],[],[],0)[0]:sock.recv(65536)
     process=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     packets=[];deadline=time.monotonic()+15
@@ -69,11 +82,11 @@ def capture_return(sock,argv,token,count,front5):
         if process.poll() is None:process.kill();process.communicate()
 
 
-def probe(token,count,baseline,front5=False,cross=False):
+def probe(token,count,baseline,front5=False,cross=False,nat=None):
     from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
     validate_trunk('ffnpkt0')
     status=lambda:json.loads(Path('/sys/kernel/debug/ffn_dp_packet_init/status').read_text())
-    before=status();expected=directional_frames(token,count,front5);rewritten=[DMAC+f[6:] for f in expected]
+    before=status();expected=directional_frames(token,count,front5,nat);rewritten=[DMAC+f[6:] for f in expected]
     inject=13 if front5 else 5;ingress=5 if front5 else 13
     found=[]
     with socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as sock:
@@ -108,9 +121,11 @@ def main():
     p.add_argument('--front5',action='store_true')
     p.add_argument('--cross',action='store_true',help='forward to the other front port; capture its DAC return')
     p.add_argument('--vlan-return',action='store_true',help='experimental tagged FE100 return to MP capture')
+    p.add_argument('--nat',choices=('address','port'),help='isolated UDP NAT or port translation qualification')
     p.add_argument('--count',type=int,choices=range(1,5),default=1);a=p.parse_args()
     if a.vlan_return and not a.cross:p.error('--vlan-return requires --cross')
-    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross)));return
+    if a.nat and not a.probe and not (a.cross and a.vlan_return):p.error('--nat requires --cross --vlan-return')
+    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat)));return
     sys.path.insert(0,'/tmp');from bcmd import call
     if subprocess.run(['systemctl','is-active','--quiet','ffn-fabric.service']).returncode==0:
         raise RuntimeError('software fabric must be stopped')
@@ -119,7 +134,8 @@ def main():
             'session_offload_verified':False}
     ingress=5 if a.front5 else 13
     egress=18-ingress if a.cross else ingress
-    report.update(ingress=ingress,egress=egress,distinct_port_direction_verified=False)
+    report.update(ingress=ingress,egress=egress,nat_mode=a.nat,nat_direction_verified=False,
+                  production_nat_qualified=False,distinct_port_direction_verified=False)
     report['scope']=f'front{ingress} -> FE100 -> front{egress} -> DAC -> DP capture'
     if a.vlan_return:report['scope']=f'front{ingress} -> FE100 -> front{egress} VLAN4000 -> DAC -> front{ingress} -> FE100 -> MP capture'
     path=Path('/var/log')/('ffn-front-session-'+str(time.time_ns())+'.json')
@@ -137,7 +153,7 @@ def main():
     ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
     err=tempfile.TemporaryFile(mode='w+')
     cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env LD_LIBRARY_PATH='+ld+
-        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')],
+        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
     def response():
         if not select.select([cp.stdout],[],[],55)[0]:raise TimeoutError('CP timeout')
@@ -159,6 +175,10 @@ def main():
         if not {'group','entry'}<=set(rule):raise RuntimeError('rule IDs missing; inspect BCM journal')
     try:
         report['controller']=response();save()
+        if report['controller'].get('ready') is not True:
+            report['cp_cleanup']=report['controller'] if report['controller'].get('restored') else response()
+            raise RuntimeError('CP hardware prerequisites not satisfied; no packet test was started: '+
+                               '; '.join(report['controller'].get('blockers',[])))
         if a.vlan_return:
             link=json.loads(subprocess.check_output(['ip','-j','link','show','dev','enp8s0f1'],text=True))[0]
             report['capture_link_before']=link;save()
@@ -185,8 +205,9 @@ def main():
             if phase=='baseline':argv+=['--baseline']
             if a.front5:argv+=['--front5']
             if a.cross:argv+=['--cross']
+            if a.nat:argv+=['--nat',a.nat]
             if capture is not None and phase!='baseline':
-                result=capture_return(capture,argv,token,a.count,a.front5)
+                result=capture_return(capture,argv,token,a.count,a.front5,a.nat)
             else:
                 r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
                 if r.returncode:raise RuntimeError('DP probe failed: '+r.stderr[-2000:])
@@ -222,6 +243,7 @@ def main():
                 except Exception as e:report['cleanup_errors'].append(str(e))
         report['session_offload_verified'] &= not bool(report['cleanup_errors'])
         report['distinct_port_direction_verified']=a.cross and report['session_offload_verified']
+        report['nat_direction_verified']=bool(a.nat) and report['session_offload_verified']
         save();print(json.dumps({'verified':report['session_offload_verified'],
             'cleanup_errors':report['cleanup_errors'],'report':str(path)}),flush=True)
     raise SystemExit(0 if report['session_offload_verified'] else 2)
