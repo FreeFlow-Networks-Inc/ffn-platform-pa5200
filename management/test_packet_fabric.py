@@ -10,7 +10,7 @@ import ffn_packet_fabric as fabric
 class FabricTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.path=Path(self.temp.name)/'state.json'
-        self.patches=[patch.object(fabric,'STATE',self.path),patch('ffn_aggregate_hardware.epoch',return_value='epoch')]
+        self.patches=[patch.object(fabric,'STATE',self.path),patch.object(fabric,'LOCK',Path(self.temp.name)/'fabric.lock'),patch('ffn_aggregate_hardware.epoch',return_value='epoch')]
         for p in self.patches:p.start()
         self.queues={24:0,34:0,35:0};self.header=1;self.writes=[];self.fail=False
 
@@ -67,6 +67,15 @@ class FabricTests(unittest.TestCase):
             return self.read(port)
         with self.assertRaisesRegex(RuntimeError,'not verified'):fabric.ensure([23,24],'epoch',read)
         self.assertEqual(json.loads(self.path.read_text())['pending'],dict(operation='queues',port=24))
+
+    def test_wan_recovery_preserves_active_aggregate_and_trunk_queues(self):
+        self.header=11;self.queues={24:8,34:8,35:8,28:0}
+        self.assertTrue(fabric.ensure([1],'epoch',self.read)['ready'])
+        self.assertEqual(self.writes,[(28,1)])
+        self.assertEqual(self.queues,{24:8,34:8,35:8,28:8})
+        self.writes=[]
+        fabric.ensure([1],'epoch',self.read)
+        self.assertEqual(self.writes,[])
 
 
 if __name__=='__main__':unittest.main()

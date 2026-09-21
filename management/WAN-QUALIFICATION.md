@@ -7,13 +7,13 @@ It does not configure addresses, install routes, enable transit forwarding,
 or advertise internet readiness. Other copper ports are outside its scope.
 
 The MP checks the caller's revision and DP boot UUID, requires the packet
-transport to be stopped, and drains existing FE100 sessions. CP journals a
+WAN port to be unowned, and drains existing FE100 sessions. CP journals a
 temporary ingress redirect before enabling it. A CP systemd timer removes
 the owned redirect after 60 seconds even if the MP disappears; failed cleanup
 retries every five seconds. Cleanup checks the transaction token and BCM
 process/boot identity and cannot clear a newer owner's configuration.
 
-The DP holds the existing exclusive fabric lock and sends at most three DHCP
+The DP shares the fabric lock, exclusively reserves port 1, and sends at most three DHCP
 Discover packets over 12 seconds. Matching checks include physical ingress
 source, client MAC, transaction ID, IPv4/UDP validity and DHCP message type.
 Only an Offer is accepted; no Request is sent and no lease is acquired. The
@@ -32,8 +32,12 @@ an upstream VLAN/MAC requirement exists, or transmitted content was rejected.
 Install `ffn_wan_forwarding.py` beside CP's existing `ffn_copper_forwarding.py`
 and `ffn_faceplate.py` under `/usr/local/sbin`. Install `ffn_wan_probe.py` beside
 DP's `ffn_dp_packet_transport.py` and its dependencies under `/usr/local/sbin`.
-CP must have systemd-run and the already commissioned queues/header setup.
-No switch resource allocation or restart is performed by this feature.
+CP must have systemd-run, `ffn_aggregate_hardware.py`, and `ffn_packet_fabric.py`.
+Preparation restores only missing WAN/trunk queues using the shared durable
+allocation journal. It preserves existing eight-queue bundles and refuses
+ambiguous partial allocations or an occupied incompatible trunk header. The
+WAN link is temporarily withdrawn during allocation; aggregate members remain
+owned by their supervisors. No BCM or dataplane restart is performed.
 
 Install `wan_backend.py` in the selected MP management extension alongside
 `policy_guard.py`. The updated `install-control-channel.py` registers the

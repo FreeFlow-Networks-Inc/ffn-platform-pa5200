@@ -42,6 +42,16 @@ def vif_status():
                 'error': 'VIF observation unavailable'}
 
 
+def policy_status():
+    """Observe the actual supervisor/kernel ACK, never infer it from boot."""
+    try:
+        from ffn_security_runtime import status
+        value=status()
+        return {key:value[key] for key in ('available','applied','revision','provider','digest','processing','nat','error') if key in value}
+    except (ImportError,OSError,ValueError,RuntimeError,KeyError):
+        return {'available':False,'applied':False,'error':'Security/NAT acknowledgment unavailable'}
+
+
 def snapshot(nonce):
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     cpu = Path('/proc/cpuinfo').read_text().lower()
@@ -88,7 +98,8 @@ def snapshot(nonce):
             'packet_io': packet_io,
             'packet_initialization': packet_initialization,
             'state': ('wrong-hardware' if not dp_hardware else 'boot-incomplete' if not ready
-                      else 'inspection-active' if runtime else 'ready'),
+                      else 'inspection-active' if runtime and runtime.get('mode')!='off' else 'ready'),
+            'policy_processing':policy_status(),
             'forwarding_verified': False,
             'engines': {'execution': 'OCTEON CPU', 'available': engines,
                         'runtime': runtime, 'hardware_acceleration': False,

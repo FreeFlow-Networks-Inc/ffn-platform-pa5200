@@ -3,11 +3,11 @@ import json
 import shlex
 import uuid
 
-FE100_VIEWS = ('status', 'driver', 'counters', 'policy', 'recovery', 'json')
+FE100_VIEWS = ('status', 'driver', 'counters', 'policy', 'recovery', 'capabilities', 'sessions', 'json')
 
 
 def help_text():
-    return ('show platform fe100 [status|driver|counters|policy|recovery] [json]\n'
+    return ('show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]\n'
             '  Read FE100 observations through MP controld; stale data is labelled.\n'
             '  Bare fe100 or fe100 json preserves the complete JSON report.\n'
             'show platform control | agents | control-events\n'
@@ -51,8 +51,31 @@ def show_fe100(parts, api, token):
     as_json = not tail or tail[-1:] == ['json']
     if tail[-1:] == ['json']: tail = tail[:-1]
     if len(tail) > 1 or (tail and tail[0] not in FE100_VIEWS[:-1]):
-        raise ValueError('usage: show platform fe100 [status|driver|counters|policy|recovery] [json]')
+        raise ValueError('usage: show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]')
     view = tail[0] if tail else None
+    if view=='sessions':
+        response=api('/api/system/planes',method='POST',token=token,
+                     body={'v':1,'id':str(uuid.uuid4()),'resource':'fe100-sessions','action':'status','payload':{}})
+        values=response.get('result') or {}
+        if response.get('ok') is not True or values.get('available') is not True:
+            raise RuntimeError('Current FE100 session observation is unavailable')
+        if as_json:print(json.dumps(values,indent=2))
+        else:
+            print('FE100 session planning: observation only; hardware admission disabled')
+            for line in _lines(values):print('  '+line)
+        return True
+    if view=='capabilities':
+        response=api('/api/system/planes',method='POST',token=token,
+                     body={'v':1,'id':str(uuid.uuid4()),'resource':'fe100-policy','action':'status','payload':{}})
+        result=response.get('result') or {}
+        if response.get('ok') is not True or not isinstance(result.get('capabilities'),dict):
+            raise RuntimeError('Current FE100 capability observation is unavailable')
+        values=result['capabilities']
+        if as_json:print(json.dumps(values,indent=2))
+        else:
+            print('FE100 implementation capabilities (not a hardware activation acknowledgement)')
+            for line in _lines(values):print('  '+line)
+        return True
     states = api('/api/system/control', token=token).get('agents', {})
     result = {}
     for name, state in states.items():

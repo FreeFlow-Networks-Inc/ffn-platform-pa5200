@@ -26,7 +26,7 @@ admission blocked. Failure prevents the running-configuration write. This is
 separate from the immediate controller mutation endpoints described below.
 
 Install `fe100/ffn_fe100_policy_control.py`, `ffn_fe100_policy.py`,
-`ffn_fe100_sessions.py`, and `ffn_fe100_journal.py` in the CP's
+`ffn_fe100_sessions.py`, `ffn_fe100_nat.py`, and `ffn_fe100_journal.py` in the CP's
 `/usr/local/sbin`, alongside the commissioned live-session adapter dependencies.
 The owner stores its journal in `/var/lib/ffn/fe100/policy-sessions.sqlite3`.
 Debian's SQLite library is required; the MP guard pins it to avoid the obsolete
@@ -131,3 +131,7 @@ eight-second observation period. `activation: active` requires a running datapla
 with the accepted revision and no reload error. Otherwise the response reports
 pending, failed, superseded, or unknown. This observation does not roll back a
 saved policy, retry a write, restart forwarding, or change inspection semantics.
+
+Read-only session planning is exposed by `show platform fe100 sessions [json]`.
+See [session planning and isolated NAT qualification](../fe100/SESSION-PLANNING.md)
+for deployment, freshness checks and the remaining hardware admission gates.

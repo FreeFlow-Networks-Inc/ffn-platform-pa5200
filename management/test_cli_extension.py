@@ -6,6 +6,32 @@ from unittest.mock import Mock
 from cli_extension import handle, complete
 
 class CLITests(unittest.TestCase):
+    def test_sessions_use_read_only_control_daemon_resource(self):
+        result=dict(available=True,hardware_admission=False,sessions=[])
+        api=Mock(return_value={'ok':True,'result':result})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            handle('show platform fe100 sessions json',api,'session')
+        self.assertEqual(json.loads(output.getvalue()),result)
+        body=api.call_args.kwargs['body']
+        self.assertEqual((body['resource'],body['action'],body['payload']),('fe100-sessions','status',{}))
+        self.assertEqual(complete('show platform fe100 ','ses'),['sessions'])
+        api.return_value={'ok':False}
+        with self.assertRaises(RuntimeError):handle('show platform fe100 sessions',api,'session')
+    def test_fe100_capabilities_use_daemon_status_and_never_admit(self):
+        capability={'production_admission':False,'nat_packet_qualification':False}
+        api=Mock(return_value={'ok':True,'result':{'capabilities':capability}})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            handle('show platform fe100 capabilities json',api,'session')
+        self.assertEqual(json.loads(output.getvalue()),capability)
+        call=api.call_args
+        self.assertEqual(call.args,('/api/system/planes',))
+        self.assertEqual(call.kwargs['token'],'session')
+        self.assertEqual(call.kwargs['body']['resource'],'fe100-policy')
+        self.assertEqual(call.kwargs['body']['action'],'status')
+        self.assertEqual(call.kwargs['body']['payload'],{})
+        self.assertEqual(complete('show platform fe100 ','cap'),['capabilities'])
+        api.return_value={'ok':False}
+        with self.assertRaises(RuntimeError):handle('show platform fe100 capabilities',api,'session')
     def test_fe100_views_never_mutate_and_preserve_freshness(self):
         api=Mock(return_value={'agents':{'cp':{'role':'cp','fresh':False,'age_seconds':91,
             'last_observation':{'report':{'fe100':{'offload_verified':True,'counters':{'received':10}},

@@ -49,6 +49,16 @@ returned without changing candidate or running XML. Conntrack NEW and DESTROY
 netlink events were verified in a disposable namespace. Native NAT and Security
 packet suites passed on the new kernel; candidate NAT preflight also passed.
 
-The session event collector and coordinated Security/NAT apply provider remain
-unfinished. The successful restart does not commission Security rules or remove
-the production aggregate transit guard.
+The core now supplies a supervised session collector and coordinated
+Security/NAT apply provider. `security_guards()` derives guard exchanges only
+from current acknowledged owners. The core installs them atomically with its
+Security rules and closed lease gate; the aggregate owner's startup guard
+remains default-deny. No LACP restart is required for policy activation.
+
+Native packet tests verified labelled session-end events with NAT tuples and
+both directions' counters, coordinated activation, expiry of the forwarding
+lease, and policy revocation. MP `nat_backend.py` carries the separate Security
+resource through controld's journaled worker. The running configuration was
+initialized under supervision and the candidate passed validation without
+committing its pending changes. Unsupported inspection/identity/log-forwarding
+features remain blocked by the core compiler.

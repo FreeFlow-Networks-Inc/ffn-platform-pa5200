@@ -1,5 +1,12 @@
 import struct
+import json
+from types import SimpleNamespace
 import unittest
+import tempfile
+import fcntl
+from pathlib import Path
+from unittest.mock import patch
+import ffn_wan_probe as wan
 from ffn_wan_probe import discover,offer,checksum,COOKIE
 
 
@@ -13,6 +20,29 @@ def response(mac,xid):
 
 
 class Probe(unittest.TestCase):
+    def test_probe_uses_current_wan_identity_and_never_invents_a_second_mac(self):
+        row={'ifname':'p1','link_type':'ether','address':'02:00:00:00:00:01'}
+        with patch.object(wan.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps([row]))):
+            self.assertEqual(wan.mac_address(),bytes.fromhex('020000000001'))
+        for rows in ([],[row|{'ifname':'other'}],[row|{'address':'01:00:00:00:00:01'}]):
+            with patch.object(wan.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps(rows))):
+                with self.assertRaises(RuntimeError):wan.mac_address()
+
+    def test_port_ownership_coexists_with_lacp_but_not_wan_or_legacy_owner(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fabric=Path(temp)/'fabric';port=Path(temp)/'port'
+            with patch.object(wan,'FABRIC_LOCK',fabric),patch.object(wan,'PORT_LOCK',port):
+                with fabric.open('a') as aggregate:
+                    fcntl.flock(aggregate,fcntl.LOCK_SH|fcntl.LOCK_NB)
+                    with wan.ownership():pass
+                    with port.open('a') as attachment:
+                        fcntl.flock(attachment,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        with self.assertRaises(BlockingIOError):
+                            with wan.ownership():pass
+                    fcntl.flock(aggregate,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    with self.assertRaises(BlockingIOError):
+                        with wan.ownership():pass
+
     def test_discover_is_valid_bootp_and_ipv4(self):
         mac=bytes.fromhex('020000000001');packet=discover(mac,123)
         self.assertEqual(checksum(packet[14:34]),0)

@@ -29,7 +29,10 @@ def encode_native(wire):
     out = bytearray(NATIVE_SIZE)
     out[KEY_OFFSET:KEY_OFFSET+16] = wire[:16]
     out[STATE_OFFSET:STATE_OFFSET+32] = wire[16:48]
-    # NAT, timestamps, host list pointers, v6 tail, and flags stay zero.
+    if int.from_bytes(wire[16:20],'big') & (3<<29):
+        # Native v4 NAT: sport, dport, saddr, daddr (12 bytes). The union's
+        # inactive v6 tail and host-only fields must remain zero on writes.
+        out[NAT_OFFSET:NAT_OFFSET+12]=wire[56:60]+wire[48:56]
     return bytes(out)
 
 
@@ -40,12 +43,12 @@ def decode_native(native, expected_key):
     if native[KEY_OFFSET:KEY_OFFSET+16] != expected_key:
         raise RuntimeError('FE100 lookup returned a different key')
     wire = native[KEY_OFFSET:KEY_OFFSET+16] + native[STATE_OFFSET:STATE_OFFSET+32] + bytes(16)
-    # NAT payload is inactive when state.nat is zero. Live FLOWUPDATE with
-    # zero NAT bytes leaves nonzero inactive NAT data on hash fetch; do not
-    # interpret those bytes as an action. Reject active NAT via the state
-    # flags, and retain every supported forwarding flag in the wire value.
-    if int.from_bytes(native[STATE_OFFSET:STATE_OFFSET+4],'big') & (3 << 29):
-        raise RuntimeError('FE100 entry contains unsupported NAT action')
+    # Inactive NAT storage is unspecified on readback. Active IPv4 NAT has
+    # exactly 12 meaningful bytes; do not adopt the inactive IPv6 union tail.
+    mode=(int.from_bytes(native[STATE_OFFSET:STATE_OFFSET+4],'big')>>29)&3
+    if mode==3:raise RuntimeError('FE100 IP version translation is unsupported')
+    if mode:
+        wire=wire[:48]+native[NAT_OFFSET+4:NAT_OFFSET+12]+native[NAT_OFFSET:NAT_OFFSET+4]+bytes(4)
     return validate_entry(wire)
 
 
@@ -95,6 +98,9 @@ class NativeSessionAdapter:
         if reasons:
             raise RuntimeError('; '.join(reasons))
         wire = validate_entry(wire)
+        if int.from_bytes(wire[16:20],'big') & (3<<29):
+            if self.health().get('nat_offload_verified') is not True:
+                raise RuntimeError('FE100 NAT packet forwarding is not qualified')
         identity = entry4(wire[:16], int.from_bytes(wire[36:40], 'big'))
         # Sysroot pan_fe100_insert_flow_entry sends FLOWADD15 with only key
         # and flow ID. FLOWUPDATE16 carries state/NAT. ADD success must never

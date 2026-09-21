@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single CP owner for WAN1/BCM28 -> BCM24. Never allocates SDK resources."""
+"""Single CP owner for WAN1/BCM28 -> BCM24 and fenced packet preparation."""
 import fcntl
 import json
 import os
@@ -63,8 +63,9 @@ def parse(value):
 
 
 def hardware(mode):
+    from ffn_aggregate_hardware import acquire
     with open('/run/ffn-forward-test.lock','a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        acquire(lock)
         before=SCRIPT.read_bytes() if SCRIPT.exists() else None
         try:
             SCRIPT.write_text(RECIPE.replace('MODE',str(mode)))
@@ -111,6 +112,29 @@ def wire_qualified(proof, current, boot_id):
             and report.get('return_sources',{}).get('28',0)>0)
 
 
+def prepare_fabric(current):
+    # Serialize the common allocation journal with aggregate preparation. Only
+    # the WAN link is withdrawn; existing trunk/aggregate queues are read back.
+    from ffn_aggregate_hardware import FACEPLATE_LOCK, acquire
+    from ffn_packet_fabric import ensure
+    with FACEPLATE_LOCK.open('a') as face:
+        acquire(face)
+        rows={p['port']:p for p in call({'op':'port.list'})['ports']}
+        enabled=rows.get(28,{}).get('enabled')
+        if type(enabled) is not bool:raise RuntimeError('WAN administrative state unavailable')
+        if enabled:call({'op':'port.set','port':28,'enable':False})
+        rows={p['port']:p for p in call({'op':'port.list'})['ports']}
+        if rows.get(28,{}).get('enabled') is not False:raise RuntimeError('WAN withdrawal unverified')
+        result=ensure([1],current)
+        # A failed or ambiguous allocation leaves the link down and its journal
+        # pending. It must never be blindly repeated or made forwarding-ready.
+        if epoch()!=current:raise RuntimeError('BCM owner changed during WAN fabric preparation')
+        if enabled:call({'op':'port.set','port':28,'enable':True})
+        rows={p['port']:p for p in call({'op':'port.list'})['ports']}
+        if rows.get(28,{}).get('enabled') is not enabled:raise RuntimeError('WAN administrative restoration unverified')
+        return result
+
+
 def execute(operation,payload=None):
     payload={} if payload is None else payload
     fields={'status':set(),'prepare':{'revision','token','dp_boot_id'},
@@ -120,8 +144,9 @@ def execute(operation,payload=None):
         raise ValueError('invalid WAN operation or fields')
     for key in ('token','dp_boot_id'):
         if key in payload:canonical_uuid(payload[key])
+    from ffn_aggregate_hardware import acquire
     with LOCK.open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        acquire(lock)
         current=epoch()
         state=json.loads(STATE.read_text()) if STATE.exists() else {'revision':0,'enabled':False,'pending':None}
         proof=json.loads(PROOF.read_text()) if PROOF.exists() else {}
@@ -148,6 +173,7 @@ def execute(operation,payload=None):
         elif operation=='prepare':
             if state.get('pending') or state.get('enabled') or observed['enabled']:
                 raise RuntimeError('WAN path must be stopped and recovered before probing')
+            prepare_fabric(current)
             wanted={'revision':state['revision']+1,'epoch':current,'enabled':False,'pending':'prepare',
                     'token':payload['token'],'dp_boot_id':payload['dp_boot_id'],
                     'deadline':time.monotonic()+50}
@@ -156,6 +182,13 @@ def execute(operation,payload=None):
             observed=hardware(1)
             if epoch()!=current:raise RuntimeError('BCM owner changed during WAN preparation')
             state=wanted|{'enabled':True,'pending':'probe'}
+            atomic(STATE,state)
+        elif operation=='recover' and state.get('epoch')!=current:
+            # After a BCM restart, discard stale intent only after a current
+            # read proves the old redirect is absent. Never touch a new owner.
+            if observed['enabled']:raise RuntimeError('Unowned WAN redirect remains after BCM restart')
+            if epoch()!=current:raise RuntimeError('BCM owner changed during WAN recovery')
+            state={'revision':state['revision']+1,'epoch':current,'enabled':False,'pending':None}
             atomic(STATE,state)
         elif operation!='status':
             if state.get('epoch')!=current:raise RuntimeError('BCM owner changed; stale WAN cleanup refused')
@@ -177,6 +210,7 @@ def execute(operation,payload=None):
                 atomic(PROOF,proof)
         if epoch()!=current:raise RuntimeError('BCM owner changed during WAN observation')
         return {'revision':state['revision'],'config':{'revision':state['revision']},'epoch':current,'state':state,'hardware':observed,
+                'wire_qualified':wire_qualified(proof,current,state.get('dp_boot_id')),
                 'scope':[1],'qualified':proof.get('epoch')==current and proof.get('dhcp_offer_verified') is True,
                 'ready':{'1':bool(state.get('epoch')==current and state.get('enabled') and not state.get('pending')
                      and wire_qualified(proof,current,state.get('dp_boot_id')) and observed=={

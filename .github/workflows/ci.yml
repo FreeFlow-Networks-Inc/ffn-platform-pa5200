@@ -151,14 +151,18 @@ jobs:
         run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport test_trunk_io
       - name: MP VIF observation and configuration ordering
         run: cd management && python3 -m unittest test_vif_backend test_copper_forwarding test_daemon_backend
+      - name: aggregate control lock contention
+        run: cd management && python3 -m unittest test_aggregate_heartbeat
       - name: WAN qualification lifecycle and DHCP wire validation
         run: |
           cd management && python3 -m unittest test_wan_forwarding test_wan_backend
           cd ../octeon/debian && python3 test_wan_probe.py
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+      - name: FE100 NAT encoding, ownership and recovery (no hardware)
+        run: cd fe100 && python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions test_warm test_ddr_diagnostics test_bcm_lab
       - name: central hardware control and FE100 policy barrier
-        run: cd management && python3 -m unittest test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+        run: cd management && python3 -m unittest test_session_backend test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
       - name: all four copper PHY and MAC control paths
         run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify test_copper_identify_backend
       - name: management UI controls
@@ -220,6 +224,12 @@ jobs:
           make -s vsys-test
           make -s oct-test
           make -s oct3-test
+
+      - name: FE100 diagnostic register scope (no hardware)
+        working-directory: fe100
+        run: |
+          gcc -O2 -Wall -Wextra -Werror -pthread test_flow_memory_mmio.c -o /tmp/ffn-fe100-mmio-test
+          /tmp/ffn-fe100-mmio-test
 
       # qemu-user-static installs the binary as qemu-mips64-static; the
       # Makefile calls qemu-mips64. Linked rather than the Makefile edited, so

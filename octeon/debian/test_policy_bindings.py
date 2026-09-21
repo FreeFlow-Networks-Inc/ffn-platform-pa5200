@@ -51,5 +51,14 @@ class BindingTests(unittest.TestCase):
         for link in self.links.values():link['ifalias']=link['ifalias'].replace(self.token,self.row['token'])
         self.assertIn('ae7.123',self.discover())
 
+    def test_only_acknowledged_parent_gets_a_conditional_guard(self):
+        with patch.object(binding,'discover',return_value={'ae7.123':'ae7.123'}):
+            guards=binding.security_guards(self.links)
+        self.assertEqual(set(guards),{'ffn_aggregate_ae7'})
+        self.assertIn('"ae7.*"',guards['ffn_aggregate_ae7'])
+        self.assertEqual(guards['ffn_aggregate_ae7'].count('meta mark & 0x80000000 == 0 counter drop'),2)
+        with patch.object(binding,'discover',return_value={}):
+            self.assertEqual(binding.security_guards(self.links),{})
+
 
 if __name__=='__main__':unittest.main()

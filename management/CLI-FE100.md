@@ -12,6 +12,7 @@ show platform fe100 driver
 show platform fe100 counters
 show platform fe100 policy
 show platform fe100 recovery
+show platform fe100 capabilities
 show platform fe100 json
 help platform
 ```
@@ -22,6 +23,12 @@ freshness and observation age. Historical observations are explicitly labelled;
 the summary does not present stale acknowledgements as current verification.
 Missing observations are unknown, rather than zero counters or a successful
 drain. There is no CLI activation/reset shortcut for unqualified hardware.
+
+`capabilities` requests a current read-only CP policy-controller observation
+through MP controld. It distinguishes implemented flow/NAT codecs from packet
+qualification and production admission, and reports the remaining prerequisites.
+An unreachable controller or missing capability report returns unavailable;
+installed code is never represented as verified hardware forwarding.
 
 Append `json` to a specific view for structured output, for example
 `show platform fe100 recovery json`. The original bare `show platform fe100`

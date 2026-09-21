@@ -228,7 +228,10 @@ def serve(intent):
             atomic(intent_path,dict(intent,network_generation=applied_revision))
             if not intent['control_only']:
                 with open('/run/ffn-network.lock','a') as lock:
-                    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                    # This is a shared configuration transaction lock, not
+                    # aggregate ownership. Wait for a policy apply instead of
+                    # crashing/restarting the owner on ordinary contention.
+                    fcntl.flock(lock,fcntl.LOCK_EX)
                     if any(n['ifname']==name for n in json.loads(ip('-j','link'))):raise ValueError('Aggregate netdevice already exists; refusing adoption')
                     ip('tuntap','add','dev',name,'mode','tap');created=True
                     ip('link','set',name,'alias','ffn-aggregate:'+intent['token'])

@@ -23,6 +23,24 @@ def rpc(resource, action='status', payload=None):
     return response['result']
 
 
+def validate_physical_options(entry):
+    """Accept explicit off defaults without claiming an unsupported feature."""
+    allowed={'comment','link-state','link-speed','link-duplex','layer3','lldp'}
+    unknown=[child.tag for child in entry if child.tag not in allowed]
+    l3=entry.find('layer3')
+    if l3 is not None:unknown+=['layer3/'+child.tag for child in l3 if child.tag not in ('ip','mtu','interface-management-profile')]
+    if unknown:raise ValueError('Unsupported physical interface options: '+', '.join(unknown))
+    nodes=entry.findall('lldp')
+    if len(nodes)>1:raise ValueError('Duplicate physical-interface LLDP configuration')
+    if nodes:
+        node=nodes[0]
+        if (node.attrib or len(node.findall('enable'))>1 or any(child.tag!='enable' or child.attrib or len(child) for child in node)):
+            raise ValueError('Unsupported physical-interface LLDP options')
+        value=node.findtext('enable','no').strip()
+        if value=='yes':raise ValueError('Physical-interface LLDP transmit is not implemented by this backend')
+        if value!='no':raise ValueError('LLDP enable must be yes or no')
+
+
 class PlatformApplier:
     def __init__(self, config): self.config=config
 
@@ -89,9 +107,9 @@ class PlatformApplier:
             if not observed or not observed['available']:
                 status.fail(name,'pa5200','Faceplate port unavailable');continue
             l3=entry.find('layer3')
-            unsupported=[child.tag for child in entry if child.tag not in ('comment','link-state','link-speed','link-duplex','layer3')]
-            if unsupported or (l3 is not None and any(c.tag not in ('ip','mtu','interface-management-profile') for c in l3)):
-                status.fail(name,'pa5200','Interface mode or option is not implemented by this config adapter');continue
+            try:validate_physical_options(entry)
+            except ValueError as error:
+                status.fail(name,'pa5200',str(error));continue
             # No configured mode means physical admin-down, even if a caller
             # supplied link-state up/auto. Selecting a mode is required first.
             enabled=l3 is not None and state!='down'
@@ -130,10 +148,10 @@ class PlatformApplier:
             name=entry.get('name','aggregate')
             for unit in entry.findall('./layer3/units/entry')+entry.findall('./layer2/units/entry'):
                 child=aggregate_units.get(unit.get('name'),{})
-                if child.get('applied'):status.ok(unit.get('name'),None,{'tag':child['tag']},'pa5200','VLAN local attachment and management profile active; transit policy remains default-deny')
+                if child.get('applied'):status.ok(unit.get('name'),None,{'tag':child['tag']},'pa5200','VLAN local attachment and management profile active; transit requires acknowledged Security policy')
                 else:status.fail(unit.get('name',name),'pa5200',child.get('reason','Aggregate VLAN attachment is awaiting dataplane acknowledgement'))
             if name in aggregate_applied:
-                message='Aggregate LACP active; parent has no network attachment' if not aggregate_applied[name]['network'].get('enabled',True) else 'Aggregate packet attachment active; transit policy remains default-deny'
+                message='Aggregate LACP active; parent has no network attachment' if not aggregate_applied[name]['network'].get('enabled',True) else 'Aggregate packet attachment active; transit requires acknowledged Security policy'
                 status.ok(name,None,{'distributing':aggregate_applied[name]['distributing']},'pa5200',message)
             else:status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))
         if (patches.get('p1',{}).get('addresses') and 1 not in network.get('backend',{}).get('ports',[])):

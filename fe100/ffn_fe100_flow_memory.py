@@ -55,11 +55,15 @@ def pll_override(raw):
 
 
 class FlowMemory:
-    def __init__(self, block, apply=False, diagnostic=False):
+    def __init__(self, block, apply=False, diagnostic=False, lock_fd=None):
         from ffn_fe100 import bar0_base_and_size, memory_decode_on
         self.name = block
         self.base, self.offset, self.pll_type, self.channels, self.monitor = BLOCKS[block]
-        self.lock = open('/run/ffn-fe100-tables.lock', 'a')
+        if lock_fd is not None:
+            if os.readlink('/proc/self/fd/'+str(lock_fd))!='/run/ffn-fe100-tables.lock':
+                raise RuntimeError('invalid inherited table lock')
+            self.lock=os.fdopen(os.dup(lock_fd),'a')
+        else:self.lock = open('/run/ffn-fe100-tables.lock', 'a')
         fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if hashlib.sha256(Path(LIB).read_bytes()).hexdigest() != SHA:
             raise RuntimeError('owner ABI changed')
@@ -67,7 +71,7 @@ class FlowMemory:
         if size != 0x100000 or not memory_decode_on():
             raise RuntimeError('FE100 BAR unavailable')
         self.trace = '/var/lib/ffn/fe100/'+block+'-memory-'+str(time.time_ns())+'.txt'
-        self.shim = C.CDLL('/usr/local/lib/ffn/libffn-fe100-flow-memory.so',
+        self.shim = C.CDLL('/usr/local/lib/ffn/'+('libffn-fe100-diagnostic.so' if diagnostic else 'libffn-fe100-flow-memory.so'),
                            mode=os.RTLD_GLOBAL | os.RTLD_NOW)
         self.shim.ffn_fe100_open.argtypes = [C.c_uint64, C.c_char_p, C.c_int]
         if self.shim.ffn_fe100_select_block(self.base):

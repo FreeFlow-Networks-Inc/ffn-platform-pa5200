@@ -9,6 +9,15 @@ from ffn_fe100_journal import Journal
 
 
 class Recovery(unittest.TestCase):
+    def test_capabilities_do_not_activate_or_open_hardware(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(control,'ROOT',Path(directory)):
+            result=control.control('status',{})
+            self.assertFalse(result['admission_enabled'])
+            self.assertFalse(result['capabilities']['production_admission'])
+            self.assertFalse(result['capabilities']['nat_packet_qualification'])
+            self.assertIn('snat-and-dnat',result['capabilities']['encoded_actions'])
+            self.assertEqual(result['sessions'],0)
+
     def test_empty_recovery_is_idempotent_and_opens_no_hardware(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(control, 'ROOT', Path(directory)):
             first = control.control('replace', {'revision': 0, 'digest': 'a'*64})

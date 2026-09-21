@@ -25,7 +25,7 @@ static int session_mode;
 static int diagnostic_mode;
 int ffn_flow_diagnostic_mode(void)
 {
-    if (regs || (block_base != 0xa8000 && block_base != 0xb0000)) return -1;
+    if (regs || (block_base != 0x98000 && block_base != 0xa8000 && block_base != 0xb0000)) return -1;
     diagnostic_mode = 1;
     return 0;
 }
@@ -51,7 +51,7 @@ int fe100_reg_rd(uint32_t dev, uint32_t off, uint32_t *value)
 int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
 {
     if (diagnostic_mode) {
-        uint32_t command = block_base + (block_base == 0xa8000 ? 0x320 : 0x500);
+        uint32_t command = block_base + (block_base == 0xb0000 ? 0x500 : 0x320);
         /* DPHY read only. IA address selection does not write memory/PHY state.
          * Targets 0x400/0x800 select the two channels (sysroot dphy_reg_rd). */
         int allowed = (off == command+4 && value <= 0xffff) ||

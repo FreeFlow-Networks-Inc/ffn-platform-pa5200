@@ -12,6 +12,11 @@ def execute(resource,action,payload):
         if action=='status' and payload:raise ValueError('status takes no payload')
         if action!='status' and (set(payload)!={'revision','plan'} or type(payload['revision']) is not int):raise ValueError('NAT requires revision and plan')
         command='python3 /usr/local/lib/ffn/ffn_nat_runtime.py '+action
+    elif resource=='security' and action in ('status','validate','apply'):
+        if action=='status' and payload:raise ValueError('status takes no payload')
+        if action!='status' and (set(payload)!={'revision','xml'} or type(payload['revision']) is not int or not isinstance(payload['xml'],str)):
+            raise ValueError('Security requires revision and policy XML')
+        command='python3 /usr/local/lib/ffn/ffn_security_runtime.py '+action
     else:raise ValueError('Unsupported dataplane resource')
     if action=='apply':
         # Hardware flows must not bypass a new software NAT decision.
@@ -33,7 +38,7 @@ def execute(resource,action,payload):
 
 if __name__=='__main__':
     try:
-        raw=sys.stdin.buffer.read(65537)
-        if len(raw)>65536:raise ValueError('Dataplane request exceeds 64 KiB')
+        raw=sys.stdin.buffer.read(262145)
+        if len(raw)>262144:raise ValueError('Dataplane request exceeds 256 KiB')
         print(json.dumps(execute(sys.argv[1],sys.argv[2],json.loads(raw) if raw.strip() else {})))
     except ValueError as error:print(json.dumps({'error':str(error)[:1024]}));raise SystemExit(2)

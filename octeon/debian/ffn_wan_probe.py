@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Bounded DHCP DISCOVER/OFFER wire qualification. Does not acquire a lease."""
 import argparse
+from contextlib import contextmanager
 from collections import Counter
 import fcntl
-import hashlib
 import ipaddress
 import json
 from pathlib import Path
@@ -11,17 +11,37 @@ import secrets
 import select
 import socket
 import struct
+import subprocess
 import time
 from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
 
 FRONT={1:28}
 COOKIE=b'\x63\x82\x53\x63'
+FABRIC_LOCK=Path('/run/ffn-fabric.lock')
+PORT_LOCK=Path('/run/ffn-aggregate-port-1.lock')
 
 
-def mac_address(name='fv1'):
-    seed=Path('/etc/machine-id').read_text().strip()
-    if len(seed)!=32:raise RuntimeError('stable DP machine ID required')
-    return b'\x02'+hashlib.sha256((seed+':'+name).encode()).digest()[:5]
+@contextmanager
+def ownership():
+    # Aggregate owners share the trunk but have disjoint ingress/egress ports.
+    # The legacy whole-fabric owner and a WAN attachment still exclude a probe.
+    with FABRIC_LOCK.open('a') as fabric, PORT_LOCK.open('a') as port:
+        fcntl.flock(fabric,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        fcntl.flock(port,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        yield
+
+
+def mac_address():
+    # A modem may admit only one learned CPE MAC. Qualification must use the
+    # same identity as the subsequent attachment, never a probe-only MAC.
+    result=subprocess.run(['ip','-n','ffn-data','-j','link','show','dev','p1'],
+                          check=True,capture_output=True,text=True,timeout=5)
+    rows=json.loads(result.stdout)
+    if len(rows)!=1 or rows[0].get('ifname')!='p1' or rows[0].get('link_type')!='ether':
+        raise RuntimeError('WAN interface identity unavailable')
+    mac=bytes.fromhex(rows[0]['address'].replace(':',''))
+    if len(mac)!=6 or mac==bytes(6) or mac[0]&1:raise RuntimeError('Invalid WAN interface MAC')
+    return mac
 
 
 def checksum(value):
@@ -71,8 +91,7 @@ def probe(seconds=12):
     validate_trunk('ffnpkt0')
     mac=mac_address();xid=secrets.randbits(32);sent=0;matched=None
     counters=Counter();sources=Counter();protocols=Counter()
-    with open('/run/ffn-fabric.lock','a') as lock, socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as conn:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with ownership(), socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as conn:
         conn.bind(('ffnpkt0',0));conn.setblocking(False)
         begin=time.monotonic();next_send=begin
         while time.monotonic()<begin+seconds:
@@ -104,9 +123,9 @@ def probe(seconds=12):
 def status():
     validate_trunk('ffnpkt0')
     available=True
-    with open('/run/ffn-fabric.lock','a') as lock:
-        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:available=False
+    try:
+        with ownership():pass
+    except BlockingIOError:available=False
     return {'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
             'fabric_available':available,'port':1,'bcm_port':28}
 

@@ -24,6 +24,14 @@ Stale observations are labelled historical and their old counters are hidden.
 FFN-CLI offers `show platform control`, `agents`, `fe100`, and `control-events`.
 These CLI views use the authenticated API, with the same administrator check.
 
+The DP nonce handshake also includes `policy_processing`: the core provider's
+current kernel/collector/interface acknowledgment, policy generation, NAT
+generation and initial-packet counters. Boot readiness alone does not imply
+that Security or NAT is enforcing. OCTEON kernel processing is reported
+separately from hardware offload; rule matches alone do not prove successful
+reverse NAT or upstream connectivity. An inspection runtime in `off` mode
+does not report `inspection-active`.
+
 The journal worker adds these resources:
 
 - `fe100-policy`: status, validate and apply. Apply requires the current revision
