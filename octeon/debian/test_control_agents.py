@@ -93,6 +93,20 @@ class Agents(unittest.TestCase):
         self.assertNotIn('registers',report)
         self.assertIn('--samples',process.await_args.args[0])
 
+    def test_recovery_freshness_boot_and_generation_fences(self):
+        report = {'schema': 1, 'cp_boot_id': 'boot', 'monotonic_time': 100,
+                  'outcome': 'drained', 'revision': 5, 'sessions': 0}
+        def observed(value=report, now=105, revision=5, count=0, phase='blocked'):
+            with patch.object(cp.Path, 'read_text', side_effect=[json.dumps(value), 'boot']), \
+                    patch.object(cp.time, 'monotonic', return_value=now):
+                return cp.policy_recovery_status('/unused', revision, count, phase)
+        self.assertTrue(observed()['drain_verified'])
+        for value in [report | {'cp_boot_id': 'old'}, report | {'outcome': 'busy'},
+                      report | {'revision': 4}, report | {'sessions': 1}]:
+            self.assertFalse(observed(value)['drain_verified'])
+        for args in [{'now': 200}, {'now': 99}, {'count': 1}, {'phase': 'draining'}]:
+            self.assertFalse(observed(**args)['drain_verified'])
+
     def test_cp_partial_observer_failure_preserves_other_state(self):
         def read(path):
             return 'OCTEON' if path.as_posix()=='/proc/cpuinfo' else 'boot'

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CP policy barrier: status and drain only; no public flow-admission API."""
+"""CP policy barrier and recovery: no public flow-admission API."""
 import json
 from pathlib import Path
 import sys
@@ -11,8 +11,9 @@ ROOT=Path('/var/lib/ffn/fe100')
 
 
 def control(operation,payload):
-    if operation not in ('status','replace'):raise ValueError('unsupported policy operation')
-    if (operation=='status' and payload) or (operation=='replace' and
+    if operation not in ('status','replace','reconcile'):raise ValueError('unsupported policy operation')
+    if not isinstance(payload,dict):raise ValueError('policy payload must be an object')
+    if (operation in ('status','reconcile') and payload) or (operation=='replace' and
             set(payload)!={'revision','digest'}):raise ValueError('invalid policy barrier fields')
     ROOT.mkdir(parents=True,exist_ok=True)
     journal=Journal(ROOT/'policy-sessions.sqlite3')
@@ -39,6 +40,7 @@ def control(operation,payload):
             def readiness(self):return ['general production admission is not qualified']
         owner=PolicyOwner(SessionManager(Backend(),journal),load,save,lambda:{},lambda:False)
         if operation=='replace':return owner.replace(payload['revision'],payload['digest'])
+        if operation=='reconcile':return owner.reconcile()
         return owner.status()
     finally:journal.close()
 

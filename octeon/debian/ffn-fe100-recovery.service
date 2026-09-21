@@ -1,0 +1,17 @@
+[Unit]
+Description=Recover stale FFN FE100 policy sessions
+ConditionPathExists=/usr/local/sbin/ffn_fe100_policy_control.py
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0
+Environment=LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_fe100_recovery.py
+TimeoutStartSec=45
+TimeoutStopSec=5
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

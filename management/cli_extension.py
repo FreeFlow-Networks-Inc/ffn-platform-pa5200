@@ -1,12 +1,101 @@
-"""Authenticated FFN-CLI commands; execution remains in the MP control daemon."""
+"""FFN-CLI commands using its request adapter; console execution is local controld IPC."""
 import json
 import shlex
 import uuid
 
+FE100_VIEWS = ('status', 'driver', 'counters', 'policy', 'recovery', 'json')
+
+
+def help_text():
+    return ('show platform fe100 [status|driver|counters|policy|recovery] [json]\n'
+            '  Read FE100 observations through MP controld; stale data is labelled.\n'
+            '  Bare fe100 or fe100 json preserves the complete JSON report.\n'
+            'show platform control | agents | control-events\n'
+            '  Inspect plane connectivity and recent control events.')
+
+
+def complete(prefix, text):
+    """Local command vocabulary only; completion never requests hardware data."""
+    try: parts = shlex.split(prefix)
+    except ValueError: return []
+    if parts == ['show']: choices = ['platform']
+    elif parts == ['show', 'platform']:
+        choices = ['fe100', 'control', 'agents', 'control-events', 'aggregates', 'mp-interfaces',
+                   'wan-path', 'status', 'bcm', 'phy', 'faceplate', 'dataplane', 'network',
+                   'inspection', 'overlay', 'chassis', 'thermal', 'fabric']
+    elif parts == ['show', 'platform', 'fe100']: choices = list(FE100_VIEWS)
+    elif len(parts) == 4 and parts[:3] == ['show', 'platform', 'fe100']:
+        choices = ['json'] if parts[3] in FE100_VIEWS[:-1] else []
+    elif parts in (['help'], ['?']): choices = ['platform']
+    elif parts in (['help', 'platform'], ['?', 'platform']): choices = ['fe100']
+    else: return None
+    return [value for value in choices if value.startswith(text)]
+
+
+def _lines(value, prefix=''):
+    if isinstance(value, dict):
+        for key, child in value.items(): yield from _lines(child, prefix + str(key) + '.')
+    elif isinstance(value, list):
+        for index, child in enumerate(value): yield from _lines(child, prefix + str(index) + '.')
+        if not value: yield prefix.rstrip('.') + ': none'
+    else:
+        rendered = 'unknown' if value is None else str(value)
+        # Agent errors/names are data, never terminal control sequences.
+        rendered = ''.join(c if c.isprintable() else ' ' for c in rendered)
+        label = ''.join(c if c.isprintable() else ' ' for c in prefix.rstrip('.'))
+        yield label + ': ' + rendered
+
+
+def show_fe100(parts, api, token):
+    tail = parts[3:]
+    as_json = not tail or tail[-1:] == ['json']
+    if tail[-1:] == ['json']: tail = tail[:-1]
+    if len(tail) > 1 or (tail and tail[0] not in FE100_VIEWS[:-1]):
+        raise ValueError('usage: show platform fe100 [status|driver|counters|policy|recovery] [json]')
+    view = tail[0] if tail else None
+    states = api('/api/system/control', token=token).get('agents', {})
+    result = {}
+    for name, state in states.items():
+        if state.get('role') != 'cp': continue
+        report = (state.get('last_observation') or {}).get('report') or {}
+        driver, fe100, policy = (report.get(key) or {} for key in ('fe100_driver','fe100','policy'))
+        fresh = state.get('fresh') is True
+        recovery = policy.get('recovery') or {}
+        details = {'fe100': report.get('fe100'), 'driver': report.get('fe100_driver'),
+                   'policy': report.get('policy')}
+        if view == 'status':
+            details = {'status': {
+                'register_access': 'verified' if fresh and driver.get('userspace',{}).get('read_verified') is True else 'unverified',
+                'policy_phase': policy.get('configured_phase'),
+                'policy_revision': policy.get('configured_revision'),
+                'journaled_sessions': policy.get('journaled_sessions'),
+                'recovery_outcome': recovery.get('outcome'),
+                'drain_verified': fresh and recovery.get('drain_verified') is True,
+                'hardware_activation_verified': fresh and policy.get('hardware_activation_verified') is True,
+                'forwarding_verified': fresh and fe100.get('offload_verified') is True}}
+        elif view:
+            details = {view: {'driver': report.get('fe100_driver'), 'policy': report.get('policy'),
+                             'counters': fe100.get('counters'), 'recovery': policy.get('recovery')}[view]}
+        result[name] = {'fresh': fresh, 'age_seconds': state.get('age_seconds'), **details}
+    if as_json:
+        print(json.dumps(result, indent=2))
+    elif not result:
+        print('FE100 observations unavailable: no control-plane agent reported.')
+    else:
+        for name, observation in result.items():
+            print('FE100 ' + ''.join(c if c.isprintable() else ' ' for c in name))
+            if not observation['fresh']: print('STALE / UNAVAILABLE: values below are historical observations.')
+            for line in _lines(observation): print('  ' + line)
+    return True
+
 
 def handle(line, api, token):
     parts=shlex.split(line)
+    if parts in (['help','platform'], ['?','platform'], ['help','platform','fe100'], ['?','platform','fe100']):
+        print(help_text()); return True
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
+    if parts[:3] == ['show','platform','fe100']:
+        return show_fe100(parts, api, token)
     if parts==['show','platform','mp-interfaces']:
         print(json.dumps(api('/api/system/mp-interfaces',token=token),indent=2));return True
     if parts[:3]==['request','platform','mp-interface'] and len(parts)==5:
@@ -48,12 +137,8 @@ def handle(line, api, token):
         print(json.dumps(result,indent=2));return True
     if parts[:2]==['show','platform'] and len(parts) in (2,3):
         resource=parts[2] if len(parts)==3 else 'status'
-        if resource in ('control', 'agents', 'fe100', 'control-events'):
+        if resource in ('control', 'agents', 'control-events'):
             result=api('/api/system/control' + ('/events' if resource=='control-events' else ''),token=token)
-            if resource=='fe100':
-                result={name: {'fresh': state['fresh'], 'age_seconds':state['age_seconds'],
-                    'fe100':(state.get('last_observation') or {}).get('report',{}).get('fe100')}
-                    for name,state in result['agents'].items() if state['role']=='cp'}
             print(json.dumps(result,indent=2))
             return True
         if resource not in ('status','bcm','phy','faceplate','dataplane','network','inspection','overlay','chassis','thermal','fabric'):
