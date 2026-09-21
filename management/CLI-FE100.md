@@ -1,7 +1,9 @@
 # FE100 operational CLI
 
-The PA5200 extension reads CP observations through the authenticated MP
-`/api/system/control` endpoint. These commands do not modify configuration or
+The PA5200 extension reads CP observations through MP controld using the
+shared management operation `/api/system/control`. The console transport is
+local Unix IPC; this operation name does not require the WebUI or HTTPS.
+These commands do not modify configuration or
 program hardware:
 
 ```text
@@ -38,13 +40,13 @@ Command parsing precedes platform dispatch. Invalid syntax or a failed
 platform request returns an error without terminating the CLI. Tab completion
 uses the extension's command vocabulary without issuing API requests.
 
-The API endpoint is resolved from `FFN_CLI_API`, then the `api_url` property in
-`/etc/ffn-ngfw/cli.json`. If neither exists, the previous local port 8443
-default remains for existing images. Configure the file to match the deployed
-manager listener; it is appliance configuration, not a hardcoded platform
-address. Only an HTTP(S) base URL is accepted, without credentials, query
-parameters, or a fragment. A malformed file fails explicitly. The file needs
-to be readable by CLI users and writable only by the administrator.
+Install the core's `image/install-console-ipc.py` for daemon transport and
+`image/install-console-auth.py` for database-backed SSH accounts. Console
+identity comes from the kernel UID of the authenticated SSH session. Roles
+come from the FFN administrator database on every command; root has full
+control access. This installer preserves that transport when updating
+platform help and completion. Old images without the core migration retain
+their configurable HTTP endpoint until migrated.
 
 ## Validation
 

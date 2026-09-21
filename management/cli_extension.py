@@ -1,4 +1,4 @@
-"""Authenticated FFN-CLI commands; execution remains in the MP control daemon."""
+"""FFN-CLI commands using its request adapter; console execution is local controld IPC."""
 import json
 import shlex
 import uuid

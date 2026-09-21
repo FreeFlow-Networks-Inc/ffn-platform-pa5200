@@ -80,7 +80,7 @@ def once(source, old, new):
 
 
 def merge(source):
-    if 'def _cli_api_endpoint():' not in source:
+    if 'def _cli_api_endpoint():' not in source and '# FFN console transport:' not in source:
         source = once(source, 'FFN_API = os.getenv("FFN_CLI_API", "https://127.0.0.1:8443")\n', ENDPOINT)
     if '# FFN platform CLI v2:' in source:
         if not all(block in source for block in (LOADER, DISPATCH, COMPLETION)):
