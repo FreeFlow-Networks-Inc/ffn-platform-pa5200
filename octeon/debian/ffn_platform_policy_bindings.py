@@ -17,6 +17,24 @@ def trusted(path):
     return st.st_uid==0 and not st.st_mode & 0o022
 
 
+def security_guards(links):
+    """Only current acknowledged owners may exchange their default-deny guard.
+
+    The core replaces these tables atomically with Security/NAT and its closed
+    lease gate. Aggregate restart still installs the original default-deny guard.
+    """
+    active=discover(links)
+    parents=sorted({name.split('.')[0] for name in active})
+    result={}
+    for parent in parents:
+        table='ffn_aggregate_'+parent
+        result[table]=('table inet '+table+' {\n chain forward {\n'
+            ' type filter hook forward priority -250; policy accept;\n'
+            ' iifname { "'+parent+'", "'+parent+'.*" } meta mark & 0x80000000 == 0 counter drop;\n'
+            ' oifname { "'+parent+'", "'+parent+'.*" } meta mark & 0x80000000 == 0 counter drop;\n }\n}\n')
+    return result
+
+
 def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
     now=time.monotonic() if now is None else now
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip()

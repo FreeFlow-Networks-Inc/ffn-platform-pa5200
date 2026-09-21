@@ -50,7 +50,7 @@ def main():
                                        for a in ('status','validate','apply')}
     worker['commands']['wan-path']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'wan_backend.py'),a]
                                    for a in ('status','validate','apply')}
-    for resource,actions in [('nat',('status','validate','apply')),('dataplane-tools',('status',))]:
+    for resource,actions in [('nat',('status','validate','apply')),('security',('status','validate','apply')),('dataplane-tools',('status',))]:
         worker['commands'][resource]={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'nat_backend.py'),resource,a] for a in actions}
     backup=Path('/var/backups/ffn/control-channel-'+str(time.time_ns()))
     def write(path,data,mode=0o644):

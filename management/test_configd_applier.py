@@ -13,9 +13,18 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_explicit_lldp_off_is_supported_but_enabled_and_unknown_options_are_not(self):
+        from xml.etree import ElementTree as ET
+        for body in ('','<lldp/>','<lldp><enable>no</enable></lldp>'):
+            configd_applier.validate_physical_options(ET.fromstring('<entry><layer3/>'+body+'</entry>'))
+        for body in ('<lldp><enable>yes</enable></lldp>','<lldp><profile>custom</profile></lldp>',
+                     '<lldp><enable>invalid</enable></lldp>','<lldp><enable>no</enable><enable>yes</enable></lldp>',
+                     '<lldp/><lldp/>','<layer3><unexpected/></layer3>','<layer2/>'):
+            with self.assertRaises(ValueError):configd_applier.validate_physical_options(ET.fromstring('<entry>'+body+'</entry>'))
+
     def test_none_and_omitted_front_ports_disable_data_and_physical_link(self):
         xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>
-        <entry name="ethernet1/1"><layer3><ip><entry name="192.0.2.1/24"/></ip></layer3></entry>
+        <entry name="ethernet1/1"><layer3><ip><entry name="192.0.2.1/24"/></ip></layer3><lldp><enable>no</enable></lldp></entry>
         <entry name="ethernet1/2"><comment>Unconfigured</comment><link-state>up</link-state></entry>
         <entry name="ethernet1/24"/>
         </ethernet></interface></network></entry></devices></config>'''
