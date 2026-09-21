@@ -14,6 +14,7 @@ from pathlib import Path
 import struct
 import sys
 from ffn_fe100_clocks import LIB, SHA
+from ffn_fe100_config import load_profile, native_configuration
 from ffn_fe100_session_adapter import CtypesOwnerEndpoint
 
 ROOT = Path('/var/lib/ffn/fe100')
@@ -120,7 +121,7 @@ def flu_record(root, boot):
 
 
 class LiveSessions:
-    def __init__(self, writable=False, lock_fd=None):
+    def __init__(self, writable=False, lock_fd=None, commissioning=False):
         from ffn_fe100 import bar0_base_and_size, memory_decode_on
         if sys.byteorder != 'big' or C.sizeof(C.c_void_p) != 8:
             raise RuntimeError('requires CP MIPS64 big-endian ABI')
@@ -150,10 +151,12 @@ class LiveSessions:
         for r in (*HEALTH,*ACTION_HEALTH,0x4080c,0x486c8): self.shim.ffn_fe100_allow_readonly(r)
         self.shim.fe100_reg_rd.argtypes = [C.c_uint32,C.c_uint32,C.POINTER(C.c_uint32)]
         self.writable = writable
+        self.commissioning = commissioning
         self.endpoint = None
         if writable:
             state = self.status()
-            if state['blockers']: raise RuntimeError('; '.join(state['blockers']))
+            reasons=state['commissioning_blockers'] if commissioning else state['blockers']
+            if reasons: raise RuntimeError('; '.join(reasons))
             self.lib = C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
             self.cfg = C.create_string_buffer(native_configuration(bytes((C.c_char*2812).in_dll(self.lib,'fe100_cfg1')),load_profile()),2812)
             # Exact ELF DWARF: eight fe100_dev_t objects, stride272, config
@@ -176,10 +179,17 @@ class LiveSessions:
         blockers = prerequisites(values,boot,journals)
         if flu_record(ROOT,boot) is None:
             blockers.append('FLU lacks verified initialization in this boot')
+        actions=action_prerequisites(values,ROOT,boot)
+        warm=False
+        if self.commissioning:
+            from ffn_fe100_warm import grant_valid
+            warm=grant_valid(ROOT,boot,values)
         return {'owner_sha256':SHA,'device':0,'initialized':not blockers,
                 'exclusive':True,'bounded':True,'writable':self.writable,
                 'cp_boot_id':boot,'blockers':blockers,
-                'action_blockers':action_prerequisites(values,ROOT,boot),
+                'action_blockers':actions,
+                'warm_lab_verified':warm,
+                'commissioning_blockers':[] if warm else blockers+actions,
                 'registers':{hex(r):v for r,v in values.items()},
                 'calibration':{str(c):{k:r.get(k) for k in ('stage','error','journal')} for c,r in journals.items()},
                 'session_offload_verified':False,'trace':self.trace}
@@ -196,9 +206,12 @@ class LiveSessions:
         if not self.writable or self.endpoint is None:
             raise RuntimeError('read-only session endpoint')
         state = self.status()
-        if state['blockers']:
+        reasons=state['commissioning_blockers'] if self.commissioning else state['blockers']
+        if reasons:
             raise RuntimeError('hardware session prerequisites changed')
-        if operation == 'update' and state['action_blockers']:
+        if self.commissioning and (len(native)!=144 or int.from_bytes(native[18:20],'big') not in (4093,4094)):
+            raise RuntimeError('commissioning session outside reserved lab zones')
+        if operation == 'update' and state['action_blockers'] and not (self.commissioning and state['warm_lab_verified']):
             raise RuntimeError('; '.join(state['action_blockers']))
         return self.endpoint.call(operation,native)
 

@@ -7,6 +7,34 @@ from validate_physical_sessions import checksum
 
 
 class FrontEncoding(unittest.TestCase):
+    def test_lab_rejects_stale_failed_or_replaced_production_owners(self):
+        import json,tempfile
+        from pathlib import Path
+        from validate_front_sessions import aggregate_owners
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/'ae1-status.json'
+            state=dict(state='active',applied=True,updated_monotonic=100,token='owner',pid=10,process_start='20',boot_id='boot')
+            path.write_text(json.dumps(state));before=aggregate_owners(root,100)
+            for changes in ({'state':'failed'},{'applied':False},{'error':'busy'},{'updated_monotonic':90}):
+                path.write_text(json.dumps(dict(state,**changes)))
+                with self.assertRaises(RuntimeError):aggregate_owners(root,100)
+            path.write_text(json.dumps(dict(state,token='replacement')))
+            self.assertNotEqual(before,aggregate_owners(root,100))
+
+    def test_qmap_uses_translated_addresses_and_observed_queue(self):
+        from ffn_fe100_packet_lab import front_qmap
+        from ffn_fe100_sessions import key4,nat_entry4
+        from ffn_fe100_nat_lab import tuples
+        for reverse in (False,True):
+            original,translated=tuples('address',reverse)
+            key=key4(original['source'],original['destination'],original['source_port'],original['destination_port'],17,4094)
+            flow=nat_entry4(key,1001,31,translated)
+            for queue in (60,96):
+                qm=front_qmap(flow,5 if reverse else 13,queue)
+                self.assertEqual(qm[12:20],flow[48:56])
+                self.assertNotEqual(qm[12:20],key[8:16])
+                self.assertEqual(int.from_bytes(qm[:4],'big')&65535,queue)
+
     def test_nat_probe_roundtrip_and_independent_checksums_both_directions(self):
         from ffn_fe100_nat_lab import tuples,rewrite
         for mode in ('address','port'):

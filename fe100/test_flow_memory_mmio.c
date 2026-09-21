@@ -35,6 +35,16 @@ int main(void)
     assert(fe100_reg_wr(0,0xb0504,0x10000)==12); /* invalid PHY address */
     assert(fe100_reg_wr(0,0xb0104,0)==12); /* reset */
     assert(fe100_reg_wr(1,0xb0504,0xc018)==12); /* wrong device */
+    block_base=0x98000;
+    ffn_fe100_allow(0x98320); ffn_fe100_allow(0x98324);
+    ffn_fe100_allow(0x9832c); ffn_fe100_allow(0x98100);
+    assert(fe100_reg_wr(0,0x98324,0xc019)==0);
+    assert(fe100_reg_wr(0,0x98320,0x02000801)==0);
+    assert(fe100_reg_wr(0,0x98320,0x02001001)==0);
+    assert(fe100_reg_wr(0,0x98320,0x04000801)==12);
+    assert(fe100_reg_wr(0,0x9832c,0)==12);
+    assert(fe100_reg_wr(0,0x98100,0)==12);
+    assert(fe100_reg_wr(0,0x98324,0x10000)==12);
     fclose(trace);
     return 0;
 }

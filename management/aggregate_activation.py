@@ -344,7 +344,11 @@ def supervise(name):
                         state['applied']=bool(acknowledged and ready and row.get('network_ready')) and not intent['control_only'] and not state.get('configuration_error')
                     save()
     except KeyboardInterrupt:state.update(state='stopping',applied=False);save()
-    except BaseException as error:state.update(state='failed',error=str(error),applied=False);save()
+    except BaseException as error:
+        state.update(state='failed',error=str(error),applied=False);save()
+        # The next automatic restart replaces the status file. Preserve the
+        # actual failure reason in the service journal for control contention.
+        print(json.dumps(dict(event='aggregate-owner-failed',group=name,error=str(error))),file=sys.stderr,flush=True)
     finally:
         # Closing DP input removes collection/distribution before CP withdrawal.
         if dp and dp.stdin:

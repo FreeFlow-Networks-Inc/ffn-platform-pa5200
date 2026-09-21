@@ -9,12 +9,15 @@ that PA-5220 memory passed training.
 import argparse
 import ctypes as C
 import json
+import os
 from pathlib import Path
 import struct
 from ffn_fe100_flow_memory import FlowMemory
 
 # opt/dpfs/usr/share/pdt/fe100.py ddr.eye, FDT0_EYE_REF/FDT1_EYE_REF.
 REFERENCES = {
+    0: (53,51,55,56,51,56,55,53),
+    1: (54,54,54,50,52,56,54,51),
     5: (61,61,62,61,59,60,61,58,62,59,59,57,61,62,61,61,
         62,59,62,61,63,61,63,61,61,62,62,59,62,63,62,61,
         63,63,61,61,62,62,59,61,60,60,60,60,60,60,60,61,
@@ -26,6 +29,14 @@ REFERENCES = {
     3: (60,61,61,63,61,62,61,62,61,61,61,62,61,60,61,62),
     4: (59,60,60,58,58,58,59,58,60,63,61,63,60,64,62,63),
 }
+
+UMCTL_STATUS=(0x98130,0x98150,0xa8150,0xa8170,0xb0150,0xb0170)
+
+
+def stable_snapshot(values):
+    # Sysroot CSR: bits4..27 are live queue credits, bit28 current stall and
+    # bit30 CAM-empty. Compare APB state and sticky stall, not activity counters.
+    return {k:(v&0x2000000f if int(k,16) in UMCTL_STATUS else v) for k,v in values.items()}
 
 
 def eye_widths(words):
@@ -82,7 +93,7 @@ def diagnose(io, channel):
         # check_init_cal_status additionally reads DP18 training status17
         # and per-bit errors14. Retain raw values without guessing bit maps.
         regs={hex(r):read(0,group,r) for r in (0x14,0x17,0x18,0x19,0x1a,0x1b)}
-        words=[read(0,group,r) for r in range(0x60,0x68)]
+        words=[read(0,group,r) for r in range(0x60,0x64 if channel in (0,1) else 0x68)]
         widths=eye_widths(words)
         refs=REFERENCES[channel][group*16:group*16+16]
         present=measurements_present(words,regs)
@@ -94,16 +105,20 @@ def diagnose(io, channel):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--block',choices=('fhm','fdt'),required=True)
+    p.add_argument('--block',choices=('fhm','fdt','fcm'),required=True)
     p.add_argument('--spd',action='store_true',help='read FDT DIMM SPD page0 using the sysroot I2C ABI')
     a=p.parse_args()
-    io=FlowMemory(a.block,apply=True,diagnostic=True)
+    fd=int(os.environ['FFN_FE100_LOCK_FD']) if 'FFN_FE100_LOCK_FD' in os.environ else None
+    if a.block=='fcm':
+        from ffn_fe100_fcm import Fcm
+        io=Fcm(apply=True,diagnostic=True,lock_fd=fd)
+    else:io=FlowMemory(a.block,apply=True,diagnostic=True,lock_fd=fd)
     before=io.snapshot()
     channels=[diagnose(io,c) for c in io.channels]
     spd=[read_spd(io,a) for a in (0x53,0x52)] if a.spd and a.block=='fdt' else []
     io.verify_protected()
     after=io.snapshot()
-    if before!=after: raise RuntimeError('controller status changed during diagnostics')
+    if stable_snapshot(before)!=stable_snapshot(after): raise RuntimeError('controller status changed during diagnostics')
     print(json.dumps({'schema':1,'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         'source':'PA-5220 sysroot PDT ddr.eye and owner check_init_cal_status',
         'block':a.block,'channels':channels,'spd':spd,'before':before,'after':after,

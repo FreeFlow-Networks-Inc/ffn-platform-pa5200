@@ -23,8 +23,8 @@ LOOKUP=(0xa8100,0xa8104,0xa8134,0xb0100,0xb0104,0xb0134,0x40010)
 
 
 class Fcm(FlowMemory):
-    def __init__(self, apply=False):
-        super().__init__('fcm',apply)
+    def __init__(self, apply=False, diagnostic=False, lock_fd=None):
+        super().__init__('fcm',apply,diagnostic,lock_fd)
         for r in LOOKUP:self.shim.ffn_fe100_allow_readonly(r)
         self.lookup={r:self.read(r) for r in LOOKUP}
 

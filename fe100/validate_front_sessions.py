@@ -21,6 +21,19 @@ import uuid
 from validate_physical_sessions import frames, DMAC, qualifies, checksum
 
 
+def aggregate_owners(root=Path('/var/lib/ffn-ngfw/aggregate-runtime'),now=None):
+    """Lab tests abort on production owner churn; never continue after recovery."""
+    now=time.monotonic() if now is None else now;owners={}
+    for path in root.glob('ae*-status.json'):
+        row=json.loads(path.read_text())
+        if row.get('state') in ('stopped','stopping'):continue
+        if (row.get('state')!='active' or not row.get('applied') or row.get('error') or
+            not 0<=now-row.get('updated_monotonic',-1)<=5):
+            raise RuntimeError('Production aggregate is not stable: '+path.name)
+        owners[path.name]={k:row[k] for k in ('token','pid','process_start','boot_id')}
+    return owners
+
+
 def directional_frames(token,count,front5=False,nat=None):
     result=frames(token,count)
     if nat:
@@ -126,7 +139,6 @@ def main():
     if a.vlan_return and not a.cross:p.error('--vlan-return requires --cross')
     if a.nat and not a.probe and not (a.cross and a.vlan_return):p.error('--nat requires --cross --vlan-return')
     if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat)));return
-    sys.path.insert(0,'/tmp');from bcmd import call
     if subprocess.run(['systemctl','is-active','--quiet','ffn-fabric.service']).returncode==0:
         raise RuntimeError('software fabric must be stopped')
     report={'schema':1,'scope':'front5 FE100 egress -> DAC -> front13 DP capture' if a.front5 else 'front13 FE100 egress -> DAC -> front5 DP capture',
@@ -140,12 +152,16 @@ def main():
     if a.vlan_return:report['scope']=f'front{ingress} -> FE100 -> front{egress} VLAN4000 -> DAC -> front{ingress} -> FE100 -> MP capture'
     path=Path('/var/log')/('ffn-front-session-'+str(time.time_ns())+'.json')
     save=lambda:path.write_text(json.dumps(report,indent=2))
+    report['production_owners']=aggregate_owners();save()
+    def production_check():
+        if aggregate_owners()!=report['production_owners']:
+            raise RuntimeError('Production aggregate lifetime changed; isolated lab aborted')
     def route(mode,ids=None):
-        argv=['python3','/tmp/prepare-forward-test.py',mode,
-            '/opt/ffn-cproot-owrt/tmp/bcmcfg/ffn_bcm_forward_test.c']
-        for k,v in (ids or {}).items():argv += ['--hw-'+k,str(v)]
-        subprocess.run(argv,check=True,stdout=subprocess.DEVNULL)
-        r=call('cint.run',script='ffn_bcm_forward_test.c')
+        result=subprocess.run(['/usr/local/sbin/ffn-cp',
+            'python3 /usr/local/sbin/ffn_fe100_bcm_lab.py'],
+            input=json.dumps({'mode':mode,'ids':ids or {}}),capture_output=True,text=True,timeout=30)
+        if result.returncode:raise RuntimeError('BCM lab operation failed: '+result.stdout[-3000:]+result.stderr[-1000:])
+        r=json.loads(result.stdout)
         report.setdefault('bcm',[]).append(r);save()
         if not r.get('completed') or any('FFN_FAIL' in s for s in r.get('markers',[])):
             raise RuntimeError('BCM route failed')
@@ -166,7 +182,7 @@ def main():
         if r.get('restored'):report['cp_cleanup']=r
         if not r.get('ok'):raise RuntimeError('CP operation failed: '+str(r))
         return r['registers']
-    redirected=False;rules=[];capture=None;feature=False;link_raised=False
+    redirected=False;rules=[];capture=None;feature=False;link_raised=False;baseline_started=False
     def create(mode):
         result=route(mode)
         markers='\n'.join(result.get('markers',[]))
@@ -179,6 +195,10 @@ def main():
             report['cp_cleanup']=report['controller'] if report['controller'].get('restored') else response()
             raise RuntimeError('CP hardware prerequisites not satisfied; no packet test was started: '+
                                '; '.join(report['controller'].get('blockers',[])))
+        report['queue_preparation']=route('queues-prepare');save()
+        production_check()
+        baseline_started=True
+        report['baseline_routes']=route('baseline-begin');save()
         if a.vlan_return:
             link=json.loads(subprocess.check_output(['ip','-j','link','show','dev','enp8s0f1'],text=True))[0]
             report['capture_link_before']=link;save()
@@ -191,6 +211,7 @@ def main():
             capture.bind(('enp8s0f1',0));capture.setblocking(False)
             capture.setsockopt(263,1,struct.pack('IHH8s',socket.if_nametoindex('enp8s0f1'),1,0,bytes(8)))
         for phase,op in [('baseline','snapshot'),('miss','prepare'),('hit','install'),('drop','drop'),('removed','remove')]:
+            production_check()
             if phase=='miss':
                 create(f'dsa-front{egress}-create')
                 if a.cross and not a.vlan_return:
@@ -199,6 +220,7 @@ def main():
                 redirected=True
                 route(f'cross{ingress}-release' if a.cross and not a.vlan_return else ('front5-session-enable' if a.front5 else 'session-path-enable'))
             before=command(op)
+            production_check()
             token=uuid.uuid4().hex
             argv=['python3','/tmp/ffn-dp-ssh.py','python3','/usr/local/sbin/validate_front_sessions.py',
                   '--probe',token,'--count',str(a.count)]
@@ -213,6 +235,7 @@ def main():
                 if r.returncode:raise RuntimeError('DP probe failed: '+r.stderr[-2000:])
                 result=json.loads(r.stdout)
             report['phases'][phase]=result
+            production_check()
             after=command('snapshot')
             result['counter_delta']={k:v['raw']-before[k]['raw'] for k,v in after.items()
                                     if k.endswith('_no_rd_clr') and k in before}
@@ -228,6 +251,9 @@ def main():
             except Exception as e:report['cleanup_errors'].append(str(e))
         for rule in reversed(rules):
             try:route('offload-rule-delete',rule)
+            except Exception as e:report['cleanup_errors'].append(str(e))
+        if baseline_started:
+            try:report['baseline_cleanup']=route('baseline-end')
             except Exception as e:report['cleanup_errors'].append(str(e))
         try:
             if cp.poll() is None and not report.get('cp_cleanup',{}).get('restored'):

@@ -52,12 +52,16 @@ int ffn_ae_q(int unit,int port,int numq,uint32 flags,int gport,void *data) {
 def load():return json.loads(STATE.read_text()) if STATE.exists() else {'groups':{}}
 
 
+class HardwareBusy(RuntimeError):
+    """A competing control operation holds a lock; no observation was made."""
+
+
 def acquire(lock,seconds=1):
     deadline=time.monotonic()+seconds
     while True:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);return
         except BlockingIOError:
-            if time.monotonic()>=deadline:raise RuntimeError('Aggregate hardware lock busy')
+            if time.monotonic()>=deadline:raise HardwareBusy('Aggregate hardware lock busy')
             time.sleep(.02)
 
 
@@ -246,12 +250,26 @@ def execute(action,payload):
         return dict(group=name,token=state['token'],epoch=current,phase=state['phase'],links=links,offload=offload_status)
 
 
+def heartbeat(payload,deadline=None):
+    """Retry brief lock contention without extending the MP's five-second ACK limit.
+
+    Never acknowledge cached state or retry ownership, lease or SDK errors.
+    A successful reply still requires all existing hardware readback checks.
+    """
+    deadline=time.monotonic()+3.5 if deadline is None else deadline
+    while True:
+        try:return execute('heartbeat',payload)
+        except HardwareBusy:
+            if time.monotonic()+1.05>=deadline:raise
+            time.sleep(.05)
+
+
 if __name__=='__main__':
     try:
         if sys.argv[1]=='stream':
             for line in sys.stdin:
                 request=json.loads(line)
-                result=execute('heartbeat',request['payload'])
+                result=heartbeat(request['payload'])
                 print(json.dumps(dict(result,sequence=request['sequence'])),flush=True)
         else:print(json.dumps(execute(sys.argv[1],json.load(sys.stdin))))
     except Exception as error:

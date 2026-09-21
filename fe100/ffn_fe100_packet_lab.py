@@ -49,15 +49,28 @@ ROOT = Path('/var/lib/ffn/fe100')
 WORKER_STATE = {}
 
 
+def front_qmap(flow,ingress,queue):
+    if type(queue)!=int or not 0<=queue<=65535:raise ValueError('Invalid observed egress queue')
+    qm=bytearray(84)
+    struct.pack_into('>III',qm,0,0x02020000|queue,(ingress<<6)|1,31)
+    # Match the selected output tuple for NAT qualification. The earlier
+    # original-address fixture missed QMAP; hardware verification of this
+    # translated-address fixture is still required before admission.
+    qm[12:20]=output_key4(flow)[8:16]
+    struct.pack_into('>II',qm,20,0xfc0,0xffff)
+    qm[28:36]=b'\xff'*8
+    return bytes(qm)
+
+
 def worker(request, fd):
     from ffn_fe100 import Fe100, bar0_base_and_size, memory_decode_on
     kind = request['kind']
     if kind=='readiness':
         from ffn_fe100_live_sessions import LiveSessions
-        return LiveSessions(False,lock_fd=fd).status()
+        return LiveSessions(False,lock_fd=fd,commissioning=True).status()
     if kind == 'session':
         from ffn_fe100_live_sessions import LiveSessions
-        if 'live' not in WORKER_STATE: WORKER_STATE['live'] = LiveSessions(True, lock_fd=fd)
+        if 'live' not in WORKER_STATE: WORKER_STATE['live'] = LiveSessions(True, lock_fd=fd,commissioning=True)
         live = WORKER_STATE['live']
         data = bytes.fromhex(request.get('data', IDENTITY.hex()))
         # A first physical packet can create an identity entry with an ASIC
@@ -251,15 +264,12 @@ class Lab:
             tx=self.call('txport',index=EGRESS)
             if tx['rc']!=3 and tx['data']!=mapping.hex():raise RuntimeError('TX port mapping conflict')
             if tx['rc']==3:self.write('txport',EGRESS,mapping)
-            qm=bytearray(84)
             # XF removes the CPU message header and emits a DSA-tagged frame
             # through NIF. The scoped BCM rule selects RAW_DSA front egress.
-            queue=0x24 if EGRESS==13 else 0x1c
-            struct.pack_into('>III',qm,0,0x02020000|queue,(FRONT_RETURN<<6)|1,31)
-            qm[12:20]=KEY[8:16]
-            struct.pack_into('>II',qm,20,0xfc0,0xffff)
-            qm[28:36]=b'\xff'*8
-            self.write('qm',31,bytes(qm))
+            from ffn_fe100_bcm_lab import run
+            queues=run({'mode':'queue-status'})['queue_ids']
+            self.record['bcm_queue_ids']=queues;self.save()
+            self.write('qm',31,front_qmap(FORWARD,FRONT_RETURN,queues[physical]))
             self.write('lef',31,struct.pack('>IIH',0x80000000|(EGRESS<<16),0,0))
             wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None)
         else:wanted=next_hop(destination=8,dmac='02:52:20:ab:cd:ee')
@@ -374,8 +384,8 @@ def main():
     lab=Lab()
     try:
         health=lab.call('readiness')
-        if health['blockers'] or health['action_blockers']:
-            print(json.dumps({'ready':False,'blockers':health['blockers']+health['action_blockers'],
+        if health['commissioning_blockers']:
+            print(json.dumps({'ready':False,'blockers':health['commissioning_blockers'],
                               'journal':str(lab.path)}),flush=True)
             return
         print(json.dumps({'ready':True,'journal':str(lab.path),'hardware':health}),flush=True)
