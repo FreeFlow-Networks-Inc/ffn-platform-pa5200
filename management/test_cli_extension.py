@@ -1,10 +1,24 @@
 import contextlib
 import io
+import json
 import unittest
 from unittest.mock import Mock
 from cli_extension import handle
 
 class CLITests(unittest.TestCase):
+    def test_fe100_shows_recovery_and_transport_freshness_from_controld(self):
+        api=Mock(return_value={'agents':{'cp':{'role':'cp','fresh':False,'age_seconds':91,
+            'last_observation':{'report':{'fe100':{'available':True},
+            'fe100_driver':{'forwarding_verified':False},
+            'policy':{'recovery':{'outcome':'blocked','drain_verified':False}}}}}}})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(handle('show platform fe100',api,'session'))
+        result=json.loads(output.getvalue())['cp']
+        self.assertFalse(result['fresh'])
+        self.assertFalse(result['policy']['recovery']['drain_verified'])
+        self.assertFalse(result['driver']['forwarding_verified'])
+        api.assert_called_once_with('/api/system/control',token='session')
+
     def test_none_mode_stages_candidate_and_preserves_explicit_link_settings(self):
         for mode in ('none','off','disabled'):
             api=Mock(side_effect=[{'ethernet':[{'name':'ethernet1/2','mode':'layer3','link_state':'down','link_speed':'1000','comment':'Spare'}]},

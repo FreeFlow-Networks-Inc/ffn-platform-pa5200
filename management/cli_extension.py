@@ -52,7 +52,9 @@ def handle(line, api, token):
             result=api('/api/system/control' + ('/events' if resource=='control-events' else ''),token=token)
             if resource=='fe100':
                 result={name: {'fresh': state['fresh'], 'age_seconds':state['age_seconds'],
-                    'fe100':(state.get('last_observation') or {}).get('report',{}).get('fe100')}
+                    'fe100':(state.get('last_observation') or {}).get('report',{}).get('fe100'),
+                    'driver':(state.get('last_observation') or {}).get('report',{}).get('fe100_driver'),
+                    'policy':(state.get('last_observation') or {}).get('report',{}).get('policy')}
                     for name,state in result['agents'].items() if state['role']=='cp'}
             print(json.dumps(result,indent=2))
             return True

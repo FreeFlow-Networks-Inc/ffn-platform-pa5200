@@ -138,6 +138,24 @@ def fe100_status():
             'offload_verified': False}
 
 
+def policy_recovery_status(path, revision, count, phase):
+    """Only a current-boot, recent drain matching the journal is healthy."""
+    try:
+        report = json.loads(Path(path).read_text())
+        age = time.monotonic() - report['monotonic_time']
+        fresh = (report.get('schema') == 1 and 0 <= age <= 90 and
+                 report.get('cp_boot_id') == Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+        return {'available': True, 'fresh': fresh, 'age_seconds': max(0, age),
+                'outcome': report.get('outcome'), 'error': report.get('error'),
+                'drain_verified': fresh and report.get('outcome') == 'drained' and
+                    report.get('revision') == revision and report.get('sessions') == 0 and
+                    count == 0 and phase == 'blocked',
+                'hardware_activation_verified': False}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {'available': False, 'fresh': False, 'drain_verified': False,
+                'hardware_activation_verified': False}
+
+
 def policy_status(path='/var/lib/ffn/fe100/policy-sessions.sqlite3'):
     """Read one consistent journal snapshot; persisted intent is not activation."""
     db = sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True, timeout=2)
@@ -148,7 +166,9 @@ def policy_status(path='/var/lib/ffn/fe100/policy-sessions.sqlite3'):
         count = db.execute('SELECT count(*) FROM sessions').fetchone()[0]
         return {'available': True, 'source': 'session intent journal',
                 'configured_revision': state.get('revision'), 'configured_phase': state.get('phase'),
-                'journaled_sessions': count, 'hardware_activation_verified': False}
+                'journaled_sessions': count, 'hardware_activation_verified': False,
+                'recovery': policy_recovery_status(Path(path).with_name('policy-recovery.json'),
+                    state.get('revision'), count, state.get('phase'))}
     finally:
         db.close()
 

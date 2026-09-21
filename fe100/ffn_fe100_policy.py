@@ -23,6 +23,31 @@ class PolicyOwner:
                 self.state['phase'] not in ('blocked','draining','active')):
             raise ValueError('invalid policy journal')
         uint(self.state['revision'],64,'policy revision')
+        # Persisted activation is intent, not a live owner's acknowledgement.
+        self.activated = False
+
+    def reconcile(self):
+        """Fence and drain stale ownership, even when no new flows arrive.
+
+        Call periodically under the journal and adapter locks. Recovery never
+        activates a policy or increments its generation. Exact ownership and
+        deletion readback remain the SessionManager's responsibility.
+        """
+        stale = self.state['phase'] != 'active' or not self.activated
+        if not stale:
+            try:
+                stale = (self.qualified() is not True or
+                         digest(self.bindings()) != self.state['attachment'])
+            except Exception:
+                stale = True
+        if stale or self.sessions.recovery_required:
+            self.activated = False
+            if (self.state['phase'] != 'blocked' or self.state['attachment'] is not None or
+                    self.sessions.sessions or self.sessions.recovery_required):
+                self.persist(phase='draining', attachment=None)
+                self.sessions.recover()
+                self.persist(phase='blocked')
+        return self.status()
 
     def persist(self, **changes):
         wanted=self.state | changes
@@ -40,6 +65,7 @@ class PolicyOwner:
                 any(c not in '0123456789abcdef' for c in policy_digest)):
             raise ValueError('SHA256 policy digest required')
         revision=uint(expected_revision+1,64,'policy revision')
+        self.activated = False
         self.persist(revision=revision,phase='draining',digest=policy_digest,attachment=None)
         # Remove all owned entries, including an interrupted prior generation.
         # recover verifies exact ownership; failures keep admissions blocked.
@@ -59,13 +85,14 @@ class PolicyOwner:
             raise RuntimeError('session recovery incomplete')
         if self.qualified() is not True:raise RuntimeError('front-port offload is not qualified')
         self.persist(phase='active',attachment=digest(self.bindings()))
+        self.activated = True
 
     def admit(self, request):
         fields={'session_id','revision','policy_digest','rule_id','verdict','protocol','src','dst',
                 'sport','dport','zone','ingress','egress','inspection_required','nat_required','established'}
         if not isinstance(request,dict) or set(request)!=fields:raise ValueError('invalid admission fields')
         uint(request['revision'],64,'policy revision')
-        if self.state['phase']!='active' or self.sessions.recovery_required:
+        if not self.activated or self.state['phase']!='active' or self.sessions.recovery_required:
             raise RuntimeError('policy admission blocked')
         bindings=self.bindings()
         if digest(bindings)!=self.state['attachment'] or self.qualified() is not True:
@@ -102,4 +129,4 @@ class PolicyOwner:
     def status(self):
         return self.state | {'sessions':len(self.sessions.sessions),
             'recovery_required':self.sessions.recovery_required,
-            'admission_enabled':self.state['phase']=='active' and not self.sessions.recovery_required}
+            'admission_enabled':self.activated and self.state['phase']=='active' and not self.sessions.recovery_required}

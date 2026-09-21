@@ -1,0 +1,11 @@
+[Unit]
+Description=Check FFN FE100 session recovery periodically
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=15
+AccuracySec=1
+Unit=ffn-fe100-recovery.service
+
+[Install]
+WantedBy=timers.target
