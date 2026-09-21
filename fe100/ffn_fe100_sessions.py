@@ -39,7 +39,8 @@ def forwarding_entry4(key, flow_id, next_hop=None, *, drop=False, decrement_ttl=
 
     VM sysroot libpandp_cp DWARF condor_flow_state_t and pdt/fe100.py
     _update_fe100: CT31, TTL28, DROP27, NH26; override at state+6.
-    NAT, QoS, recirculation and unreviewed flags are deliberately unavailable.
+    NAT uses the separate nat_entry4 codec. QoS, recirculation and unreviewed
+    flags are deliberately unavailable.
     Next-hop provisioning/ownership is the caller's responsibility.
     """
     if type(drop) is not bool or type(decrement_ttl) is not bool:
@@ -56,6 +57,35 @@ def forwarding_entry4(key, flow_id, next_hop=None, *, drop=False, decrement_ttl=
     return bytes(wire)
 
 
+def nat_entry4(key, flow_id, next_hop, translated, *, decrement_ttl=True):
+    """Encode the already selected translation; never allocate an address/port.
+
+    FE100 NAT=1 changes addresses; PNAT=2 also changes ports. Wire NAT fields
+    are addresses then ports, unlike the native condor_nat4_state_t structure.
+    This codec does not authorize admission or certify hardware NAT behavior.
+    """
+    fields={'source','destination','source_port','destination_port'}
+    if not isinstance(translated,dict) or set(translated)!=fields:
+        raise ValueError('complete translated IPv4 tuple required')
+    wire=bytearray(forwarding_entry4(key,flow_id,next_hop,decrement_ttl=decrement_ttl))
+    target=key4(translated['source'],translated['destination'],translated['source_port'],
+                translated['destination_port'],key[1],int.from_bytes(key[2:4],'big'))
+    if target==key:raise ValueError('NAT action must change the tuple')
+    mode=2 if target[4:8]!=key[4:8] else 1
+    flags=int.from_bytes(wire[16:20],'big') | (mode<<29)
+    wire[16:20]=flags.to_bytes(4,'big')
+    wire[48:60]=target[8:16]+target[4:8]
+    return bytes(wire)
+
+
+def output_key4(wire):
+    """Effective tuple after a validated action, retaining its lookup zone."""
+    key=wire[:16]
+    if int.from_bytes(wire[16:20],'big') & (3<<29):
+        return key[:4]+wire[56:60]+wire[48:56]
+    return key
+
+
 def validate_entry4(wire):
     wire = bytes(wire)
     if len(wire) != 64:
@@ -67,8 +97,17 @@ def validate_entry4(wire):
     flags, override = struct.unpack_from('!II', wire, 16)
     if flags == 1 << 27:
         expected = forwarding_entry4(key, flow_id, drop=True)
-    elif flags in ((1 << 31) | (1 << 26), (1 << 31) | (1 << 26) | (1 << 28)):
-        expected = forwarding_entry4(key, flow_id, override, decrement_ttl=bool(flags & (1 << 28)))
+    elif flags & ~(3<<29) in ((1 << 31) | (1 << 26), (1 << 31) | (1 << 26) | (1 << 28)):
+        mode=(flags>>29)&3
+        if mode==3:raise ValueError('IP version translation is not supported')
+        if mode:
+            translated=dict(source=str(ipaddress.IPv4Address(wire[48:52])),
+                            destination=str(ipaddress.IPv4Address(wire[52:56])),
+                            source_port=int.from_bytes(wire[56:58],'big'),
+                            destination_port=int.from_bytes(wire[58:60],'big'))
+            expected=nat_entry4(key,flow_id,override,translated,decrement_ttl=bool(flags & (1<<28)))
+        else:
+            expected = forwarding_entry4(key, flow_id, override, decrement_ttl=bool(flags & (1 << 28)))
     else:
         raise ValueError('unsupported flow actions')
     if wire != expected:
@@ -158,9 +197,10 @@ class SessionManager:
             raise ValueError('invalid bidirectional entries')
         for entry in entries:
             validate_entry4(entry)
-        a, b = entries[0][:16], entries[1][:16]
-        if a[:4] != b[:4] or a[4:6] != b[6:8] or a[6:8] != b[4:6] or a[8:12] != b[12:16] or a[12:16] != b[8:12]:
-            raise ValueError('directional keys must reverse the same zone and tuple')
+        for forward,reverse in (entries,entries[::-1]):
+            a,b=output_key4(forward),reverse[:16]
+            if a[:4] != b[:4] or a[4:6] != b[6:8] or a[6:8] != b[4:6] or a[8:12] != b[12:16] or a[12:16] != b[8:12]:
+                raise ValueError('directional actions must reverse the same zone and translated tuple')
         # Preflight BOTH keys before touching either direction.
         for entry in entries:
             if self.backend.fetch(entry[:16]) is not None:

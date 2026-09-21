@@ -147,6 +147,8 @@ jobs:
           cd ../octeon/debian && python3 test_wan_probe.py
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+      - name: FE100 NAT encoding, ownership and recovery (no hardware)
+        run: cd fe100 && python3 -m unittest test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions
       - name: central hardware control and FE100 policy barrier
         run: cd management && python3 -m unittest test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
       - name: all four copper PHY and MAC control paths

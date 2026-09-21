@@ -80,9 +80,9 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): self.adapter.fetch(self.key)
         self.assertEqual(self.endpoint.calls,[])
 
-    def test_wrong_key_and_nat_not_adopted(self):
+    def test_wrong_key_and_version_nat_not_adopted(self):
         native = bytearray(encode_native(self.wire))
-        native[32] |= 0x20
+        native[32] |= 0x60
         with self.assertRaises(RuntimeError): decode_native(native,self.key)
         with self.assertRaises(RuntimeError): decode_native(encode_native(self.wire),self.reverse)
 

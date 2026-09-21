@@ -41,7 +41,8 @@ def control(operation,payload):
         owner=PolicyOwner(SessionManager(Backend(),journal),load,save,lambda:{},lambda:False)
         if operation=='replace':return owner.replace(payload['revision'],payload['digest'])
         if operation=='reconcile':return owner.reconcile()
-        return owner.status()
+        from ffn_fe100_nat import capabilities
+        return dict(owner.status(),capabilities=capabilities())
     finally:journal.close()
 
 
