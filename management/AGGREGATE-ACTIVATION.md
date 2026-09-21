@@ -57,7 +57,12 @@ misrouted observations. The DP expires physical link leases independently of
 the MP. Missing control input closes the owner; the CP watchdog disables links
 before removing redirects. The DP watchdog removes a stale owner's tagged
 netdevice and local network state. Failed cleanup remains visible and is not
-silently adopted by another owner.
+silently adopted by another owner. A failed MP supervisor retries after ten
+seconds. It fences the saved identity, recompiles committed configuration, and
+requires a fresh DP acknowledgement. Stop remains stopped. Recovery after a DP
+reboot includes restoration of missing packet-fabric stages and journaled BCM
+queues for the committed members; recovery does not invent routing, addressing,
+VLANs or member assignments.
 
 Scoped packet owners share the fabric lock and exclusively own each physical
 member. Existing legacy owners retain their exclusive fabric lock. The WAN
@@ -85,9 +90,11 @@ or changes host DNS. An address or route application failure withholds readiness
 traffic entering or leaving the aggregate until aggregate security-policy
 binding is implemented. Local services follow the configured interface
 management profile. Existing NAT/routing policy compilation is not claimed to
-be integrated with the new aggregate. Layer 2 aggregates, VLAN subinterfaces,
-jumbo frames, hardware firewall-session offload and automatic activation after a reboot
-remain outside this version.
+be integrated with the new aggregate. Layer 2 aggregates,
+jumbo frames and hardware firewall-session offload remain outside this version.
+Activated supervisors recover after MP, CP or DP restarts. Install the matching
+DP packet module using the [packet-fabric recovery instructions](PACKET-FABRIC-RECOVERY.md).
+Faulted engines, conflicting resources and uncertain allocations remain blocked.
 
 ### Hardware egress ownership
 

@@ -48,7 +48,7 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             row['blockers']=[b for b in row['blockers'] if b['code'] not in ('bcm-membership','lacp-negotiation','dataplane-attachment','dhcp-client','lldp')]
             if not runtime or not runtime.get('fresh'):
                 row['state']='inactive'
-                row['blockers'].append(dict(code='activation-inactive',message=(runtime or {}).get('error') or 'Committed aggregate owner is not active'))
+                row['blockers'].append(dict(code='activation-inactive',message=(runtime or {}).get('error') or (runtime or {}).get('recovery_stage') or 'Committed aggregate owner is not active'))
         if runtime and runtime.get('fresh'):
             row['state']=runtime['state'];row['applied']=runtime.get('applied',False) and row['committed'] and runtime.get('running_revision')==committed['revision']
             dp=runtime.get('dataplane',{})

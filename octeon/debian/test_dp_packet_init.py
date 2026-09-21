@@ -3,10 +3,38 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from ffn_dp_packet_init import prepare, status, set_trunk
+from ffn_dp_packet_init import prepare, status, set_trunk, reconcile, STAGES
+import uuid
 
 
 class PacketInit(unittest.TestCase):
+    def test_reconcile_missing_stages_and_running_noop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'status').touch();boot=str(uuid.uuid4())
+            value=dict(pki_active=0,pki_enabled=0,pko_enabled=0,pki_microcode_prepared=True,trunk={})
+            calls=[]
+            def stage(op):calls.append(op);value[STAGES[op]]=True
+            def start():calls.append('start-trunk');value.update(pki_enabled=1,pko_enabled=1,trunk=dict(running=True,dq_open=True,error=0))
+            args=dict(root=root,boot_id=lambda:boot,boot_check=lambda:dict(ready=True),read=lambda:value,stage=stage,start=start,lock_path=root/'lock',link=lambda:dict(internal_link_ready=True))
+            self.assertTrue(reconcile(boot,**args)['ready'])
+            self.assertEqual(calls,list(STAGES)[1:]+['start-trunk'])
+            calls.clear();self.assertEqual(reconcile(boot,**args)['changed'],[]);self.assertEqual(calls,[])
+
+    def test_reconcile_fences_boot_faults_and_active_incomplete_engines(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'status').touch();boot=str(uuid.uuid4())
+            for extra in (dict(dma_error=-5),dict(pki_enabled=1),dict(trunk=dict(error=3))):
+                value=dict(pki_active=0,pki_enabled=0,pko_enabled=0);value.update(extra)
+                with self.assertRaises(RuntimeError):reconcile(boot,root=root,boot_id=lambda:boot,boot_check=lambda:dict(ready=True),read=lambda:value,stage=lambda op:self.fail('unexpected stage'),lock_path=root/'lock',link=lambda:dict(internal_link_ready=True))
+            with self.assertRaisesRegex(RuntimeError,'lifetime'):reconcile(boot,root=root,boot_id=lambda:str(uuid.uuid4()),boot_check=lambda:dict(ready=True),lock_path=root/'lock')
+
+    def test_reconcile_loads_installed_module_but_does_not_reset_fault(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);boot=str(uuid.uuid4());calls=[]
+            with self.assertRaisesRegex(RuntimeError,'fault'):
+                reconcile(boot,root=root,boot_id=lambda:boot,boot_check=lambda:dict(ready=True),loader=lambda argv,**kw:calls.append(argv),read=lambda:dict(dma_error=-5),lock_path=root/'lock')
+            self.assertEqual(calls,[['modprobe','ffn_dp_packet_init']])
+
     def test_trunk_transition_fixed_argv_and_readback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
