@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bounded DHCP DISCOVER/OFFER wire qualification. Does not acquire a lease."""
 import argparse
+from contextlib import contextmanager
 from collections import Counter
 import fcntl
 import hashlib
@@ -16,6 +17,18 @@ from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
 
 FRONT={1:28}
 COOKIE=b'\x63\x82\x53\x63'
+FABRIC_LOCK=Path('/run/ffn-fabric.lock')
+PORT_LOCK=Path('/run/ffn-aggregate-port-1.lock')
+
+
+@contextmanager
+def ownership():
+    # Aggregate owners share the trunk but have disjoint ingress/egress ports.
+    # The legacy whole-fabric owner and a WAN attachment still exclude a probe.
+    with FABRIC_LOCK.open('a') as fabric, PORT_LOCK.open('a') as port:
+        fcntl.flock(fabric,fcntl.LOCK_SH|fcntl.LOCK_NB)
+        fcntl.flock(port,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        yield
 
 
 def mac_address(name='fv1'):
@@ -71,8 +84,7 @@ def probe(seconds=12):
     validate_trunk('ffnpkt0')
     mac=mac_address();xid=secrets.randbits(32);sent=0;matched=None
     counters=Counter();sources=Counter();protocols=Counter()
-    with open('/run/ffn-fabric.lock','a') as lock, socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as conn:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with ownership(), socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as conn:
         conn.bind(('ffnpkt0',0));conn.setblocking(False)
         begin=time.monotonic();next_send=begin
         while time.monotonic()<begin+seconds:
@@ -104,9 +116,9 @@ def probe(seconds=12):
 def status():
     validate_trunk('ffnpkt0')
     available=True
-    with open('/run/ffn-fabric.lock','a') as lock:
-        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:available=False
+    try:
+        with ownership():pass
+    except BlockingIOError:available=False
     return {'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
             'fabric_available':available,'port':1,'bcm_port':28}
 

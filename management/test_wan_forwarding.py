@@ -1,8 +1,10 @@
 from pathlib import Path
 import tempfile
+import fcntl
 import unittest
 from unittest.mock import patch
 import ffn_wan_forwarding as wan
+PREPARE_FABRIC=wan.prepare_fabric
 TOKEN='cc3107f8-eb91-4c58-ae04-b25f8fa4a988'
 BOOT='985984f6-7566-4152-9d31-8b5ce14ba5db'
 class WAN(unittest.TestCase):
@@ -14,7 +16,7 @@ class WAN(unittest.TestCase):
         def hardware(mode):
             if mode:self.enabled=int(mode==1);self.writes.append(mode)
             return {'header':11,'wan_queues':8,'trunk_queues':8,'destination':24,'enabled':self.enabled}
-        for name,value in [('epoch',lambda:'current'),('hardware',hardware),('watchdog',lambda token:None)]:
+        for name,value in [('epoch',lambda:'current'),('hardware',hardware),('watchdog',lambda token:None),('prepare_fabric',lambda current:None)]:
             item=patch.object(wan,name,value);item.start();self.addCleanup(item.stop)
     def prepare(self):
         return wan.execute('prepare',{'revision':0,'token':TOKEN,'dp_boot_id':BOOT})
@@ -68,4 +70,34 @@ class WAN(unittest.TestCase):
             with self.assertRaises(RuntimeError):wan.execute('finish',{'token':TOKEN,'report':self.report()})
         self.assertFalse(wan.PROOF.exists())
         wan.execute('abort',{'token':TOKEN});self.assertFalse(self.enabled)
+    def test_stale_recovery_requires_empty_current_hardware(self):
+        wan.atomic(wan.STATE,{'revision':7,'epoch':'old','enabled':True,'pending':'start'})
+        self.enabled=1
+        with self.assertRaisesRegex(RuntimeError,'Unowned'):wan.execute('recover',{'revision':7})
+        self.assertEqual(self.writes,[])
+        self.enabled=0
+        result=wan.execute('recover',{'revision':7})
+        self.assertEqual(result['state'],{'revision':8,'epoch':'current','enabled':False,'pending':None})
+        self.assertFalse(result['wire_qualified']);self.assertEqual(self.writes,[])
+    def test_fabric_failure_never_enables_redirect(self):
+        with patch.object(wan,'prepare_fabric',side_effect=RuntimeError('allocation uncertain')):
+            with self.assertRaisesRegex(RuntimeError,'allocation uncertain'):self.prepare()
+        self.assertEqual(self.writes,[])
+    def test_queue_preparation_does_not_take_aggregate_heartbeat_lock(self):
+        import ffn_aggregate_hardware as agg
+        import ffn_packet_fabric as fabric
+        with tempfile.TemporaryDirectory() as tmp:
+            aggregate=Path(tmp)/'aggregate.lock';face=Path(tmp)/'faceplate.lock';enabled=True
+            def call(payload):
+                nonlocal enabled
+                if payload['op']=='port.set':enabled=payload['enable']
+                return {'ports':[{'port':28,'enabled':enabled}]}
+            def ensure(ports,current):
+                self.assertEqual((ports,current),([1],'current'))
+                self.assertFalse(enabled)
+                return {'ready':True}
+            with aggregate.open('a') as held,patch.object(agg,'LOCK',aggregate),patch.object(agg,'FACEPLATE_LOCK',face),patch.object(wan,'call',side_effect=call),patch.object(fabric,'ensure',side_effect=ensure):
+                fcntl.flock(held,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                self.assertTrue(PREPARE_FABRIC('current')['ready'])
+                self.assertTrue(enabled)
 if __name__=='__main__':unittest.main()

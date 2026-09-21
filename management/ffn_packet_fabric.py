@@ -2,7 +2,7 @@
 """Journaled BCM queue preparation for the PA-5200 packet transport.
 
 The board's internal trunk and SDK queue geometry are hardware constants.
-Front destinations come exclusively from the MP's committed aggregate intent.
+Front destinations come exclusively from the MP's committed interface intent.
 No L2 forwarding, addresses, VLANs, link speeds or policy are invented here.
 """
 import json
@@ -10,8 +10,10 @@ from pathlib import Path
 import re
 
 STATE=Path('/etc/ffn/packet-fabric.json')
+LOCK=Path('/run/ffn-packet-fabric.lock')
 TRUNK=24
 QUEUES=8
+COPPER_PORTS={1:28,2:13,3:14,4:15}
 
 RECIPE=r'''
 int ffn_fabric_inventory(int unit,int port,int numq,uint32 flags,int gport,void *data) {
@@ -80,7 +82,7 @@ int ffn_fabric_inventory(int unit,int port,int numq,uint32 flags,int gport,void 
 
 def query(port,operation=0):
     from ffn_aggregate_hardware import PORTS,LOCK,acquire,SCRIPT,call
-    if port not in (*PORTS.values(),TRUNK) or operation not in (0,1,2):raise ValueError('Invalid fabric operation')
+    if port not in (*PORTS.values(),*COPPER_PORTS.values(),TRUNK) or operation not in (0,1,2):raise ValueError('Invalid fabric operation')
     with open('/run/ffn-forward-test.lock','a') as lock:
         acquire(lock)
         previous=SCRIPT.read_bytes()
@@ -102,8 +104,20 @@ def query(port,operation=0):
 
 
 def ensure(ports,expected_epoch,read=query):
-    """Caller holds aggregate and faceplate locks and has fenced old owners."""
+    """Caller fences its own ports and holds the faceplate lock.
+
+    Allocation has its own journal lock: WAN preparation must not hold the
+    aggregate owner lock and starve that owner's link heartbeat.
+    """
+    from ffn_aggregate_hardware import acquire
+    with LOCK.open('a') as lock:
+        acquire(lock)
+        return _ensure(ports,expected_epoch,read)
+
+
+def _ensure(ports,expected_epoch,read):
     from ffn_aggregate_hardware import PORTS,epoch,atomic
+    PORTS=PORTS|COPPER_PORTS
     if not ports or len(set(ports))!=len(ports) or any(type(p) is not int or p not in PORTS for p in ports):raise ValueError('Invalid fabric members')
     def fence():
         if epoch()!=expected_epoch:raise RuntimeError('BCM lifetime changed during fabric preparation')

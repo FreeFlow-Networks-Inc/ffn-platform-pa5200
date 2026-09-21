@@ -52,6 +52,23 @@ def execute(action,payload,call=remote,drain=before_commit):
             call('dp','stop',{'boot_id':dp['boot_id']})
             result=call('cp','stop',{'revision':current['revision']})
         else:
+            proof=current.get('qualification',{})
+            qualified=(current.get('wire_qualified') is True
+                       and proof.get('report',{}).get('boot_id')==dp['boot_id'])
+            if not qualified:
+                if attachment['running']:raise ValueError('Withdraw the existing WAN attachment before requalification')
+                if (current['state'].get('pending') or current['state'].get('enabled')
+                        or current['state'].get('epoch')!=current.get('epoch')):
+                    current=call('cp','recover',{'revision':current['revision']})
+                token=str(uuid.uuid4())
+                try:
+                    call('cp','prepare',{'revision':current['revision'],'token':token,'dp_boot_id':dp['boot_id']})
+                    report=call('dp','probe',{})
+                    current=call('cp','finish',{'token':token,'report':report})
+                finally:
+                    call('cp','abort',{'token':token})
+                if not current.get('wire_qualified'):
+                    raise ValueError('WAN wire qualification received no port-1 return traffic; check the physical link and upstream connection')
             result=call('cp','start',{'revision':current['revision'],'dp_boot_id':dp['boot_id']})
             try:attachment=call('dp','start',{'boot_id':dp['boot_id']})
             except BaseException:
