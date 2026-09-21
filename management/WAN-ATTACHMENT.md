@@ -20,6 +20,12 @@ the direct OCTEON trunk. It does not relay packets through the MP, alter copper
 3/4 forwarding, or claim hardware session offload. Local traffic reaches the
 kernel interface-profile INPUT rules; transit traffic retains ingress inspection.
 Short Ethernet frames are padded before adding headers that BCM removes.
+The core network owner preserves each TAP's actual MAC in its local
+`port-macs.json` identity store and restores it before a recreated TAP is
+enabled. Qualification reads that same WAN MAC. A probe-only identity or a
+new random MAC after reboot can consume a cable modem's learned CPE slot.
+Keep the identity store with the appliance state during updates; do not ship
+its contents in an image or copy it between appliances.
 Temporary TAP-down events during address changes drop packets without killing
 the transport owner. State includes the process start time and DP boot identity.
 

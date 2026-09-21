@@ -4,7 +4,6 @@ import argparse
 from contextlib import contextmanager
 from collections import Counter
 import fcntl
-import hashlib
 import ipaddress
 import json
 from pathlib import Path
@@ -12,6 +11,7 @@ import secrets
 import select
 import socket
 import struct
+import subprocess
 import time
 from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
 
@@ -31,10 +31,17 @@ def ownership():
         yield
 
 
-def mac_address(name='fv1'):
-    seed=Path('/etc/machine-id').read_text().strip()
-    if len(seed)!=32:raise RuntimeError('stable DP machine ID required')
-    return b'\x02'+hashlib.sha256((seed+':'+name).encode()).digest()[:5]
+def mac_address():
+    # A modem may admit only one learned CPE MAC. Qualification must use the
+    # same identity as the subsequent attachment, never a probe-only MAC.
+    result=subprocess.run(['ip','-n','ffn-data','-j','link','show','dev','p1'],
+                          check=True,capture_output=True,text=True,timeout=5)
+    rows=json.loads(result.stdout)
+    if len(rows)!=1 or rows[0].get('ifname')!='p1' or rows[0].get('link_type')!='ether':
+        raise RuntimeError('WAN interface identity unavailable')
+    mac=bytes.fromhex(rows[0]['address'].replace(':',''))
+    if len(mac)!=6 or mac==bytes(6) or mac[0]&1:raise RuntimeError('Invalid WAN interface MAC')
+    return mac
 
 
 def checksum(value):

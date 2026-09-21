@@ -1,4 +1,6 @@
 import struct
+import json
+from types import SimpleNamespace
 import unittest
 import tempfile
 import fcntl
@@ -18,6 +20,14 @@ def response(mac,xid):
 
 
 class Probe(unittest.TestCase):
+    def test_probe_uses_current_wan_identity_and_never_invents_a_second_mac(self):
+        row={'ifname':'p1','link_type':'ether','address':'02:00:00:00:00:01'}
+        with patch.object(wan.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps([row]))):
+            self.assertEqual(wan.mac_address(),bytes.fromhex('020000000001'))
+        for rows in ([],[row|{'ifname':'other'}],[row|{'address':'01:00:00:00:00:01'}]):
+            with patch.object(wan.subprocess,'run',return_value=SimpleNamespace(stdout=json.dumps(rows))):
+                with self.assertRaises(RuntimeError):wan.mac_address()
+
     def test_port_ownership_coexists_with_lacp_but_not_wan_or_legacy_owner(self):
         with tempfile.TemporaryDirectory() as temp:
             fabric=Path(temp)/'fabric';port=Path(temp)/'port'
