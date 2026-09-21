@@ -34,7 +34,7 @@ def atomic(path,data):
 
 
 def command(role,operation):
-    if role=='cp' and operation in ('status','prepare','stop','stream'):
+    if role=='cp' and operation in ('status','prepare','stop','recover','stream'):
         return CP+['python3 /usr/local/sbin/ffn_aggregate_hardware.py '+operation]
     if role=='dp' and operation in ('status','serve','recover'):
         return DP+['python3 /usr/local/sbin/ffn_aggregate_runtime.py '+operation]
@@ -60,7 +60,7 @@ def status():
         try:
             row=json.loads(path.read_text());valid_name(row['group'])
             start=Path('/proc',str(row['pid']),'stat').read_text().rsplit(') ',1)[1].split()[19]
-            fresh=start==row['process_start'] and row['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip() and 0<=time.monotonic()-row['updated_monotonic']<6 and 0<=time.monotonic()-row.get('dp_received_monotonic',0)<3
+            fresh=row.get('state') not in ('starting','stopping','stopped','failed') and start==row['process_start'] and row['boot_id']==Path('/proc/sys/kernel/random/boot_id').read_text().strip() and 0<=time.monotonic()-row['updated_monotonic']<6 and 0<=time.monotonic()-row.get('dp_received_monotonic',0)<3
         except (OSError,ValueError,KeyError,IndexError):
             try:row=json.loads(path.read_text());fresh=False
             except (OSError,ValueError):continue
@@ -68,7 +68,9 @@ def status():
         if not fresh:
             row['state']='stopped' if row.get('state')=='stopped' else 'unavailable'
             row['applied']=False
-            if isinstance(row.get('dataplane'),dict):row['dataplane'].update(distributing=[],attachment_ready=False,hardware_offload=False)
+            if isinstance(row.get('dataplane'),dict):
+                row['dataplane'].update(distributing=[],attachment_ready=False,network_ready=False,hardware_offload=False,configuration_revision=None)
+                for unit in row['dataplane'].get('subinterfaces',[]):unit.update(applied=False,state='pending')
         groups[row['group']]=row
     return dict(groups=groups,revision=revision(),activation_supported=Path('/etc/systemd/system/ffn-aggregate@.service').is_file(),
                 offload_ready=False,offload_blocker=OFFLOAD_BLOCKER,
@@ -136,7 +138,7 @@ def prepare(raw,group,control_only,dp_boot,offload=False):
     system='02:'+':'.join(hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[n:n+2] for n in range(0,10,2))
     intent=dict(group=group,token=str(uuid.uuid4()),boot_id=dp_boot,system=system,members=[p['port'] for p in row['members']],
         lacp=row['lacp'],network=network,lldp=row['lldp'],control_only=control_only,offload=offload)
-    return dict(group=group,running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),link_revision=link_revision(row),intent=intent,
+    return dict(group=group,activation_id=intent['token'],running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),link_revision=link_revision(row),intent=intent,
         speeds={str(p['port']):p['speed'] for p in row['members']})
 
 
@@ -148,6 +150,46 @@ def link_revision(row):
 
 def network_revision(intent):
     return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
+
+
+def resume_selection(name,call=remote):
+    """Fence the previous owner, then compile a new lifetime from running XML.
+
+    Called only by a started supervisor. Explicit Stop remains stopped. A new
+    token and an empty observation ensure an old configuration ACK cannot be
+    reused even when the DP process restarts within the same boot.
+    """
+    import fcntl
+    with (DIRECTORY/'lifecycle.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        path=DIRECTORY/(valid_name(name)+'-intent.json')
+        saved=json.loads(path.read_text());old=saved['intent'];raw=RUNNING.read_bytes()
+        dp=call('dp','status',{});cp=call('cp','status',{})
+        selected=prepare(raw,name,old['control_only'],dp['boot_id'],old['offload'])
+        if old['offload']:raise ValueError(OFFLOAD_BLOCKER)
+        observed=dp.get('groups',{}).get(name,{})
+        if observed.get('fresh'):raise RuntimeError('Previous DP owner is still active; awaiting withdrawal')
+        if observed and observed.get('token')!=old['token']:raise ValueError('DP aggregate ownership changed')
+        for group,state in cp['groups'].items():
+            if state['phase']=='stopped':continue
+            if group!=name and set(state['ports'])&set(selected['intent']['members']):raise ValueError('Aggregate members belong to another CP owner')
+            if group!=name:continue
+            if state['token']!=old['token'] or state['epoch']!=saved['epoch']:raise ValueError('CP aggregate ownership changed')
+            if state['epoch']==cp['epoch']:
+                call('cp','stop',dict(group=name,token=old['token'],epoch=cp['epoch']))
+            else:
+                call('cp','recover',dict(group=name,token=old['token'],epoch=cp['epoch'],previous_epoch=state['epoch']))
+        # /run is cleared on a reboot. Never send the previous boot's cleanup
+        # identity into the new boot or remove a new owner's interfaces.
+        if dp['boot_id']==old['boot_id']:
+            call('dp','recover',{key:old[key] for key in ('group','token','boot_id')})
+        if RUNNING.read_bytes()!=raw:raise ValueError('Running configuration changed during recovery')
+        from policy_guard import before_commit
+        before_commit(raw)
+        selected['epoch']=cp['epoch']
+        selected['activation_id']=saved.get('activation_id',old['token'])
+        atomic(path,selected)
+        return selected
 
 
 def execute(action,payload,call=remote):
@@ -193,22 +235,23 @@ def execute(action,payload,call=remote):
         atomic(DIRECTORY/'revision.json',{'revision':revision()+1})
         selected['epoch']=cp['epoch'];atomic(DIRECTORY/(name+'-intent.json'),selected)
         subprocess.run(['systemctl','start','ffn-aggregate@'+name],check=True,timeout=15)
+        fcntl.flock(lock,fcntl.LOCK_UN)
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
             result=status()['groups'].get(name,{})
-            if result.get('token')==selected['intent']['token'] and result.get('fresh'):
+            if result.get('activation_id')==selected['activation_id'] and result.get('fresh'):
                 if result['state'] in ('negotiating','active','control-only','awaiting-address'):return result
                 if result['state']=='failed':return result
-            if result.get('token')==selected['intent']['token'] and result.get('error'):return result
+            if result.get('activation_id')==selected['activation_id'] and result.get('error'):return result
             time.sleep(.2)
-        return dict(group=name,token=selected['intent']['token'],state='starting',accepted=True,applied=False,
+        return dict(group=name,activation_id=selected['activation_id'],state='starting',accepted=True,applied=False,
                     detail='MP supervisor started; follow aggregate status for CP/DP activation')
 
 
 def supervise(name):
     name=valid_name(name);selected=json.loads((DIRECTORY/(name+'-intent.json')).read_text());intent=selected['intent']
     path=DIRECTORY/(name+'-status.json');dp=None;cp=None;prepared=False
-    state=dict(group=name,token=intent['token'],running_revision=selected['running_revision'],control_only=intent['control_only'],
+    state=dict(group=name,activation_id=selected.get('activation_id',intent['token']),token=intent['token'],running_revision=selected['running_revision'],control_only=intent['control_only'],
         offload_requested=intent['offload'],pid=os.getpid(),process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],
         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),state='starting',applied=False)
     def save():state['updated_monotonic']=time.monotonic();atomic(path,state)
@@ -216,6 +259,10 @@ def supervise(name):
     signal.signal(signal.SIGTERM,halt);save()
     identity=dict(group=name,token=intent['token'],epoch=selected['epoch'])
     try:
+        selected=resume_selection(name);intent=selected['intent']
+        identity=dict(group=name,token=intent['token'],epoch=selected['epoch'])
+        state.update(token=intent['token'],running_revision=selected['running_revision'])
+        save()
         if hashlib.sha256(RUNNING.read_bytes()).hexdigest()!=selected['running_revision']:raise ValueError('Committed configuration changed before startup')
         dp=subprocess.Popen(command('dp','serve'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None,start_new_session=True,bufsize=0)
         dp.stdin.write((json.dumps(intent)+'\n').encode());dp.stdin.flush()
@@ -301,8 +348,9 @@ def supervise(name):
                 except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait();state['cleanup_error']='Remote shutdown did not acknowledge; inspect CP/DP status'
         if state['state']!='failed':state['state']='stopped'
         state['applied']=False;save()
+    return state['state']!='failed'
 
 
 if __name__=='__main__':
-    if sys.argv[1]=='serve':supervise(sys.argv[2])
+    if sys.argv[1]=='serve':raise SystemExit(0 if supervise(sys.argv[2]) else 1)
     else:print(json.dumps(execute(sys.argv[1],json.load(sys.stdin))))

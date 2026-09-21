@@ -10,6 +10,71 @@ from test_aggregate_config import XML
 
 
 class ActivationTests(unittest.TestCase):
+    def test_restart_recompiles_running_config_and_fences_previous_lifetime(self):
+        for reboot in (False,True):
+            with self.subTest(reboot=reboot),tempfile.TemporaryDirectory() as tmp:
+                directory=Path(tmp);running=directory/'running.xml';running.write_bytes(XML)
+                old=activation.prepare(XML,'ae1',False,str(uuid.uuid4()));old['epoch']='old-cp'
+                activation.atomic(directory/'ae1-intent.json',old)
+                current_boot=str(uuid.uuid4()) if reboot else old['intent']['boot_id']
+                current_epoch='new-cp' if reboot else old['epoch']
+                calls=[]
+                def remote(role,operation,payload):
+                    calls.append((role,operation,payload))
+                    if operation=='status':
+                        if role=='dp':return dict(boot_id=current_boot,groups={})
+                        return dict(epoch=current_epoch,groups={'ae1':dict(token=old['intent']['token'],epoch=old['epoch'],phase='active',ports=[23,24])})
+                    return {}
+                # The saved activation contains a different address. Only the
+                # current committed XML may populate the replacement intent.
+                running.write_bytes(XML.replace(b'<bond>',b'<mtu>1499</mtu><bond>'))
+                with patch.object(activation,'DIRECTORY',directory),patch.object(activation,'RUNNING',running),patch('policy_guard.before_commit') as guard:
+                    selected=activation.resume_selection('ae1',remote)
+                self.assertEqual(selected['intent']['boot_id'],current_boot)
+                self.assertNotEqual(selected['intent']['token'],old['intent']['token'])
+                self.assertEqual(selected['intent']['network']['mtu'],1499)
+                self.assertEqual(selected['running_revision'],activation.plan(running.read_bytes())['revision'])
+                self.assertEqual(selected['epoch'],current_epoch)
+                self.assertEqual(json.loads((directory/'ae1-intent.json').read_text()),selected)
+                self.assertEqual([c[:2] for c in calls],[('dp','status'),('cp','status'),('cp','recover' if reboot else 'stop')]+([] if reboot else [('dp','recover')]))
+                guard.assert_called_once_with(running.read_bytes())
+
+    def test_restart_never_replaces_live_or_foreign_owners_or_failed_cleanup(self):
+        for scenario in ('live-dp','foreign-dp','foreign-cp','overlap','cleanup-failed','disabled','changed-config'):
+            with self.subTest(scenario=scenario),tempfile.TemporaryDirectory() as tmp:
+                directory=Path(tmp);running=directory/'running.xml';running.write_bytes(XML)
+                old=activation.prepare(XML,'ae1',False,str(uuid.uuid4()));old['epoch']='cp'
+                path=directory/'ae1-intent.json';activation.atomic(path,old);before=path.read_bytes()
+                dp=dict(boot_id=old['intent']['boot_id'],groups={})
+                cp=dict(epoch='cp',groups={'ae1':dict(token=old['intent']['token'],epoch='cp',phase='active',ports=[23,24])})
+                if scenario=='live-dp':dp['groups']['ae1']=dict(fresh=True,token=old['intent']['token'])
+                if scenario=='foreign-dp':dp['groups']['ae1']=dict(fresh=False,token=str(uuid.uuid4()))
+                if scenario=='foreign-cp':cp['groups']['ae1']['token']=str(uuid.uuid4())
+                if scenario=='overlap':cp['groups']={'ae2':dict(phase='active',ports=[23,24])}
+                if scenario=='disabled':running.write_bytes(XML.replace(b'<aggregate-ethernet><entry name="ae1">',b'<aggregate-ethernet><entry name="ae1"><link-state>down</link-state>'))
+                mutations=[]
+                def remote(role,operation,payload):
+                    if operation=='status':return dp if role=='dp' else cp
+                    mutations.append((role,operation))
+                    if scenario=='cleanup-failed':raise RuntimeError('withdrawal failed')
+                    if scenario=='changed-config':running.write_bytes(XML+b' ')
+                    return {}
+                with patch.object(activation,'DIRECTORY',directory),patch.object(activation,'RUNNING',running),patch('policy_guard.before_commit') as guard:
+                    with self.assertRaises((ValueError,RuntimeError)):activation.resume_selection('ae1',remote)
+                self.assertEqual(path.read_bytes(),before);guard.assert_not_called()
+                if scenario not in ('cleanup-failed','changed-config'):self.assertEqual(mutations,[])
+
+    def test_stale_status_withdraws_parent_and_vlan_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp)
+            row=dict(group='ae1',pid=0,state='active',applied=True,dataplane=dict(configuration_revision='old',network_ready=True,subinterfaces=[dict(name='ae1.69',applied=True)]))
+            activation.atomic(directory/'ae1-status.json',row)
+            with patch.object(activation,'DIRECTORY',directory):result=activation.status()['groups']['ae1']
+            self.assertFalse(result['fresh']);self.assertFalse(result['applied'])
+            self.assertIsNone(result['dataplane']['configuration_revision'])
+            self.assertFalse(result['dataplane']['network_ready'])
+            self.assertFalse(result['dataplane']['subinterfaces'][0]['applied'])
+
     def test_network_and_unit_edits_do_not_change_link_identity(self):
         old=activation.plan(XML)['aggregates'][0];fingerprint=activation.link_revision(old)
         for change in (dict(network=dict(old['network'],addresses=['192.0.2.1/24'],dhcp=False)),dict(network=dict(old['network'],enabled=False,dhcp=False)),dict(lldp=False),dict(subinterfaces=[{'name':'ae1.69'}])):
@@ -115,6 +180,27 @@ class HardwareTests(unittest.TestCase):
         first_restore=next(i for i,e in enumerate(self.events) if e[0]=='redirect' and e[2]==2)
         self.assertTrue(all(('admin',p,False) in self.events[:first_restore] for p in (34,35)))
         self.assertFalse(any(self.enabled.values()));self.assertFalse(any(self.redirect.values()))
+
+    def test_reboot_recovery_requires_old_identity_and_proven_empty_hardware(self):
+        self.h.execute('prepare',self.request)
+        request=dict(group='ae1',token=self.request['token'],previous_epoch='epoch',epoch='new')
+        with patch.object(self.h,'epoch',return_value='new'):
+            with self.assertRaisesRegex(RuntimeError,'not been withdrawn'):self.h.execute('recover',request)
+            self.enabled={34:False,35:False};self.redirect={23:0,24:0};self.events=[]
+            for change in (dict(token=str(uuid.uuid4())),dict(epoch='epoch'),dict(previous_epoch='wrong')):
+                with self.assertRaises(ValueError):self.h.execute('recover',dict(request,**change))
+            result=self.h.execute('recover',request)
+            self.assertEqual(result['phase'],'stopped')
+            self.assertEqual(self.h.load()['groups']['ae1']['recovered_epoch'],'new')
+            self.assertTrue(all(event[0]=='redirect' and event[2]==0 for event in self.events))
+
+    def test_reboot_recovery_refuses_existing_offload_trunk(self):
+        cfg=dict(groups={'ae1':dict(token=self.request['token'],epoch='old',phase='active',ports=[23,24],offload=True)})
+        self.h.atomic(self.h.STATE,cfg)
+        request=dict(group='ae1',token=self.request['token'],previous_epoch='old',epoch='epoch')
+        with patch('ffn_aggregate_bcm_lag.trunk',return_value=dict(exists=True)):
+            with self.assertRaisesRegex(RuntimeError,'trunk still exists'):self.h.execute('recover',request)
+        self.assertEqual(self.h.load()['groups']['ae1']['phase'],'active')
 
     def test_partial_prepare_rolls_back_and_wrong_token_cannot_stop_new_owner(self):
         self.fail=(24,1)

@@ -109,7 +109,7 @@ def close(cfg,name):
 
 
 def execute(action,payload):
-    if action not in ('status','prepare','heartbeat','stop','sweep'):raise ValueError('Unknown aggregate hardware operation')
+    if action not in ('status','prepare','heartbeat','stop','recover','sweep'):raise ValueError('Unknown aggregate hardware operation')
     if action in ('status','sweep'):
         if payload:raise ValueError('Unexpected fields')
     else:validate_identity(payload)
@@ -130,6 +130,24 @@ def execute(action,payload):
             return {'expired':True}
         if action=='status':return {'epoch':current,**cfg}
         name=payload['group'];state=cfg['groups'].get(name)
+        if action=='recover':
+            if (set(payload)!={'group','token','epoch','previous_epoch'} or payload['epoch']!=current
+                or not state or state['token']!=payload['token'] or state['epoch']!=payload['previous_epoch']
+                or state['epoch']==current):raise ValueError('Fresh BCM epoch and previous owner identity required')
+            # A new BCM lifetime invalidates the journal, not necessarily the
+            # hardware state. Retire it only after proving an empty baseline.
+            with FACEPLATE_LOCK.open('a') as guard:
+                acquire(guard)
+                physical={p['port']:p for p in call({'op':'port.list'})['ports']}
+                for port in state['ports']:
+                    if physical.get(PORTS[port],{}).get('enabled') is not False or hardware(port)['enabled']:
+                        raise RuntimeError('Previous BCM ownership has not been withdrawn')
+                if state.get('offload'):
+                    from ffn_aggregate_bcm_lag import trunk
+                    if trunk(int(name[2:]))['exists']:raise RuntimeError('Previous BCM trunk still exists')
+                if epoch()!=current:raise RuntimeError('BCM lifetime changed during recovery')
+                state.update(phase='stopped',recovered_epoch=current);atomic(STATE,cfg)
+            return dict(group=name,token=state['token'],epoch=current,phase='stopped')
         if action=='prepare':
             if set(payload)-{'group','token','epoch','ports','speeds','offload'} or not {'group','token','epoch','ports','speeds'}<=set(payload) or payload['epoch']!=current:raise ValueError('Fresh BCM epoch and exact prepare fields required')
             offload=payload.get('offload',False)

@@ -6,6 +6,19 @@ VLAN subinterfaces. Layer 3 units use owned 802.1Q devices on the OCTEON aggrega
 TAP. Static addresses and interface management profiles apply per child, with
 independent receive/transmit counters. An applied child requires a fresh matching
 configuration acknowledgement; saved XML alone does not establish readiness.
+
+An activated MP supervisor retries after a control-stream failure or DP restart.
+Each retry recompiles running XML, verifies withdrawal of the previous CP/DP
+owner, and starts a new owner token against the current DP boot identity. Parent
+and VLAN readiness remain pending until the replacement DP acknowledges that
+configuration and LACP negotiates. Explicit Stop does not trigger a retry.
+No member, address, VLAN, or management profile is supplied by a recovery default.
+
+A CP/BCM restart also requires proving the previous hardware ownership is gone.
+An old-epoch journal may be retired only when its ports are down, redirects are
+absent, and any old offload trunk is absent. Missing packet queues/trunk setup,
+foreign ownership, or failed cleanup remain blocked and visible; retrying does
+not fabricate a dataplane acknowledgement or bypass hardware initialization.
 Malformed or unsupported units are withdrawn and reported separately from LACP.
 
 The runtime tracks the complete running revision separately from member and
