@@ -36,13 +36,14 @@ def owner(directory,boot,fail):
     import aggregate_activation as activation
     activation.DIRECTORY=Path(directory);activation.RUNNING=Path(directory)/'running.xml'
     def remote(role,operation,payload):
+        if operation=='fabric':return dict(ready=True,boot_id=boot,epoch='cp')
         if operation!='status':return {}
         if role=='dp':return dict(boot_id=boot,groups={})
         return dict(epoch='cp',groups={})
     # resume_selection binds its default at import; inject the fake transport
     # explicitly while exercising the real recovery and supervisor logic.
     resume=activation.resume_selection
-    with patch.object(activation,'resume_selection',side_effect=lambda name:resume(name,remote)),patch.object(activation,'remote',side_effect=remote),patch.object(activation,'command',side_effect=lambda role,op:[sys.executable,__file__,'--agent',role,str(int(fail))]),patch('policy_guard.before_commit'):
+    with patch.object(activation,'resume_selection',side_effect=lambda name,**kw:resume(name,remote,**kw)),patch.object(activation,'remote',side_effect=remote),patch.object(activation,'command',side_effect=lambda role,op:[sys.executable,__file__,'--agent',role,str(int(fail))]),patch('policy_guard.before_commit'):
         raise SystemExit(0 if activation.supervise('ae1') else 1)
 
 

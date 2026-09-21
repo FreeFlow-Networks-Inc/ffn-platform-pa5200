@@ -34,10 +34,12 @@ def atomic(path,data):
 
 
 def command(role,operation):
-    if role=='cp' and operation in ('status','prepare','stop','recover','stream'):
+    if role=='cp' and operation in ('status','fabric','prepare','stop','recover','stream'):
         return CP+['python3 /usr/local/sbin/ffn_aggregate_hardware.py '+operation]
     if role=='dp' and operation in ('status','serve','recover'):
         return DP+['python3 /usr/local/sbin/ffn_aggregate_runtime.py '+operation]
+    if role=='dp' and operation=='fabric':
+        return DP+['python3 /usr/local/sbin/ffn_dp_packet_init.py reconcile']
     raise ValueError('Unknown aggregate agent operation')
 
 
@@ -152,7 +154,7 @@ def network_revision(intent):
     return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
 
 
-def resume_selection(name,call=remote):
+def resume_selection(name,call=remote,progress=lambda stage:None):
     """Fence the previous owner, then compile a new lifetime from running XML.
 
     Called only by a started supervisor. Explicit Stop remains stopped. A new
@@ -164,6 +166,7 @@ def resume_selection(name,call=remote):
         fcntl.flock(lock,fcntl.LOCK_EX)
         path=DIRECTORY/(valid_name(name)+'-intent.json')
         saved=json.loads(path.read_text());old=saved['intent'];raw=RUNNING.read_bytes()
+        progress('Checking previous CP and DP ownership')
         dp=call('dp','status',{});cp=call('cp','status',{})
         selected=prepare(raw,name,old['control_only'],dp['boot_id'],old['offload'])
         if old['offload']:raise ValueError(OFFLOAD_BLOCKER)
@@ -186,6 +189,13 @@ def resume_selection(name,call=remote):
         if RUNNING.read_bytes()!=raw:raise ValueError('Running configuration changed during recovery')
         from policy_guard import before_commit
         before_commit(raw)
+        progress('Restoring OCTEON packet runtime')
+        packet=call('dp','fabric',dict(boot_id=dp['boot_id']))
+        if packet.get('ready') is not True or packet.get('boot_id')!=dp['boot_id']:raise RuntimeError('DP packet fabric acknowledgement missing')
+        progress('Restoring BCM packet queues and trunk headers')
+        fabric=call('cp','fabric',dict(group=name,token=selected['intent']['token'],epoch=cp['epoch'],ports=selected['intent']['members']))
+        if fabric.get('ready') is not True or fabric.get('epoch')!=cp['epoch']:raise RuntimeError('CP packet fabric acknowledgement missing')
+        if RUNNING.read_bytes()!=raw:raise ValueError('Running configuration changed during fabric preparation')
         selected['epoch']=cp['epoch']
         selected['activation_id']=saved.get('activation_id',old['token'])
         atomic(path,selected)
@@ -210,7 +220,7 @@ def execute(action,payload,call=remote):
         if operation in ('deactivate','recover'):
             if action=='validate':return {'validated':True}
             atomic(DIRECTORY/'revision.json',{'revision':revision()+1})
-            subprocess.run(['systemctl','stop','ffn-aggregate@'+name],check=True,timeout=60)
+            subprocess.run(['systemctl','disable','--now','ffn-aggregate@'+name],check=True,timeout=60)
             current=call('cp','status',{})
             state=current['groups'].get(name)
             if state and state['phase']!='stopped':call('cp','stop',dict(group=name,token=state['token'],epoch=state['epoch']))
@@ -234,7 +244,7 @@ def execute(action,payload,call=remote):
         before_commit(raw)
         atomic(DIRECTORY/'revision.json',{'revision':revision()+1})
         selected['epoch']=cp['epoch'];atomic(DIRECTORY/(name+'-intent.json'),selected)
-        subprocess.run(['systemctl','start','ffn-aggregate@'+name],check=True,timeout=15)
+        subprocess.run(['systemctl','enable','--now','ffn-aggregate@'+name],check=True,timeout=15)
         fcntl.flock(lock,fcntl.LOCK_UN)
         deadline=time.monotonic()+8
         while time.monotonic()<deadline:
@@ -259,7 +269,8 @@ def supervise(name):
     signal.signal(signal.SIGTERM,halt);save()
     identity=dict(group=name,token=intent['token'],epoch=selected['epoch'])
     try:
-        selected=resume_selection(name);intent=selected['intent']
+        def progress(stage):state['recovery_stage']=stage;save()
+        selected=resume_selection(name,progress=progress);intent=selected['intent']
         identity=dict(group=name,token=intent['token'],epoch=selected['epoch'])
         state.update(token=intent['token'],running_revision=selected['running_revision'])
         save()
@@ -278,6 +289,7 @@ def supervise(name):
         cp=subprocess.Popen(command('cp','stream'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None,start_new_session=True,bufsize=0)
         for process in (cp,dp):os.set_blocking(process.stdout.fileno(),False)
         buffers={cp.stdout:b'',dp.stdout:b''};sent=None;sequence=0;next_send=0;last_dp=time.monotonic()
+        state.pop('recovery_stage',None)
         state.update(state='negotiating',dataplane=row,dp_received_monotonic=last_dp);save()
         while True:
             now=time.monotonic()

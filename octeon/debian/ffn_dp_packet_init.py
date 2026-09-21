@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import subprocess
+import uuid
 from pathlib import Path
 
 ROOT = Path('/sys/kernel/debug/ffn_dp_packet_init')
@@ -84,15 +85,68 @@ def set_trunk(enabled, root=ROOT, lock_path='/run/ffn-fabric.lock', runner=subpr
         return after
 
 
+def reconcile(expected_boot, root=ROOT, boot_id=None, boot_check=None,
+              loader=subprocess.run, read=None, stage=None, start=None,
+              lock_path='/run/ffn-packet-reconcile.lock',link=None):
+    """Restore missing stages once; never reset a running or faulted engine."""
+    if str(uuid.UUID(expected_boot))!=expected_boot:raise ValueError('Current DP boot identity required')
+    if boot_id is None:boot_id=lambda:Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if boot_check is None:
+        from ffn_dp_boot_health import inspect_boot
+        boot_check=inspect_boot
+    if read is None:read=lambda:status(root)
+    if stage is None:stage=lambda op:prepare(root,operation=op)
+    if start is None:start=lambda:set_trunk(True,root)
+    def fence():
+        if boot_id()!=expected_boot:raise RuntimeError('DP lifetime changed during fabric recovery')
+    with open(lock_path,'a') as owner:
+        fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        fence()
+        if boot_check().get('ready') is not True:raise RuntimeError('DP boot incomplete')
+        if not (root/'status').exists():
+            loader(['modprobe','ffn_dp_packet_init'],check=True,capture_output=True,text=True,timeout=15)
+        packet=read();changed=[]
+        if packet.get('dma_error') or packet.get('trunk',{}).get('error') or packet.get('pki_reset_busy'):
+            raise RuntimeError('Packet fabric fault requires recovery; automatic reset refused')
+        if link is None:
+            from ffn_dp_link import ensure
+            link=ensure
+        fence()
+        if link().get('internal_link_ready') is not True:raise RuntimeError('Internal packet link not acknowledged')
+        for operation,flag in STAGES.items():
+            fence()
+            if packet.get(flag) is True:continue
+            if any(packet.get(k)!=0 for k in ('pki_active','pki_enabled','pko_enabled')):
+                raise RuntimeError('Cannot initialize missing stages on an active packet engine')
+            stage(operation);packet=read();fence()
+            if packet.get(flag) is not True:raise RuntimeError('Packet stage not acknowledged: '+operation)
+            changed.append(operation)
+        if packet.get('trunk',{}).get('running') is not True:
+            fence();start();changed.append('start-trunk')
+        packet=read();fence();trunk=packet.get('trunk',{})
+        if (packet.get('dma_error') or trunk.get('error') or trunk.get('running') is not True
+            or trunk.get('dq_open') is not True or packet.get('pki_enabled')!=1 or packet.get('pko_enabled')!=1):
+            raise RuntimeError('Packet fabric runtime not acknowledged')
+        return dict(ready=True,boot_id=expected_boot,changed=changed,packet_initialization=packet)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('status', 'start-trunk', 'stop-trunk', *STAGES))
+    parser.add_argument('operation', choices=('status', 'reconcile', 'start-trunk', 'stop-trunk', *STAGES))
     args = parser.parse_args()
-    if args.operation == 'status': result = status()
+    if args.operation == 'reconcile':
+        import sys
+        request=json.load(sys.stdin)
+        if not isinstance(request,dict) or set(request)!={'boot_id'}:raise ValueError('Expected boot_id only')
+        result=reconcile(request['boot_id'])
+    elif args.operation == 'status': result = status()
     elif args.operation in ('start-trunk','stop-trunk'):
         result = set_trunk(args.operation == 'start-trunk')
     else: result = prepare(operation=args.operation)
     print(json.dumps(result, indent=2))
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    try:main()
+    except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:
+        print(json.dumps({'error':str(error)}));raise SystemExit(1)

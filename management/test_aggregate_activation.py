@@ -21,6 +21,7 @@ class ActivationTests(unittest.TestCase):
                 calls=[]
                 def remote(role,operation,payload):
                     calls.append((role,operation,payload))
+                    if operation=='fabric':return dict(ready=True,boot_id=current_boot,epoch=current_epoch)
                     if operation=='status':
                         if role=='dp':return dict(boot_id=current_boot,groups={})
                         return dict(epoch=current_epoch,groups={'ae1':dict(token=old['intent']['token'],epoch=old['epoch'],phase='active',ports=[23,24])})
@@ -36,7 +37,7 @@ class ActivationTests(unittest.TestCase):
                 self.assertEqual(selected['running_revision'],activation.plan(running.read_bytes())['revision'])
                 self.assertEqual(selected['epoch'],current_epoch)
                 self.assertEqual(json.loads((directory/'ae1-intent.json').read_text()),selected)
-                self.assertEqual([c[:2] for c in calls],[('dp','status'),('cp','status'),('cp','recover' if reboot else 'stop')]+([] if reboot else [('dp','recover')]))
+                self.assertEqual([c[:2] for c in calls],[('dp','status'),('cp','status'),('cp','recover' if reboot else 'stop')]+([] if reboot else [('dp','recover')])+[('dp','fabric'),('cp','fabric')])
                 guard.assert_called_once_with(running.read_bytes())
 
     def test_restart_never_replaces_live_or_foreign_owners_or_failed_cleanup(self):
@@ -192,7 +193,15 @@ class HardwareTests(unittest.TestCase):
             result=self.h.execute('recover',request)
             self.assertEqual(result['phase'],'stopped')
             self.assertEqual(self.h.load()['groups']['ae1']['recovered_epoch'],'new')
-            self.assertTrue(all(event[0]=='redirect' and event[2]==0 for event in self.events))
+            self.assertTrue(all((event[0]=='redirect' and event[2]==0) or (event[0]=='admin' and event[2] is False) for event in self.events))
+
+    def test_reboot_recovery_withdraws_board_enabled_links_only_for_saved_owner(self):
+        self.h.execute('prepare',self.request)
+        self.redirect={23:0,24:0};self.events=[]
+        with patch.object(self.h,'epoch',return_value='new'):
+            self.h.execute('recover',dict(group='ae1',token=self.request['token'],previous_epoch='epoch',epoch='new'))
+        self.assertFalse(any(self.enabled.values()))
+        self.assertEqual({event[1] for event in self.events if event[0]=='admin'},{34,35})
 
     def test_reboot_recovery_refuses_existing_offload_trunk(self):
         cfg=dict(groups={'ae1':dict(token=self.request['token'],epoch='old',phase='active',ports=[23,24],offload=True)})

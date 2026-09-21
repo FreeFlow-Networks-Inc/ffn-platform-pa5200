@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""CP owner of optical aggregate redirects; no queue allocation or SDK restart.
+"""CP owner of optical aggregate redirects and journaled packet preparation.
 
 Ingress is forced to the existing OCTEON trunk before links are enabled. A
 missing DP owner therefore drops packets instead of falling back to bridging.
@@ -109,7 +109,7 @@ def close(cfg,name):
 
 
 def execute(action,payload):
-    if action not in ('status','prepare','heartbeat','stop','recover','sweep'):raise ValueError('Unknown aggregate hardware operation')
+    if action not in ('status','fabric','prepare','heartbeat','stop','recover','sweep'):raise ValueError('Unknown aggregate hardware operation')
     if action in ('status','sweep'):
         if payload:raise ValueError('Unexpected fields')
     else:validate_identity(payload)
@@ -130,6 +130,17 @@ def execute(action,payload):
             return {'expired':True}
         if action=='status':return {'epoch':current,**cfg}
         name=payload['group'];state=cfg['groups'].get(name)
+        if action=='fabric':
+            from ffn_packet_fabric import ensure
+            if set(payload)!={'group','token','epoch','ports'} or payload['epoch']!=current:raise ValueError('Fresh fabric identity and members required')
+            ports=payload['ports']
+            if not isinstance(ports,list) or not 2<=len(ports)<=8 or len(set(ports))!=len(ports) or any(type(p) is not int or p not in PORTS for p in ports):raise ValueError('Invalid fabric member list')
+            if any(g['phase']!='stopped' and (group==name or set(g['ports'])&set(ports)) for group,g in cfg['groups'].items()):raise ValueError('Fabric members still owned')
+            with FACEPLATE_LOCK.open('a') as guard:
+                acquire(guard)
+                physical={p['port']:p for p in call({'op':'port.list'})['ports']}
+                if any(physical.get(PORTS[p],{}).get('enabled') is not False or hardware(p)['enabled'] for p in ports):raise ValueError('Fabric members must be withdrawn first')
+                return ensure(ports,current)
         if action=='recover':
             if (set(payload)!={'group','token','epoch','previous_epoch'} or payload['epoch']!=current
                 or not state or state['token']!=payload['token'] or state['epoch']!=payload['previous_epoch']
@@ -138,13 +149,20 @@ def execute(action,payload):
             # hardware state. Retire it only after proving an empty baseline.
             with FACEPLATE_LOCK.open('a') as guard:
                 acquire(guard)
-                physical={p['port']:p for p in call({'op':'port.list'})['ports']}
                 for port in state['ports']:
-                    if physical.get(PORTS[port],{}).get('enabled') is not False or hardware(port)['enabled']:
+                    if hardware(port)['enabled']:
                         raise RuntimeError('Previous BCM ownership has not been withdrawn')
                 if state.get('offload'):
                     from ffn_aggregate_bcm_lag import trunk
                     if trunk(int(name[2:]))['exists']:raise RuntimeError('Previous BCM trunk still exists')
+                # Reboot-time board initialization can enable front links.
+                # Withdraw only the fenced former owner's members, after
+                # proving none retains a redirect or offload trunk.
+                for group,other in cfg['groups'].items():
+                    if group!=name and other['phase']!='stopped' and set(other['ports'])&set(state['ports']):raise RuntimeError('Recovery members belong to another owner')
+                for port in state['ports']:call({'op':'port.set','port':PORTS[port],'enable':False})
+                physical={p['port']:p for p in call({'op':'port.list'})['ports']}
+                if any(physical.get(PORTS[p],{}).get('enabled') is not False for p in state['ports']):raise RuntimeError('Recovery link withdrawal not verified')
                 if epoch()!=current:raise RuntimeError('BCM lifetime changed during recovery')
                 state.update(phase='stopped',recovered_epoch=current);atomic(STATE,cfg)
             return dict(group=name,token=state['token'],epoch=current,phase='stopped')

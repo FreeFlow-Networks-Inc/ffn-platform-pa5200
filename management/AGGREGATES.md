@@ -15,10 +15,23 @@ configuration and LACP negotiates. Explicit Stop does not trigger a retry.
 No member, address, VLAN, or management profile is supplied by a recovery default.
 
 A CP/BCM restart also requires proving the previous hardware ownership is gone.
-An old-epoch journal may be retired only when its ports are down, redirects are
-absent, and any old offload trunk is absent. Missing packet queues/trunk setup,
-foreign ownership, or failed cleanup remain blocked and visible; retrying does
-not fabricate a dataplane acknowledgement or bypass hardware initialization.
+An old-epoch journal may be retired only after its redirects and any old offload
+trunk are absent. Recovery withdraws board-enabled links belonging to that saved
+owner and verifies they are down. Foreign ownership or failed cleanup stays blocked.
+
+Recovery then loads the installed kernel-matched packet initializer and runs
+only missing DP initialization stages. The CP prepares the internal packet
+header and allocates queues only for the internal trunk and committed aggregate
+members. SDK resource IDs are allocated by the hardware and journaled; no lab
+port selection, address, VLAN, or routing default is replayed. Every allocation
+is journaled before execution. A lost response or partial allocation blocks
+further allocations in that BCM lifetime rather than duplicating resources.
+
+Activate enables the aggregate supervisor across MP boots; Stop/Recover disables
+it. An already running packet fabric is reused without resetting engines or
+restarting BCM. Hardware faults still require explicit recovery. The shared
+WebUI/CLI status reports the recovery step and then the new DP acknowledgement.
+See [PACKET-FABRIC-RECOVERY.md](PACKET-FABRIC-RECOVERY.md) for installation.
 Malformed or unsupported units are withdrawn and reported separately from LACP.
 
 The runtime tracks the complete running revision separately from member and

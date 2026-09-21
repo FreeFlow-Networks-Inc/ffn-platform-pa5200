@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import json
+import os
 from pathlib import Path
 import time
 
@@ -61,6 +62,29 @@ def enable_once(read, write):
     if after['pki_enabled']:
         result.update(error='packet input changed concurrently; stop commissioning', internal_link_ready=False)
     return result
+
+
+def ensure(read=None,write=None,lock_path='/run/ffn-fabric.lock'):
+    """Idempotent prerequisite for MP-driven packet-fabric recovery."""
+    if read is None:read=lambda:json.loads(STATUS.read_text())
+    if write is None:
+        def write(payload):
+            fd=os.open(ENABLE,os.O_WRONLY)
+            try:
+                raw=payload.encode('ascii')
+                if os.write(fd,raw)!=len(raw):raise OSError('short internal link command')
+            finally:os.close(fd)
+    # Packet owners hold a shared fabric lock for their lifetime. A read-only
+    # readiness check must work while another aggregate or WAN uses the trunk.
+    current=report(read())
+    if current['internal_link_ready']:return dict(current,changed=False)
+    with open(lock_path,'a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        before=read();current=report(before)
+        if current['internal_link_ready']:return dict(current,changed=False)
+        result=enable_once(read,write)
+        if not result['internal_link_ready'] or result.get('error'):raise RuntimeError('Internal OCTEON link not ready; automatic reset refused')
+        return result
 
 
 def main():

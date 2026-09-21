@@ -3,7 +3,7 @@ import json
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock
-from ffn_dp_link import enable_once, report, observe
+from ffn_dp_link import enable_once, report, observe, ensure
 
 
 class Link(unittest.TestCase):
@@ -17,6 +17,24 @@ class Link(unittest.TestCase):
         write.assert_called_once_with('2\n')
         self.assertTrue(result['internal_link_ready'])
         self.assertFalse(result['physical_packet_transport_verified'])
+
+    def test_ensure_reuses_active_packet_link_and_never_resets_faulted_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            write=Mock();lock=Path(directory)/'lock'
+            self.assertFalse(ensure(lambda:dict(self.up,pki_enabled=1),write,lock)['changed'])
+            with self.assertRaises(RuntimeError):ensure(lambda:dict(self.up,link=0),write,lock)
+            write.assert_not_called()
+            reads=Mock(side_effect=[self.down,self.down,self.down,self.up])
+            self.assertTrue(ensure(reads,write,lock)['changed']);write.assert_called_once_with('2\n')
+
+    def test_ready_link_can_be_observed_while_another_packet_owner_holds_lock(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'lock';write=Mock()
+            with path.open('a') as owner:
+                fcntl.flock(owner,fcntl.LOCK_SH)
+                self.assertTrue(ensure(lambda:self.up,write,path)['internal_link_ready'])
+            write.assert_not_called()
 
     def test_no_reinitialize_live_link(self):
         write=Mock(); result=enable_once(lambda:self.up,write)

@@ -12,3 +12,6 @@ KillMode=control-group
 # retry. Uncertain ownership stays blocked; no stale acknowledgement is reused.
 Restart=on-failure
 RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

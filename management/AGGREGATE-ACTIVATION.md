@@ -60,8 +60,9 @@ netdevice and local network state. Failed cleanup remains visible and is not
 silently adopted by another owner. A failed MP supervisor retries after ten
 seconds. It fences the saved identity, recompiles committed configuration, and
 requires a fresh DP acknowledgement. Stop remains stopped. Recovery after a DP
-reboot depends on the underlying packet fabric being provisioned; recovery
-does not invent queue, routing, address, or VLAN configuration.
+reboot includes restoration of missing packet-fabric stages and journaled BCM
+queues for the committed members; recovery does not invent routing, addressing,
+VLANs or member assignments.
 
 Scoped packet owners share the fabric lock and exclusively own each physical
 member. Existing legacy owners retain their exclusive fabric lock. The WAN
@@ -91,9 +92,9 @@ binding is implemented. Local services follow the configured interface
 management profile. Existing NAT/routing policy compilation is not claimed to
 be integrated with the new aggregate. Layer 2 aggregates,
 jumbo frames and hardware firewall-session offload remain outside this version.
-An already activated supervisor recovers across a DP restart once packet-fabric
-prerequisites are ready; automatic activation after an MP reboot remains outside
-this version.
+Activated supervisors recover after MP, CP or DP restarts. Install the matching
+DP packet module using the [packet-fabric recovery instructions](PACKET-FABRIC-RECOVERY.md).
+Faulted engines, conflicting resources and uncertain allocations remain blocked.
 
 ### Hardware egress ownership
 
