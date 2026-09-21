@@ -3,9 +3,46 @@ import io
 import json
 import unittest
 from unittest.mock import Mock
-from cli_extension import handle
+from cli_extension import handle, complete
 
 class CLITests(unittest.TestCase):
+    def test_fe100_views_never_mutate_and_preserve_freshness(self):
+        api=Mock(return_value={'agents':{'cp':{'role':'cp','fresh':False,'age_seconds':91,
+            'last_observation':{'report':{'fe100':{'offload_verified':True,'counters':{'received':10}},
+            'fe100_driver':{'userspace':{'read_verified':True}},
+            'policy':{'hardware_activation_verified':True,'recovery':{'drain_verified':True}}}}}}})
+        for view in ('status','driver','counters','policy','recovery'):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                handle('show platform fe100 '+view,api,'session')
+            self.assertIn('STALE / UNAVAILABLE',output.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            handle('show platform fe100 status json',api,'session')
+        status=json.loads(output.getvalue())['cp']['status']
+        self.assertFalse(status['drain_verified'])
+        self.assertFalse(status['hardware_activation_verified'])
+        self.assertFalse(status['forwarding_verified'])
+        self.assertEqual(status['register_access'],'unverified')
+        for call in api.call_args_list:
+            self.assertEqual(call.args,('/api/system/control',))
+            self.assertEqual(call.kwargs,{'token':'session'})
+
+    def test_help_completion_invalid_command_and_missing_data(self):
+        api=Mock()
+        for command in ('help platform','help platform fe100','? platform'):
+            with contextlib.redirect_stdout(io.StringIO()) as output:handle(command,api,'session')
+            self.assertIn('recovery',output.getvalue())
+        self.assertEqual(complete('show platform fe100 ','re'),['recovery'])
+        self.assertEqual(complete('show platform fe100 recovery ','j'),['json'])
+        for command in ('show platform fe100 reset','show platform fe100 recovery extra','show platform fe100 json json'):
+            with self.assertRaises(ValueError):handle(command,api,'session')
+        api.assert_not_called()
+        api.return_value={'agents':{}}
+        with contextlib.redirect_stdout(io.StringIO()) as output:handle('show platform fe100 status',api,'session')
+        self.assertIn('unavailable',output.getvalue())
+        api.return_value={'agents':{'cp':{'role':'cp','fresh':False,'last_observation':None}}}
+        with contextlib.redirect_stdout(io.StringIO()) as output:handle('show platform fe100 status',api,'session')
+        self.assertIn('unknown',output.getvalue())
+
     def test_fe100_shows_recovery_and_transport_freshness_from_controld(self):
         api=Mock(return_value={'agents':{'cp':{'role':'cp','fresh':False,'age_seconds':91,
             'last_observation':{'report':{'fe100':{'available':True},
