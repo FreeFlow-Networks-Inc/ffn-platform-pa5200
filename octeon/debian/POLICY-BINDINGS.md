@@ -22,7 +22,7 @@ remains in place; NAT validation alone does not authorize traffic.
 
 ## Security kernel candidate
 
-The current DP kernel has conntrack labels/events but lacks `NF_CT_NETLINK`.
+The previous DP kernel had conntrack labels/events but lacked `NF_CT_NETLINK`.
 An external module build failed at modpost because `nf_conn_pernet_ecache` is not
 exported by that kernel. Do not force-load or bypass symbol validation.
 
