@@ -30,14 +30,15 @@ if FRONT_RETURN not in (5,13):raise ValueError('unsupported front return')
 EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
 NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
+PROTOCOL={'udp':17,'tcp':6}[os.environ.get('FFN_FE100_LAB_PROTOCOL','udp')]
 LAB_LIF=2 if FRONT_RETURN==5 else 1
-KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,17,4094) if FRONT_RETURN==5 else
-       key4('198.18.0.1', '198.18.0.2', 49000, 49001, 17, 4094))
+KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,PROTOCOL,4094) if FRONT_RETURN==5 else
+       key4('198.18.0.1', '198.18.0.2', 49000, 49001, PROTOCOL, 4094))
 if NAT_MODE:
     if not VLAN_RETURN or EGRESS==FRONT_RETURN:raise ValueError('NAT lab requires isolated cross-port VLAN return')
     from ffn_fe100_nat_lab import tuples
     ORIGINAL,TRANSLATED=tuples(NAT_MODE,FRONT_RETURN==5)
-    KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],17,4094)
+    KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],PROTOCOL,4094)
 IDENTITY = entry4(KEY, 1001)
 FORWARD = (nat_entry4(KEY,1001,31,TRANSLATED) if NAT_MODE else
            forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN))
@@ -53,9 +54,9 @@ def front_qmap(flow,ingress,queue):
     if type(queue)!=int or not 0<=queue<=65535:raise ValueError('Invalid observed egress queue')
     qm=bytearray(84)
     struct.pack_into('>III',qm,0,0x02020000|queue,(ingress<<6)|1,31)
-    # Match the selected output tuple for NAT qualification. The earlier
-    # original-address fixture missed QMAP; hardware verification of this
-    # translated-address fixture is still required before admission.
+    # QMAP matches post-NAT addresses. Original-address matching produced
+    # egress exception17; translated addresses passed physical address-NAT
+    # tests in both directions. Queue IDs come from current BCM allocation.
     qm[12:20]=output_key4(flow)[8:16]
     struct.pack_into('>II',qm,20,0xfc0,0xffff)
     qm[28:36]=b'\xff'*8
@@ -353,6 +354,13 @@ class Lab:
 
 
 def main():
+    if '--protocol' in sys.argv:
+        index=sys.argv.index('--protocol')
+        if (index!=len(sys.argv)-2 or sys.argv[index+1] not in ('udp','tcp') or
+            not any(p in sys.argv[:index] for p in ('--front5','--front13'))):
+            raise SystemExit('--protocol udp|tcp must be last')
+        os.environ['FFN_FE100_LAB_PROTOCOL']=sys.argv[index+1]
+        del sys.argv[index:]
     if '--nat' in sys.argv:
         index=sys.argv.index('--nat')
         if (index!=len(sys.argv)-2 or sys.argv[index+1] not in ('address','port') or

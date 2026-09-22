@@ -76,8 +76,8 @@ The address-NAT trial then produced four session hits and four hardware drops
 in their respective phases. Its hit-phase packets missed QMAP and arrived at
 diagnostic capture unchanged: **hardware NAT did not qualify**. All temporary
 FE100 entries, BCM rules, baseline redirects and capture settings were restored.
-The translated-address QMAP fixture and dynamic queue selection are implemented
-but their physical NAT result remains unverified.
+At that checkpoint, the translated-address QMAP fixture and dynamic queue
+selection were implemented but their physical NAT result remained unverified.
 
 Live tests also coincided with aggregate-owner recoveries. The initial lab lock
 covered too many SDK calls; it was narrowed to individual calls. Testing was
@@ -93,3 +93,15 @@ distributing, and the existing Security/NAT collector healthy. Running and
 candidate configuration hashes remained unchanged. Complete physical NAT
 qualification and sustained control-plane coexistence are still required before
 production FE100 admission; the existing OCTEON kernel provider remains active.
+
+## Follow-up, 2026-09-22
+
+The translated-address QMAP key has now produced exact physical NAT rewrites.
+See [NAT packet qualification](NAT-PACKET-QUALIFICATION.md) for the TCP/UDP
+matrix and its limits. These results remain separate from production admission.
+
+One initial test still starved the production BCM lock and caused aggregate
+owner recovery. The lab now yields for 100ms outside the shared lock between
+SDK operations; the subsequent qualification sequence retained the same active
+aggregate owner. Packet capture also uses a larger per-socket receive buffer
+and rejects any reported capture loss. No global buffer settings were changed.

@@ -58,6 +58,8 @@ LACP, flush conntracks or install hardware NAT entries.
 The MIPS64 unit suite covers exact wire/native vectors, address and port
 translations in both directions, wrong reverse-pair rejection, independent NAT
 qualification, accepted writes with lost replies, recovery and policy fencing.
-Remaining hardware qualification requires isolated bidirectional packet tests
-checking translated bytes, IPv4/TCP/UDP checksums, TTL, deletion, restart and
-counter accounting before production session admission can be enabled.
+The isolated physical rewrite milestone is documented in
+[NAT packet qualification](NAT-PACKET-QUALIFICATION.md), including exact
+translated bytes, IPv4/TCP/UDP checksums, TTL and deletion checks. Paired-session
+lifetime, TCP state, aggregate/VLAN attachment, restart recovery and counter
+handoff remain prerequisites for production session admission.
