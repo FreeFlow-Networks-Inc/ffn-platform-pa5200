@@ -15,6 +15,13 @@ def reverse(r):
 
 
 class NatSessions(unittest.TestCase):
+    def test_ipv6_translation_cannot_use_ipv4_offload_codec(self):
+        from ffn_fe100_nat import capabilities
+        for kind in ('nat64','nptv6'):
+            self.assertFalse(capabilities()['translation_types'][kind]['production_admission'])
+            self.assertFalse(capabilities()['translation_types'][kind]['codec'])
+        with self.assertRaises(ValueError):session_pair4(1,row(src='2001:db8::1'),row(),9,[31,30])
+
     def setUp(self):
         self.original=row();self.reply=row('198.51.100.8','203.0.113.9',443,45000)
         self.entries=session_pair4(42,self.original,self.reply,9,[31,30])

@@ -16,7 +16,13 @@ def capabilities():
                 native_nat_layout='ports-then-addresses', wire_nat_layout='addresses-then-ports',
                 session_planning='on-demand acknowledged DP observation via MP controld to CP',
                 nat_packet_qualification=False, production_admission=False,
-                pending=['NAT wire/checksum qualification','ordered session lifecycle and invalidation feed',
+                translation_types={
+                    'ipv4':dict(codec=True,production_admission=False),
+                    'nat64':dict(codec=False,production_admission=False,
+                        reason='FE100 VER mode requires audited IPv6 keys, cross-family actions and bidirectional packet qualification'),
+                    'nptv6':dict(codec=False,production_admission=False,
+                        reason='IPv6 prefix mapping and checksum-neutral rewrite are not qualified on this FE100 adapter')},
+                pending=['production NAT qualification beyond the isolated TCP/UDP rewrite matrix','ordered session lifecycle and invalidation feed',
                          'aggregate/VLAN attachment qualification','hardware aging/counter handoff'])
 
 
