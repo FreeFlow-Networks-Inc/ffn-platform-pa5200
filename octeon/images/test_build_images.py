@@ -37,6 +37,23 @@ class BuildInputTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_cp_requires_cooling_support_in_its_own_kernel(self):
+        base = ''.join('CONFIG_' + name + '=y\n' for name in
+                       ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'))
+        b.check_kernel_config(base, 'dp')
+        with self.assertRaisesRegex(ValueError, 'cooling'):
+            b.check_kernel_config(base, 'cp')
+        cooling = ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM')
+        complete = base + ''.join('CONFIG_' + name + '=y\n' for name in cooling)
+        b.check_kernel_config(complete, 'cp')
+        for name in cooling:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'cooling'):
+                b.check_kernel_config(complete.replace('CONFIG_' + name + '=y\n', ''), 'cp')
+        modular = complete.replace('CONFIG_I2C_MUX_PCA954x=y', 'CONFIG_I2C_MUX_PCA954x=m')
+        with self.assertRaisesRegex(ValueError, 'cooling'):
+            b.check_kernel_config(modular, 'cp')
+        b.check_kernel_config(modular + 'CONFIG_MODULES=y\n', 'cp')
+
     def test_elf_endianness_and_machine(self):
         p = self.root / 'elf'
         good = b'\x7fELF\x02\x02' + b'\0'*12 + b'\x00\x08'
@@ -199,7 +216,8 @@ class BuildInputTests(unittest.TestCase):
         init.write_bytes(cpio_entry('init', b'clean') + cpio_entry('usr/lib/os-release', b'ID=debian\n') + cpio_entry('TRAILER!!!'))
         config = self.root / 'config'
         config.write_text(''.join('CONFIG_'+s+'=y\n' for s in
-                                 ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS')))
+                                 ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS',
+                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM')))
         def pin(p):
             return dict(path=str(p), sha256=b.sha(p))
         inputs = dict(kernel_repository=str(platform), kernel_commit='c'*40,

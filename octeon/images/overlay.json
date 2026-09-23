@@ -126,6 +126,36 @@
       "platform",
       "octeon/debian/ffn_cp_agent.py",
       "usr/local/sbin/ffn_cp_agent.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-management-i2c.sh",
+      "usr/local/sbin/ffn-management-i2c.sh"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-management-i2c.service",
+      "etc/systemd/system/ffn-management-i2c.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_thermal.py",
+      "usr/local/sbin/ffn_thermal.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_chassis_led.py",
+      "usr/local/sbin/ffn_chassis_led.py"
+    ],
+    [
+      "platform",
+      "octeon/i2c/ffn_i2cread.py",
+      "usr/local/sbin/ffn_i2cread.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-thermal.service",
+      "etc/systemd/system/ffn-thermal.service"
     ]
   ],
   "dp": [

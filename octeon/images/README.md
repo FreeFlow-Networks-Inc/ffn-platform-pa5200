@@ -36,6 +36,21 @@ client and filesystem ID before starting NFS. The transport unit copies its
 packaged executable to `/run/ffn-dp` before starting; it must still be stopped
 while the DP is reset. These units do not replace BCM/FE100 or DP boot qualification.
 
+The CP overlay also carries the I2C mux service, thermal governor, chassis
+status/LED helper and their I2C reader. Kernel checks require OCTEON I2C,
+the character device, PCA954x mux support and CPLD memory access. Drivers load
+from the running kernel's module tree rather than a previous kernel's loose
+modules. These services remain disabled in the generic image: after identifying
+the supported chassis, the MP must provision its authenticated temperature feed
+and enable `ffn-thermal.service` (which requires the mux service). Missing or
+stale temperatures and invalid fan feedback demand full cooling.
+
+Qualify each deployment through the MP control daemon: check all twelve board
+sensors, eight fan tachometers, both PSU presence/power-good signals, MP sensor
+freshness, and the automatic governor's watchdog. A bounded full-speed request
+must produce eight full PWM readbacks and increased RPM, followed by verified
+restoration of automatic mode. A successful I2C read alone is not this test.
+
 Do not register the firewall itself as a build runner. Set the `OCTEON_BUILD_PROFILE`
 variable in GitHub's `octeon-build` environment to the absolute path of a
 runner-owned profile. Restrict that environment to reviewed refs; this workflow

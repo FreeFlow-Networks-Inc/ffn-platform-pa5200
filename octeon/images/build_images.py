@@ -166,6 +166,18 @@ def check_host():
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
 
 
+def check_kernel_config(conf, role):
+    values = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_]+)=([ym])$', conf, re.M))
+    for symbol in ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'):
+        if values.get('CONFIG_' + symbol) != 'y':
+            raise ValueError('Missing kernel requirement: ' + symbol)
+    if role == 'cp':
+        for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
+            value = values.get('CONFIG_' + symbol)
+            if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
+                raise ValueError('Missing CP cooling kernel requirement: ' + symbol)
+
+
 def build(config, platform, core, out):
     check_host()
     if config.get('schema') != 1 or config.get('redistributable_inputs_reviewed') is not True:
@@ -235,9 +247,7 @@ def build(config, platform, core, out):
             make = ['make', '-C', tree, 'ARCH=mips', 'CROSS_COMPILE=' + cross]
             run(make + ['olddefconfig'])
             conf = (tree / '.config').read_text()
-            for symbol in ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'):
-                if 'CONFIG_' + symbol + '=y\n' not in conf:
-                    raise ValueError('Missing kernel requirement: ' + symbol)
+            check_kernel_config(conf, role)
             run(make + ['-j' + str(jobs), 'vmlinux', 'modules'])
             run(make + ['INSTALL_MOD_PATH=' + str(root), 'modules_install'])
             # Kernel build/source links point to the runner; source ships separately.
