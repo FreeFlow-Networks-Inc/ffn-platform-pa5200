@@ -3,7 +3,9 @@
 window.ffnExtensions.renderPatchImages = async parent => {
   try {
     await import('/static/extensions/pa5200/plane-images.js');
-    if (parent.isConnected) return window.ffnExtensions.renderPlaneImageCards(parent);
+    if (parent.isConnected) await window.ffnExtensions.renderPlaneImageCards(parent);
+    await import('/static/extensions/pa5200/plane-lifecycle.js');
+    if (parent.isConnected) await window.ffnExtensions.renderPlaneLifecycle(parent);
   } catch (error) { parent.textContent = 'Processor image controls unavailable: ' + error.message; }
 };
 (() => {

@@ -53,6 +53,8 @@ def main():
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['plane-images']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_images.py'),a]
                                        for a in ('status','validate','apply')}
+    worker['commands']['plane-lifecycle']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_lifecycle.py'),a]
+                                          for a in ('status','validate','apply')}
     for resource,actions in [('nat',('status','validate','apply')),('security',('status','validate','apply')),('dataplane-tools',('status',))]:
         worker['commands'][resource]={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'nat_backend.py'),resource,a] for a in actions}
     backup=Path('/var/backups/ffn/control-channel-'+str(time.time_ns()))
