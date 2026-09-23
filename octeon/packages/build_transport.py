@@ -19,9 +19,14 @@ SOURCES = {
     'octeon/dpnet2/ffn_dpnetd.c': 'dpnet/ffn_dpnetd.c',
     'octeon/dpnet2/ffn_dpnet_ring.h': 'dpnet/ffn_dpnet_ring.h',
     'octeon/dpnet2/Makefile': 'dpnet/Makefile',
+    'octeon/dpagent/ffn_dpagent2.c': 'boot/ffn_dpagent2.c',
+    'octeon/debian/ffn-systemd-handoff.c': 'boot/ffn-systemd-handoff.c',
+    'octeon/images/boot/Makefile': 'boot/Makefile',
+    'octeon/images/boot/ffn_nfsmount.c': 'boot/ffn_nfsmount.c',
     'LICENSE': 'LICENSE',
 }
-BINARIES = {'usr/libexec/ffn/ffn_pcnetd', 'usr/libexec/ffn/ffn_dpnetd'}
+BINARIES = {'usr/libexec/ffn/' + name for name in
+            ('ffn_pcnetd', 'ffn_dpnetd', 'ffn_dpagent2', 'ffn-systemd-handoff', 'ffn_nfsmount')}
 
 
 def sha(path):
@@ -86,7 +91,7 @@ def audit_deb(path):
     if status != 0:
         raise ValueError('Cannot inspect Debian package')
     if set(found) != BINARIES:
-        raise ValueError('Both PCIe transports are required')
+        raise ValueError('Both PCIe transports and boot helpers are required')
     return {'package': fields['Package'], 'version': fields['Version'],
             'architecture': fields['Architecture'], 'built_using': fields['Built-Using'],
             'executables': found}

@@ -1,0 +1,62 @@
+#!/bin/busybox sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Role is part of the image. The MP supplies ffn.nfsroot=IPv4:/export at boot.
+export PATH=/bin:/sbin
+BB=/bin/busybox
+$BB mount -t devtmpfs devtmpfs /dev
+$BB mount -t proc proc /proc
+$BB mount -t sysfs sysfs /sys
+$BB mkdir -p /dev/pts /dev/net
+$BB mount -t devpts devpts /dev/pts
+exec </dev/console >/dev/console 2>&1
+fallback() {
+    echo "FFN boot: $*; keeping RAM transport and recovery console"
+    while :; do $BB sh -i; $BB sleep 2; done
+}
+supervise() {
+    (while :; do "$@"; $BB sleep 2; done) &
+}
+[ "$$" = 1 ] || exit 2
+role=$($BB cat /etc/ffn-image-role)
+case "$role" in
+    cp) supervise /sbin/ffn_pcnetd ;;
+    dp)
+        # The mailbox must publish its canary before the CP starts dpnet.
+        supervise /sbin/ffn_dpagent2
+        supervise /sbin/ffn_dpnetd --role dp --wait 60
+        ;;
+    *) fallback 'invalid image role' ;;
+esac
+root=
+set -f
+for arg in $($BB cat /proc/cmdline); do
+    case "$arg" in
+        ffn.nfsroot=*) [ -z "$root" ] || fallback 'duplicate NFS root'; root=${arg#ffn.nfsroot=} ;;
+    esac
+done
+set +f
+echo "$root" | $BB grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/[A-Za-z0-9_./-]+$' || fallback 'MP must supply a valid NFS root'
+server=${root%%:*}; export_path=${root#*:}
+case "$export_path/" in */../*|*/./*|*//*) fallback 'unsafe export path' ;; esac
+$BB mkdir -p /newroot
+i=0
+until $BB ping -c1 -W1 "$server" >/dev/null 2>&1; do
+    i=$((i+1)); [ "$i" -lt 60 ] || fallback 'root server unreachable'
+    $BB sleep 1
+done
+/sbin/ffn_nfsmount "$root" /newroot "nolock,vers=3,addr=$server,proto=tcp,mountproto=tcp,hard" || fallback 'NFS mount failed'
+$BB grep -Eq '^ID="?debian"?$' /newroot/usr/lib/os-release || fallback 'Debian root required'
+[ "$($BB cat /newroot/etc/ffn-image-role)" = "$role" ] || fallback 'root role mismatch'
+for foreign in /newroot/etc/openwrt_release /newroot/etc/centos-release /newroot/opt/ffn-compat; do
+    [ ! -e "$foreign" ] || fallback 'foreign runtime rejected'
+done
+$BB chroot /newroot /usr/lib/systemd/systemd --version || fallback 'systemd runtime failed'
+$BB chroot /newroot /usr/sbin/sshd -t || fallback 'MP must provision SSH identity before boot'
+for dir in proc sys dev; do
+    $BB mkdir -p "/newroot/$dir"
+    $BB mount -o bind "/$dir" "/newroot/$dir" || fallback "bind $dir failed"
+done
+$BB mkdir -p /newroot/run /newroot/oldroot
+$BB mount -t tmpfs -o mode=755 tmpfs /newroot/run || fallback 'run mount failed'
+$BB mount -o bind / /newroot/oldroot || fallback 'preserve RAM runtime failed'
+exec /sbin/ffn-systemd-handoff /newroot

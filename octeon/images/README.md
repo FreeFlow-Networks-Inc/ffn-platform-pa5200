@@ -1,5 +1,68 @@
 # OCTEON images built by GitHub Actions
 
+## Independent patch-server pulls
+
+Device > Patch Management shows separate Control Plane and Data Plane image
+cards when the PA-5200 extension is selected. Each has its own Check and Download
+operation, revision, job and cache. The console uses the same controld resource:
+
+```text
+show platform images
+request platform image cp check
+request platform image dp check
+request platform image cp download SHA256_FROM_CHECK
+request platform image dp download SHA256_FROM_CHECK
+```
+
+The MP worker registers `plane-images` with status, validate and apply operations.
+It starts a bounded systemd download worker, so closing the browser does not
+interrupt a transfer. No WebUI HTTP request is needed from the console.
+The update-server URL and Ed25519 public key are shared with core Patch Management;
+TLS uses the MP's CA trust. Provision the patch server's CA rather than disabling
+certificate verification.
+
+Publish a completed build to the existing signed patch repository one role at a time:
+
+```sh
+python3 octeon/images/publish_patch.py --core /path/to/core \
+  --dir /path/to/public/patches --build /path/to/completed-build \
+  --role cp --version VERSION --seed /private/sign.key --public-key /path/to/update.pub
+```
+
+Repeat with `--role dp` when that image is ready. Publishing either image preserves
+the other role and the core code patch; code-patch publication also preserves both
+roles. Catalog keys are `pa5200-cp` and `pa5200-dp`. Downloads require the checked
+digest, verify the signed size/hash and embedded role/ABI/source metadata, and
+reject catalog rollback. Failed transfers preserve the previous staged image.
+State lives below `/var/lib/ffn-ngfw/pa5200-images/{cp,dp}`.
+
+These operations stage complete images on the MP. They do not activate them,
+change boot selection, or restart the CP/DP. The UI explicitly labels unqualified
+build candidates. Local root provisioning, an explicit boot operation and fresh
+agent/hardware acknowledgments are required before reporting a live update.
+
+## Build clean Debian seeds
+
+In the isolated Debian builder with MIPS64 BE emulation and the source-built
+`rebootstrap` repository, run `build_rootfs.py --role cp|dp --repository PATH
+--out NEW_DIRECTORY`. It installs real Debian packages in a new root, checks their
+configuration, records source versions, and removes bootstrap logs and generated
+SSH/machine identity. No existing appliance root is accepted.
+
+`build_initramfs.py` takes `--role`, `--busybox` (busybox-static .deb), `--transport`
+(ffn-octeon-transport .deb), `--base-files` (.deb), `--source-date-epoch` and `--out`.
+It produces a plain newc archive with static Debian/FFN executables and records
+the exact input hashes. The DP starts its recovery mailbox before dpnet; both
+roles retain their transports in RAM through systemd handoff. The MP must supply
+`ffn.nfsroot=SERVER_IPV4:/PROVISIONED_EXPORT` in the kernel command line. There is
+no default export, customer address, password or SSH key in either seed.
+The root must match the image role and have locally provisioned SSH identity.
+Missing provisioning keeps the recovery environment available.
+
+Include the matching Debian source packages, patches and licensing notices in
+the corresponding-source bundle, including glibc/GCC used by static executables.
+Seed creation and QEMU execution checks do not establish hardware boot readiness.
+
 The platform's `OCTEON CP and DP images` workflow builds two **MIPS64 big-endian**
 Debian/glibc bundles. The management-plane image is Ubuntu amd64. Each bundle contains `vmlinux`, its matching kernel modules and root filesystem,
 `kernel.config`, and `image.json`. Both come from the same pinned platform/core

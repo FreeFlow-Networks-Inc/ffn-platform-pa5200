@@ -239,6 +239,12 @@ def build(config, platform, core, out):
                 base = {'core': core, 'platform': platform}[origin]
                 safe_install(base / source, root, destination)
                 owners.pop(destination, None)
+            marker = root / 'etc/ffn-image-role'
+            if marker.parent.is_symlink() or marker.is_symlink():
+                raise ValueError('Role marker crosses an image symlink')
+            marker.parent.mkdir(exist_ok=True)
+            marker.write_text(role + '\n')
+            owners.pop('etc/ffn-image-role', None)
             shutil.copyfile(kernel_config, tree / '.config')
             run([tree / 'scripts/config', '--file', tree / '.config',
                  '--set-str', 'INITRAMFS_SOURCE', initramfs,

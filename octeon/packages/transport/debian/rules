@@ -11,6 +11,7 @@ override_dh_auto_configure:
 override_dh_auto_build:
 	$(MAKE) -C pcnet CROSS=$(CROSS)
 	$(MAKE) -C dpnet CROSS=$(CROSS)
+	$(MAKE) -C boot CROSS=$(CROSS)
 
 override_dh_auto_test:
 	$(MAKE) -C dpnet CROSS=$(CROSS) check
@@ -19,6 +20,7 @@ override_dh_auto_test:
 override_dh_auto_clean:
 	$(MAKE) -C pcnet clean
 	$(MAKE) -C dpnet clean
+	$(MAKE) -C boot clean
 
 override_dh_auto_install:
 
