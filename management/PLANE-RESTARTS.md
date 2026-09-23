@@ -1,6 +1,6 @@
 # Independent processor restart
 
-Patch Management exposes Control Plane and Data Plane restart buttons through
+System > Hardware & Runtime > Dataplane & Engines exposes Control Plane and Data Plane restart buttons through
 the `plane-lifecycle` MP worker resource. CLI equivalents are:
 
 ```

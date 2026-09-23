@@ -4,9 +4,13 @@ window.ffnExtensions.renderPatchImages = async parent => {
   try {
     await import('/static/extensions/pa5200/plane-images.js');
     if (parent.isConnected) await window.ffnExtensions.renderPlaneImageCards(parent);
+  } catch (error) { parent.textContent = 'Processor image controls unavailable: ' + error.message; }
+};
+window.ffnExtensions.renderDataplaneControls = async parent => {
+  try {
     await import('/static/extensions/pa5200/plane-lifecycle.js');
     if (parent.isConnected) await window.ffnExtensions.renderPlaneLifecycle(parent);
-  } catch (error) { parent.textContent = 'Processor image controls unavailable: ' + error.message; }
+  } catch (error) { parent.textContent = 'Processor restart controls unavailable: ' + error.message; }
 };
 (() => {
   'use strict';
