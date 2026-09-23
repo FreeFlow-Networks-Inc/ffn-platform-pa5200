@@ -93,6 +93,9 @@ jobs:
       - name: deps
         run: python3 -m pip install --quiet pyelftools fastapi
 
+      - name: OCTEON release input validation
+        run: python3 -m unittest discover -s octeon/images -p 'test_*.py'
+
       - name: shared Linux network engine
         uses: actions/checkout@v5
         with:

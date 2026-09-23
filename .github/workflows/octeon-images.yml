@@ -1,0 +1,85 @@
+name: OCTEON CP and DP images
+
+# Never run untrusted PR code on the prepared builder. Dispatch a reviewed ref.
+on:
+  workflow_dispatch:
+    inputs:
+      core_commit:
+        description: Full reviewed FFN-NGFW commit to include
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: octeon-images
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, ffn-octeon-builder]
+    environment: octeon-build
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: platform-src
+          persist-credentials: false
+      - name: Require immutable core input
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: '[[ "$CORE_COMMIT" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@v5
+        with:
+          repository: FreeFlow-Networks-Inc/FFN-NGFW
+          ref: ${{ inputs.core_commit }}
+          path: core-src
+          submodules: false
+          persist-credentials: false
+      - name: Build clean plane candidates
+        env:
+          BUILD_PROFILE: ${{ vars.OCTEON_BUILD_PROFILE }}
+        run: |
+          test -n "$BUILD_PROFILE"
+          python3 platform-src/octeon/images/build_images.py \
+            --config "$BUILD_PROFILE" --platform platform-src --core core-src \
+            --out "$RUNNER_TEMP/octeon-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: octeon-candidates
+          path: ${{ runner.temp }}/octeon-${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: octeon-release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: octeon-candidates
+          path: release
+      - name: Check all artifact digests
+        working-directory: release
+        run: sha256sum --check SHA256SUMS
+      - uses: actions/attest@v4
+        with:
+          subject-path: release/*
+      - name: Create draft release for qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PLATFORM_COMMIT: ${{ github.sha }}
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          tag="octeon-${PLATFORM_COMMIT:0:12}-${CORE_COMMIT:0:12}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          gh release create "$tag" release/* --target "$PLATFORM_COMMIT" \
+            --draft --title "OCTEON CP/DP candidate $tag" \
+            --notes 'MIPS64 big-endian CP/DP candidates. Hardware boot qualification and a reviewed platform image lock are required before deployment. Source archives and checksums are included.'
+          echo "Draft release: $tag" >> "$GITHUB_STEP_SUMMARY"
