@@ -5,6 +5,7 @@ The owner's pdt diagnostic defines forwarding type 5 as SYSPORT. Mask one
 bits mean comparison, so only the six-bit ingress logical port is matched.
 Default only describes the entry; --inspect issues indirect table reads.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -55,7 +56,7 @@ if shim.ffn_fe100_select_block(0x80000) or shim.ffn_fe100_select_lif_table(table
 # getter is called unless --apply explicitly requests an entry insertion.
 if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/lif-lab-trace.txt', 1):
     raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+for r in json.load(open(register_map_path())):
     shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
 get = lib.pan_fe100_fetch_lif_entry

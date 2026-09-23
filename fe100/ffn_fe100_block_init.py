@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Lab: initialize an individually audited FE100 packet-processing block."""
+from ffn_fe100 import register_map_path
 import argparse
 from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
@@ -34,7 +35,7 @@ shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
 if shim.ffn_fe100_select_block(blocks[args.block]):raise SystemExit('block selection failed')
 trace=('/var/lib/ffn/fe100/'+args.block+'-init.txt').encode()
 if shim.ffn_fe100_open(base,trace,args.apply):raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):shim.ffn_fe100_allow(r['addr'])
+for r in json.load(open(register_map_path())):shim.ffn_fe100_allow(r['addr'])
 lib=C.CDLL(library,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
 # fe100_cfg1 is an exported 2812-byte initialized object in this exact ELF.
 # Copy it; never mutate the library's global configuration in place.

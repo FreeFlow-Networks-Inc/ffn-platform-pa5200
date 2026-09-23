@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded lab programming of one FE100 NIF receive port-map entry."""
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -28,7 +29,7 @@ if size != 0x100000 or not memory_decode_on(): raise SystemExit('FE100 BAR unava
 shim = C.CDLL('/usr/local/lib/ffn/libffn-fe100-tables.so',mode=os.RTLD_GLOBAL|os.RTLD_NOW)
 shim.ffn_fe100_open.argtypes = [C.c_uint64,C.c_char_p,C.c_int]
 if shim.ffn_fe100_open(base,b'/var/lib/ffn/fe100/portmap-trace.txt',args.apply): raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')): shim.ffn_fe100_allow(r['addr'])
+for r in json.load(open(register_map_path())): shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
 # DWARF pan_fe100_portmap_entry_t is exactly three packed uint8 fields.
 entry = (C.c_uint8*3)(args.swdev,args.device,args.port)

@@ -4,6 +4,7 @@
 Invoked only by ffn_fe100_nexthop.py while it owns the table lock and the
 temporary next-hop. This child has a separate MMIO mapping restricted to TLU.
 """
+from ffn_fe100 import register_map_path
 import ctypes as C
 import hashlib
 import json
@@ -37,7 +38,7 @@ def main():
     shim.ffn_fe100_open.argtypes = [C.c_uint64, C.c_char_p, C.c_int]
     if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/direct-lif-trace.txt', 1):
         raise RuntimeError('map failed')
-    for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+    for r in json.load(open(register_map_path())):
         shim.ffn_fe100_allow(r['addr'])
     lib = C.CDLL(libpath, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
     get, put = lib.pan_fe100_fetch_lif_entry, lib.pan_fe100_insert_lif_entry
@@ -60,7 +61,7 @@ def main():
     modes = {}
     try:
         if capture:
-            registers = {r['name']:r['addr'] for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json'))}
+            registers = {r['name']:r['addr'] for r in json.load(open(register_map_path()))}
             if fe.read32(registers['prom_chip_rev_num']) >> 24:
                 raise RuntimeError('PCA decoder requires FE100, not FE101')
             for block in ('lif','dfp','fwd'):

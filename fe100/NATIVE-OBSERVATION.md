@@ -5,10 +5,10 @@ root-owned and mode 0644. Generate it with `tools/ffn_fe100_csr.py` against the
 owner's matching `libpandp_cp.so.1.0`; the extractor rejects mismatched layouts.
 Keep that library and generated metadata out of public code-patch archives.
 
-The base driver CLI, non-clearing lookup observer and CP agent use this native
-location. `FFN_FE100_REGMAP` selects another absolute path when explicitly
+Register-map consumers, including the base driver CLI, non-clearing lookup
+observer and CP agent, use this native location. `FFN_FE100_REGMAP` selects another absolute path when explicitly
 configured by the operator. No compatibility root is needed for these reads.
-This does not port the remaining hardware bring-up helpers or enable sessions.
+This path change does not remove other bring-up dependencies or enable sessions.
 
 Deploy `ffn_cp_agent.py`, `ffn_fe100.py` and `ffn_fe100_lookup_health.py` together.
 The CP also needs the core's `ffn_agent_protocol.py`, `ffn_agent_resources.py`

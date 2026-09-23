@@ -5,6 +5,7 @@ Default denies every write to verify symbol interposition before using --apply.
 Each adapter confines accesses to approved registers in its selected block. No PAN
 system-state service, full-chip reset, parser load or forwarding setup is called.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import hashlib
@@ -37,7 +38,7 @@ shim.ffn_fe100_allow.argtypes = [C.c_uint32]
 shim.fe100_reg_rd.argtypes = [C.c_uint32, C.c_uint32, C.POINTER(C.c_uint32)]
 if shim.ffn_fe100_open(base, args.trace.encode(), args.apply) != 0:
     raise SystemExit('cannot map FE100 or open trace')
-for entry in json.loads(pathlib.Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text()):
+for entry in json.loads(pathlib.Path(register_map_path()).read_text()):
     if shim.ffn_fe100_allow(entry['addr']) != 0: raise SystemExit('invalid register map')
 # These NIF SerDes locations are absent from the public CSR descriptor table.
 # Each is an explicit address in this owner's pan_fe100_nif_100g_init routine.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read non-clearing FE100 counters and block fault modes for lab evidence."""
+from ffn_fe100 import register_map_path
 import argparse
 import json
 import time
@@ -8,7 +9,7 @@ from ffn_fe100 import Fe100
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--compare', help='Earlier JSON snapshot; emit changed counters')
 args = p.parse_args()
-regs = json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json'))
+regs = json.load(open(register_map_path()))
 previous = json.load(open(args.compare))['registers'] if args.compare else {}
 fe = Fe100()
 values = {}

@@ -5,6 +5,7 @@ Default slot 0 is the isolated lab configuration. The initialized owner
 fe100_cfg1 has four priority maps at offsets 1336..1399; entries 255 are
 unconfigured and are left untouched. No forwarding policy is created here.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -34,7 +35,7 @@ if shim.ffn_fe100_select_block(0x70000):
     raise SystemExit('block selection failed')
 if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/spm-trace.txt', args.apply):
     raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+for r in json.load(open(register_map_path())):
     shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
 defaults = bytes((C.c_char * 2812).in_dll(lib, 'fe100_cfg1'))
