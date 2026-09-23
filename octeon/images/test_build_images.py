@@ -64,6 +64,23 @@ class BuildInputTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 b.elf(p)
 
+    def test_pem_delimiter_constants_are_not_private_keys(self):
+        delimiter=b'-----BEGIN OPENSSH PRIVATE KEY-----'
+        self.assertFalse(b.private_key_material(b'ELF constants\x00'+delimiter+b'\x00'))
+        self.assertTrue(b.private_key_material(b'ELF embedded key\x00'+delimiter+b'\n'+b'A'*64+b'\n'))
+
+    @unittest.skipUnless(hasattr(tarfile, 'data_filter'), 'Python tar data filtering required')
+    def test_absolute_debian_links_are_rebased_inside_image(self):
+        link=tarfile.TarInfo('etc/ssl/certs/example.pem')
+        link.type=tarfile.SYMTYPE;link.linkname='/usr/share/ca-certificates/example.crt'
+        rebased=b.rootfs_filter(link,str(self.root))
+        self.assertEqual(rebased.linkname.replace(os.sep,'/'),'../../../usr/share/ca-certificates/example.crt')
+        self.assertEqual(link.linkname,'/usr/share/ca-certificates/example.crt')
+        link.linkname='/../../outside'
+        with self.assertRaises(ValueError): b.rootfs_filter(link,str(self.root))
+        link.linkname='../../../../outside'
+        with self.assertRaises(tarfile.FilterError): b.rootfs_filter(link,str(self.root))
+
     def test_role_packages_required_before_build(self):
         debian_metadata(self.root)
         policy.debian_root(self.root, 'cp')
@@ -87,7 +104,7 @@ class BuildInputTests(unittest.TestCase):
         for name, value in [('etc/machine-id', 'identity'), ('root/.ssh/authorized_keys', 'key'),
                             ('var/lib/ffn-ngfw/running-config.xml', 'configuration'),
                             ('etc/ssh/ssh_host_ed25519_key', 'key'),
-                            ('usr/share/secret', '-----BEGIN OPENSSH PRIVATE KEY-----')]:
+                            ('usr/share/secret', '-----BEGIN OPENSSH PRIVATE KEY-----\n'+'A'*64+'\n')]:
             p = self.root / name
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(value)
@@ -118,7 +135,7 @@ class BuildInputTests(unittest.TestCase):
         b.audit_initramfs(p)
         for data in (good[:-10], good + good, cpio_entry('../../escape') + cpio_entry('TRAILER!!!'),
                      cpio_entry('etc/shadow', b'secret') + cpio_entry('TRAILER!!!'),
-                     cpio_entry('init', b'-----BEGIN RSA PRIVATE KEY-----') + cpio_entry('TRAILER!!!')):
+                     cpio_entry('init', b'-----BEGIN RSA PRIVATE KEY-----\n'+b'A'*64+b'\n') + cpio_entry('TRAILER!!!')):
             p.write_bytes(data)
             with self.subTest(data=data[:20]), self.assertRaises(ValueError):
                 b.audit_initramfs(p)

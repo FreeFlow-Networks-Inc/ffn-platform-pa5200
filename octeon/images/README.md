@@ -62,6 +62,11 @@ Missing provisioning keeps the recovery environment available.
 Include the matching Debian source packages, patches and licensing notices in
 the corresponding-source bundle, including glibc/GCC used by static executables.
 Seed creation and QEMU execution checks do not establish hardware boot readiness.
+`collect_sources.py --rootfs CLEAN_ROOT --cache SOURCE_CACHE --out SOURCE_DIRECTORY`
+collects exact source versions from dpkg metadata and `Built-Using`. It verifies
+archive SHA-256 values from each Debian source descriptor, and can recover
+superseded versions from Debian Snapshot when the current APT index has moved on.
+Archive that directory as the build profile's `corresponding_sources` input.
 
 The platform's `OCTEON CP and DP images` workflow builds two **MIPS64 big-endian**
 Debian/glibc bundles. The management-plane image is Ubuntu amd64. Each bundle contains `vmlinux`, its matching kernel modules and root filesystem,

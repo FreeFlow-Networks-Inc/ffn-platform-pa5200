@@ -6,10 +6,12 @@ runner configuration identifies reviewed kernel source and rootfs/initramfs
 seeds. Builds never contact an appliance or change any boot selection.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import shutil
 import subprocess
@@ -54,6 +56,27 @@ def elf(path):
         raise ValueError('Expected MIPS64 big-endian ELF: ' + str(path))
 
 
+def private_key_material(data):
+    # ssh-keygen/OpenSSL embed PEM delimiter strings as executable constants.
+    # Require an actual encoded body, not a delimiter alone. Do not exempt ELF
+    # files wholesale: a binary can still contain an embedded private key.
+    return re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----\r?\n'
+                     rb'(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n|\r?\n)*'
+                     rb'[A-Za-z0-9+/=]{32,}\r?\n', data) is not None
+
+
+def rootfs_filter(member, destination):
+    # Debian alternatives and CA links are absolute inside the target root.
+    # Rebase them before Python's safety filter so they never refer to the host.
+    if (member.issym() or member.islnk()) and member.linkname.startswith('/'):
+        if '..' in member.linkname.split('/'):
+            raise ValueError('Absolute image link traverses outside root')
+        member = copy.copy(member)
+        target = member.linkname.lstrip('/')
+        member.linkname = posixpath.relpath(target, posixpath.dirname(member.name) or '.') if member.issym() else target
+    return tarfile.data_filter(member, destination)
+
+
 def audit_initramfs(path):
     """Only a single plain newc archive is accepted; inspect without extracting."""
     distributions = []
@@ -96,7 +119,7 @@ def audit_initramfs(path):
             if (name.startswith(('root/', 'home/', 'opt/dpfs/', 'opt/ffn-compat/', 'etc/ffn/', 'etc/ffn-ngfw/'))
                     or Path(name).name in ('shadow', 'gshadow', 'authorized_keys', 'machine-id')
                     or re.search(r'(ssh_host_.*_key|id_rsa|id_ed25519)$', name)
-                    or re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----', data)):
+                    or private_key_material(data)):
                 raise ValueError('Machine/vendor state in initramfs: ' + name)
 
 
@@ -132,7 +155,7 @@ def audit_root(root):
             elf(item)
         if item.stat().st_size < 16 * 1024 * 1024:
             data = item.read_bytes()
-            if re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----', data):
+            if private_key_material(data):
                 raise ValueError('Private key material: ' + name)
 
 
@@ -219,7 +242,7 @@ def build(config, platform, core, out):
             root = bundle / 'rootfs'
             root.mkdir(parents=True)
             with tarfile.open(seed) as tar:
-                tar.extractall(root, filter='data')
+                tar.extractall(root, filter=rootfs_filter)
                 owners = {m.name.removeprefix('./').rstrip('/'): (m.uid, m.gid) for m in tar.getmembers()}
             audit_root(root)
             operating_system = image_policy.debian_root(root, role)
