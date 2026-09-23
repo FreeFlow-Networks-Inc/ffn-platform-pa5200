@@ -156,6 +156,16 @@
       "platform",
       "octeon/debian/ffn-thermal.service",
       "etc/systemd/system/ffn-thermal.service"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100.py",
+      "usr/local/sbin/ffn_fe100.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_lookup_health.py",
+      "usr/local/sbin/ffn_fe100_lookup_health.py"
     ]
   ],
   "dp": [

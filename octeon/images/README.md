@@ -51,6 +51,12 @@ freshness, and the automatic governor's watchdog. A bounded full-speed request
 must produce eight full PWM readbacks and increased RPM, followed by verified
 restoration of automatic mode. A successful I2C read alone is not this test.
 
+FE100 observation code is included in the CP overlay. The owner must provision
+the matching register metadata separately as described in
+[native FE100 observations](../../fe100/NATIVE-OBSERVATION.md). Missing metadata
+keeps the agent's read-verification flag false; neither file installation nor
+register readback is a forwarding acknowledgment.
+
 Do not register the firewall itself as a build runner. Set the `OCTEON_BUILD_PROFILE`
 variable in GitHub's `octeon-build` environment to the absolute path of a
 runner-owned profile. Restrict that environment to reviewed refs; this workflow
