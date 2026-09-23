@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "platform": "pa5200",
+  "enabled": false,
+  "reason": "No qualified CP/DP release has been published and pinned yet."
+}

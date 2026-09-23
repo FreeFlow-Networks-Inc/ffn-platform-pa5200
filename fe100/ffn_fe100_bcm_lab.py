@@ -64,6 +64,10 @@ def execute(source,call):
             SCRIPT.write_text(source)
             result=call({'op':'cint.run','script':SCRIPT.name,'timeout':20})
         finally:SCRIPT.write_bytes(previous)
+    # flock does not provide FIFO ordering. Immediately reacquiring it for
+    # the next lab read can starve production's 20ms retry loop even though
+    # each individual SDK call is short. Yield outside the shared lock.
+    time.sleep(.1)
     if (not result.get('completed') or result.get('truncated') or
         any('FAIL' in s for s in result.get('markers',[]))):
         raise RuntimeError('BCM lab recipe failed: '+json.dumps(result))

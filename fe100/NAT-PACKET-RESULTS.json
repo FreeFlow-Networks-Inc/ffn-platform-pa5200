@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "scope": "isolated IPv4 NAT packet rewrite; sequential directional tests",
+  "complete": true,
+  "missing": [],
+  "production_admission": false,
+  "tcp_state_tracking_verified": false,
+  "simultaneous_bidirectional_verified": false,
+  "aggregate_transit_verified": false,
+  "date": "2026-09-22",
+  "cases": [
+    {
+      "protocol": "udp",
+      "translation": "address",
+      "ingress": 13,
+      "egress": 5,
+      "packets": 4
+    },
+    {
+      "protocol": "udp",
+      "translation": "address",
+      "ingress": 5,
+      "egress": 13,
+      "packets": 4
+    },
+    {
+      "protocol": "udp",
+      "translation": "port",
+      "ingress": 13,
+      "egress": 5,
+      "packets": 4
+    },
+    {
+      "protocol": "udp",
+      "translation": "port",
+      "ingress": 5,
+      "egress": 13,
+      "packets": 4
+    },
+    {
+      "protocol": "tcp",
+      "translation": "address",
+      "ingress": 13,
+      "egress": 5,
+      "packets": 4
+    },
+    {
+      "protocol": "tcp",
+      "translation": "address",
+      "ingress": 5,
+      "egress": 13,
+      "packets": 4
+    },
+    {
+      "protocol": "tcp",
+      "translation": "port",
+      "ingress": 13,
+      "egress": 5,
+      "packets": 4
+    },
+    {
+      "protocol": "tcp",
+      "translation": "port",
+      "ingress": 5,
+      "egress": 13,
+      "packets": 4
+    }
+  ],
+  "report_sha256": [
+    "0a68e2e9ac5edcb7a46661bb7fb42dfdaf300411686dc5dc918becb0428aee34",
+    "a80a9c61b544385aaca4f33d91338a5693a87db2a83651b89badf841f31b20e5",
+    "250f76d4ac0347b3e1dd3b2abea42dde6ed1ff44c2c6fb0b8e3e6e39adcf3dbf",
+    "c465a34ed658ed418ae3f7c78e7d851a1786e11ba4e4ffc01d142356c132da5c",
+    "030a473892db633213fa80ebdc76270b246973fd8396e4946859ca950de41db8",
+    "fc65a908eff4e3057aa5820426ae4f79bb2d1b2ec8b3663518731a255b0c77af",
+    "9ccf41e3724e3e61b03c9928d5c276fb16480fd3ddf1e3c04cc1c19562afcfcc",
+    "9004ba012cb3eddd7d14d2d04c8d31213aa0001e1869d3c3ee0d197bdcd1d622"
+  ],
+  "full_report_location": "/var/log/ffn-fe100-nat-qualification.json on MP"
+}

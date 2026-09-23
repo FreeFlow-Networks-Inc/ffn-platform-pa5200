@@ -7,6 +7,25 @@ from validate_physical_sessions import checksum
 
 
 class FrontEncoding(unittest.TestCase):
+    def test_tcp_nat_probe_full_checksums_payload_sequence_and_ttl(self):
+        for mode in ('address','port'):
+            for reverse in (False,True):
+                packets=directional_frames('12'*16,4,reverse,mode,'tcp')
+                wanted=expected_return('12'*16,4,reverse,mode,'tcp')
+                for packet,tagged in zip(packets,wanted):
+                    out=tagged[:12]+tagged[16:]
+                    self.assertEqual(packet[23],6);self.assertEqual(out[23],6)
+                    self.assertEqual(packet[46:48],bytes.fromhex('5018'))
+                    self.assertEqual(packet[38:50],out[38:50])
+                    self.assertEqual(packet[54:],out[54:])
+                    self.assertEqual(out[22],packet[22]-1)
+                    self.assertNotEqual(packet[26:38],out[26:38])
+                    for frame in (packet,out):
+                        self.assertEqual(int.from_bytes(frame[16:18],'big'),len(frame)-14)
+                        self.assertEqual(checksum(frame[14:34]),0)
+                        pseudo=frame[26:34]+struct.pack('!BBH',0,6,len(frame)-34)
+                        self.assertEqual(checksum(pseudo+frame[34:]),0)
+
     def test_lab_rejects_stale_failed_or_replaced_production_owners(self):
         import json,tempfile
         from pathlib import Path
@@ -61,15 +80,16 @@ class FrontEncoding(unittest.TestCase):
         from pathlib import Path
         from ffn_fe100_nat_lab import tuples
         from ffn_fe100_sessions import key4,validate_entry4
-        for mode in ('address','port'):
+        import itertools
+        for mode,(protocol,number) in itertools.product(('address','port'),(('udp',17),('tcp',6))):
             for front in ('5','13'):
-                env=dict(os.environ,FFN_FE100_FRONT_RETURN=front,FFN_FE100_CROSS='1',FFN_FE100_VLAN_RETURN='1',FFN_FE100_NAT_LAB=mode)
+                env=dict(os.environ,FFN_FE100_FRONT_RETURN=front,FFN_FE100_CROSS='1',FFN_FE100_VLAN_RETURN='1',FFN_FE100_NAT_LAB=mode,FFN_FE100_LAB_PROTOCOL=protocol)
                 result=subprocess.check_output([sys.executable,'-c',
                     'import ffn_fe100_packet_lab as x,json;print(json.dumps([x.KEY.hex(),x.RETURN_KEY.hex(),x.FORWARD.hex()]))'],
                     env=env,cwd=Path(__file__).resolve().parent,text=True)
                 key,returned,forward=[bytes.fromhex(x) for x in json.loads(result)]
                 original,translated=tuples(mode,front=='5')
-                def packed(t,zone):return key4(t['source'],t['destination'],t['source_port'],t['destination_port'],17,zone)
+                def packed(t,zone):return key4(t['source'],t['destination'],t['source_port'],t['destination_port'],number,zone)
                 self.assertEqual(key,packed(original,4094));self.assertEqual(returned,packed(translated,4093))
                 self.assertEqual(validate_entry4(forward),forward)
 
@@ -78,6 +98,12 @@ class FrontEncoding(unittest.TestCase):
         fixture=Qualification();fixture.setUp()
         self.assertTrue(qualifies_front(fixture.phases))
         fixture.phases['drop']['unexpected_dp_packets']=[{'raw':'unexpected copy'}]
+        self.assertFalse(qualifies_front(fixture.phases))
+        fixture.setUp()
+        fixture.phases['hit']['capture_drops']=1
+        self.assertFalse(qualifies_front(fixture.phases))
+        fixture.phases['hit']['capture_drops']=0
+        fixture.phases['hit']['dp_capture_drops']=1
         self.assertFalse(qualifies_front(fixture.phases))
 
     def test_front_destination_is_a_lif_not_cpu_sysport(self):

@@ -38,7 +38,7 @@ Only use this with the documented isolated front5/front13 loop. Test addresses,
 VLAN4000, table reservations and ports are confined to commissioning fixtures;
 they are never production defaults or user configuration.
 
-The expected-frame oracle independently recomputes full IPv4/UDP checksums,
+The expected-frame oracle independently recomputes full IPv4/TCP/UDP checksums,
 checks TTL decrement and exact tagged output, and retains miss, hit, drop and
 removal phases with native counters and cleanup verification. The return-flow
 cleanup key follows the translated tuple. CP readiness is checked before MP
@@ -46,10 +46,12 @@ changes capture features, creates BCM rules or sends test packets.
 
 Initial live validation found no qualifying calibration/initialization journals
 for the CP boot. The preflight refused the test with no BCM/capture changes or
-packet injection, and cleanup was verified. Packet tests remain blocked until
-the commissioning sequence is validated for that boot. Prior-boot records alone cannot authorize writes. See
+packet injection, and cleanup was verified. Packet tests require the
+commissioning sequence to be validated for their current boot. Prior-boot records alone cannot authorize writes. See
 [retained-state commissioning](WARM-COMMISSIONING.md) for fresh six-channel
 readback, the expiring lab-only grant, and subsequent live test results. Fixture
-and codec tests do not prove live NAT rewriting. Even successful directional
-UDP tests will not commission general production NAT: TCP, paired lifetime,
-aggregate/VLAN attachment, counter handoff and restart recovery remain required.
+and codec tests do not prove live NAT rewriting. Subsequent physical rewrite
+results are recorded in [NAT packet qualification](NAT-PACKET-QUALIFICATION.md).
+Successful directional TCP/UDP packets do not commission general production
+NAT: TCP state tracking, paired lifetime, aggregate/VLAN attachment, counter
+handoff and restart recovery remain required.

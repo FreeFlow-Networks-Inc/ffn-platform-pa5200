@@ -41,6 +41,17 @@ class BcmLabTests(unittest.TestCase):
         with self.assertRaises(OSError):lab.execute('lab',lambda _:(_ for _ in ()).throw(OSError()))
         self.assertEqual(self.script.read_text(),'production recipe')
 
+    def test_lab_yields_with_shared_lock_released_for_production(self):
+        import fcntl
+        waits=[]
+        def pause(seconds):
+            with lab.FORWARD_LOCK.open('a') as production:
+                fcntl.flock(production,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                waits.append(seconds)
+        with patch.object(lab.time,'sleep',side_effect=pause):
+            lab.execute(lab.port_recipe(7),self.call)
+        self.assertEqual(waits,[.1])
+
     def test_baseline_restores_original_enabled_state_after_partial_failure(self):
         # save()'s default path is fixed at definition time, inject the fixture.
         original_save=lab.save

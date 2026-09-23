@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
-from validate_physical_sessions import frames, DMAC, qualifies, checksum
+from validate_physical_sessions import DMAC, qualifies, checksum
 
 
 def aggregate_owners(root=Path('/var/lib/ffn-ngfw/aggregate-runtime'),now=None):
@@ -34,14 +34,15 @@ def aggregate_owners(root=Path('/var/lib/ffn-ngfw/aggregate-runtime'),now=None):
     return owners
 
 
-def directional_frames(token,count,front5=False,nat=None):
-    result=frames(token,count)
+def directional_frames(token,count,front5=False,nat=None,protocol='udp'):
+    from ffn_fe100_nat_lab import probe_frames
+    result=probe_frames(token,count,protocol)
     if nat:
         from ffn_fe100_nat_lab import tuples,rewrite
         original,_=tuples(nat,front5)
         return [rewrite(f,original) for f in result]
     if not front5:return result
-    # Swapping source/destination words preserves IP and UDP one's-complement
+    # Swapping source/destination words preserves IP and TCP/UDP one's-complement
     # sums; ports swap as well. Tests verify both resulting checksums.
     return [f[:26]+f[30:34]+f[26:30]+f[36:38]+f[34:36]+f[38:] for f in result]
 
@@ -53,11 +54,24 @@ def vlan_return_frame(frame):
 
 
 def qualifies_front(phases):
-    return qualifies(phases) and all(not p.get('unexpected_dp_packets') for p in phases.values())
+    return qualifies(phases) and all(not p.get('unexpected_dp_packets') and not p.get('capture_drops')
+                                    and not p.get('dp_capture_drops') for p in phases.values())
 
 
-def expected_return(token,count,front5=False,nat=None):
-    packets=directional_frames(token,count,front5,nat)
+def capture_buffer(sock):
+    # The shared packet trunk also carries production traffic. A tiny default
+    # AF_PACKET queue can drop lab packets while a probe is transmitting.
+    # Scope the larger buffer to this root-owned socket, not a global sysctl.
+    sock.setsockopt(socket.SOL_SOCKET,33,8*1024*1024) # Linux SO_RCVBUFFORCE
+
+
+def capture_drops(sock):
+    # Linux SOL_PACKET / PACKET_STATISTICS; reading resets this socket's stats.
+    return struct.unpack('=II',sock.getsockopt(263,6,8))[1]
+
+
+def expected_return(token,count,front5=False,nat=None,protocol='udp'):
+    packets=directional_frames(token,count,front5,nat,protocol)
     if nat:
         from ffn_fe100_nat_lab import tuples,rewrite
         _,translated=tuples(nat,front5)
@@ -65,9 +79,10 @@ def expected_return(token,count,front5=False,nat=None):
     return [vlan_return_frame(f) for f in packets]
 
 
-def capture_return(sock,argv,token,count,front5,nat=None):
-    expected=expected_return(token,count,front5,nat)
+def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp'):
+    expected=expected_return(token,count,front5,nat,protocol)
     while select.select([sock],[],[],0)[0]:sock.recv(65536)
+    capture_drops(sock)
     process=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     packets=[];deadline=time.monotonic()+15
     try:
@@ -88,6 +103,8 @@ def capture_return(sock,argv,token,count,front5,nat=None):
         out,err=process.communicate(timeout=2)
         if process.returncode:raise RuntimeError('DP probe failed: '+err[-2000:])
         result=json.loads(out)
+        result['dp_capture_drops']=result.get('capture_drops',0)
+        result['capture_drops']=capture_drops(sock)
         result['unexpected_dp_packets']=result['packets']
         result.update(packets=packets,original=[],rewritten=sorted({i for p in packets for i in p['rewritten']}))
         return result
@@ -95,14 +112,15 @@ def capture_return(sock,argv,token,count,front5,nat=None):
         if process.poll() is None:process.kill();process.communicate()
 
 
-def probe(token,count,baseline,front5=False,cross=False,nat=None):
+def probe(token,count,baseline,front5=False,cross=False,nat=None,protocol='udp'):
     from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
     validate_trunk('ffnpkt0')
     status=lambda:json.loads(Path('/sys/kernel/debug/ffn_dp_packet_init/status').read_text())
-    before=status();expected=directional_frames(token,count,front5,nat);rewritten=[DMAC+f[6:] for f in expected]
+    before=status();expected=directional_frames(token,count,front5,nat,protocol);rewritten=[DMAC+f[6:] for f in expected]
     inject=13 if front5 else 5;ingress=5 if front5 else 13
     found=[]
     with socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as sock:
+        capture_buffer(sock)
         sock.bind(('ffnpkt0',0));sock.setblocking(False)
         for frame in expected:
             raw=encode(inject,frame)
@@ -120,10 +138,11 @@ def probe(token,count,baseline,front5=False,cross=False,nat=None):
                     item['original']=[i for i,f in enumerate(expected) if frame==f]
                     item['rewritten']=[i for i,f in enumerate(rewritten) if frame==f]
             found.append(item)
+        dropped=capture_drops(sock)
     after=status();tx=after['trunk']['tx_completed']-before['trunk']['tx_completed']
     if tx<count or after['trunk']['error'] or after['trunk']['bad_dma']:
         raise RuntimeError('DP packet transport failed')
-    return {'token':token,'count':count,'packets':found,'before':before,'after':after,
+    return {'token':token,'count':count,'packets':found,'before':before,'after':after,'capture_drops':dropped,
             'tx_completed':tx,'original':sorted({i for p in found for i in p['original']}),
             'rewritten':sorted({i for p in found for i in p['rewritten']})}
 
@@ -134,11 +153,12 @@ def main():
     p.add_argument('--front5',action='store_true')
     p.add_argument('--cross',action='store_true',help='forward to the other front port; capture its DAC return')
     p.add_argument('--vlan-return',action='store_true',help='experimental tagged FE100 return to MP capture')
-    p.add_argument('--nat',choices=('address','port'),help='isolated UDP NAT or port translation qualification')
+    p.add_argument('--nat',choices=('address','port'),help='isolated IPv4 NAT or port translation qualification')
+    p.add_argument('--protocol',choices=('udp','tcp'),default='udp',help='isolated rewrite/checksum probe; no TCP state admission')
     p.add_argument('--count',type=int,choices=range(1,5),default=1);a=p.parse_args()
     if a.vlan_return and not a.cross:p.error('--vlan-return requires --cross')
     if a.nat and not a.probe and not (a.cross and a.vlan_return):p.error('--nat requires --cross --vlan-return')
-    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat)));return
+    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat,a.protocol)));return
     if subprocess.run(['systemctl','is-active','--quiet','ffn-fabric.service']).returncode==0:
         raise RuntimeError('software fabric must be stopped')
     report={'schema':1,'scope':'front5 FE100 egress -> DAC -> front13 DP capture' if a.front5 else 'front13 FE100 egress -> DAC -> front5 DP capture',
@@ -146,7 +166,7 @@ def main():
             'session_offload_verified':False}
     ingress=5 if a.front5 else 13
     egress=18-ingress if a.cross else ingress
-    report.update(ingress=ingress,egress=egress,nat_mode=a.nat,nat_direction_verified=False,
+    report.update(ingress=ingress,egress=egress,nat_mode=a.nat,protocol=a.protocol,nat_direction_verified=False,
                   production_nat_qualified=False,distinct_port_direction_verified=False)
     report['scope']=f'front{ingress} -> FE100 -> front{egress} -> DAC -> DP capture'
     if a.vlan_return:report['scope']=f'front{ingress} -> FE100 -> front{egress} VLAN4000 -> DAC -> front{ingress} -> FE100 -> MP capture'
@@ -169,7 +189,7 @@ def main():
     ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
     err=tempfile.TemporaryFile(mode='w+')
     cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env LD_LIBRARY_PATH='+ld+
-        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')],
+        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
     def response():
         if not select.select([cp.stdout],[],[],55)[0]:raise TimeoutError('CP timeout')
@@ -208,6 +228,7 @@ def main():
             if 'rx-all: off' not in features:raise RuntimeError('capture rx-all baseline must be off')
             feature=True;subprocess.run(['ethtool','-K','enp8s0f1','rx-all','on'],check=True)
             capture=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+            capture_buffer(capture)
             capture.bind(('enp8s0f1',0));capture.setblocking(False)
             capture.setsockopt(263,1,struct.pack('IHH8s',socket.if_nametoindex('enp8s0f1'),1,0,bytes(8)))
         for phase,op in [('baseline','snapshot'),('miss','prepare'),('hit','install'),('drop','drop'),('removed','remove')]:
@@ -228,8 +249,9 @@ def main():
             if a.front5:argv+=['--front5']
             if a.cross:argv+=['--cross']
             if a.nat:argv+=['--nat',a.nat]
+            argv+=['--protocol',a.protocol]
             if capture is not None and phase!='baseline':
-                result=capture_return(capture,argv,token,a.count,a.front5,a.nat)
+                result=capture_return(capture,argv,token,a.count,a.front5,a.nat,a.protocol)
             else:
                 r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
                 if r.returncode:raise RuntimeError('DP probe failed: '+r.stderr[-2000:])

@@ -32,6 +32,11 @@ needs a register offset says which platform it came from.
 
 ## What is in here
 
+Ready-made CP/DP image builds, release qualification and automatic MP staging are
+documented in [OCTEON images](octeon/images/README.md). The pipeline builds clean
+source-based candidates; the initial image lock stays disabled until a pair is
+published and qualified.
+
     ffn_oct.py          OCTEON CP/DP boot orchestration from the host
     ffn_gryphon.py      chassis model: PCI-to-role map, per-slot topology
     ffn_ifroles.py      interface role assignment for this chassis
