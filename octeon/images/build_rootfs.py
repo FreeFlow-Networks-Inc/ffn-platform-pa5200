@@ -35,7 +35,7 @@ def build(role, repository, out):
     inventory=subprocess.check_output(['chroot',str(root),'dpkg-query','-W',
             '-f=${Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n'],text=True)
     (out/'packages.tsv').write_text(inventory)
-    for rel in ('var/log','tmp','run','var/cache/apt/archives','var/lib/apt/lists'):
+    for rel in ('dev','var/log','tmp','run','var/cache/apt/archives','var/lib/apt/lists'):
         directory=root/rel
         if directory.is_symlink() or os.path.ismount(directory):
             raise ValueError('Unexpected seed mount or symlink: '+rel)

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Role is part of the image. The MP supplies ffn.nfsroot=IPv4:/export at boot.
 export PATH=/bin:/sbin
+[ "$$" = 1 ] || exit 2
 BB=/bin/busybox
 $BB mount -t devtmpfs devtmpfs /dev
 $BB mount -t proc proc /proc
@@ -16,7 +17,6 @@ fallback() {
 supervise() {
     (while :; do "$@"; $BB sleep 2; done) &
 }
-[ "$$" = 1 ] || exit 2
 role=$($BB cat /etc/ffn-image-role)
 case "$role" in
     cp) supervise /sbin/ffn_pcnetd ;;

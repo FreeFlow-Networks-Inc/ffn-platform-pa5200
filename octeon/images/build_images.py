@@ -137,6 +137,8 @@ def audit_root(root):
             # be followed by the builder's host-side file operations.
             continue
         if not item.is_file():
+            if not item.is_dir():
+                raise ValueError('Special file must be created at boot: ' + name)
             continue
         if any(name == p or name.startswith(p + '/') for p in forbidden):
             raise ValueError('Machine/vendor state in seed: ' + name)
