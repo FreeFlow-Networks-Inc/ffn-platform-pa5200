@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import image_policy
 
 
 def run(args, **kw):
@@ -55,6 +56,7 @@ def elf(path):
 
 def audit_initramfs(path):
     """Only a single plain newc archive is accepted; inspect without extracting."""
+    distributions = []
     with path.open('rb') as f:
         while True:
             header = f.read(110)
@@ -76,11 +78,21 @@ def audit_initramfs(path):
             if name == 'TRAILER!!!':
                 if size or any(f.read()):
                     raise ValueError('Concatenated initramfs content is not supported')
+                if not distributions or any(x.get('ID') != 'debian' for x in distributions):
+                    raise ValueError('Initramfs must identify a Debian userspace; foreign or unknown seed rejected')
                 return
             if name.startswith('/') or '..' in name.split('/'):
                 raise ValueError('Unsafe initramfs path')
             if mode & 0o170000 not in (0o100000, 0o040000, 0o120000):
                 raise ValueError('Device nodes must be created at boot, not shipped')
+            if any(name == p or name.startswith(p + '/') for p in image_policy.FOREIGN_MARKERS):
+                raise ValueError('Foreign distribution in initramfs: ' + name)
+            if name in ('etc/os-release', 'usr/lib/os-release') and mode & 0o170000 == 0o100000:
+                distributions.append(image_policy.os_release(data.decode('utf8')))
+            if 'ld-musl' in Path(name).name:
+                raise ValueError('Foreign libc in initramfs')
+            if data.startswith(b'\x7fELF') and (data[:6] != b'\x7fELF\x02\x02' or data[18:20] != b'\x00\x08'):
+                raise ValueError('Non-MIPS64 big-endian ELF in initramfs: ' + name)
             if (name.startswith(('root/', 'home/', 'opt/dpfs/', 'opt/ffn-compat/', 'etc/ffn/', 'etc/ffn-ngfw/'))
                     or Path(name).name in ('shadow', 'gshadow', 'authorized_keys', 'machine-id')
                     or re.search(r'(ssh_host_.*_key|id_rsa|id_ed25519)$', name)
@@ -114,6 +126,10 @@ def audit_root(root):
                 fields = row.split(':')
                 if len(fields) < 2 or fields[1] not in ('!', '*', '!!', '!*'):
                     raise ValueError('Unlocked account/password in seed: ' + name)
+        with item.open('rb') as stream:
+            header = stream.read(20)
+        if header.startswith(b'\x7fELF'):
+            elf(item)
         if item.stat().st_size < 16 * 1024 * 1024:
             data = item.read_bytes()
             if re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----', data):
@@ -179,12 +195,14 @@ def build(config, platform, core, out):
             tree.mkdir()
             with tarfile.open(source_archive) as tar:
                 tar.extractall(tree, filter='data')
+            kernel_version = image_policy.kernel(tree)
             seed = pinned_file(cfg['rootfs'])
             initramfs = pinned_file(cfg['initramfs'])
             audit_initramfs(initramfs)
             kernel_config = pinned_file(cfg['config'])
             cross = cfg['cross_compile']
             compiler = output([cross + 'gcc', '--version']).splitlines()[0]
+            image_policy.compiler(output([cross + 'gcc', '-dumpmachine']), compiler)
             bundle = work / role
             root = bundle / 'rootfs'
             root.mkdir(parents=True)
@@ -192,12 +210,13 @@ def build(config, platform, core, out):
                 tar.extractall(root, filter='data')
                 owners = {m.name.removeprefix('./').rstrip('/'): (m.uid, m.gid) for m in tar.getmembers()}
             audit_root(root)
+            operating_system = image_policy.debian_root(root)
             for required in ('usr/lib/systemd/systemd', 'usr/bin/python3'):
-                executable = (root / required).resolve(strict=True)
+                executable = image_policy.root_path(root, required)
                 if root not in executable.parents:
                     raise ValueError('Runtime executable escapes image root')
                 elf(executable)
-            module_dir = (root / 'lib/modules').resolve()
+            module_dir = image_policy.root_path(root, 'lib/modules')
             if root not in module_dir.parents:
                 raise ValueError('Kernel module directory escapes image root')
             if module_dir.exists() and any(module_dir.iterdir()):
@@ -236,6 +255,7 @@ def build(config, platform, core, out):
             shutil.copyfile(sources, out / (role + '-userspace-sources.tar.xz'))
             audit_root(root)
             details = {'role': role, 'architecture': 'mips64eb', 'kernel_release': release,
+                       'operating_system': operating_system, 'kernel_source_version': kernel_version,
                        'kernel_commit': commit, 'compiler': compiler,
                        'rootfs_sha256': sha(seed), 'initramfs_sha256': sha(initramfs),
                        'kernel_config_sha256': sha(bundle / 'kernel.config'),

@@ -4,9 +4,8 @@
 # result is copied to the CP through the MP's NFS rootfs and to the DP over the
 # ffn-dpsh channel.
 #
-# Static on purpose: the CP userland is the vendor's big-endian CentOS root plus
-# FFN's static busybox, and the DP runs a Buildroot glibc. A static binary needs
-# neither to match.
+# Link current Debian glibc statically so the transport can run from RAM
+# independently of the CP/DP network-backed filesystems it serves.
 
 CROSS   ?= mips64-linux-gnuabi64-
 CC      := $(CROSS)gcc

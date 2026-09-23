@@ -1,3 +1,7 @@
+> Historical bring-up record. Distro choices and compatibility-root instructions
+> below are retired. Use `octeon/images/README.md` and `octeon/USERLAND-DISTRO.md`
+> for the Debian CP/DP and Ubuntu MP release policy.
+
 # Debian boot and management on the PA-5220
 
 ## Hardware results, 2026-09-09

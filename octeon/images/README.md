@@ -1,7 +1,7 @@
 # OCTEON images built by GitHub Actions
 
 The platform's `OCTEON CP and DP images` workflow builds two **MIPS64 big-endian**
-bundles. Each contains `vmlinux`, its matching kernel modules and root filesystem,
+Debian/glibc bundles. The management-plane image is Ubuntu amd64. Each bundle contains `vmlinux`, its matching kernel modules and root filesystem,
 `kernel.config`, and `image.json`. Both come from the same pinned platform/core
 source pair. They are boot candidates until tested on hardware.
 
@@ -18,6 +18,12 @@ vendor components stay on the appliance and require separate local integration.
 
 Use an isolated Linux x64 runner labelled `ffn-octeon-builder`, with Python 3.12+,
 git, make, native kernel build prerequisites and a MIPS64 big-endian cross compiler.
+OCTEON source must be Linux 6.18 or newer (`os-policy.json`); OpenWrt/musl
+compilers and foreign distro roots/initramfs are rejected. Python and systemd
+must be owned by installed Debian `mips64` packages. Use a GNU userspace
+toolchain with a Debian glibc sysroot for agents/transports; a nolibc kernel
+compiler cannot build those executables.
+
 Do not register the firewall itself as a build runner. Set the `OCTEON_BUILD_PROFILE`
 variable in GitHub's `octeon-build` environment to the absolute path of a
 runner-owned profile. Restrict that environment to reviewed refs; this workflow
@@ -138,3 +144,16 @@ restarts BCM or LACP, or makes a new image active just because it downloaded.
 
 Tests: `python3 -m unittest discover -s octeon/images -p 'test_*.py'`.
 Core tests: `python3 -m unittest discover -s tests -p test_plane_images.py`.
+
+## Inspect inputs before a build
+
+```sh
+python3 octeon/images/image_policy.py --rootfs /path/to/clean-debian-root
+python3 octeon/images/image_policy.py --kernel /path/to/pinned-linux-source
+```
+
+These commands read metadata without executing target programs. The complete
+builder also audits ELF files, archives, credentials and source revisions.
+A Debian bootstrap root with loose Python/SSH files is a development input,
+not a release seed. Build and install corresponding Debian packages before
+pinning a seed; never relabel a foreign root by replacing `os-release`.

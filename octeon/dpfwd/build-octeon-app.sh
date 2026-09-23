@@ -8,11 +8,8 @@
 # hold them to the real API and stops there -- it never links. This links, and
 # linking is where every interesting problem was.
 #
-# WHY musl AND NOT THE SDK'S OWN COMPILER. The DP's initramfs is static busybox
-# with no shared libraries, so the binary must be static; and the SDK's bundled
-# 2012 glibc dies in ptmalloc_init on a modern kernel before main() runs. musl
-# static with gcc 13.3 is measured working on 6.18. The cost is three
-# compatibility headers in compat/ and one patched SDK line, all below.
+# Link against the reviewed Debian glibc toolchain. Static linking keeps the
+# transport independent of the NFS filesystem it serves.
 #
 # WHY THE SDK TREE IS COPIED. cvmx-access-native.h needs a one-line change (see
 # PATCH below) and the SDK's headers include each other with quoted includes,
@@ -26,19 +23,24 @@
 # and /dev/shm must be mounted (tmpfs) for the CVMX_SHARED region.
 set -eu
 
-SDK=${SDK:-/mnt/clones/sdk51/OCTEON-SDK}
-TC=${TC:-/mnt/clones/openwrt-toolchain/toolchain-mips64_octeonplus_64_gcc-13.3.0_musl}
-STAGE=${STAGE:-/tmp/sdkbuild}
+SDK=${SDK:?Set SDK to the retained OCTEON hardware SDK interfaces}
+CROSS_COMPILE=${CROSS_COMPILE:?Set CROSS_COMPILE to a Debian MIPS64 BE GNU toolchain prefix}
 OUT=${OUT:-ffn-dp-octeon}
 MODEL=${MODEL:-OCTEON_CN78XX}
-
-export STAGING_DIR="$TC"
-CC="$TC/bin/mips64-openwrt-linux-musl-gcc"
-AR="$TC/bin/mips64-openwrt-linux-musl-ar"
-NM="$TC/bin/mips64-openwrt-linux-musl-nm"
-
-[ -x "$CC" ] || { echo "no compiler at $CC"; exit 2; }
+CC="${CROSS_COMPILE}gcc"
+AR="${CROSS_COMPILE}ar"
+NM="${CROSS_COMPILE}nm"
+command -v "$CC" >/dev/null || { echo "no compiler at $CC"; exit 2; }
+case "$("$CC" -dumpmachine)" in
+    *musl*|*openwrt*|mips64el*) echo 'Debian big-endian GNU toolchain required'; exit 2;;
+    mips64*-linux-gnu*) ;;
+    *) echo 'Debian userspace compiler with glibc required'; exit 2;;
+esac
 [ -d "$SDK/executive" ] || { echo "no SDK at $SDK"; exit 2; }
+AIH=${OCTEON_APP_INIT_HEADER:-$SDK/ffn-abi-headers/octeon-app-init.h}
+[ -f "$AIH" ] || { echo "Set OCTEON_APP_INIT_HEADER to the retained SDK ABI header"; exit 2; }
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/ffn-cvmx.XXXXXXXX")
+trap 'rm -rf -- "$STAGE"' EXIT HUP INT TERM
 
 # ---------------------------------------------------------------------------
 # 1. Stage the SDK sources and apply the one patch.
@@ -55,9 +57,8 @@ NM="$TC/bin/mips64-openwrt-linux-musl-nm"
 # -L on the copy is required: target/include/* are symlinks into executive/, so
 # a plain cp -a produces a tree of dangling links that `ls` shows and `cat`
 # cannot read.
-if [ ! -d "$STAGE" ] || [ "${REFRESH:-0}" = 1 ]; then
+{
 	echo "  staging SDK sources into $STAGE"
-	rm -rf "$STAGE"
 	mkdir -p "$STAGE"
 	cp -a  "$SDK/executive"     "$STAGE/executive"
 	cp -aL "$SDK/target/include" "$STAGE/include"
@@ -68,26 +69,12 @@ if [ ! -d "$STAGE" ] || [ "${REFRESH:-0}" = 1 ]; then
 	grep -q 'FFN: section attr' "$STAGE/include/cvmx-access-native.h" \
 		|| { echo "  PATCH DID NOT APPLY -- SDK layout changed?"; exit 3; }
 
-	# octeon-app-init.h is a COMPILER-provided header, not a library one: it
-	# ships inside Cavium's own gcc 4.7 tree, so building with any other
-	# compiler cannot see it and cvmx-app-init-linux.c and octeon-model.c both
-	# fail on it. Those two are not optional -- between them they define
-	# main(), cvmx_user_app_init() and the runtime model checks -- so without
-	# this the link dies on "undefined reference to `main'", which reads like
-	# a problem with FFN's own sources rather than a missing SDK header.
-	#
-	# Copied into the staged include dir rather than adding the gcc directory
-	# to -I: that directory also holds a 2012 stdint.h and friends, and
-	# putting those ahead of musl's is a much larger change than the one file
-	# actually needed.
-	AIH=$SDK/tools-gcc-4.7/mipsisa64-octeon-elf/include/octeon-app-init.h
-	[ -f "$AIH" ] || AIH=$(find "$SDK/tools-gcc-4.7" -name octeon-app-init.h 2>/dev/null | head -1)
-	[ -f "$AIH" ] || { echo "  no octeon-app-init.h under $SDK/tools-gcc-4.7"; exit 3; }
+	# ABI declarations are retained separately from the retired compiler.
 	cp "$AIH" "$STAGE/include/octeon-app-init.h"
-fi
+}
 
 CF="-march=octeon3 -mabi=64 -EB -O2 -std=gnu99 -w
-    -include compat/ffn_musl_compat.h
+    -include compat/ffn_cvmx_compat.h
     -DCVMX_BUILD_FOR_LINUX_USER=1
     -DUSE_RUNTIME_MODEL_CHECKS=1
     -DCVMX_ENABLE_POW_CHECKS=0
@@ -100,26 +87,26 @@ CF="-march=octeon3 -mabi=64 -EB -O2 -std=gnu99 -w
 # 2. The executive -> libcvmx.a
 # ---------------------------------------------------------------------------
 # An ARCHIVE, not a pile of objects: the linker then pulls only what the call
-# graph reaches. Five executive files do not build against musl at all
-# (cvmx-interrupt aside, they need glibc-only headers), and none of them is
+# graph reaches. Five executive files do not build against this userspace toolchain at all
+# (cvmx-interrupt aside, they need unavailable platform headers), and none of them is
 # reachable, so an archive makes them a non-problem where `ld -r` made them
 # undefined symbols.
 #
 # cvmx-app-init.c is EXCLUDED deliberately: it is the bare-metal twin of
 # cvmx-app-init-linux.c and defines the same cvmx_user_app_init.
 echo "  building executive"
-rm -rf cvmx-obj-musl && mkdir -p cvmx-obj-musl
+rm -rf cvmx-obj-gnu && mkdir -p cvmx-obj-gnu
 n=0
 for f in "$STAGE"/executive/cvmx-*.c "$STAGE"/executive/octeon-*.c; do
 	b=$(basename "$f" .c)
 	[ "$b" = "cvmx-app-init" ] && continue
 	# shellcheck disable=SC2086
-	$CC -c $CF -o "cvmx-obj-musl/$b.o" "$f" 2>/dev/null && n=$((n + 1)) || true
+	$CC -c $CF -o "cvmx-obj-gnu/$b.o" "$f" 2>/dev/null && n=$((n + 1)) || true
 done
 for f in "$STAGE"/executive/libfdt/*.c; do
 	b=$(basename "$f" .c)
 	# shellcheck disable=SC2086
-	$CC -c $CF -o "cvmx-obj-musl/fdt_$b.o" "$f" 2>/dev/null && n=$((n + 1)) || true
+	$CC -c $CF -o "cvmx-obj-gnu/fdt_$b.o" "$f" 2>/dev/null && n=$((n + 1)) || true
 done
 echo "  executive: $n objects"
 [ "$n" -gt 130 ] || { echo "  too few -- expected ~143"; exit 4; }
@@ -127,7 +114,7 @@ echo "  executive: $n objects"
 # NAME THE FILES THAT MUST BE THERE, do not just count.
 #
 # The compile loop above sends errors to /dev/null and carries on, because five
-# executive files genuinely do not build against musl and none of them is
+# executive files genuinely do not build against this userspace toolchain and none of them is
 # reachable. That tolerance hid a real failure: cvmx-app-init-linux.c and
 # octeon-model.c were ALSO failing (on the missing compiler header above), the
 # count still cleared 130, and the build ran on to die at link time on
@@ -138,7 +125,7 @@ echo "  executive: $n objects"
 # ones the link genuinely needs: main() and cvmx_user_app_init() come from
 # cvmx-app-init-linux, and USE_RUNTIME_MODEL_CHECKS routes through octeon-model.
 for must in cvmx-app-init-linux octeon-model; do
-	[ -f "cvmx-obj-musl/$must.o" ] || {
+	[ -f "cvmx-obj-gnu/$must.o" ] || {
 		echo "  MISSING $must.o -- the link would fail on main/cvmx_user_app_init."
 		echo "  Rebuild it alone, without 2>/dev/null, to see the real error:"
 		echo "    \$CC -c \$CF -o /tmp/x.o $STAGE/executive/$must.c"
@@ -147,13 +134,13 @@ for must in cvmx-app-init-linux octeon-model; do
 done
 
 rm -f libcvmx.a
-$AR rcs libcvmx.a cvmx-obj-musl/*.o
+$AR rcs libcvmx.a cvmx-obj-gnu/*.o
 
 # ---------------------------------------------------------------------------
 # 3. FFN's own sources
 # ---------------------------------------------------------------------------
 echo "  building forwarder"
-rm -rf musl-obj && mkdir -p musl-obj
+rm -rf gnu-obj && mkdir -p gnu-obj
 # ffn_dp_l3_parse.c is not optional: the text -> address primitives moved out of
 # ffn_dp_l3_config.c when the v6 config layer needed the same MAC, token and
 # prefix handling, so omitting it links to undefined dp_l3_parse_* symbols.
@@ -166,7 +153,7 @@ for f in ffn_dp_oct.c ffn_dp_l3.c ffn_dp_l3_config.c ffn_dp_l3_parse.c \
          ffn_dp_io_octeon.c ffn_dp_io_octeon3.c ffn_dp_bgx_octeon3.c \
          ffn_dp_octeon_main.c; do
 	# shellcheck disable=SC2086
-	$CC -c $CF -DFFN_HAVE_CVMX=1 -o "musl-obj/$(basename "$f" .c).o" "$f"
+	$CC -c $CF -DFFN_HAVE_CVMX=1 -o "gnu-obj/$(basename "$f" .c).o" "$f"
 done
 
 # ---------------------------------------------------------------------------
@@ -177,7 +164,7 @@ done
 # Without it the link fails on those two symbols.
 echo "  linking"
 $CC -march=octeon3 -mabi=64 -EB -static -o "$OUT" \
-    musl-obj/*.o libcvmx.a -lm \
+    gnu-obj/*.o libcvmx.a -lm \
     -Wl,-T,"$SDK/target/lib/cvmx-shared-linux.ld"
 
 # ---------------------------------------------------------------------------
@@ -193,7 +180,7 @@ echo "  .cvmx_shared: 0x$s - 0x$e"
 if [ "$s" = "$e" ]; then
 	echo "  FATAL: .cvmx_shared is EMPTY. CVMX_SHARED placed nothing, so the"
 	echo "         per-core fork barrier will hang. Check that"
-	echo "         compat/ffn_musl_compat.h defines cvmx_shared."
+	echo "         compat/ffn_cvmx_compat.h defines cvmx_shared."
 	exit 5
 fi
 

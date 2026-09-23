@@ -4,6 +4,14 @@ Platform support for **Palo Alto Networks PA-5200-series** appliances, consumed
 by [FFN-NGFW](https://github.com/FreeFlow-Networks-Inc/FFN-NGFW) as a submodule at
 `platform/pa5200/`.
 
+## Operating systems
+
+PA-5200 releases use **Ubuntu amd64 for the MP** and **Debian MIPS64 big-endian
+for CP and DP**, with glibc and Linux 6.18+ on OCTEON. See the
+[OS policy](octeon/USERLAND-DISTRO.md) and [image builder](octeon/images/README.md).
+Foreign distro roots, compatibility chroots and legacy vendor kernels are not
+release inputs. Hardware qualification is required before enabling an image lock.
+
 ## Why this is a separate repository
 
 FFN-NGFW is the firewall. This is the code that makes one specific family of

@@ -1,34 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later
- * Copyright (C) 2026 FreeFlow Networks, Inc.
- *
- * ffn_musl_compat.h -- force-included when building the SDK executive on musl.
- *
- * The OCTEON SDK's executive is 2013 code written against glibc. musl is what
- * the dataplane must link against, because the DP's initramfs is static busybox
- * with no shared libraries and the SDK's own static glibc segfaults in
- * ptmalloc_init on a modern kernel before main() runs.
- *
- * Use with -include. It must NOT be #included by our own sources: everything
- * here is a concession to somebody else's code, and keeping it out of the FFN
- * sources keeps that boundary visible.
- */
-#ifndef FFN_MUSL_COMPAT_H
-#define FFN_MUSL_COMPAT_H
-
-#include <sys/types.h>
-
-/* `uint` is a BSD-ism that glibc exposes from sys/types.h and musl does not.
- * cvmx-helper-util.c uses it in a function signature, so it is needed before
- * that file's first declaration -- which is why this is force-included rather
- * than patched in.
- *
- * Guarded because musl DOES define it under _GNU_SOURCE in some versions, and a
- * duplicate typedef is an error in C99 (C11 allows it, the SDK builds -std=gnu99).
- */
-#ifndef __DEFINED_uint
-#define __DEFINED_uint
-typedef unsigned int uint;
-#endif
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Mainline GNU compiler adaptation for the OCTEON executive. */
+#ifndef FFN_CVMX_COMPAT_H
+#define FFN_CVMX_COMPAT_H
 
 /*
  * CVMX_SHARED, WITHOUT CAVIUM'S COMPILER.
@@ -73,4 +46,4 @@ typedef unsigned int uint;
  */
 #define cvmx_shared section(".cvmx_shared")
 
-#endif /* FFN_MUSL_COMPAT_H */
+#endif /* FFN_CVMX_COMPAT_H */
