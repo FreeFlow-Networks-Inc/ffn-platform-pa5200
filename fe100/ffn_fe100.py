@@ -41,6 +41,14 @@ PCI_DEV = "0002:01:00.0"
 SYSFS = "/sys/bus/pci/devices/" + PCI_DEV
 
 
+def register_map_path():
+    """Owner-provisioned metadata in the native Debian filesystem."""
+    value = os.environ.get('FFN_FE100_REGMAP', '/usr/share/ffn/fe100/registers.json')
+    if not os.path.isabs(value):
+        raise ValueError('FE100 register map path must be absolute')
+    return value
+
+
 def bar0_base_and_size():
     """BAR0's CPU physical address and length, from sysfs rather than a constant.
 
@@ -155,7 +163,7 @@ def load_map(path):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--map", default="/opt/ffn/fe100-csr.json")
+    ap.add_argument("--map", default=register_map_path())
     ap.add_argument("--regs", nargs="*", help="register names to read")
     ap.add_argument("--block", help="read every register whose name starts with this")
     ap.add_argument("--limit", type=int, default=64)

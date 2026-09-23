@@ -10,6 +10,19 @@ import ffn_dp_agent as dp
 
 
 class Agents(unittest.TestCase):
+    def test_native_register_map_override_and_missing_map(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.driver_fixture(root)
+            native = root / 'usr/share/ffn/fe100/registers.json'
+            with patch.dict(cp.os.environ, {'FFN_FE100_REGMAP': '/owner/registers.json'}):
+                self.assertFalse(cp.fe100_driver_status(root)['userspace']['register_map_installed'])
+                (root / 'owner').mkdir()
+                native.rename(root / 'owner/registers.json')
+                self.assertTrue(cp.fe100_driver_status(root)['userspace']['register_map_installed'])
+            with patch.dict(cp.os.environ, {'FFN_FE100_REGMAP': 'relative.json'}):
+                self.assertFalse(cp.fe100_driver_status(root)['userspace']['register_map_installed'])
+
     def driver_fixture(self, root):
         def write(name, value):
             path = root / name
@@ -17,7 +30,7 @@ class Agents(unittest.TestCase):
             path.write_bytes(value if isinstance(value, bytes) else value.encode())
         write('usr/local/sbin/ffn_fe100.py', "PCI_DEV = '0002:01:00.0'\nraise RuntimeError('must never execute')\n")
         write('usr/local/sbin/ffn_fe100_lookup_health.py', '# fixture')
-        write('opt/ffn-compat/opt/ffn/fe100-csr.json', '[]')
+        write('usr/share/ffn/fe100/registers.json', '[]')
         write('dev/mem', b'')
         prefix = 'sys/bus/pci/devices/0002:01:00.0/'
         write(prefix + 'vendor', '0xfeed'); write(prefix + 'device', '0xfe1c')

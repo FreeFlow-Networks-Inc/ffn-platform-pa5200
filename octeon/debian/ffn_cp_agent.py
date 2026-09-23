@@ -5,6 +5,7 @@ import ast
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -45,7 +46,8 @@ def fe100_driver_status(root=Path('/')):
     except (OSError, ValueError, SyntaxError):
         result['errors'].append('Userspace driver metadata unavailable')
     userspace['reader_installed'] = path('/usr/local/sbin/ffn_fe100_lookup_health.py').is_file()
-    userspace['register_map_installed'] = path('/opt/ffn-compat/opt/ffn/fe100-csr.json').is_file()
+    register_map = os.environ.get('FFN_FE100_REGMAP', '/usr/share/ffn/fe100/registers.json')
+    userspace['register_map_installed'] = Path(register_map).is_absolute() and path(register_map).is_file()
     userspace['memory_device_present'] = path('/dev/mem').exists()
     try:
         entries = list(path('/sys/bus/pci/devices').iterdir())
