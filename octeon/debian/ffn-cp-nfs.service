@@ -1,12 +1,15 @@
 [Unit]
-Description=FFN DP NFS exports using preserved management userspace
-After=local-fs.target network.target
-ConditionPathExists=/opt/ffn-compat/usr/local/bin/ffn-cp-nfsd.sh
+Description=FFN DP exports through Debian's native NFS server
+Requires=nfs-server.service
+After=local-fs.target network.target nfs-server.service
+# The MP provisions the export path, exact transport client and filesystem ID.
+# No appliance-specific export or address is included in the image.
+ConditionPathExists=/etc/exports.d/ffn-dp.exports
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/sbin/chroot /opt/ffn-compat /usr/local/bin/ffn-cp-nfsd.sh
+ExecStart=/usr/sbin/exportfs -r
+ExecReload=/usr/sbin/exportfs -r
 TimeoutStartSec=90
 [Install]
 WantedBy=multi-user.target

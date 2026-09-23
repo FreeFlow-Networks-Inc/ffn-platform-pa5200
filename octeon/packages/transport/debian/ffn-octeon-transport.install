@@ -1,0 +1,2 @@
+pcnet/ffn_pcnetd usr/libexec/ffn
+dpnet/ffn_dpnetd usr/libexec/ffn

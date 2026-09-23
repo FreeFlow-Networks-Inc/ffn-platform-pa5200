@@ -114,6 +114,16 @@
   "cp": [
     [
       "platform",
+      "octeon/debian/ffn-cp-nfs.service",
+      "etc/systemd/system/ffn-cp-nfs.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-dpnet.service",
+      "etc/systemd/system/ffn-dpnet.service"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_cp_agent.py",
       "usr/local/sbin/ffn_cp_agent.py"
     ]

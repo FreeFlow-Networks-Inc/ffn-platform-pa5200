@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+include /usr/share/dpkg/architecture.mk
+CROSS = $(DEB_HOST_GNU_TYPE)-
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	@test "$(DEB_HOST_ARCH)" = mips64 || { echo 'Only big-endian mips64 is supported'; exit 1; }
+
+override_dh_auto_build:
+	$(MAKE) -C pcnet CROSS=$(CROSS)
+	$(MAKE) -C dpnet CROSS=$(CROSS)
+
+override_dh_auto_test:
+	$(MAKE) -C dpnet CROSS=$(CROSS) check
+	@file pcnet/ffn_pcnetd | grep -E 'ELF 64-bit MSB.*MIPS.*statically linked'
+
+override_dh_auto_clean:
+	$(MAKE) -C pcnet clean
+	$(MAKE) -C dpnet clean
+
+override_dh_auto_install:
+
+# Cross-built static executables are already stripped with target binutils.
+override_dh_strip:
+override_dh_shlibdeps:
+
+# Record the exact Debian sources of both statically linked runtimes.
+override_dh_gencontrol:
+	python3 debian/runtime_sources.py $(CROSS) >> debian/ffn-octeon-transport.substvars
+	dh_gencontrol

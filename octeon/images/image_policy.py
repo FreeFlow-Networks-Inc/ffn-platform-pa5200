@@ -64,7 +64,7 @@ def distribution(root, expected):
     return records[0]
 
 
-def debian_root(root):
+def debian_root(root, role=None):
     info = distribution(root, 'debian')
     status = root_path(root, 'var/lib/dpkg/status')
     if not status.is_file(): raise ValueError('Debian dpkg package database required')
@@ -79,6 +79,13 @@ def debian_root(root):
         installed[name] = fields
     if not {'base-files', 'libc6', 'systemd', 'python3'} <= set(installed):
         raise ValueError('Debian base-files, glibc, systemd and Python packages required')
+    if role is not None:
+        if role not in ('cp', 'dp'):
+            raise ValueError('Unknown OCTEON plane role')
+        requirements = json.loads((Path(__file__).parent.parent / 'packages/runtime-requirements.json').read_text())
+        missing = sorted(set(requirements['common'] + requirements[role]) - set(installed))
+        if missing:
+            raise ValueError('Missing configured ' + role + ' runtime packages: ' + ', '.join(missing))
     owned = set()
     infodir = root_path(root, 'var/lib/dpkg/info')
     for p in infodir.glob('*.list'):
@@ -121,9 +128,12 @@ def main():
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--rootfs', type=Path)
     inputs.add_argument('--kernel', type=Path)
+    parser.add_argument('--role', choices=('cp', 'dp'), help='Also require the plane runtime package set')
     args = parser.parse_args()
     try:
-        result = debian_root(args.rootfs) if args.rootfs else {'kernel_source_version': kernel(args.kernel)}
+        if args.role and not args.rootfs:
+            raise ValueError('--role requires --rootfs')
+        result = debian_root(args.rootfs, args.role) if args.rootfs else {'kernel_source_version': kernel(args.kernel)}
     except (ValueError, OSError) as exc:
         print(json.dumps({'accepted': False, 'error': str(exc)}))
         return 1

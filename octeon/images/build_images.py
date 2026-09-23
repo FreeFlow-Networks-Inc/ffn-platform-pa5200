@@ -210,7 +210,7 @@ def build(config, platform, core, out):
                 tar.extractall(root, filter='data')
                 owners = {m.name.removeprefix('./').rstrip('/'): (m.uid, m.gid) for m in tar.getmembers()}
             audit_root(root)
-            operating_system = image_policy.debian_root(root)
+            operating_system = image_policy.debian_root(root, role)
             for required in ('usr/lib/systemd/systemd', 'usr/bin/python3'):
                 executable = image_policy.root_path(root, required)
                 if root not in executable.parents:

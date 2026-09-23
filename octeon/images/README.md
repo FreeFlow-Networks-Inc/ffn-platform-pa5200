@@ -24,6 +24,18 @@ must be owned by installed Debian `mips64` packages. Use a GNU userspace
 toolchain with a Debian glibc sysroot for agents/transports; a nolibc kernel
 compiler cannot build those executables.
 
+The seed must also contain the configured role packages listed in
+`../packages/runtime-requirements.json`. A CP requires native Debian NFS-server
+packages; a DP requires its policy/networking tools. Missing packages fail the
+build before kernel compilation. See [Debian packages](../packages/README.md)
+for the transport source-package builder and the runtime inventory command.
+
+The CP overlay installs disabled native NFS and DP transport units. The MP must
+provision `/etc/exports.d/ffn-dp.exports` with the selected root, exact transport
+client and filesystem ID before starting NFS. The transport unit copies its
+packaged executable to `/run/ffn-dp` before starting; it must still be stopped
+while the DP is reset. These units do not replace BCM/FE100 or DP boot qualification.
+
 Do not register the firewall itself as a build runner. Set the `OCTEON_BUILD_PROFILE`
 variable in GitHub's `octeon-build` environment to the absolute path of a
 runner-owned profile. Restrict that environment to reviewed refs; this workflow
@@ -148,7 +160,7 @@ Core tests: `python3 -m unittest discover -s tests -p test_plane_images.py`.
 ## Inspect inputs before a build
 
 ```sh
-python3 octeon/images/image_policy.py --rootfs /path/to/clean-debian-root
+python3 octeon/images/image_policy.py --rootfs /path/to/clean-debian-root --role cp
 python3 octeon/images/image_policy.py --kernel /path/to/pinned-linux-source
 ```
 

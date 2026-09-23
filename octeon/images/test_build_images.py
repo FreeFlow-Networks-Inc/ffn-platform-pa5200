@@ -19,8 +19,10 @@ def cpio_entry(name, content=b'', mode=0o100644):
 
 
 def debian_metadata(root):
+    requirements = json.loads((Path(__file__).parent.parent / 'packages/runtime-requirements.json').read_text())
+    packages = set(requirements['common'] + requirements['cp'] + requirements['dp'])
     files = {'usr/lib/os-release': 'ID=debian\nVERSION_CODENAME=sid\n',
-             'var/lib/dpkg/status': '\n\n'.join('Package: '+n+'\nStatus: install ok installed\nArchitecture: mips64\nVersion: 1' for n in ('base-files', 'libc6', 'systemd', 'python3')),
+             'var/lib/dpkg/status': '\n\n'.join('Package: '+n+'\nStatus: install ok installed\nArchitecture: mips64\nVersion: 1' for n in sorted(packages)),
              'var/lib/dpkg/info/systemd.list': '/usr/lib/systemd/systemd\n',
              'var/lib/dpkg/info/python3.list': '/usr/bin/python3\n'}
     for name, data in files.items():
@@ -44,6 +46,16 @@ class BuildInputTests(unittest.TestCase):
             p.write_bytes(invalid)
             with self.assertRaises(ValueError):
                 b.elf(p)
+
+    def test_role_packages_required_before_build(self):
+        debian_metadata(self.root)
+        policy.debian_root(self.root, 'cp')
+        policy.debian_root(self.root, 'dp')
+        status = self.root / 'var/lib/dpkg/status'
+        status.write_text(status.read_text().replace('Package: nfs-kernel-server', 'Package: removed-nfs-server'))
+        with self.assertRaisesRegex(ValueError, 'nfs-kernel-server'):
+            policy.debian_root(self.root, 'cp')
+        policy.debian_root(self.root, 'dp')
 
     def test_pinned_seed_tampering(self):
         p = self.root / 'seed'

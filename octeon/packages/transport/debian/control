@@ -1,0 +1,16 @@
+Source: ffn-octeon-transport
+Section: net
+Priority: optional
+Maintainer: FFN Build System <build@localhost>
+Build-Depends: debhelper-compat (= 13), gcc-mips64-linux-gnuabi64 | gcc-16-mips64-linux-gnuabi64, libc6-dev-mips64-cross, python3:native
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: ffn-octeon-transport
+Architecture: mips64
+Depends: ${misc:Depends}
+Built-Using: ${ffn:Built-Using}
+Description: FFN OCTEON management and dataplane PCIe transports
+ Static Debian GNU/glibc transport daemons for the PA-5200 processors.
+ The management plane provisions transport roles and starts the daemons.
+ Installation does not start services, configure interfaces or reset hardware.

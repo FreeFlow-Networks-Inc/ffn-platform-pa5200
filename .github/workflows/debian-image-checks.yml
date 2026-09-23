@@ -1,0 +1,39 @@
+name: Debian image and package checks
+
+on:
+  push:
+    paths:
+      - 'octeon/images/**'
+      - 'octeon/packages/**'
+      - 'octeon/debian/*.service'
+      - 'tools/ffn_octboot.py'
+      - 'tools/test_octboot_policy.py'
+      - '.github/workflows/debian-image-checks.yml'
+  pull_request:
+    paths:
+      - 'octeon/images/**'
+      - 'octeon/packages/**'
+      - 'octeon/debian/*.service'
+      - 'tools/ffn_octboot.py'
+      - 'tools/test_octboot_policy.py'
+      - '.github/workflows/debian-image-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    # PRs never execute on the private hardware/image builder.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate image inputs, package payloads and boot preflight
+        run: |
+          python3 -m unittest discover -s octeon/images -p test_build_images.py
+          python3 -m unittest discover -s octeon/packages -p test_packages.py
+          python3 -m unittest discover -s tools -p test_octboot_policy.py
