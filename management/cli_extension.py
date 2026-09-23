@@ -10,7 +10,7 @@ def help_text():
     return ('show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]\n'
             '  Read FE100 observations through MP controld; stale data is labelled.\n'
             '  Bare fe100 or fe100 json preserves the complete JSON report.\n'
-            'show platform control | agents | control-events\n'
+            'show platform control | agents | control-events | boot\n'
             '  Inspect plane connectivity and recent control events.')
 
 
@@ -20,7 +20,7 @@ def complete(prefix, text):
     except ValueError: return []
     if parts == ['show']: choices = ['platform']
     elif parts == ['show', 'platform']:
-        choices = ['fe100', 'control', 'agents', 'control-events', 'aggregates', 'mp-interfaces',
+        choices = ['fe100', 'control', 'agents', 'control-events', 'boot', 'aggregates', 'mp-interfaces',
                    'wan-path', 'status', 'bcm', 'phy', 'faceplate', 'dataplane', 'network',
                    'inspection', 'overlay', 'chassis', 'thermal', 'fabric']
     elif parts == ['show', 'platform', 'fe100']: choices = list(FE100_VIEWS)
@@ -119,6 +119,10 @@ def handle(line, api, token):
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
     if parts[:3] == ['show','platform','fe100']:
         return show_fe100(parts, api, token)
+    if parts == ['show','platform','boot']:
+        result = api('/api/system/control', token=token)
+        print(json.dumps(result.get('hardware_boot', {'phase':'unavailable','hardware_ready':False}), indent=2))
+        return True
     if parts==['show','platform','mp-interfaces']:
         print(json.dumps(api('/api/system/mp-interfaces',token=token),indent=2));return True
     if parts[:3]==['request','platform','mp-interface'] and len(parts)==5:

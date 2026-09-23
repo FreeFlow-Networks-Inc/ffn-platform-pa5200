@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "platform": "pa5200",
+  "match": {
+    "architectures": ["x86_64", "amd64"],
+    "products": ["PA-5220"],
+    "pci_required": {"177d:9700": 1}
+  },
+  "mp_boot_units": ["ffn-octeon.service"],
+  "steps": [
+    {"id": "octeon-boot", "plane": "mp", "unit": "ffn-octeon.service", "timeout": 1500},
+    {"id": "management-i2c", "plane": "cp", "unit": "ffn-management-i2c.service", "after": ["octeon-boot"], "timeout": 120},
+    {"id": "cooling", "plane": "cp", "unit": "ffn-thermal.service", "after": ["management-i2c"], "timeout": 120},
+    {"id": "bcm", "plane": "cp", "unit": "ffn-bcmd.service", "after": ["cooling"], "timeout": 120},
+    {"id": "front-ports", "plane": "cp", "unit": "ffn-front-ports.service", "after": ["bcm"], "timeout": 1200},
+    {"id": "copper-phy", "plane": "cp", "unit": "ffn-copper.service", "after": ["front-ports"], "timeout": 240},
+    {"id": "fe100-links", "plane": "cp", "unit": "ffn-fe100-links.service", "after": ["copper-phy"], "timeout": 660},
+    {"id": "saved-faceplate-state", "plane": "cp", "unit": "ffn-faceplate-restore.service", "after": ["fe100-links"], "timeout": 360},
+    {"id": "cp-worker", "plane": "cp", "unit": "ffn-plane@cp.service", "after": ["saved-faceplate-state"], "timeout": 90},
+    {"id": "dp-agent", "plane": "dp", "unit": "ffn-dp-agent.service", "after": ["octeon-boot"], "timeout": 90},
+    {"id": "dp-worker", "plane": "dp", "unit": "ffn-plane@dp.service", "after": ["dp-agent"], "timeout": 90},
+    {"id": "mp-worker", "plane": "mp", "unit": "ffn-plane@mp.service", "after": ["cp-worker", "dp-worker"], "timeout": 90}
+  ],
+  "acknowledgments": {
+    "cp": ["octeon", "bcm.available", "fe100.available", "fe100_driver.userspace.read_verified"],
+    "dp": ["octeon", "boot.ready"]
+  }
+}

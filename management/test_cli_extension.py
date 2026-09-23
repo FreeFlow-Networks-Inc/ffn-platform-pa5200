@@ -6,6 +6,15 @@ from unittest.mock import Mock
 from cli_extension import handle, complete
 
 class CLITests(unittest.TestCase):
+    def test_boot_status_uses_control_daemon_view(self):
+        state = {'owner':'mp','phase':'waiting-agents','hardware_ready':False}
+        api = Mock(return_value={'hardware_boot':state})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(handle('show platform boot',api,'session'))
+        self.assertEqual(json.loads(output.getvalue()),state)
+        api.assert_called_once_with('/api/system/control',token='session')
+        self.assertEqual(complete('show platform ','boo'),['boot'])
+
     def test_sessions_use_read_only_control_daemon_resource(self):
         result=dict(available=True,hardware_admission=False,sessions=[])
         api=Mock(return_value={'ok':True,'result':result})

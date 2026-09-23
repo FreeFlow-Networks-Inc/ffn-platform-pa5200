@@ -37,6 +37,9 @@ documented in [OCTEON images](octeon/images/README.md). The pipeline builds clea
 source-based candidates; the initial image lock stays disabled until a pair is
 published and qualified.
 
+The [MP-owned boot profile](management/BOOT.md) connects MP hardware detection to
+the commissioned CP/DP, cooling, BCM, PHY and FE100 services and agent readiness.
+
     ffn_oct.py          OCTEON CP/DP boot orchestration from the host
     ffn_gryphon.py      chassis model: PCI-to-role map, per-slot topology
     ffn_ifroles.py      interface role assignment for this chassis
