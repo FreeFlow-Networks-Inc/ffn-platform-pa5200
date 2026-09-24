@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ffn-octeon-transport
+Source: https://github.com/FreeFlow-Networks-Inc/ffn-platform-pa5200
+
+Files: *
+Copyright: 2026 FreeFlow Networks, Inc.
+License: GPL-2
+ The complete GNU General Public License version 2 is included in LICENSE.
+ On Debian systems it is also available at /usr/share/common-licenses/GPL-2.

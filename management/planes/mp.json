@@ -230,6 +230,28 @@
         "/opt/ffn-platforms/pa5200-management/session_backend.py",
         "status"
       ]
+    },
+    "plane-lifecycle": {
+      "status": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "status"],
+      "validate": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "validate"],
+      "apply": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "apply"]
+    },
+    "plane-images": {
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_images.py",
+        "validate"
+      ],
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_images.py",
+        "status"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_images.py",
+        "apply"
+      ]
     }
   },
   "role": "mp"

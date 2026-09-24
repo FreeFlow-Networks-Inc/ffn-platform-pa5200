@@ -1,7 +1,7 @@
 [Unit]
 Description=FFN FE100 gearbox, Ethernet and Interlaken links
-Requires=ffn-copper.service
-After=ffn-copper.service
+Requires=ffn-mdio.service ffn-bcmd.service ffn-fe100-pci.service
+After=ffn-mdio.service ffn-front-ports.service ffn-bcmd.service ffn-fe100-pci.service
 PartOf=ffn-bcmd.service
 
 [Service]

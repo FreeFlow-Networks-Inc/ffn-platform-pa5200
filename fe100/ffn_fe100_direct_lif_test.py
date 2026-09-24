@@ -4,6 +4,7 @@
 Invoked only by ffn_fe100_nexthop.py while it owns the table lock and the
 temporary next-hop. This child has a separate MMIO mapping restricted to TLU.
 """
+from ffn_fe100 import register_map_path
 import ctypes as C
 import hashlib
 import json
@@ -24,7 +25,7 @@ def main():
     fd = int(os.environ['FFN_FE100_LOCK_FD'])
     if os.readlink('/proc/self/fd/'+str(fd)) != '/run/ffn-fe100-tables.lock':
         raise RuntimeError('missing parent table lock')
-    libpath = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+    libpath = '/usr/local/lib64/libpandp_cp.so.1.0'
     with open(libpath, 'rb') as f:
         if hashlib.file_digest(f, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
             raise RuntimeError('owner ABI changed')
@@ -37,7 +38,7 @@ def main():
     shim.ffn_fe100_open.argtypes = [C.c_uint64, C.c_char_p, C.c_int]
     if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/direct-lif-trace.txt', 1):
         raise RuntimeError('map failed')
-    for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+    for r in json.load(open(register_map_path())):
         shim.ffn_fe100_allow(r['addr'])
     lib = C.CDLL(libpath, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
     get, put = lib.pan_fe100_fetch_lif_entry, lib.pan_fe100_insert_lif_entry
@@ -60,7 +61,7 @@ def main():
     modes = {}
     try:
         if capture:
-            registers = {r['name']:r['addr'] for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json'))}
+            registers = {r['name']:r['addr'] for r in json.load(open(register_map_path()))}
             if fe.read32(registers['prom_chip_rev_num']) >> 24:
                 raise RuntimeError('PCA decoder requires FE100, not FE101')
             for block in ('lif','dfp','fwd'):

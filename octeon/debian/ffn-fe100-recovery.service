@@ -6,7 +6,7 @@ After=local-fs.target
 [Service]
 Type=oneshot
 Environment=LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0
-Environment=LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64
+Environment=LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps
 ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_fe100_recovery.py
 TimeoutStartSec=45
 TimeoutStopSec=5

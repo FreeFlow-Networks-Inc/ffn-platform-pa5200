@@ -9,11 +9,12 @@ describes the September 5 starting point.
 
 The FE100 is a Palo Alto ASIC — PCI `feed:fe1c`, class `0x020000` (Ethernet
 controller), BAR0 = 1 MB — on the control plane's own PCIe bus. It is not the
-BCM88375; it is a separate part, on a different bus, with no driver bound to it.
+BCM88375; it is a separate part on a different bus. The native Debian CP now
+binds it to the `ffn_fe100` PCI driver.
 
 ## What now works
 
-`ffn_fe100.py` runs on the control plane, maps BAR0 through `/dev/mem`, and
+`ffn_fe100.py` runs on the control plane, maps the bound PCI `resource0`, and
 reads or writes registers by name from the 5951-entry map recovered from the
 vendor's `libpandp_cp.so`.
 
@@ -36,14 +37,34 @@ nif_cr_imp_chk_en   +0x10508 = 0x0000000f
 with the COMMAND register's memory-space bit clear. Reads then return
 `0xffffffff`, which is indistinguishable from a register that genuinely reads
 all ones. The tool checks the bit and says so rather than printing plausible
-nonsense. Enable with `echo 1 > /sys/bus/pci/devices/0002:01:00.0/enable` — and
-the upstream bridge `0002:00:00.0` needs enabling too.
+nonsense. The PCI driver's probe enables memory decoding and claims BAR0.
 
-There is no `devmem` on this control plane's busybox, which is what the earlier
-probe tool assumed. This uses the python3 that is already there for `ffn_bcmd`
-rather than adding a package to a firewall's control plane for one read. Reads
-are a local mmap rather than mailbox round trips, which is what makes a
-full-chip survey cheap enough to be routine.
+The Python reader and C owner adapters require the FFN binding; neither falls
+back to `/dev/mem`. The adapter's register allowlists and write gates still
+apply. PCI ownership does not replace the userspace table lock or the
+commissioned initialization and session owners.
+
+## Native PCI binding
+
+Build `octeon/kctl/ffn_fe100.ko` against the exact CP kernel. The CP image builder
+includes it, and `ffn-fe100-pci.service` loads it before FE100 link setup.
+Probe validates the PCI identity and 1 MiB memory BAR, claims the resource, and
+enables memory decoding. It does not reset FE100, reinitialize tables, enable
+bus mastering, or claim forwarding readiness. Unbind only after stopping all
+userspace owners and closing their BAR mappings.
+
+On the CP, inspect the binding and readiness with:
+
+```sh
+systemctl status ffn-fe100-pci.service
+ls -l /sys/bus/pci/drivers/ffn_fe100/
+python3 /usr/local/sbin/ffn_hardware_verify.py
+```
+
+The CP agent reports the kernel binding, BAR presence, and a successful
+non-clearing read separately. A module file or PCI device alone never counts
+as responding. Physical forwarding and hardware NAT qualification remain
+separate from binding, register access, and session-table validation.
 
 ## Survey: all 23 blocks answer
 

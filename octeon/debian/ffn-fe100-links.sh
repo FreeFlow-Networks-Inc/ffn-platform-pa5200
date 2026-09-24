@@ -2,7 +2,8 @@
 # Initialize FE100's physical links using owner runtime already on the box.
 set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export LD_LIBRARY_PATH=/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64
+export LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps
+export LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0
 gate=/sys/module/ffn_mdioctl/parameters/allow_gearbox_writes
 trap 'echo 0 > "$gate"' EXIT
 mkdir -p /var/lib/ffn/fe100

@@ -39,10 +39,12 @@ CLI:
 """
 import glob
 import json
+import math
 import os
 import time
 import struct
 import sys
+import uuid
 
 PCI_VENDOR_CAVIUM = "177d"
 SYSFS_PCI = "/sys/bus/pci/devices"
@@ -941,8 +943,84 @@ def oct_probe_bootproto(path, window=None):
             "note": "candidates only -- confirm against the bootloader before use"}
 
 
+def agent_handoff(profile, client=None):
+    """Observe the MP-owned channels without loading images or applying config.
+
+    Freshness is measured by controld's monotonic receive clock. Processor wall
+    clocks may not be synchronized during boot and are never used for expiry.
+    A configured worker alone is insufficient: require a read-only round trip.
+    """
+    result = {'ready': False, 'dp_handshake': False, 'control_handoff': False,
+              'detail': 'DP handshake: waiting; control handoff: unavailable'}
+    try:
+        if client is None:
+            from ffn_controld_client import ControldClient
+            client = ControldClient(timeout=10)
+        state = client.query('state/agents')
+        if state.get('owner') != 'ffn-controld':
+            raise ValueError('FFN control daemon unavailable')
+        counts, boots = {}, {}
+        for role in ('cp', 'dp'):
+            boots[role] = set()
+            for agent in state.get('agents', {}).values():
+                observation = agent.get('last_observation') or {}
+                report = observation.get('report') or {}
+                if agent.get('role') != role or observation.get('role') != role:
+                    continue
+                if observation.get('platform') != 'pa5200' or observation.get('v') != 1:
+                    continue
+                if any(agent.get(k) is not True for k in ('connected', 'fresh', 'ready')):
+                    continue
+                age, expiry = agent.get('age_seconds'), agent.get('stale_after_seconds')
+                if (type(age) not in (int, float) or type(expiry) not in (int, float)
+                        or not math.isfinite(age) or not math.isfinite(expiry)
+                        or not 0 <= age < expiry):
+                    continue
+                boot = observation.get('boot_id')
+                try:
+                    if str(uuid.UUID(boot)) != boot:
+                        continue
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                if report.get('boot_id') != boot or report.get('ready') is not True:
+                    continue
+                boots[role].add(boot)
+            counts[role] = len(boots[role])
+        expected = {r: profile[r + '_instances'] for r in ('cp', 'dp')}
+        result['dp_handshake'] = counts['dp'] == expected['dp']
+        result['detail'] = ('DP handshake: %d/%d fresh ready agent(s); '
+                            'control handoff: %d/%d fresh ready CP agent(s)'
+                            % (counts['dp'], expected['dp'], counts['cp'], expected['cp']))
+        if not result['dp_handshake'] or counts['cp'] != expected['cp']:
+            return result
+        if state.get('worker_configured') is not True:
+            result['detail'] += '; execution worker not configured'
+            return result
+        request = {'v': 1, 'id': str(uuid.uuid4()), 'resource': 'plane-lifecycle',
+                   'action': 'status', 'payload': {}}
+        reply = client.query('plane/request', request=request)
+        status = reply.get('result') or {}
+        if (reply.get('id') != request['id'] or reply.get('v') != 1
+                or reply.get('ok') is not True or reply.get('state') != 'observed'
+                or reply.get('trace', [])[:2] != ['controld', 'mp']
+                or status.get('platform') != 'pa5200' or status.get('busy') is not False):
+            raise ValueError('Execution worker has not acknowledged a stable control handoff')
+        # The worker obtains a second live observation through controld. Fence
+        # a restart between the initial handshake and the worker's reply.
+        for role in ('cp', 'dp'):
+            observed = status.get('roles', {}).get(role, {})
+            if (observed.get('fresh') is not True or observed.get('ready') is not True
+                    or observed.get('boot_id') not in boots[role]):
+                raise ValueError('Processor identity/readiness changed during control handoff')
+        result.update(ready=True, control_handoff=True)
+        result['detail'] += '; MP execution worker acknowledged; processor boot identities matched'
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError, AttributeError, KeyError):
+        result['detail'] += '; live control-channel verification unavailable or changed'
+    return result
+
+
 def bringup_plan(model=None, pci=None):
-    """The exact ordered sequence, with per-step readiness. Pure planning."""
+    """Ordered boot prerequisites plus a read-only, live control handoff check."""
     m, prof = profile(model)
     eps = discover_endpoints()
     target = None
@@ -1057,9 +1135,9 @@ def bringup_plan(model=None, pci=None):
                       % (b["name"], b["size"] // (1 << 20), b["integrity"])
                       for b in _bs) or "none",
             json.dumps(prof["fe100"]), CPLD_MAIN["node"])))
-    add(9, "await DP agent handshake, hand off to FFN control plane", False,
-        "message rings + doorbell; %d DP instance(s) for %s"
-        % (prof["dp_instances"], m))
+    handoff = agent_handoff(prof)
+    add(9, "DP agent handshake and FFN control-plane handoff", handoff['ready'],
+        handoff['detail'])
 
     ready = sum(1 for s in steps if s["ready"])
     return {"model": m, "profile": prof, "target": target,

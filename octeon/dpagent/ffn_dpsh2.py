@@ -320,7 +320,7 @@ def one_shot(s, cmd, timeout):
 
 
 
-def main():
+def session_main():
     ap = argparse.ArgumentParser(description="persistent shell on the DP over PCIe")
     ap.add_argument("-c", "--command")
     ap.add_argument("-t", "--timeout", type=float, default=30.0)
@@ -353,6 +353,30 @@ def main():
         return 0
     finally:
         s.close()
+
+
+def main():
+    import fcntl
+    if os.path.exists('/run/ffn-cp-restart.pending'):
+        print('Control Plane restart preparation in progress')
+        return 2
+    # Reset owner takes this exclusively; every mailbox client shares the fence.
+    # A second lock serializes clients using the same persistent shell session.
+    try:
+        with open('/run/ffn-dp-reset.lock', 'a') as reset, open('/run/ffn-dp-shell.lock', 'a') as shell:
+            fcntl.flock(reset, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            deadline = time.monotonic() + 8
+            while True:
+                try:
+                    fcntl.flock(shell, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline: raise
+                    time.sleep(.1)
+            return session_main()
+    except BlockingIOError:
+        print('DP reset or mailbox operation in progress; retry observation later')
+        return 2
 
 
 if __name__ == "__main__":

@@ -3,6 +3,10 @@ Description=FFN CP-to-DP transport from RAM
 After=ffn-cp-nfs.service
 [Service]
 Type=simple
+RuntimeDirectory=ffn-dp
+RuntimeDirectoryMode=0700
+# Copy the packaged static executable to RAM before serving a network root.
+ExecStartPre=/usr/bin/install -m0755 /usr/libexec/ffn/ffn_dpnetd /run/ffn-dp/ffn_dpnetd
 ExecStart=/run/ffn-dp/ffn_dpnetd --role cp -v
 Restart=on-failure
 RestartSec=3

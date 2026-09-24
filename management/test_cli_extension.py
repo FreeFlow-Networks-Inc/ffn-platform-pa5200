@@ -6,6 +6,27 @@ from unittest.mock import Mock
 from cli_extension import handle, complete
 
 class CLITests(unittest.TestCase):
+    def test_independent_image_pull_uses_control_daemon(self):
+        api = Mock(side_effect=[{'ok':True,'result':{'roles':{'dp':{'revision':7}}}},
+                               {'ok':True,'result':{'status':'queued','role':'dp'}}])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            handle('request platform image dp download ' + 'a'*64, api, 'ssh-session')
+        self.assertEqual(json.loads(output.getvalue())['role'], 'dp')
+        self.assertTrue(all(c.args[0] == '/api/system/planes' for c in api.call_args_list))
+        request = api.call_args.kwargs['body']
+        self.assertEqual(request['resource'], 'plane-images')
+        self.assertEqual(request['payload'], {'role':'dp','operation':'download','revision':7,'sha256':'a'*64})
+        self.assertEqual(complete('request platform image ', 'c'), ['cp'])
+
+    def test_boot_status_uses_control_daemon_view(self):
+        state = {'owner':'mp','phase':'waiting-agents','hardware_ready':False}
+        api = Mock(return_value={'hardware_boot':state})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(handle('show platform boot',api,'session'))
+        self.assertEqual(json.loads(output.getvalue()),state)
+        api.assert_called_once_with('/api/system/control',token='session')
+        self.assertEqual(complete('show platform ','boo'),['boot'])
+
     def test_sessions_use_read_only_control_daemon_resource(self):
         result=dict(available=True,hardware_admission=False,sessions=[])
         api=Mock(return_value={'ok':True,'result':result})

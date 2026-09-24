@@ -1,0 +1,12 @@
+[Unit]
+Description=FFN native OCTEON MDIO access for PHY and gearbox controllers
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/modprobe ffn_mdioctl
+RemainAfterExit=yes
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

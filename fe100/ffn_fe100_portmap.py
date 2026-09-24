@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded lab programming of one FE100 NIF receive port-map entry."""
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -19,7 +20,7 @@ if not (0 <= args.port <= 255 and 0 <= args.device <= 31 and args.swdev in (0,1)
     p.error('invalid port-map address')
 lock = open('/run/ffn-fe100-tables.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library = '/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library, 'rb') as source:
     if hashlib.file_digest(source, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')
@@ -28,7 +29,7 @@ if size != 0x100000 or not memory_decode_on(): raise SystemExit('FE100 BAR unava
 shim = C.CDLL('/usr/local/lib/ffn/libffn-fe100-tables.so',mode=os.RTLD_GLOBAL|os.RTLD_NOW)
 shim.ffn_fe100_open.argtypes = [C.c_uint64,C.c_char_p,C.c_int]
 if shim.ffn_fe100_open(base,b'/var/lib/ffn/fe100/portmap-trace.txt',args.apply): raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')): shim.ffn_fe100_allow(r['addr'])
+for r in json.load(open(register_map_path())): shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
 # DWARF pan_fe100_portmap_entry_t is exactly three packed uint8 fields.
 entry = (C.c_uint8*3)(args.swdev,args.device,args.port)

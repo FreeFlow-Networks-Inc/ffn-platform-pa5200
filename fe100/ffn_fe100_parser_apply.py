@@ -13,7 +13,7 @@ import struct
 from ffn_fe100_parser_inspect import open_parser
 
 BACKUP=Path('/var/lib/ffn/fe100/parser-before-direct-encode.json')
-SOURCE=Path('/opt/ffn-compat/tmp/dpfs/etc/fe-parser.json')
+SOURCE=Path('/usr/share/ffn/fe100/parser.json')
 FIELDS={
     'exccode':(8,16,8),'sysport':(8,0,16),
     'pkey0_idx':(24,19,5),'pkey0_en':(24,18,1),'pkey1_idx':(24,13,5),'pkey1_en':(24,12,1),

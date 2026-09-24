@@ -137,7 +137,8 @@ def compile_device(device):
 
 
 def plan(raw):
-    root=parse(raw);device=root.find("./devices/entry[@name='localhost.localdomain']")
+    from ffn_interface_addresses import resolved_config
+    root=resolved_config(parse(raw));device=root.find("./devices/entry[@name='localhost.localdomain']")
     groups,orphans=compile_device(device) if device is not None else ([],[])
     return dict(revision=hashlib.sha256(raw if isinstance(raw,bytes) else raw.encode()).hexdigest(),
                 aggregates=groups,orphan_members=orphans)

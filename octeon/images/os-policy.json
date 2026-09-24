@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "platform": "pa5200",
+  "mp": {"distribution": "ubuntu", "architecture": "amd64"},
+  "cp": {"distribution": "debian", "architecture": "mips64", "elf": "mips64eb", "libc": "glibc"},
+  "dp": {"distribution": "debian", "architecture": "mips64", "elf": "mips64eb", "libc": "glibc"},
+  "minimum_octeon_kernel": [6, 18],
+  "vendor_compatibility_roots": false,
+  "cross_distribution_fallback": false
+}

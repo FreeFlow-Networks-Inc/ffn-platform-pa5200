@@ -7,7 +7,7 @@ import subprocess
 def before_commit(candidate_bytes, run=subprocess.run):
     if not isinstance(candidate_bytes,bytes):raise ValueError('candidate bytes required')
     command='/usr/local/sbin/ffn-cp'
-    ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
+    ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
     def call(op,payload):
         # The vendor search path contains an obsolete SQLite with the same
         # SONAME. Pin Debian's library for the durable Python journal.

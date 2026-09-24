@@ -11,7 +11,7 @@ import ctypes
 import os
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--library', default='/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0')
+parser.add_argument('--library', default='/usr/local/lib64/libpandp_cp.so.1.0')
 parser.add_argument('--attach', action='store_true')
 args = parser.parse_args()
 lib = ctypes.CDLL(args.library, mode=os.RTLD_LOCAL | os.RTLD_LAZY)

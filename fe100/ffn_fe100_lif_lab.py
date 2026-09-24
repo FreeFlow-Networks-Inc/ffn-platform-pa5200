@@ -5,6 +5,7 @@ The owner's pdt diagnostic defines forwarding type 5 as SYSPORT. Mask one
 bits mean comparison, so only the six-bit ingress logical port is matched.
 Default only describes the entry; --inspect issues indirect table reads.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -35,7 +36,7 @@ if not (args.apply or args.inspect):
     raise SystemExit(0)
 lock = open('/run/ffn-fe100-tables.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library = '/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library, 'rb') as f:
     if hashlib.file_digest(f, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')
@@ -55,7 +56,7 @@ if shim.ffn_fe100_select_block(0x80000) or shim.ffn_fe100_select_lif_table(table
 # getter is called unless --apply explicitly requests an entry insertion.
 if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/lif-lab-trace.txt', 1):
     raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+for r in json.load(open(register_map_path())):
     shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
 get = lib.pan_fe100_fetch_lif_entry

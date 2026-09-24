@@ -1,6 +1,7 @@
 [Unit]
 Description=PA-5220 BCM84848 copper PHY firmware and link initialization
-After=ffn-front-ports.service
+Requires=ffn-mdio.service
+After=ffn-mdio.service ffn-front-ports.service
 
 [Service]
 Type=oneshot

@@ -6,15 +6,19 @@ runner configuration identifies reviewed kernel source and rootfs/initramfs
 seeds. Builds never contact an appliance or change any boot selection.
 """
 import argparse
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+import image_policy
 
 
 def run(args, **kw):
@@ -53,8 +57,30 @@ def elf(path):
         raise ValueError('Expected MIPS64 big-endian ELF: ' + str(path))
 
 
+def private_key_material(data):
+    # ssh-keygen/OpenSSL embed PEM delimiter strings as executable constants.
+    # Require an actual encoded body, not a delimiter alone. Do not exempt ELF
+    # files wholesale: a binary can still contain an embedded private key.
+    return re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----\r?\n'
+                     rb'(?:(?:Proc-Type|DEK-Info):[^\r\n]*\r?\n|\r?\n)*'
+                     rb'[A-Za-z0-9+/=]{32,}\r?\n', data) is not None
+
+
+def rootfs_filter(member, destination):
+    # Debian alternatives and CA links are absolute inside the target root.
+    # Rebase them before Python's safety filter so they never refer to the host.
+    if (member.issym() or member.islnk()) and member.linkname.startswith('/'):
+        if '..' in member.linkname.split('/'):
+            raise ValueError('Absolute image link traverses outside root')
+        member = copy.copy(member)
+        target = member.linkname.lstrip('/')
+        member.linkname = posixpath.relpath(target, posixpath.dirname(member.name) or '.') if member.issym() else target
+    return tarfile.data_filter(member, destination)
+
+
 def audit_initramfs(path):
     """Only a single plain newc archive is accepted; inspect without extracting."""
+    distributions = []
     with path.open('rb') as f:
         while True:
             header = f.read(110)
@@ -76,15 +102,25 @@ def audit_initramfs(path):
             if name == 'TRAILER!!!':
                 if size or any(f.read()):
                     raise ValueError('Concatenated initramfs content is not supported')
+                if not distributions or any(x.get('ID') != 'debian' for x in distributions):
+                    raise ValueError('Initramfs must identify a Debian userspace; foreign or unknown seed rejected')
                 return
             if name.startswith('/') or '..' in name.split('/'):
                 raise ValueError('Unsafe initramfs path')
             if mode & 0o170000 not in (0o100000, 0o040000, 0o120000):
                 raise ValueError('Device nodes must be created at boot, not shipped')
+            if any(name == p or name.startswith(p + '/') for p in image_policy.FOREIGN_MARKERS):
+                raise ValueError('Foreign distribution in initramfs: ' + name)
+            if name in ('etc/os-release', 'usr/lib/os-release') and mode & 0o170000 == 0o100000:
+                distributions.append(image_policy.os_release(data.decode('utf8')))
+            if 'ld-musl' in Path(name).name:
+                raise ValueError('Foreign libc in initramfs')
+            if data.startswith(b'\x7fELF') and (data[:6] != b'\x7fELF\x02\x02' or data[18:20] != b'\x00\x08'):
+                raise ValueError('Non-MIPS64 big-endian ELF in initramfs: ' + name)
             if (name.startswith(('root/', 'home/', 'opt/dpfs/', 'opt/ffn-compat/', 'etc/ffn/', 'etc/ffn-ngfw/'))
                     or Path(name).name in ('shadow', 'gshadow', 'authorized_keys', 'machine-id')
                     or re.search(r'(ssh_host_.*_key|id_rsa|id_ed25519)$', name)
-                    or re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----', data)):
+                    or private_key_material(data)):
                 raise ValueError('Machine/vendor state in initramfs: ' + name)
 
 
@@ -102,6 +138,8 @@ def audit_root(root):
             # be followed by the builder's host-side file operations.
             continue
         if not item.is_file():
+            if not item.is_dir():
+                raise ValueError('Special file must be created at boot: ' + name)
             continue
         if any(name == p or name.startswith(p + '/') for p in forbidden):
             raise ValueError('Machine/vendor state in seed: ' + name)
@@ -114,9 +152,13 @@ def audit_root(root):
                 fields = row.split(':')
                 if len(fields) < 2 or fields[1] not in ('!', '*', '!!', '!*'):
                     raise ValueError('Unlocked account/password in seed: ' + name)
+        with item.open('rb') as stream:
+            header = stream.read(20)
+        if header.startswith(b'\x7fELF'):
+            elf(item)
         if item.stat().st_size < 16 * 1024 * 1024:
             data = item.read_bytes()
-            if re.search(rb'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----', data):
+            if private_key_material(data):
                 raise ValueError('Private key material: ' + name)
 
 
@@ -129,7 +171,7 @@ def safe_install(source, root, destination):
             raise ValueError('Image overlay crosses symlink: ' + destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-    target.chmod(0o755 if destination.endswith('.py') else 0o644)
+    target.chmod(0o755 if destination.endswith(('.py', '.sh')) else 0o644)
 
 
 def archive_git(repo, dest, commit):
@@ -146,8 +188,58 @@ def image_owner(member, owners):
 
 
 def check_host():
-    if os.name != 'posix' or not hasattr(tarfile, 'data_filter'):
+    if os.name != 'posix' or sys.version_info < (3, 12) or not hasattr(tarfile, 'data_filter'):
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
+
+
+def check_kernel_config(conf, role):
+    values = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_]+)=([ym])$', conf, re.M))
+    for symbol in ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'):
+        if values.get('CONFIG_' + symbol) != 'y':
+            raise ValueError('Missing kernel requirement: ' + symbol)
+    if role == 'cp':
+        for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
+            value = values.get('CONFIG_' + symbol)
+            if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
+                raise ValueError('Missing CP cooling kernel requirement: ' + symbol)
+
+
+def check_mdio_source(tree):
+    source = (tree / 'drivers/net/mdio/mdio-cavium.c').read_text()
+    start = source.index('int cavium_mdiobus_read_c45')
+    read = source[start:source.index('EXPORT_SYMBOL', start)]
+    phase = read[read.index('smi_cmd.s.phy_op = 3'):]
+    phase = phase[:phase.index('oct_mdio_writeq')]
+    if not re.search(r'smi_cmd\.s\.reg_adr\s*=\s*devad\s*;', phase):
+        raise ValueError('CP requires the Cavium Clause 45 device-address fix')
+
+
+def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work):
+    """Build hardware adapters against this image, never import loose old modules."""
+    module = work / (role + '-hardware')
+    module.mkdir()
+    names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl', 'ffn_fe100') if role == 'cp' else (
+        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe')
+    for p in (platform / 'octeon/kctl').iterdir():
+        if p.suffix in ('.c', '.h'):
+            shutil.copyfile(p, module / p.name)
+    (module / 'Makefile').write_text('obj-m += ' + ' '.join(n + '.o' for n in names) + '\n')
+    run(['make', '-C', tree, 'M=' + str(module), 'ARCH=mips',
+         'CROSS_COMPILE=' + cross, 'LOCALVERSION=', 'KCFLAGS=-Werror', 'modules'])
+    for name in names:
+        artifact = module / (name + '.ko')
+        elf(artifact)
+        modules = image_policy.root_path(root, 'lib/modules')
+        safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    if role == 'cp':
+        image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
+                              output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+        adapters = work / 'fe100-adapters'
+        run(['sh', platform / 'fe100/build-adapters.sh', adapters],
+            env=dict(os.environ, CC=userspace_cross + 'gcc'))
+        for artifact in adapters.glob('*.so'):
+            elf(artifact)
+            safe_install(artifact, root, 'usr/local/lib/ffn/' + artifact.name)
 
 
 def build(config, platform, core, out):
@@ -179,25 +271,30 @@ def build(config, platform, core, out):
             tree.mkdir()
             with tarfile.open(source_archive) as tar:
                 tar.extractall(tree, filter='data')
+            kernel_version = image_policy.kernel(tree)
+            if role == 'cp':
+                check_mdio_source(tree)
             seed = pinned_file(cfg['rootfs'])
             initramfs = pinned_file(cfg['initramfs'])
             audit_initramfs(initramfs)
             kernel_config = pinned_file(cfg['config'])
             cross = cfg['cross_compile']
             compiler = output([cross + 'gcc', '--version']).splitlines()[0]
+            image_policy.compiler(output([cross + 'gcc', '-dumpmachine']), compiler)
             bundle = work / role
             root = bundle / 'rootfs'
             root.mkdir(parents=True)
             with tarfile.open(seed) as tar:
-                tar.extractall(root, filter='data')
+                tar.extractall(root, filter=rootfs_filter)
                 owners = {m.name.removeprefix('./').rstrip('/'): (m.uid, m.gid) for m in tar.getmembers()}
             audit_root(root)
+            operating_system = image_policy.debian_root(root, role)
             for required in ('usr/lib/systemd/systemd', 'usr/bin/python3'):
-                executable = (root / required).resolve(strict=True)
+                executable = image_policy.root_path(root, required)
                 if root not in executable.parents:
                     raise ValueError('Runtime executable escapes image root')
                 elf(executable)
-            module_dir = (root / 'lib/modules').resolve()
+            module_dir = image_policy.root_path(root, 'lib/modules')
             if root not in module_dir.parents:
                 raise ValueError('Kernel module directory escapes image root')
             if module_dir.exists() and any(module_dir.iterdir()):
@@ -208,6 +305,12 @@ def build(config, platform, core, out):
                 base = {'core': core, 'platform': platform}[origin]
                 safe_install(base / source, root, destination)
                 owners.pop(destination, None)
+            marker = root / 'etc/ffn-image-role'
+            if marker.parent.is_symlink() or marker.is_symlink():
+                raise ValueError('Role marker crosses an image symlink')
+            marker.parent.mkdir(exist_ok=True)
+            marker.write_text(role + '\n')
+            owners.pop('etc/ffn-image-role', None)
             shutil.copyfile(kernel_config, tree / '.config')
             run([tree / 'scripts/config', '--file', tree / '.config',
                  '--set-str', 'INITRAMFS_SOURCE', initramfs,
@@ -216,9 +319,7 @@ def build(config, platform, core, out):
             make = ['make', '-C', tree, 'ARCH=mips', 'CROSS_COMPILE=' + cross]
             run(make + ['olddefconfig'])
             conf = (tree / '.config').read_text()
-            for symbol in ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'):
-                if 'CONFIG_' + symbol + '=y\n' not in conf:
-                    raise ValueError('Missing kernel requirement: ' + symbol)
+            check_kernel_config(conf, role)
             run(make + ['-j' + str(jobs), 'vmlinux', 'modules'])
             run(make + ['INSTALL_MOD_PATH=' + str(root), 'modules_install'])
             # Kernel build/source links point to the runner; source ships separately.
@@ -228,6 +329,8 @@ def build(config, platform, core, out):
             run([cross + 'strip', '-o', bundle / 'vmlinux', tree / 'vmlinux'])
             elf(bundle / 'vmlinux')
             release = (tree / 'include/config/kernel.release').read_text().strip()
+            build_hardware(platform, tree, root, role, cross,
+                           cfg.get('userspace_cross_compile', cross), release, work)
             run(['depmod', '-b', root, release])
             shutil.copyfile(tree / '.config', bundle / 'kernel.config')
             shutil.copyfile(initramfs, out / (role + '-initramfs.cpio'))
@@ -236,6 +339,7 @@ def build(config, platform, core, out):
             shutil.copyfile(sources, out / (role + '-userspace-sources.tar.xz'))
             audit_root(root)
             details = {'role': role, 'architecture': 'mips64eb', 'kernel_release': release,
+                       'operating_system': operating_system, 'kernel_source_version': kernel_version,
                        'kernel_commit': commit, 'compiler': compiler,
                        'rootfs_sha256': sha(seed), 'initramfs_sha256': sha(initramfs),
                        'kernel_config_sha256': sha(bundle / 'kernel.config'),

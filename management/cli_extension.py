@@ -10,8 +10,14 @@ def help_text():
     return ('show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]\n'
             '  Read FE100 observations through MP controld; stale data is labelled.\n'
             '  Bare fe100 or fe100 json preserves the complete JSON report.\n'
-            'show platform control | agents | control-events\n'
-            '  Inspect plane connectivity and recent control events.')
+            'show platform control | agents | control-events | boot\n'
+            '  Inspect plane connectivity and recent control events.\n'
+            'show platform images\n'
+            'show platform processors\n'
+            'request platform restart cp|dp acknowledge-outage\n'
+            'request platform image cp|dp check\n'
+            'request platform image cp|dp download SHA256\n'
+            '  Check and download one signed plane image through MP controld; no reset.')
 
 
 def complete(prefix, text):
@@ -20,7 +26,7 @@ def complete(prefix, text):
     except ValueError: return []
     if parts == ['show']: choices = ['platform']
     elif parts == ['show', 'platform']:
-        choices = ['fe100', 'control', 'agents', 'control-events', 'aggregates', 'mp-interfaces',
+        choices = ['fe100', 'control', 'agents', 'control-events', 'boot', 'images', 'processors', 'aggregates', 'mp-interfaces',
                    'wan-path', 'status', 'bcm', 'phy', 'faceplate', 'dataplane', 'network',
                    'inspection', 'overlay', 'chassis', 'thermal', 'fabric']
     elif parts == ['show', 'platform', 'fe100']: choices = list(FE100_VIEWS)
@@ -28,6 +34,11 @@ def complete(prefix, text):
         choices = ['json'] if parts[3] in FE100_VIEWS[:-1] else []
     elif parts in (['help'], ['?']): choices = ['platform']
     elif parts in (['help', 'platform'], ['?', 'platform']): choices = ['fe100']
+    elif parts == ['request', 'platform']: choices = ['image', 'restart']
+    elif parts == ['request', 'platform', 'restart']: choices = ['cp', 'dp']
+    elif len(parts) == 4 and parts[:3] == ['request', 'platform', 'restart']: choices = ['acknowledge-outage']
+    elif parts == ['request', 'platform', 'image']: choices = ['cp', 'dp']
+    elif len(parts) == 4 and parts[:3] == ['request', 'platform', 'image']: choices = ['check', 'download']
     else: return None
     return [value for value in choices if value.startswith(text)]
 
@@ -117,8 +128,40 @@ def handle(line, api, token):
     if parts in (['help','platform'], ['?','platform'], ['help','platform','fe100'], ['?','platform','fe100']):
         print(help_text()); return True
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
+    if parts == ['show','platform','processors'] or parts[:3] == ['request','platform','restart']:
+        if parts[0] == 'request' and (len(parts) != 5 or parts[3] not in ('cp','dp') or parts[4] != 'acknowledge-outage'):
+            raise ValueError('usage: request platform restart cp|dp acknowledge-outage')
+        def lifecycle(action, payload):
+            result = api('/api/system/planes', method='POST', token=token,
+                         body={'v':1,'id':str(uuid.uuid4()),'resource':'plane-lifecycle','action':action,'payload':payload})
+            if not result.get('ok'): raise ValueError(result.get('error', 'Processor operation failed'))
+            return result['result']
+        state = lifecycle('status', {})
+        if parts[0] == 'request':
+            state = lifecycle('apply', {'role':parts[3], 'operation':'restart', 'revision':state['config']['revision'],
+                'expected_boot_id':state['roles'][parts[3]]['boot_id'], 'acknowledge_outage':True})
+        print(json.dumps(state, indent=2)); return True
+    if parts == ['show', 'platform', 'images'] or parts[:3] == ['request', 'platform', 'image']:
+        def image_request(action, payload):
+            response = api('/api/system/planes', method='POST', token=token,
+                           body={'v':1, 'id':str(uuid.uuid4()), 'resource':'plane-images', 'action':action, 'payload':payload})
+            if not response.get('ok'):
+                raise ValueError('Plane image operation failed: ' + str(response.get('error')))
+            return response['result']
+        state = image_request('status', {})
+        if parts[0] == 'request':
+            if len(parts) not in (5, 6) or parts[3] not in ('cp','dp') or parts[4] not in ('check','download') or len(parts) != (5 if parts[4] == 'check' else 6):
+                raise ValueError('usage: request platform image cp|dp check | download SHA256')
+            state = image_request('apply', {'role':parts[3], 'operation':parts[4],
+                                  'revision':state['roles'][parts[3]]['revision'],
+                                  'sha256':parts[5] if len(parts) == 6 else ''})
+        print(json.dumps(state, indent=2)); return True
     if parts[:3] == ['show','platform','fe100']:
         return show_fe100(parts, api, token)
+    if parts == ['show','platform','boot']:
+        result = api('/api/system/control', token=token)
+        print(json.dumps(result.get('hardware_boot', {'phase':'unavailable','hardware_ready':False}), indent=2))
+        return True
     if parts==['show','platform','mp-interfaces']:
         print(json.dumps(api('/api/system/mp-interfaces',token=token),indent=2));return True
     if parts[:3]==['request','platform','mp-interface'] and len(parts)==5:

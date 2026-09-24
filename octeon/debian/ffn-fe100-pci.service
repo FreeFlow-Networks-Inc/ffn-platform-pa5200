@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN FE100 PCI driver binding
+Before=ffn-fe100-links.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/modprobe ffn_fe100
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

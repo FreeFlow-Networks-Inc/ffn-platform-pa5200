@@ -35,14 +35,13 @@ Usage:
     ffn_mipscall.py --selftest <libports.so>
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
 
-# The OCTEON SDK cross-binutils read these big-endian MIPS64 objects with line
-# numbers; the host's native objdump does not. Overridable for a different tree.
-DEFAULT_PREFIX = ("/mnt/clones/sdk51/OCTEON-SDK/tools-gcc-4.7/bin/"
-                  "mips64-octeon-linux-gnu-")
+# Use current MIPS binutils; never depend on the retired SDK compiler tree.
+DEFAULT_PREFIX = os.environ.get("CROSS_COMPILE", "mips64-linux-gnuabi64-")
 
 
 def run(prefix, tool, *args):

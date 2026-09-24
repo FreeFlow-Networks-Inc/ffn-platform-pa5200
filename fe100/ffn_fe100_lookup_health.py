@@ -101,12 +101,12 @@ def main():
     args = p.parse_args()
     if not 2 <= args.samples <= 30 or not 0.05 <= args.interval <= 2:
         p.error('use 2..30 samples and an interval of 0.05..2 seconds')
-    from ffn_fe100 import Fe100, bar0_base_and_size, memory_decode_on
+    from ffn_fe100 import Fe100, bar0_base_and_size, memory_decode_on, register_map_path
     with open('/run/ffn-fe100-tables.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
         if bar0_base_and_size()[1] != 0x100000 or not memory_decode_on():
             raise RuntimeError('FE100 BAR unavailable')
-        with open('/opt/ffn-compat/opt/ffn/fe100-csr.json') as f:
+        with open(register_map_path()) as f:
             regs = [r for r in json.load(f) if selected(r['name'])]
         samples = []
         fe = Fe100()

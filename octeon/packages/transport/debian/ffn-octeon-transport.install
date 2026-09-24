@@ -1,0 +1,5 @@
+pcnet/ffn_pcnetd usr/libexec/ffn
+dpnet/ffn_dpnetd usr/libexec/ffn
+boot/ffn_dpagent2 usr/libexec/ffn
+boot/ffn-systemd-handoff usr/libexec/ffn
+boot/ffn_nfsmount usr/libexec/ffn

@@ -23,7 +23,7 @@ from ffn_wan_forwarding import atomic
 STATE=Path('/etc/ffn/aggregate-hardware.json')
 LOCK=Path('/run/ffn-aggregate-hardware.lock')
 FACEPLATE_LOCK=Path('/run/ffn-faceplate.lock')
-SCRIPT=Path('/opt/ffn-compat/tmp/bcmcfg/ffn_bcm_forward_test.c')
+SCRIPT=Path('/usr/share/broadcom/ffn_bcm_forward_test.c')
 PORTS=dict(enumerate((16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35),5))
 LEASE=15
 RECIPE=r'''

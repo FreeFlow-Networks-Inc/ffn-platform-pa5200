@@ -5,6 +5,7 @@ Default reads configuration/status only. Native routines are bound to the
 appliance's audited ELF and one writable register block. Each training attempt
 is journaled before hardware I/O; an interrupted attempt is never retried.
 """
+from ffn_fe100 import register_map_path
 import argparse
 from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
@@ -80,7 +81,7 @@ class FlowMemory:
             raise RuntimeError('flow memory diagnostic scope failed')
         if self.shim.ffn_fe100_open(base, self.trace.encode(), apply):
             raise RuntimeError('flow memory mapping failed')
-        for r in json.loads(Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text()):
+        for r in json.loads(Path(register_map_path()).read_text()):
             if self.base <= r['addr'] < self.base+0x8000:
                 self.shim.ffn_fe100_allow(r['addr'])
         for r in (*PROTECTED, 0xa8080, 0xb0080, 0x40404, 0x40428, 0x40450, 0xffffc):

@@ -19,7 +19,7 @@ def rpc(resource, action='status', payload=None):
     request={'v':1,'id':str(uuid.uuid4()),'resource':resource,'action':action,'payload':payload or {}}
     response=ControldClient(timeout=130).plane_request(request)
     if not response.get('ok'):
-        raise ValueError('MP request %s: %s (%s)'%(request['id'],response.get('state'),response.get('error')))
+        raise ValueError('MP %s/%s request %s: %s (%s)'%(resource,action,request['id'],response.get('state'),response.get('error')))
     return response['result']
 
 
@@ -50,7 +50,8 @@ class PlatformApplier:
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
 
     def reconcile(self, status):
-        root=ET.parse(self.config).getroot()
+        from ffn_interface_addresses import resolved_config
+        root=resolved_config(ET.parse(self.config).getroot())
         device=root.find("./devices/entry[@name='localhost.localdomain']")
         if device is None: return
         if device.find('./deviceconfig/system/mp-interfaces/entry') is not None:

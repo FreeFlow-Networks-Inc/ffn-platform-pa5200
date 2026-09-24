@@ -6,8 +6,9 @@
 #include <stddef.h>
 static uint32_t registers[0x100000/4];
 static unsigned events, denied;
-int fe100_dbg_prt(uint32_t level,const char *format,...) { return 0; }
+int fe100_dbg_prt(uint32_t level,const char *format,...) { (void)level; (void)format; return 0; }
 int fe100_get_dram_info(void *config) {
+    (void)config;
     /* Explicitly model the audited owner's missing-EEPROM fallback. */
     fprintf(stdout,"EEPROM_FALLBACK_NO_OVERRIDE\n"); return 0;
 }

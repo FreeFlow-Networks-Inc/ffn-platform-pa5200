@@ -10,6 +10,7 @@ BCM routing and packet injection are controlled separately by the MP tester.
 Reference: VM 5220-sysroot1-full libpandp_cp.so DWARF, usr/share/pdt/fe100.py,
 opt/dpfs/etc/fe-parser.json. IPv4 UDP test key, LIF1, ACL31 and NH31 only.
 """
+from ffn_fe100 import register_map_path
 import ctypes as C
 import fcntl
 import hashlib
@@ -88,7 +89,7 @@ def worker(request, fd):
         from ffn_fe100_lookup_health import selected, decode
         fe = Fe100()
         try:
-            regs = json.loads(Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text())
+            regs = json.loads(Path(register_map_path()).read_text())
             return {r['name']:{'raw':v, 'fields':decode(r,v)} for r in regs
                     if selected(r['name']) or (r['name'].split('_')[0] in ('flu','cfp','nif','prw','tmi')
                                               and r['name'].endswith('_no_rd_clr'))
@@ -119,7 +120,7 @@ def worker(request, fd):
         trace = str(ROOT/('packet-io-'+str(time.time_ns())+'.txt'))
         if shim.ffn_fe100_open(address,trace.encode(),1): raise RuntimeError('map failed')
         # Selected block only; native IA APIs need capability/command/data CSRs.
-        for r in json.loads(Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text()):
+        for r in json.loads(Path(register_map_path()).read_text()):
             shim.ffn_fe100_allow(r['addr'])
         lib = C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
         WORKER_STATE.update(lib=lib,shim=shim,trace=trace,kind=kind)

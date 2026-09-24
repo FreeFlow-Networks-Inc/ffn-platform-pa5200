@@ -23,6 +23,29 @@ HEALTH = (0x40010,0x40014,0x40400,0x40404,0x40428,0x40450,0x48008,0x48018,0x4870
           0xb0100,0xb0104,0xb0134,0xb0148,0xb0150,0xb0168,0xb0170)
 ACTION_HEALTH = (0x98008,0x98174,0x98128,0x98130,0x98148,0x98150,
                  0x78134,0x78804,0x406a4)
+PIPELINE_MODES = {0x40200: 'FLU', 0x48080: 'CFP', 0x70500: 'PRW'}
+PIPELINE_HEALTH = (*PIPELINE_MODES, 0x4080c)
+
+
+def pipeline_prerequisites(values):
+    """A ready CPU doorbell does not prove the return path can complete.
+
+    Native Debian commissioning exposed a latched PRW fatal error while all
+    memory-ready bits passed. After clearing it, an outstanding FLU indirect
+    command still prevented readback. Observe both without clearing errors or
+    accepting a busy command as successful initialization.
+    """
+    reasons = []
+    for register, block in PIPELINE_MODES.items():
+        value = values.get(register)
+        if value is None:
+            reasons.append(block+' pipeline status is unavailable')
+        elif value & 0x3000:
+            reasons.append(block+' pipeline reports a latched hardware error')
+    completion = values.get(0x4080c)
+    if completion is None or (completion >> 23) & 7 != 1:
+        reasons.append('FLU indirect access is busy or has not completed successfully')
+    return reasons
 
 
 def action_prerequisites(values, root, boot):
@@ -148,7 +171,7 @@ class LiveSessions:
         # Only session IA windows and CPU start control can be written.
         for r in (*range(0x40800,0x40890,4),0x48014,*range(0x486c0,0x486f4,4)):
             if r not in (0x4080c,0x486c8): self.shim.ffn_fe100_allow(r)
-        for r in (*HEALTH,*ACTION_HEALTH,0x4080c,0x486c8): self.shim.ffn_fe100_allow_readonly(r)
+        for r in (*HEALTH,*ACTION_HEALTH,*PIPELINE_HEALTH,0x486c8): self.shim.ffn_fe100_allow_readonly(r)
         self.shim.fe100_reg_rd.argtypes = [C.c_uint32,C.c_uint32,C.POINTER(C.c_uint32)]
         self.writable = writable
         self.commissioning = commissioning
@@ -175,8 +198,10 @@ class LiveSessions:
     def status(self):
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         journals = calibration_journals(ROOT, boot)
-        values = {r:self.read(r) for r in (*HEALTH,*ACTION_HEALTH)}
+        values = {r:self.read(r) for r in (*HEALTH,*ACTION_HEALTH,*PIPELINE_HEALTH)}
         blockers = prerequisites(values,boot,journals)
+        pipeline = pipeline_prerequisites(values)
+        blockers.extend(pipeline)
         if flu_record(ROOT,boot) is None:
             blockers.append('FLU lacks verified initialization in this boot')
         actions=action_prerequisites(values,ROOT,boot)
@@ -189,7 +214,7 @@ class LiveSessions:
                 'cp_boot_id':boot,'blockers':blockers,
                 'action_blockers':actions,
                 'warm_lab_verified':warm,
-                'commissioning_blockers':[] if warm else blockers+actions,
+                'commissioning_blockers':pipeline if warm else blockers+actions,
                 'registers':{hex(r):v for r,v in values.items()},
                 'calibration':{str(c):{k:r.get(k) for k in ('stage','error','journal')} for c,r in journals.items()},
                 'session_offload_verified':False,'trace':self.trace}

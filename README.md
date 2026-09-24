@@ -4,6 +4,14 @@ Platform support for **Palo Alto Networks PA-5200-series** appliances, consumed
 by [FFN-NGFW](https://github.com/FreeFlow-Networks-Inc/FFN-NGFW) as a submodule at
 `platform/pa5200/`.
 
+## Operating systems
+
+PA-5200 releases use **Ubuntu amd64 for the MP** and **Debian MIPS64 big-endian
+for CP and DP**, with glibc and Linux 6.18+ on OCTEON. See the
+[OS policy](octeon/USERLAND-DISTRO.md) and [image builder](octeon/images/README.md).
+Foreign distro roots, compatibility chroots and legacy vendor kernels are not
+release inputs. Hardware qualification is required before enabling an image lock.
+
 ## Why this is a separate repository
 
 FFN-NGFW is the firewall. This is the code that makes one specific family of
@@ -36,6 +44,9 @@ Ready-made CP/DP image builds, release qualification and automatic MP staging ar
 documented in [OCTEON images](octeon/images/README.md). The pipeline builds clean
 source-based candidates; the initial image lock stays disabled until a pair is
 published and qualified.
+
+The [MP-owned boot profile](management/BOOT.md) connects MP hardware detection to
+the commissioned CP/DP, cooling, BCM, PHY and FE100 services and agent readiness.
 
     ffn_oct.py          OCTEON CP/DP boot orchestration from the host
     ffn_gryphon.py      chassis model: PCI-to-role map, per-slot topology

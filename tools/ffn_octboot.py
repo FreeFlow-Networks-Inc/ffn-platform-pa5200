@@ -20,6 +20,7 @@ usage: ffn_octboot.py [--watch SECONDS] [--kernel PATH] [--addr 0xN]
 import argparse
 import hashlib
 import os
+import re
 import sys
 import time
 
@@ -30,10 +31,20 @@ import ffn_octdram as od
 PCI = "0000:01:00.0"
 FIFO = "/run/ffn-octeon-console.in"
 CLOG = "/var/log/ffn-octeon-console.log"
-KERNEL = "/var/lib/ffn-ngfw/octeon/ffn-vmlinux-octeon3"
-# DEV ONLY: vendor userland from this appliance's own /opt/dpfs. Staged in
-# DRAM, never embedded in the kernel, never packaged into an FFN image.
-OVERLAY = "/var/lib/ffn-ngfw/octeon/dev/ffn-dev-overlay.cpio"
+
+
+def kernel_bytes(path):
+    """Validate a current embedded-initramfs kernel before touching hardware."""
+    if os.stat(path).st_size > 512 * 1024**2:
+        raise ValueError('Oversized CP kernel')
+    with open(path, 'rb') as stream:
+        data = stream.read()
+    if data[:6] != b'\x7fELF\x02\x02' or data[18:20] != b'\x00\x08':
+        raise ValueError('CP kernel must be MIPS64 big-endian ELF')
+    versions = {tuple(map(int, m)) for m in re.findall(rb'Linux version (\d+)\.(\d+)\.(\d+)', data)}
+    if len(versions) != 1 or next(iter(versions)) < (6, 18, 0):
+        raise ValueError('Legacy or unidentified CP kernel rejected')
+    return data
 
 
 def fifo(cmd):
@@ -77,26 +88,21 @@ def prompt_ok(quiet=False):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--watch", type=float, default=115.0)
-    ap.add_argument("--kernel", default=KERNEL)
+    ap.add_argument("--kernel", required=True, help="explicit qualified kernel with embedded Debian initramfs")
     ap.add_argument("--addr", default="0x21000000")
     ap.add_argument("--fdt", default="0x80000")
     ap.add_argument("--cores", type=int, default=8)
     ap.add_argument("--no-stage", action="store_true")
-    ap.add_argument("--overlay", default=OVERLAY)
-    ap.add_argument("--overlay-addr", default="0x22000000")
-    # Extra kernel command-line words, appended verbatim.
-    #
-    # The reason this exists: booting with no mem= at all leaves the kernel
-    # with only ~432 MB of the 8 GB this CP has, because it takes whatever the
-    # boot descriptor offers. A suffix-less "mem=2048" is what must be avoided
-    # -- arch/mips/cavium-octeon/setup.c parses it with memparse(), so a bare
-    # number is BYTES. "mem=2G" or "mem=2048M" is correct and gives the kernel
-    # the memory a full rootfs needs to unpack into.
-    ap.add_argument("--extra", default="",
-                    help="extra kernel args, e.g. --extra 'mem=2G'")
-    ap.add_argument("--no-overlay", action="store_true")
+    ap.add_argument("--extra", default="", help="MP-provisioned kernel command line")
+    # Accepted for existing callers; overlays are always disabled now.
+    ap.add_argument("--no-overlay", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     addr = int(a.addr, 0)
+    try:
+        data = kernel_bytes(a.kernel)
+    except (OSError, ValueError) as exc:
+        print(str(exc))
+        return 2
 
     if not os.path.exists(FIFO):
         print("console broker is not running -- start it with:")
@@ -111,55 +117,17 @@ def main():
               "python3 tools/ffn_octctl.py boot --dev 0 --force")
         return 2
 
-    if not a.no_stage:
-        print()
-        print("=== stage FFN's kernel ===")
-        data = open(a.kernel, "rb").read()
-        want = hashlib.sha256(data).hexdigest()
-        with od.WindowedDram(PCI) as w:
+    print()
+    print("=== verify staged kernel ===" if a.no_stage else "=== stage FFN kernel ===")
+    want = hashlib.sha256(data).hexdigest()
+    with od.WindowedDram(PCI) as w:
+        if not a.no_stage:
             w.write(addr, data)
-            got = hashlib.sha256(w.read(addr, len(data))).hexdigest()
-        print("  %.2f MiB -> 0x%x  sha256 %s"
-              % (len(data) / (1 << 20), addr, "MATCH" if got == want else "MISMATCH"))
-        if got != want:
-            return 1
-
-    rootfs_arg = ""
-    if not a.no_overlay and os.path.exists(a.overlay):
-        oaddr = int(a.overlay_addr, 0)
-        print()
-        print("=== stage dev overlay rootfs (DEV ONLY -- never packaged) ===")
-        blob = open(a.overlay, "rb").read()
-        if blob[:6] != b"070701":
-            print("  not a newc cpio (magic %r) -- refusing" % blob[:6])
-            return 1
-        want = hashlib.sha256(blob).hexdigest()
-        with od.WindowedDram(PCI) as w:
-            w.write(oaddr, blob)
-            got = hashlib.sha256(w.read(oaddr, len(blob))).hexdigest()
-        ok = got == want
-        print("  %.2f MiB -> 0x%x  sha256 %s"
-              % (len(blob) / (1 << 20), oaddr, "MATCH" if ok else "MISMATCH"))
-        if not ok:
-            return 1
-        # Reserve the staging area from the SAME len(blob) that sizes
-        # ffn_rootfs=, emitted here beside it so the reserve cannot be stale
-        # relative to the payload it protects. A literal in ffn-octeon-up.sh
-        # would be a second derivation of one payload -- two files, two
-        # languages, no coupling.
-        #
-        # This is required, not belt-and-braces. The overlay is written before
-        # Linux starts but CONSUMED BY LINUX in do_populate_rootfs, i.e. after mm
-        # and the allocator are live, so the kernel can hand these pages out
-        # before the unpacker reads them. Observed on 2026-09-01 booting without
-        # it: "FFN: no cpio at 0x22000000 (magic ffffff80000000), skipping" --
-        # kernel data written over the staged cpio -- and the CP came up with no
-        # overlay, hence no /sbin/ffn-nfsroot and no NFS root at all.
-        rootfs_arg = (" ffn_rootfs=0x%x,0x%x ffn_reserve=0x%x,0x%x"
-                      % (oaddr, len(blob), oaddr, len(blob)))
-    elif not a.no_overlay:
-        print()
-        print("=== no dev overlay at %s -- booting without a shell ===" % a.overlay)
+        got = hashlib.sha256(w.read(addr, len(data))).hexdigest()
+    print("  %.2f MiB -> 0x%x  sha256 %s"
+          % (len(data) / (1 << 20), addr, "MATCH" if got == want else "MISMATCH"))
+    if got != want:
+        return 1
 
     # ffn_fdt: the SDK ships built-in trees only for CN3xxx/CN68xx, both legacy
     # CIU. This is a CIU3 part, so it must use the tree u-boot built for the
@@ -174,7 +142,7 @@ def main():
     # octeon_irq_init_ciu -- so the two must be deployed together.
     fdt_arg = (" ffn_fdt=%s" % a.fdt) if a.fdt else ""
     boot = ("bootoctlinux 0x%x numcores=%d console=ttyS0,115200n8"
-            "%s%s rw%s" % (addr, a.cores, fdt_arg, rootfs_arg,
+            "%s rw%s" % (addr, a.cores, fdt_arg,
                            (" " + a.extra) if a.extra else ""))
     print()
     print("=== boot ===")

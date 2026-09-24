@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: FreeFlow-Networks-Inc/FFN-NGFW
-          ref: f286c56cbdc877501a7e2a8c97f4b329ce54027c
+          ref: 96b46d39ca22c62dab4d86d99353e1a442527132
           path: .core-runtime
           submodules: false
           persist-credentials: false
@@ -123,7 +123,7 @@ jobs:
       - name: fe100 parser codec
         run: cd fe100 && python3 test_parser_codec.py
       - name: FE100 profile and native configuration
-        run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory
+        run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
         run: cd fe100 && python3 -m unittest test_aging test_flowstats
       - name: bcm agent -- cint result parsing
@@ -162,6 +162,8 @@ jobs:
           cd ../octeon/debian && python3 test_wan_probe.py
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+      - name: live bring-up handshake and control handoff
+        run: PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH" python3 -m unittest discover -s management -p test_bringup_handoff.py
       - name: FE100 NAT encoding, ownership and recovery (no hardware)
         run: cd fe100 && python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions test_warm test_ddr_diagnostics test_bcm_lab test_nat_results
       - name: central hardware control and FE100 policy barrier

@@ -13,6 +13,13 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_missing_address_object_fails_before_any_hardware_calls(self):
+        xml='<config><devices><entry name="localhost.localdomain"><network><interface><ethernet><entry name="ethernet1/1"><layer3><ip><entry name="missing"/></ip></layer3></entry></ethernet></interface></network></entry></devices></config>'
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_text(xml)
+            with patch('configd_applier.rpc') as rpc, self.assertRaisesRegex(ValueError,'missing'):
+                PlatformApplier(path).reconcile(Status())
+            rpc.assert_not_called()
     def test_explicit_lldp_off_is_supported_but_enabled_and_unknown_options_are_not(self):
         from xml.etree import ElementTree as ET
         for body in ('','<lldp/>','<lldp><enable>no</enable></lldp>'):

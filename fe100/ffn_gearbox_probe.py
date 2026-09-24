@@ -14,7 +14,7 @@ p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--apply', action='store_true')
 p.add_argument('--trace', default='/var/lib/ffn/fe100/gearbox-trace.txt')
 args = p.parse_args()
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpanbcm_cp.so.1.0'
+library = '/usr/local/lib64/libpanbcm_cp.so.1.0'
 with open(library, 'rb') as source:
     if hashlib.file_digest(source, 'sha256').hexdigest() != '8e4a786a901903a5806edffc213a0f0727167e5f7b7a8b0a145bf2d94aea2040':
         raise SystemExit('vendor library differs from inspected ABI')

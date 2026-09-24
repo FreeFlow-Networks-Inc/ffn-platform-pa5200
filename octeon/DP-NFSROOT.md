@@ -1,3 +1,7 @@
+> Historical bring-up record. Distro choices and compatibility-root instructions
+> below are retired. Use `octeon/images/README.md` and `octeon/USERLAND-DISTRO.md`
+> for the Debian CP/DP and Ubuntu MP release policy.
+
 # The DP roots over NFS
 
 **Working.** The DP's `/` is the CP's `/opt/dproot` export, mounted at boot by

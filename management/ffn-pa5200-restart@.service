@@ -1,0 +1,13 @@
+[Unit]
+Description=PA-5200 independent %i processor restart
+After=network.target ffn-octconsoled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/bin/python3 /opt/ffn-platforms/pa5200-management/plane_restart_owner.py %i restart
+# The web worker has its own deadline. Never kill a PCIe operation mid-access;
+# an unfinished owner stays visible and blocks another reset.
+TimeoutStartSec=infinity
+KillMode=process
+UMask=0077

@@ -1,3 +1,7 @@
+> Historical bring-up record. Distro choices and compatibility-root instructions
+> below are retired. Use `octeon/images/README.md` and `octeon/USERLAND-DISTRO.md`
+> for the Debian CP/DP and Ubuntu MP release policy.
+
 # Booting the 40-core DP Octeon from the 8-core CP
 
 Status: **not booted.** The DP is present, powered and enumerated; the vendor

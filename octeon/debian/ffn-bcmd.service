@@ -2,7 +2,6 @@
 Wants=ffn-front-ports.service
 Description=PA-5220 Broadcom switch control
 After=network.target ffn-dp-boot.service
-ConditionPathIsMountPoint=/opt/ffn-compat
 
 [Service]
 Type=simple

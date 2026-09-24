@@ -5,6 +5,7 @@ import ast
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -17,14 +18,14 @@ sys.path.insert(0, '/usr/local/lib/ffn')
 def fe100_driver_status(root=Path('/')):
     """Read driver metadata only. Never bind, load, enable or map hardware.
 
-    The commissioned FE100 access driver is userspace ffn_fe100.py, not a
-    PCI kernel module. The existing non-clearing reader proves access later
-    in this same agent observation; file presence alone cannot do that.
+    ffn_fe100 owns the PCI BAR; ffn_fe100.py maps its resource0 window.
+    The non-clearing reader proves access later in this same observation;
+    file presence or a kernel binding alone cannot do that.
     """
     def path(name):
         return root / name.lstrip('/')
     result = {'schema': 1, 'available': True, 'devices': [], 'errors': [],
-              'userspace': {'name': 'ffn_fe100.py', 'access': 'devmem-mmio',
+              'userspace': {'name': 'ffn_fe100.py', 'access': 'pci-resource0',
                             'installed': False, 'target_pci': None,
                             'sha256': None, 'read_verified': False,
                             'state': 'unavailable'}}
@@ -45,8 +46,8 @@ def fe100_driver_status(root=Path('/')):
     except (OSError, ValueError, SyntaxError):
         result['errors'].append('Userspace driver metadata unavailable')
     userspace['reader_installed'] = path('/usr/local/sbin/ffn_fe100_lookup_health.py').is_file()
-    userspace['register_map_installed'] = path('/opt/ffn-compat/opt/ffn/fe100-csr.json').is_file()
-    userspace['memory_device_present'] = path('/dev/mem').exists()
+    register_map = os.environ.get('FFN_FE100_REGMAP', '/usr/share/ffn/fe100/registers.json')
+    userspace['register_map_installed'] = Path(register_map).is_absolute() and path(register_map).is_file()
     try:
         entries = list(path('/sys/bus/pci/devices').iterdir())
     except OSError:
@@ -65,7 +66,8 @@ def fe100_driver_status(root=Path('/')):
             continue
         row = {'pci': entry.name, 'model': 'FE100', 'kernel_state': 'unknown',
                'kernel_driver': None, 'kernel_module': None, 'kernel_version': None,
-               'bar0_bytes': None, 'memory_decode': None}
+               'bar0_bytes': None, 'memory_decode': None,
+               'resource_present': entry.joinpath('resource0').exists()}
         try:
             row['kernel_driver'] = entry.joinpath('driver').readlink().name
             row['kernel_state'] = 'bound'
@@ -101,7 +103,8 @@ def qualify_fe100_access(driver, telemetry):
     verified = bool(driver.get('available') and target and target['memory_decode'] is True
                     and target['bar0_bytes'] == 0x100000 and userspace.get('installed')
                     and userspace.get('reader_installed') and userspace.get('register_map_installed')
-                    and userspace.get('memory_device_present') and telemetry.get('available') is True)
+                    and target.get('kernel_driver') == 'ffn_fe100'
+                    and target.get('resource_present') is True and telemetry.get('available') is True)
     userspace['read_verified'] = verified
     userspace['state'] = 'responding' if verified else 'installed-unverified' if userspace.get('installed') else 'unavailable'
     driver['userspace'] = userspace

@@ -69,8 +69,13 @@
  * a gamble: see ffn_bde_paxb_probe_window().
  */
 #include <asm/paccess.h>
+#define CVMX_ENABLE_CSR_ADDRESS_CHECKING 0
 #include <asm/octeon/octeon.h>
+/* The imported SDK switch intentionally shares the CN78XX/CN73XX branch. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
 #include <asm/octeon/cvmx-pemx-defs.h>
+#pragma GCC diagnostic pop
 
 #include "ffn_bde_abi.h"
 

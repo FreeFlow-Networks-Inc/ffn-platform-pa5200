@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Lab: initialize an individually audited FE100 packet-processing block."""
+from ffn_fe100 import register_map_path
 import argparse
 from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
@@ -23,7 +24,7 @@ profile=load_profile()
 if args.parser_json and args.block!='par':p.error('--parser-json requires --block par')
 lock=open('/run/ffn-fe100-tables.lock','w')
 fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-library='/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library='/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library,'rb') as f:
     if hashlib.file_digest(f,'sha256').hexdigest()!='b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')
@@ -34,7 +35,7 @@ shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
 if shim.ffn_fe100_select_block(blocks[args.block]):raise SystemExit('block selection failed')
 trace=('/var/lib/ffn/fe100/'+args.block+'-init.txt').encode()
 if shim.ffn_fe100_open(base,trace,args.apply):raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):shim.ffn_fe100_allow(r['addr'])
+for r in json.load(open(register_map_path())):shim.ffn_fe100_allow(r['addr'])
 lib=C.CDLL(library,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
 # fe100_cfg1 is an exported 2812-byte initialized object in this exact ELF.
 # Copy it; never mutate the library's global configuration in place.
@@ -59,7 +60,7 @@ fn.argtypes=[C.c_uint32,C.c_void_p]
 fn.restype=C.c_int
 result=fn(0,C.byref(cfg))
 if result==0 and args.parser_json:
-    source=open('/opt/ffn-compat/tmp/dpfs/etc/fe-parser.json','rb').read()
+    source=open('/usr/share/ffn/fe100/parser.json','rb').read()
     json.loads(source) # validate before entering the owner's C parser
     lib.cJSON_Parse.argtypes=[C.c_char_p]
     lib.cJSON_Parse.restype=C.c_void_p

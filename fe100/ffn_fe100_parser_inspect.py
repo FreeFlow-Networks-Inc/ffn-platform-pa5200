@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read the FE100 owner parser table without changing entries or counters."""
+from ffn_fe100 import register_map_path
 import ctypes as C
 import fcntl
 import hashlib
@@ -21,7 +22,7 @@ def open_parser():
     if shim.ffn_fe100_select_block(0x20000): raise RuntimeError('PAR block selection failed')
     shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
     if shim.ffn_fe100_open(base,b'/var/lib/ffn/fe100/parser-inspect-trace.txt',1): raise RuntimeError('map failed')
-    for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')): shim.ffn_fe100_allow(r['addr'])
+    for r in json.load(open(register_map_path())): shim.ffn_fe100_allow(r['addr'])
     lib=C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
     get=lib.pan_fe100_parser_entry_fetch
     get.argtypes=[C.c_uint32,C.c_void_p,C.c_int]

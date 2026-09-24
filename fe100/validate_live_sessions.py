@@ -25,6 +25,8 @@ def main():
             'keys':[k.hex() for k in keys],'entries':[w.hex() for w in wires],
             'before':before,'operations':[],'session_offload_verified':False,
             'session_table_verified':False,'cleanup_verified':False}
+    generation = ROOT/'generation.json'
+    report['hardware_generation'] = json.loads(generation.read_text()) if generation.exists() else None
     path=ROOT/('session-validation-'+str(time.time_ns())+'.json')
     with path.open('x') as f: json.dump(report,f);f.flush();os.fsync(f.fileno())
     def save():

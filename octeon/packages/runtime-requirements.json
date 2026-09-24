@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "architecture": "mips64",
+  "common": [
+    "base-files", "libc6", "systemd", "systemd-sysv", "python3",
+    "openssh-server", "iproute2", "kmod", "procps", "busybox",
+    "nfs-common", "ffn-octeon-transport"
+  ],
+  "cp": ["nfs-kernel-server", "rpcbind"],
+  "dp": ["nftables", "conntrack", "ethtool"]
+}

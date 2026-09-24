@@ -5,6 +5,7 @@ Reference pan_fe100_set_sem_fcm_config_thread calls
 fe100_sem_update_configuration before DDR and fe100_sem_fe_init after it.
 This separated stage never writes FCM clocks, PHYs, or other lookup blocks.
 """
+from ffn_fe100 import register_map_path
 import argparse
 from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
@@ -36,7 +37,7 @@ class Sem:
         if self.shim.ffn_fe100_select_block(0x78000):raise RuntimeError('SEM scope selection failed')
         self.shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
         if self.shim.ffn_fe100_open(base,self.trace.encode(),apply):raise RuntimeError('map failed')
-        for r in json.loads(Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text()):
+        for r in json.loads(Path(register_map_path()).read_text()):
             if 0x78000<=r['addr']<0x80000:self.shim.ffn_fe100_allow(r['addr'])
         for r in REGS:self.shim.ffn_fe100_allow_readonly(r)
         self.shim.fe100_reg_rd.argtypes=[C.c_uint32,C.c_uint32,C.POINTER(C.c_uint32)]

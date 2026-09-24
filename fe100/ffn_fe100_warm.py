@@ -108,7 +108,7 @@ def issue():
         if len(candidates)!=1:raise ValueError('Exactly one intact retained-state provenance chain required')
         record['source_boot'],record['sources']=candidates[0]
         record['profile']=asdict(load_profile());record['diagnostics']=[];save()
-        ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
+        ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
         for block in ('fhm','fdt','fcm'):
             p=subprocess.run(['python3','/usr/local/sbin/ffn_fe100_ddr_diagnostics.py','--block',block],
                 env=dict(os.environ,LD_LIBRARY_PATH=ld,FFN_FE100_LOCK_FD=str(io.lock.fileno())),

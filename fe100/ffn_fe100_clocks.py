@@ -13,7 +13,7 @@ import os
 import struct
 import time
 
-LIB = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+LIB = '/usr/local/lib64/libpandp_cp.so.1.0'
 SHA = 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9'
 RST, INIT = 0xa0004, 0xa01c0
 TCAM = (0xa05a0, 0xa05a4, 0xa05a8, 0xa05ac, 0xa05b0)

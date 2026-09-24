@@ -4,6 +4,7 @@
 Default is read-only. Apply is exclusive and once per boot, before any live
 sessions. DDR, TDI and packet blocks cannot be written through this mapping.
 """
+from ffn_fe100 import register_map_path
 import argparse
 from ffn_fe100_config import load_profile, native_configuration
 import ctypes as C
@@ -77,7 +78,7 @@ class Flu:
         if self.shim.ffn_fe100_select_block(0x40000): raise RuntimeError('FLU scope unavailable')
         self.shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
         if self.shim.ffn_fe100_open(base,self.trace.encode(),apply): raise RuntimeError('FLU mapping failed')
-        for row in json.loads(Path('/opt/ffn-compat/opt/ffn/fe100-csr.json').read_text()):
+        for row in json.loads(Path(register_map_path()).read_text()):
             if 0x40000<=row['addr']<0x48000: self.shim.ffn_fe100_allow(row['addr'])
         for r in (*HEALTH,*PROTECTED,0xffffc): self.shim.ffn_fe100_allow_readonly(r)
         self.shim.fe100_reg_rd.argtypes=[C.c_uint32,C.c_uint32,C.POINTER(C.c_uint32)]

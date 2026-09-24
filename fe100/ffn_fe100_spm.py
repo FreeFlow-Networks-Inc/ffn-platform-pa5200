@@ -5,6 +5,7 @@ Default slot 0 is the isolated lab configuration. The initialized owner
 fe100_cfg1 has four priority maps at offsets 1336..1399; entries 255 are
 unconfigured and are left untouched. No forwarding policy is created here.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -21,7 +22,7 @@ if not 0 <= args.slot < 16:
     p.error('slot must be 0..15')
 lock = open('/run/ffn-fe100-tables.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library = '/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library, 'rb') as f:
     if hashlib.file_digest(f, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')
@@ -34,7 +35,7 @@ if shim.ffn_fe100_select_block(0x70000):
     raise SystemExit('block selection failed')
 if shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/spm-trace.txt', args.apply):
     raise SystemExit('map failed')
-for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+for r in json.load(open(register_map_path())):
     shim.ffn_fe100_allow(r['addr'])
 lib = C.CDLL(library, mode=os.RTLD_LOCAL | os.RTLD_LAZY)
 defaults = bytes((C.c_char * 2812).in_dll(lib, 'fe100_cfg1'))

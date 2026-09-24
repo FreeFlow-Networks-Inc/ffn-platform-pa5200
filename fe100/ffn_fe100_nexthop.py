@@ -5,6 +5,7 @@ Default inspects one slot. --roundtrip commissions an empty slot and removes
 it in finally. No table flush, LIF change, or lookup-engine initialization.
 Caller must set the same LD_LIBRARY_PATH as ffn-fe100-links.sh.
 """
+from ffn_fe100 import register_map_path
 import argparse
 import ctypes as C
 import fcntl
@@ -15,7 +16,7 @@ import struct
 import subprocess
 import sys
 
-LIB = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+LIB = '/usr/local/lib64/libpandp_cp.so.1.0'
 SHA = 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9'
 
 
@@ -70,7 +71,7 @@ class NextHop:
         self.shim.ffn_fe100_open.argtypes = [C.c_uint64, C.c_char_p, C.c_int]
         if self.shim.ffn_fe100_open(base, b'/var/lib/ffn/fe100/nexthop-trace.txt', 1):
             raise RuntimeError('map failed')
-        for r in json.load(open('/opt/ffn-compat/opt/ffn/fe100-csr.json')):
+        for r in json.load(open(register_map_path())):
             self.shim.ffn_fe100_allow(r['addr'])
         for name in ('fetch', 'insert'):
             fn = getattr(self.lib, 'pan_fe100_'+name+'_nexthop_entry')
