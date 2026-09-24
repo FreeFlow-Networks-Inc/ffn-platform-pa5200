@@ -2,6 +2,7 @@ import io
 import json
 import struct
 import unittest
+from contextlib import nullcontext
 from unittest.mock import Mock,patch
 import native_plane_boot as boot
 import plane_restart_node as node
@@ -70,6 +71,36 @@ class NativeBootTests(unittest.TestCase):
                  Mock(stdout='ActiveState=inactive\nResult=success\nExecMainStatus=0\n')]
         with patch.object(node.subprocess,'run',side_effect=results),patch.object(node.time,'sleep') as sleep:
             node.wait_dp_owner();sleep.assert_called_once_with(1)
+
+    def test_transient_transport_cannot_be_used_for_restart(self):
+        state=Mock(stdout='LoadState=loaded\nTransient=yes\nFragmentPath=/run/systemd/transient/transport.service\n')
+        with patch.object(boot.subprocess,'run',return_value=state):
+            with self.assertRaisesRegex(ValueError,'Persistent transport'):
+                boot.transport_service({'transport':{'unit':'transport.service'}})
+
+    def test_missing_transport_after_stop_prevents_reset(self):
+        with patch.object(boot,'run') as run,patch.object(boot,'transport_service',side_effect=ValueError('missing')):
+            with self.assertRaisesRegex(ValueError,'missing'):
+                boot.stop_transport({'transport':{'unit':'transport.service'}})
+        self.assertEqual(run.call_args_list[0].args[0],['systemctl','stop','transport.service'])
+        self.assertEqual(run.call_args_list[1].args[0],['systemctl','daemon-reload'])
+
+    def test_cp_reconnect_restores_dp_window_without_resetting_processor(self):
+        cfg={'pci':'0003:03:00.0','devnum':3,'tools':{'csr':{'path':'/native/csr'}},
+             'transport':{'unit':'transport.service'}}
+        before={'boot_id':'unchanged','notes_sha256':'same'}
+        with patch.object(node,'profile',return_value=cfg),patch.object(boot,'preflight'), \
+                patch.object(boot,'exclusive',return_value=nullcontext()),patch.object(boot,'stop_transport') as stop, \
+                patch.object(boot,'run') as run,patch.object(node,'Path') as path, \
+                patch.object(node,'observe',return_value=before) as observe:
+            self.assertEqual(node.reconnect_dp(before),before)
+            stop.assert_called_once_with(cfg);observe.assert_called_once_with('dp',owned=True)
+            self.assertEqual([x.args[0] for x in run.call_args_list],[
+                ['/native/csr','--devnum=3','PEM0_BAR1_INDEX1','0x11'],
+                ['systemctl','start','transport.service']])
+            run.reset_mock();observe.return_value=dict(before,boot_id='unexpected')
+            with self.assertRaisesRegex(RuntimeError,'DP boot changed'):node.reconnect_dp(before)
+            self.assertEqual(run.call_count,1)
 
 
 if __name__=='__main__':unittest.main()

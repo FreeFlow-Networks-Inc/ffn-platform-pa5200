@@ -82,6 +82,24 @@ def wait_dp_owner():
     raise RuntimeError('DP boot owner is still running; restoration deferred')
 
 
+def reconnect_dp(before):
+    from native_plane_boot import preflight, exclusive, stop_transport, run
+    cfg=profile('dp');preflight(cfg)
+    with exclusive('/run/ffn-dp-reset.lock'):
+        stop_transport(cfg)
+        enable=Path('/sys/bus/pci/devices')/cfg['pci']/'enable'
+        if enable.read_text().strip()=='0':enable.write_text('1')
+        # CP enumeration clears the DP's PCIe window, not its running DRAM.
+        # Restore only the mailbox/transport window; never reset the DP here.
+        run([cfg['tools']['csr']['path'],'--devnum='+str(cfg['devnum']),
+             'PEM0_BAR1_INDEX1','0x11'],env=dict(os.environ,**cfg.get('environment',{})),hardware=True)
+        after=observe('dp',owned=True)
+        if any(after[key]!=before[key] for key in ('boot_id','notes_sha256')):
+            raise RuntimeError('DP boot changed during CP restart; transport remains stopped')
+        run(['systemctl','start',cfg['transport']['unit']],timeout=30)
+    return after
+
+
 def prepare(role):
     before={r:observe(r) for r in ('cp','dp')}
     units=[u for u in CP_UNITS if active(u)] if role=='cp' else []
@@ -106,7 +124,7 @@ def restore(role):
             if unit not in CP_UNITS:raise ValueError('Unexpected recovery unit')
             subprocess.run(['systemctl','start',unit],check=True,timeout=1120)
             if not active(unit):raise RuntimeError('Restored service is not active: '+unit)
-        subprocess.run(['systemctl','start',profile('dp')['transport']['unit']],check=True,timeout=30)
+        reconnect_dp(state['before']['dp'])
     transport=profile('dp')['transport']['unit']
     for _ in range(3):
         if not active(transport):raise RuntimeError('DP transport is not active after restart')

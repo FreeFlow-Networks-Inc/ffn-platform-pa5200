@@ -50,6 +50,7 @@ def profile(role):
 
 
 def preflight(cfg):
+    transport_service(cfg)
     endpoint = Path('/sys/bus/pci/devices') / cfg['pci']
     identity = (endpoint/'vendor').read_text().strip()[2:] + (endpoint/'device').read_text().strip()[2:]
     expected = '177d9700' if cfg['role'] == 'cp' else '177d0095'
@@ -77,6 +78,19 @@ def preflight(cfg):
 def command(cfg):
     return 'bootoctlinux 21000000 numcores=%d console=ttyS0,115200n8%s rw%s' % (
         cfg['cores'], ' ffn_fdt='+cfg['fdt'] if cfg['fdt'] else '', ' '+cfg['extra'] if cfg['extra'] else '')
+
+
+def transport_service(cfg):
+    unit=cfg['transport']['unit']
+    p=subprocess.run(['systemctl','show',unit,'--property=LoadState,FragmentPath,Transient'],
+                     capture_output=True,text=True,check=True,timeout=10)
+    state=dict(line.split('=',1) for line in p.stdout.splitlines() if '=' in line)
+    fragment=state.get('FragmentPath','')
+    if (state.get('LoadState')!='loaded' or state.get('Transient')!='no'
+            or not fragment.startswith(('/etc/systemd/system/','/usr/lib/systemd/system/','/lib/systemd/system/'))
+            or not Path(fragment).is_file()):
+        raise ValueError('Persistent transport service required before reset: '+unit)
+    return state
 
 
 @contextmanager
@@ -110,6 +124,11 @@ def run(argv, env=None, timeout=180, hardware=False):
 def stop_transport(cfg):
     unit = cfg['transport']['unit']
     run(['systemctl','stop',unit],timeout=30)
+    # A former transient unit can retain its /run fragment until stopped, even
+    # when a persistent replacement was installed. Reload and validate before
+    # touching the processor, rather than discovering a missing unit after boot.
+    run(['systemctl','daemon-reload'],timeout=30)
+    transport_service(cfg)
     expected = cfg['transport']['argv']
     for p in Path('/proc').glob('[0-9]*'):
         try:

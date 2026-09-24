@@ -31,6 +31,11 @@ The relay needs `ffn_agent_protocol.py` in `/usr/local/lib/ffn`. Use the native
 BCM service drop-in `ffn-bcmd-native-restart.conf` only with a native Debian BCM
 installation. Install persistent MP-to-CP and CP-to-DP transport units pointing
 to their actual native executables. Reload systemd on both processors.
+Verify `systemctl show <transport-unit> -p Transient -p FragmentPath` reports
+`Transient=no` and a persistent unit file. Installing a replacement file does
+not convert an already-running transient unit; migrate that transport during
+commissioning before enabling restart. Preflight rejects transient owners,
+and the stop path reloads systemd and rechecks the unit before any PCI reset.
 
 The MP owner pauses the active config reconciler, aggregate workers and link
 reconciliation while operating. CP restart records the active hardware services,
@@ -42,6 +47,9 @@ After the selected kernel returns, the owner checks transport service health,
 verifies the other processor's boot ID is unchanged, and resumes the previously
 active MP reconcilers. Reconciliation completion and traffic recovery require
 separate verification; a successful restart is not a forwarding test.
+CP restoration re-enables the DP PCIe endpoint and restores its mailbox window
+under the DP reset lock before starting the transport. It verifies the original
+DP boot ID and kernel notes and performs no DP reset in this reconnect path.
 
 Provision root-owned, non-group/world-writable JSON boot profiles at
 `/etc/ffn/plane-boot/cp.json` on MP and `/etc/ffn/plane-boot/dp.json` on CP.

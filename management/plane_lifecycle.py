@@ -16,6 +16,7 @@ from ffn_control_plane import control_rpc
 
 ROOT = Path('/var/lib/ffn-ngfw/pa5200-restarts')
 CONFIG = Path('/etc/ffn-ngfw/pa5200-restarts.json')
+OWNER_ROOT = Path('/var/lib/ffn-ngfw/pa5200-restart-owner')
 ROLES = ('cp', 'dp')
 UNITS = {role: 'ffn-pa5200-restart-' + role + '.service' for role in ROLES}
 
@@ -128,7 +129,14 @@ class Lifecycle:
             return job
 
     def start_owner(self, role, timeout):
-        subprocess.run(['systemctl', 'start', UNITS[role]], check=True, timeout=timeout, capture_output=True)
+        started = time.time()
+        try:
+            subprocess.run(['systemctl', 'start', UNITS[role]], check=True, timeout=timeout, capture_output=True)
+        except subprocess.CalledProcessError:
+            detail = read(OWNER_ROOT / (role + '.json'), {})
+            if detail.get('started_at', 0) >= started - 2 and detail.get('error'):
+                raise ValueError(role.upper() + ' restart failed: ' + str(detail['error'])[:400]) from None
+            raise
         if self.unit(UNITS[role]).get('Result') != 'success': raise ValueError('Restart owner did not succeed')
 
     def work(self, ident, clock=time.monotonic, sleep=time.sleep):

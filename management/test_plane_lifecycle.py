@@ -100,5 +100,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(client.settings(),{})
         self.assertFalse(client.config.exists())
 
+    def test_owner_error_is_visible_without_reusing_old_failures(self):
+        client=p.Lifecycle(self.client.root)
+        failure=p.subprocess.CalledProcessError(1,['systemctl','start'])
+        with patch.object(p.subprocess,'run',side_effect=failure),patch.object(p.time,'time',return_value=100), \
+                patch.object(p,'read',return_value={'started_at':101,'error':'Persistent transport service required'}) as read:
+            with self.assertRaisesRegex(ValueError,'CP restart failed: Persistent transport'):
+                client.start_owner('cp',30)
+            read.return_value={'started_at':80,'error':'old failure'}
+            with self.assertRaises(p.subprocess.CalledProcessError):client.start_owner('cp',30)
+
 
 if __name__ == '__main__': unittest.main()
