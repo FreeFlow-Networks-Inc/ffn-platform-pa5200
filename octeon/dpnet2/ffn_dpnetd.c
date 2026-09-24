@@ -478,9 +478,17 @@ static int tap_open(const char *ifname, const char *ip, const char *mask)
 	close(s);
 
 	/* 127/8 on a non-loopback interface needs route_localnet, which is what
-	 * keeps this link non-routable from any physical topology. */
+	 * keeps this link non-routable from any physical topology. Only on THIS
+	 * interface: conf/all would lift the martian check on eth0/eth1 too. */
 	snprintf(path, sizeof path,
 		 "/proc/sys/net/ipv4/conf/%s/route_localnet", ifname);
+	write_sysctl(path, "1");
+	/* Strict reverse-path check on the link: a source the kernel would not
+	 * route back out this interface is dropped. Belt to the daemon's own
+	 * ingress filter's braces; the effective value is max(all, iface), so a
+	 * loose global setting cannot weaken it. */
+	snprintf(path, sizeof path,
+		 "/proc/sys/net/ipv4/conf/%s/rp_filter", ifname);
 	write_sysctl(path, "1");
 
 	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
@@ -607,6 +615,82 @@ static void print_status(const struct rgn *r)
 	       rgn_rd32(r, FFN_DPNET_D2C_OFF + FFN_DPNET_R_DROPS));
 }
 
+/* ---------------------------------------------------------------- ingress -- */
+
+/*
+ * The ring is a trust boundary. Whatever the CP pops from the D2C ring is
+ * handed to the CP's kernel as if it had arrived on a NIC, and the CP is
+ * forwarding between this link and pcnet with route_localnet on both. Left
+ * unfiltered, the DP could talk to the CP's own loopback services (including
+ * the shell on 127.1.1.2), to any 127.1.1.x address, or as any source it
+ * likes -- which is the DP owning the CP and, through it, the MP.
+ *
+ * So the CP end admits exactly what the link exists to carry, and nothing
+ * else: IPv4 FROM the DP's address TO the CP's link address or the MP, and
+ * ARP from the DP for the CP's link address. Other ethertypes, VLAN tags,
+ * IPv6, broadcast, loopback, spoofed sources -- dropped and counted.
+ *
+ * Enforced here, in the daemon, because it is the one place every frame
+ * passes through and it works on every kernel the CP has run (vendor 4.9,
+ * Buildroot, upstream 6.18) with no netfilter dependency. The DP end does not
+ * filter: the CP is the trusted side of that link.
+ *
+ * The check runs on the daemon's private copy of the frame, after ring_pop
+ * has finished with the ring, so nothing it inspects can change under it.
+ */
+struct ingress {
+	int	 enabled;
+	uint32_t local;		/* this end's link address, host order */
+	uint32_t peer;		/* the only source the far end may use */
+	uint32_t fwd;		/* the one destination beyond `local` (the MP) */
+};
+
+static uint32_t rd_be32(const uint8_t *p)
+{
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+	       ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static uint32_t ip4_of(const char *s)
+{
+	struct in_addr a;
+
+	if (inet_pton(AF_INET, s, &a) != 1)
+		die("bad address %s", s);
+	return ntohl(a.s_addr);
+}
+
+static int ingress_ok(const struct ingress *f, const uint8_t *p, uint32_t n)
+{
+	uint32_t et, ihl, src, dst;
+
+	if (n < 14)
+		return 0;
+	et = ((uint32_t)p[12] << 8) | p[13];
+
+	if (et == 0x0800) {				/* IPv4 */
+		if (n < 34 || (p[14] >> 4) != 4)
+			return 0;
+		ihl = (uint32_t)(p[14] & 0x0f) * 4;
+		if (ihl < 20 || n < 14 + ihl)
+			return 0;
+		src = rd_be32(p + 26);
+		dst = rd_be32(p + 30);
+		return src == f->peer && (dst == f->local || dst == f->fwd);
+	}
+	if (et == 0x0806) {				/* ARP, Ethernet/IPv4 */
+		if (n < 42)
+			return 0;
+		if (p[14] != 0 || p[15] != 1 || p[16] != 0x08 || p[17] != 0x00 ||
+		    p[18] != 6 || p[19] != 4)
+			return 0;
+		src = rd_be32(p + 28);			/* sender IP */
+		dst = rd_be32(p + 38);			/* target IP */
+		return src == f->peer && dst == f->local;
+	}
+	return 0;
+}
+
 /* -------------------------------------------------------------------- run -- */
 
 static volatile sig_atomic_t want_stats;
@@ -617,11 +701,11 @@ static void on_term(int sig) { (void)sig; want_stop = 1; }
 
 struct stats {
 	uint64_t tx_frames, tx_bytes, tx_full, tx_stall;
-	uint64_t rx_frames, rx_bytes, rx_bad, tap_drop;
+	uint64_t rx_frames, rx_bytes, rx_bad, rx_filt, tap_drop;
 };
 
 static void run(int tapfd, const struct ring *tx, const struct ring *rx,
-		const char *who)
+		const struct ingress *filt, const char *who)
 {
 	/* 8-aligned because rgn_read/rgn_write walk this buffer as uint64_t.
 	 * MIPS64 faults on an unaligned 64-bit access, and the standard does
@@ -652,6 +736,10 @@ static void run(int tapfd, const struct ring *tx, const struct ring *rx,
 			busy = 1;
 			if (n < 0) {
 				st.rx_bad++;
+				continue;
+			}
+			if (filt->enabled && !ingress_ok(filt, buf, (uint32_t)n)) {
+				st.rx_filt++;
 				continue;
 			}
 			if (write(tapfd, buf, (size_t)n) != n)
@@ -697,7 +785,8 @@ static void run(int tapfd, const struct ring *tx, const struct ring *rx,
 		if (want_stats) {
 			want_stats = 0;
 			logmsg("tx %llu frames / %llu B (stalls %llu, dropped %llu)  "
-			       "rx %llu frames / %llu B (bad %llu, tap-drop %llu)",
+			       "rx %llu frames / %llu B (bad %llu, filtered %llu, "
+			       "tap-drop %llu)",
 			       (unsigned long long)st.tx_frames,
 			       (unsigned long long)st.tx_bytes,
 			       (unsigned long long)st.tx_stall,
@@ -705,6 +794,7 @@ static void run(int tapfd, const struct ring *tx, const struct ring *rx,
 			       (unsigned long long)st.rx_frames,
 			       (unsigned long long)st.rx_bytes,
 			       (unsigned long long)st.rx_bad,
+			       (unsigned long long)st.rx_filt,
 			       (unsigned long long)st.tap_drop);
 		}
 
@@ -749,20 +839,27 @@ static void usage(void)
 "                      (default 60)\n"
 "  --no-tap            attach to the region but do not create the interface\n"
 "  --addr IP           override this end's address\n"
+"  --peer IP           cp only: the DP's address, the only source admitted\n"
+"                      from the ring (default %s)\n"
+"  --mp IP             cp only: the MP's address, the only destination the\n"
+"                      DP may reach beyond the CP itself (default %s)\n"
+"  --no-filter         cp only, DEBUG: hand every ring frame to the kernel\n"
 "  -v                  verbose\n"
 "\n"
 "CP end is %s, DP end is %s, interface %s.\n",
-		DEFAULT_PCI, FFN_DPNET_CP_ADDR, FFN_DPNET_DP_ADDR,
-		FFN_DPNET_IFNAME);
+		DEFAULT_PCI, FFN_DPNET_DP_ADDR, FFN_DPNET_MP_ADDR,
+		FFN_DPNET_CP_ADDR, FFN_DPNET_DP_ADDR, FFN_DPNET_IFNAME);
 	exit(2);
 }
 
 int main(int argc, char **argv)
 {
 	const char *role = NULL, *pci = DEFAULT_PCI, *addr = NULL;
-	int status = 0, reset = 0, no_tap = 0, wait_secs = 60;
+	const char *peer = NULL, *mp = FFN_DPNET_MP_ADDR;
+	int status = 0, reset = 0, no_tap = 0, no_filter = 0, wait_secs = 60;
 	struct rgn r;
 	struct ring tx, rx;
+	struct ingress filt;
 	uint64_t canary;
 	int is_cp, tapfd = -1, i;
 
@@ -773,6 +870,10 @@ int main(int argc, char **argv)
 			pci = argv[++i];
 		else if (!strcmp(argv[i], "--addr") && i + 1 < argc)
 			addr = argv[++i];
+		else if (!strcmp(argv[i], "--peer") && i + 1 < argc)
+			peer = argv[++i];
+		else if (!strcmp(argv[i], "--mp") && i + 1 < argc)
+			mp = argv[++i];
 		else if (!strcmp(argv[i], "--wait") && i + 1 < argc)
 			wait_secs = atoi(argv[++i]);
 		else if (!strcmp(argv[i], "--status"))
@@ -781,6 +882,8 @@ int main(int argc, char **argv)
 			reset = 1;
 		else if (!strcmp(argv[i], "--no-tap"))
 			no_tap = 1;
+		else if (!strcmp(argv[i], "--no-filter"))
+			no_filter = 1;
 		else if (!strcmp(argv[i], "-v"))
 			verbose = 1;
 		else
@@ -842,12 +945,28 @@ int main(int argc, char **argv)
 		return 0;
 	}
 
+	/* The CP end filters what the DP may send; the DP end trusts the CP. */
+	memset(&filt, 0, sizeof filt);
+	if (is_cp && !no_filter) {
+		if (!peer)
+			peer = FFN_DPNET_DP_ADDR;
+		filt.enabled = 1;
+		filt.local = ip4_of(addr);
+		filt.peer = ip4_of(peer);
+		filt.fwd = ip4_of(mp);
+		logmsg("ingress: admitting only IPv4/ARP from %s to %s or %s",
+		       peer, addr, mp);
+	} else if (is_cp) {
+		logmsg("WARNING: --no-filter: the DP can reach anything the CP "
+		       "can route to, including the CP's own loopback services");
+	}
+
 	signal(SIGUSR1, on_usr1);
 	signal(SIGTERM, on_term);
 	signal(SIGINT, on_term);
 	signal(SIGPIPE, SIG_IGN);
 
-	run(tapfd, &tx, &rx, is_cp ? "CP" : "DP");
+	run(tapfd, &tx, &rx, &filt, is_cp ? "CP" : "DP");
 
 	if (is_cp)
 		rgn_wr32(&r, FFN_DPNET_H_CP_UP, 0);

@@ -13,8 +13,23 @@
 # /etc/ld.so.conf.d/ffn-vendor-nfs.conf. The library itself stays inside the
 # vendor area so the never-package gates still cover it.
 #
-# SECURITY: exports are restricted to 127.1.0.0/16, exactly as PAN does. NFS
-# listens on 0.0.0.0 but the bmfw input chain is policy-drop with a mgmt
+# SECURITY: every export is scoped to the ONE client that mounts it, which for
+# everything the MP serves is the CP at 127.1.1.2.
+#
+# It used to be 127.1.0.0/16 "exactly as PAN does". That range contains the DP
+# at 127.1.2.2, and these exports are rw,no_root_squash and include the CP's
+# live root filesystems -- so the DP could mount and rewrite the CP's root. The
+# PCIe ingress filters do not close this: both ends deliberately admit DP
+# traffic addressed to the MP (the CP has to route it) and neither looks at
+# protocol or port, so DP -> MP:2049 is permitted by design.
+#
+# The DP needs nothing from the MP. It roots on 127.1.2.1:/opt/dproot, which is
+# the CP's own NFS server -- verified on hardware from the DP's /proc/mounts.
+# If the legacy DP boot path is ever revived (dpboot6/7 and ffn-dp-bringup.sh
+# still pass nfsroot=/opt/dpfs, i.e. the MP), add 127.1.2.2 to /opt/dpfs
+# DELIBERATELY rather than widening everything back to a /16.
+#
+# NFS listens on 0.0.0.0 but the bmfw input chain is policy-drop with a mgmt
 # allow-list of 22/443/8443 only, so 111/2049/20048 are unreachable from the
 # management network. Do NOT add them to mgmt_tcp_ports.
 set -u
@@ -52,15 +67,26 @@ do_start() {
         mkdir -p "$d"
     done
 
+    # This writes the narrow exports only when there is nothing to lose. It
+    # deliberately does NOT correct an existing file: the CP's live root
+    # filesystem is served from one of these lines, and rewriting them under a
+    # mounted root is how you strand the CP.
+    #
+    # The cost of that caution is that a box which came up before the SECURITY
+    # note above was written keeps its old 127.1.0.0/16 file forever and is
+    # never told. check_export_scope (below, reported by `status`) is what
+    # closes that gap -- it reports the drift and leaves the fix to a human who
+    # can pick the moment.
     if [ ! -s /etc/exports ] || ! grep -q '/opt/dpfs' /etc/exports; then
         cat > /etc/exports <<'EOF'
-# FFN: NFS root for the Octeon control/data planes.
-# 127.1.0.0/16 only -- the CP/DP address space, as PAN-OS restricts it.
-/opt/dpfs    127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.cp  127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp0 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp1 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
-/opt/var.dp2 127.1.0.0/16(rw,sync,no_root_squash,no_subtree_check)
+# FFN: NFS root for the Octeon control plane.
+# 127.1.1.2 -- the CP, and only the CP. NOT the /16: that contains the DP, and
+# these are rw,no_root_squash. See the SECURITY note at the top of this file.
+/opt/dpfs    127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.cp  127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp0 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp1 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
+/opt/var.dp2 127.1.1.2(rw,sync,no_root_squash,no_subtree_check)
 EOF
     fi
 
@@ -83,7 +109,36 @@ do_stop() {
     echo "stopped serving (rpcbind left running; it is harmless and shared)"
 }
 
+check_export_scope() {
+    # An export carrying no_root_squash must name exactly ONE host. See the
+    # SECURITY note at the top of this file: 127.1.0.0/16 contains the DP at
+    # 127.1.2.2, these exports are rw, and they include the CP's live roots --
+    # so a /16 lets the DP mount and rewrite the CP's root filesystem.
+    [ -f /etc/exports ] || { echo "  no /etc/exports"; return 0; }
+    wide=$(awk '
+        /^[[:space:]]*#/ { next }
+        /no_root_squash/ {
+            split($2, a, "(")
+            if (a[1] !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(\/32)?$/)
+                printf "    %s -> %s\n", $1, a[1]
+        }' /etc/exports)
+    if [ -n "$wide" ]; then
+        echo "  WARNING: no_root_squash exported to more than one host:"
+        printf '%s\n' "$wide"
+        echo "  Each of these trusts every UID on every host in that range,"
+        echo "  root included. Narrow them to the single client that mounts"
+        echo "  each one, then: exportfs -ra"
+        echo "  NOT corrected automatically -- the CP's live root is served"
+        echo "  from one of these lines and rewriting it under a mounted root"
+        echo "  strands the CP. Pick the moment."
+    else
+        echo "  ok: every no_root_squash export names a single host"
+    fi
+}
+
 do_status() {
+    echo "=== export scope ==="
+    check_export_scope
     echo "=== exports ==="
     "$B/exportfs" -v 2>/dev/null || echo "  exportfs unavailable"
     echo "=== nfsd threads ==="

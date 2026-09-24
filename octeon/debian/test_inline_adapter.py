@@ -96,7 +96,13 @@ class Adapter(unittest.TestCase):
     def test_policy_rejects_invalid(self):
         good = {'revision': 0, 'mode': 'block', 'ports': [1], 'literal': 'test'}
         self.assertEqual(validate(good), good)
-        for key, value in [('ports', [23]), ('ports', [True]), ('ports', [1, 1]),
+        # Port bounds are both ends of range(1, 25) -- the PA-5220's 24 faceplate
+        # ports. This used to assert port 23 was rejected, from when the allowed
+        # set was the four ports (1, 3, 5, 13); dfe3778 widened it to 1-24 for
+        # copper VIF support and 23 became valid, so the case silently stopped
+        # testing anything and failed. Pinning 0 and 25 tests the boundary a
+        # future edit to that range would actually break.
+        for key, value in [('ports', [0]), ('ports', [25]), ('ports', [True]), ('ports', [1, 1]),
                            ('literal', ''), ('literal', 'x'*64), ('revision', True), ('mode', 'reset')]:
             with self.assertRaises(ValueError):
                 validate(dict(good, **{key: value}))

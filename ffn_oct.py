@@ -1224,6 +1224,10 @@ FPGA_MAXARGS = 10                   # from the command table entry
 FPGA_ATTEMPTS = 3                   # the wrapper's retry count
 FPGA_RETRY_DELAY_US = 1000000       # 0xf4240, the wrapper's inter-attempt wait
 FPGA_FORCE_ENV = "fpga-force"
+# The vendor default from the command help ("ce40=ce40-file"). With load=none
+# nothing is fetched, so the value only has to make the parser set the
+# select-ce40 bit; this keeps the vendor spelling rather than inventing one.
+FPGA_DEFAULT_IMAGE = "ce40-file"
 
 # The mailbox lives here, so a bitstream written over it would destroy the very
 # channel used to announce it. Span = state + len + the biggest command.
@@ -1232,7 +1236,8 @@ _MBOX_HI = BOOTMBOX_CMD + BOOTMBOX_MAXLEN
 
 
 def build_fpga_program_cmd(addr=FPGA_DEFAULT_ADDR, size=None, force=False,
-                           method="none", image=None, delay=None, ide=None):
+                           method="none", image=FPGA_DEFAULT_IMAGE,
+                           delay=None, ide=None):
     """Build an fpga_program command line. Raises ValueError on anything the
     bootloader would reject or silently misread.
 
@@ -1258,11 +1263,27 @@ def build_fpga_program_cmd(addr=FPGA_DEFAULT_ADDR, size=None, force=False,
         if not size or size <= 0:
             raise ValueError("load=none programs from DRAM, so size= is "
                              "required and must be positive")
-    if image is not None:
-        if method == "none":
-            raise ValueError("ce40= names a file to fetch; it is meaningless "
-                             "with load=none")
-        parts.append("ce40=%s" % image)
+    # ce40= IS THE FPGA SELECTOR, not merely a filename. Omitting it does not
+    # fall back to a default -- it programs nothing, silently.
+    #
+    # This used to refuse ce40= with load=none, reasoning that a name is
+    # pointless when nothing is fetched. On 2026-09-20 the resulting command
+    # ran at the u-boot prompt and printed "programming unknown", then stopped:
+    # no error, no SUCCESS, no FAILURE, and DONE stayed clear. The worker says
+    # why, at 0xc008e764:
+    #
+    #     lui  s1,0xc009 ; addiu s1,s1,6464   -> 0xc0091940 = "unknown"
+    #     lui  v0,0xc00b ; addiu v0,v0,-2096  -> 0xc00af7d0 = "ce40"
+    #     andi v1,v1,0x1                      ; bit 0 of the parsed flags
+    #     movn s1,v0,v1                       ; set -> "ce40", clear -> "unknown"
+    #
+    # and bit 0 is set only when the parser (0xc008e094, keyword at 0xc00af570)
+    # matches "ce40=". So the selector is required for every method.
+    if image is None:
+        raise ValueError("ce40= selects which FPGA to program; without it the "
+                         "bootloader prints 'programming unknown' and does "
+                         "nothing")
+    parts.append("ce40=%s" % image)
     parts.append("addr=%x" % addr)
     if size is not None and size > 0:
         parts.append("size=%x" % size)
@@ -2116,8 +2137,11 @@ def _selftest_fpga(chk):
 
     # --- the command FFN actually sends ---
     c = build_fpga_program_cmd(addr=0x400000, size=0x2e05a00)
-    chk(c == "fpga_program load=none addr=400000 size=2e05a00",
-        "builds bare-hex load=none addr/size (%s)" % c)
+    chk(c == "fpga_program load=none ce40=ce40-file addr=400000 size=2e05a00",
+        "builds bare-hex load=none with the ce40 selector (%s)" % c)
+    chk("ce40=" in c,
+        "the selector is present even with load=none: without it the worker "
+        "prints 'programming unknown' and programs nothing")
     c = build_fpga_program_cmd(addr=0x400000, size=0x10, force=True)
     chk(c.endswith(" force"), "force is appended last")
     c = build_fpga_program_cmd(addr=0x400000, size=0x10, delay=0x2710, ide=0)
@@ -2139,7 +2163,7 @@ def _selftest_fpga(chk):
     refuses({"size": None}, "size= is required")
     refuses({"size": 0}, "size= is required")
     refuses({"size": 1, "addr": 0}, "implausible load address")
-    refuses({"size": 1, "image": "ce40.bin"}, "meaningless with load=none")
+    refuses({"size": 1, "image": None}, "selects which FPGA")
 
     # a tftpboot fetch legitimately takes a filename and needs no size
     c = build_fpga_program_cmd(method="tftpboot", image="ce40.bin")
@@ -2190,8 +2214,9 @@ def _selftest_fpga(chk):
         "the bitstream is byte-identical in DRAM")
     sent = [bytes(w[1]).split(b"\0")[0].decode()
             for w in sim.writes if w[0] == BOOTMBOX_CMD]
-    chk(sent == ["fpga_program load=none addr=400000 size=4000"],
-        "exactly one fpga_program command is sent (%s)" % sent)
+    chk(sent == ["fpga_program load=none ce40=ce40-file addr=400000 size=4000"],
+        "exactly one fpga_program command is sent, with the selector (%s)"
+        % sent)
     chk("console" in msg,
         "the message says the console line is the real confirmation")
 

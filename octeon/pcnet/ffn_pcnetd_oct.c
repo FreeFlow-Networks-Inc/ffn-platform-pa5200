@@ -18,6 +18,19 @@
  * The protocol is the reference in tools/ffn_pcnet_ring.py, already validated
  * against this DRAM through cpdp. All multi-byte control fields are big-endian;
  * on this big-endian CPU that means native, so no swaps appear below.
+ *
+ * TRUST. The host writes this DRAM through the BAR, so every field read below
+ * -- head, tail, len, crc, payload, even the fields the protocol calls ours --
+ * may hold any value. The rules that keep that harmless, and which every
+ * function here follows:
+ *
+ *   * a shared field is read exactly ONCE per operation into a local, and
+ *     only the local is used afterwards (no time-of-check/time-of-use gap);
+ *   * an index is MASKED before it becomes an address, so nothing the host
+ *     writes can turn into an access outside the 4 MB mapping;
+ *   * a bad slot (len 0, len out of range, CRC mismatch) is CONSUMED before
+ *     it is reported, so one corrupt slot can never wedge the ring. The old
+ *     code returned "empty" on len == 0 and left tail in place -- forever.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -70,42 +83,54 @@ static volatile struct ffn_pcnet_ring *ring(u32 off)
 	return (volatile struct ffn_pcnet_ring *)(region + off);
 }
 
+/* i is masked here, and nowhere else needs to remember to. */
 static volatile struct ffn_pcnet_slot *slot(u32 ring_off, u32 i)
 {
 	return (volatile struct ffn_pcnet_slot *)
-		(region + ring_off + ffn_pcnet_slot_off(i));
+		(region + ring_off + ffn_pcnet_slot_off(i & FFN_PCNET_SLOT_MASK));
 }
 
 /*
- * Consume one frame from a ring into `buf`. Returns the length, 0 if empty.
- * This is the consumer: it reads head, and advances tail.
+ * Consume one frame from a ring into `buf`.
+ *
+ * Returns the frame length, 0 when the ring is empty, or -1 when the slot was
+ * rejected. A rejected slot has ALREADY been consumed (len cleared, tail
+ * advanced), so the caller keeps draining; it never sees the same slot twice.
+ *
+ * len == 0 with head != tail is a protocol violation, not a race: the host
+ * writes len before head and its BAR writes are posted in order, so a head
+ * we can see always comes with the len that preceded it. Treating it as
+ * "not visible yet" and returning without advancing was the wedge.
  */
-static u32 ring_get(u32 ring_off, u8 *buf, u32 cap)
+static int ring_get(u32 ring_off, u8 *buf, u32 cap)
 {
 	volatile struct ffn_pcnet_ring *r = ring(ring_off);
-	u32 head = be32(r->head);
-	u32 tail = be32(r->tail);
+	u32 head = be32(r->head) & FFN_PCNET_SLOT_MASK;
+	u32 tail = be32(r->tail) & FFN_PCNET_SLOT_MASK;
 	volatile struct ffn_pcnet_slot *s;
 	u32 len, crc, i;
+	int bad = 0;
 
 	if (head == tail)
 		return 0;
 	s = slot(ring_off, tail);
-	len = be32(s->len);
-	if (len == 0)
-		return 0;                /* producer advanced head, len not yet visible */
-	if (len > cap || len > FFN_PCNET_SLOT - 8)
-		len = 0;                 /* corrupt; drop by clearing below */
+	len = be32(s->len);              /* read once; only this copy is used */
+	if (len == 0 || len > cap || len > FFN_PCNET_MAXFRAME) {
+		bad = 1;
+		len = 0;
+	}
+	/* Copy out BEFORE releasing: once tail moves the host may overwrite
+	 * the slot. The CRC is then checked on our private copy only. */
 	for (i = 0; i < len; i++)
 		buf[i] = s->data[i];
 	crc = be32(s->crc);
 	s->len = 0;                      /* release the slot */
 	barrier();
-	r->tail = be32((tail + 1) % FFN_PCNET_NSLOTS);
+	r->tail = be32((tail + 1) & FFN_PCNET_SLOT_MASK);
 	barrier();
-	if (len && crc32(buf, len) != crc)
-		return 0;                /* detected coherency slip; drop */
-	return len;
+	if (bad || crc32(buf, len) != crc)
+		return -1;               /* consumed and dropped */
+	return (int)len;
 }
 
 /*
@@ -116,14 +141,14 @@ static u32 ring_get(u32 ring_off, u8 *buf, u32 cap)
 static int ring_put(u32 ring_off, const u8 *buf, u32 len)
 {
 	volatile struct ffn_pcnet_ring *r = ring(ring_off);
-	u32 head = be32(r->head);
-	u32 tail = be32(r->tail);
+	u32 head = be32(r->head) & FFN_PCNET_SLOT_MASK;
+	u32 tail = be32(r->tail) & FFN_PCNET_SLOT_MASK;
 	volatile struct ffn_pcnet_slot *s;
 	u32 i;
 
-	if (len > FFN_PCNET_SLOT - 8)
+	if (len > FFN_PCNET_MAXFRAME)
 		return -1;
-	if ((head + 1) % FFN_PCNET_NSLOTS == tail) {
+	if (((head + 1) & FFN_PCNET_SLOT_MASK) == tail) {
 		r->producer_drops = be32(be32(r->producer_drops) + 1);
 		return -1;
 	}
@@ -134,7 +159,7 @@ static int ring_put(u32 ring_off, const u8 *buf, u32 len)
 	barrier();
 	s->len = be32(len);              /* ready flag, after the payload */
 	barrier();
-	r->head = be32((head + 1) % FFN_PCNET_NSLOTS);
+	r->head = be32((head + 1) & FFN_PCNET_SLOT_MASK);
 	barrier();
 	return 0;
 }
@@ -262,6 +287,31 @@ int main(void)
 			return 1;
 		}
 	}
+	/*
+	 * Geometry is checked, not assumed. The ring offsets and slot count in
+	 * the header are host-written, and this side indexes DRAM with them; a
+	 * host built with different constants would otherwise be silently read
+	 * at the wrong offsets and look like flaky hardware. Each field is read
+	 * once into a local and compared -- nothing here is re-read later.
+	 */
+	{
+		u32 ver = be32(h->version), ns = be32(h->nslots);
+		u32 sb = be32(h->slot_bytes);
+		u32 h2o = be32(h->h2o_off), o2h = be32(h->o2h_off);
+
+		if (ver != FFN_PCNET_VERSION || ns != FFN_PCNET_NSLOTS ||
+		    sb != FFN_PCNET_SLOT || h2o != FFN_PCNET_H2O_OFF ||
+		    o2h != FFN_PCNET_O2H_OFF) {
+			fprintf(stderr, "ffn_pcnetd: geometry mismatch: host says "
+				"ver=%u slots=%u slot=%u h2o=0x%x o2h=0x%x; this "
+				"build has ver=%u slots=%u slot=%u h2o=0x%x "
+				"o2h=0x%x -- rebuild both sides together\n",
+				ver, ns, sb, h2o, o2h, FFN_PCNET_VERSION,
+				FFN_PCNET_NSLOTS, FFN_PCNET_SLOT,
+				FFN_PCNET_H2O_OFF, FFN_PCNET_O2H_OFF);
+			return 1;
+		}
+	}
 	h->oct_up = be32(1);
 	barrier();
 
@@ -300,13 +350,16 @@ int main(void)
 	 */
 	for (;;) {
 		struct pollfd pfd;
-		u32 len;
+		int len;
 		ssize_t n;
 
-		/* drain host -> OCTEON into the TAP */
-		while ((len = ring_get(FFN_PCNET_H2O_OFF, frame, sizeof(frame)))) {
-			ssize_t w = write(tapfd, frame, len);
-			(void)w;
+		/* drain host -> OCTEON into the TAP. A negative length is a slot
+		 * that was rejected and already consumed: keep draining. */
+		while ((len = ring_get(FFN_PCNET_H2O_OFF, frame, sizeof(frame))) != 0) {
+			if (len > 0) {
+				ssize_t w = write(tapfd, frame, (size_t)len);
+				(void)w;
+			}
 		}
 
 		/* move any TAP frames out to the OCTEON -> host ring */

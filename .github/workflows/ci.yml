@@ -124,6 +124,8 @@ jobs:
         run: cd fe100 && python3 test_parser_codec.py
       - name: FE100 profile and native configuration
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
+      - name: FE100 session idle expiry
+        run: cd fe100 && python3 -m unittest test_aging test_flowstats
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing
@@ -132,6 +134,14 @@ jobs:
         run: cd octeon/bcmagent && python3 test_l2_ops.py
       - name: bcm agent -- ps parsing
         run: cd octeon/bcmagent && python3 test_psparse.py
+      - name: bcm agent -- SOC property drift (declared vs the chip we ran)
+        run: cd octeon/bcmagent && python3 test_bcm_config_drift.py
+      - name: queue provisioning convergence
+        run: cd bcm && python3 -m unittest test_queue_provision
+      - name: NFS export scope (no_root_squash names one host)
+        run: cd octeon && python3 -m unittest test_nfs_export_scope
+      - name: CP boot script (harness contract + CE40 FPGA step)
+        run: cd octeon/cp-6.18 && python3 test_boot_script.py
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
       - name: LACP wire codec, negotiation and OCTEON member transport

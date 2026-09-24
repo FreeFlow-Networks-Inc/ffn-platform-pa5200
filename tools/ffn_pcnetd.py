@@ -85,10 +85,18 @@ def ifup(name, cidr):
     # PCIe-only isolation), and route_localnet is what makes it usable on a real
     # interface. A host-scope route pins the peer to this device ahead of the
     # local table's 127.0.0.0/8 -> lo entry.
-    for key in ("all", name):
+    #
+    # ONLY on this interface. This used to also set conf/all/route_localnet,
+    # which lifts the martian check for 127/8 on EVERY interface, physical NICs
+    # included -- the exact isolation the NFS export and the CP shell rely on.
+    # rp_filter is set strict on the link as well, so a source the kernel would
+    # not route back out this interface is dropped (the effective value is the
+    # max of conf/all and conf/<iface>, so this cannot be undone by a loose
+    # global setting, only strengthened).
+    for key, val in (("route_localnet", "1"), ("rp_filter", "1")):
         try:
-            with open("/proc/sys/net/ipv4/conf/%s/route_localnet" % key, "w") as f:
-                f.write("1")
+            with open("/proc/sys/net/ipv4/conf/%s/%s" % (name, key), "w") as f:
+                f.write(val)
         except OSError:
             pass
     # Disable segmentation offloads so the TAP never hands us a super-frame
@@ -110,7 +118,16 @@ def main():
                     help="assume BAR1 index 1 is already programmed (avoids oct-remote-csr)")
     ap.add_argument("--setup-only", action="store_true",
                     help="program window, region, interface, then exit (persistent TAP)")
+    ap.add_argument("--allow-src", action="append", metavar="CIDR",
+                    help="source addresses admitted from the ring (repeatable); "
+                         "default: the CP (127.1.1.2) and the DP subnet "
+                         "(127.1.2.0/24) it forwards for")
+    ap.add_argument("--no-filter", action="store_true",
+                    help="DEBUG ONLY: hand every ring frame to the kernel unfiltered")
     a = ap.parse_args()
+
+    local_ip = pn.ip4(a.addr.split("/")[0])
+    allowed = [pn.cidr(s) for s in (a.allow_src or ["127.1.1.2/32", "127.1.2.0/24"])]
 
     if not a.skip_window:
         point_window()
@@ -143,13 +160,17 @@ def main():
     h2o = pn.Ring(pn.H2O_OFF, rd, wr)     # host produces
     o2h = pn.Ring(pn.O2H_OFF, rd, wr)     # host consumes
 
-    print("ffn_pcnetd: bridging %s <-> rings" % a.iface)
+    print("ffn_pcnetd: bridging %s <-> rings; ingress %s" % (
+        a.iface, "UNFILTERED" if a.no_filter else
+        "to %s from %s" % (a.addr.split("/")[0],
+                           ", ".join(a.allow_src or ["127.1.1.2", "127.1.2.0/24"]))),
+        flush=True)
     # Poll both directions. The TAP is fd-pollable; the O2H ring is not, so use a
     # short poll timeout and check it every iteration.
     import select
     poller = select.poll()
     poller.register(tapfd, select.POLLIN)
-    tx = rx = txdrop = rxdrop = 0
+    tx = rx = txdrop = rxdrop = rxfilt = 0
     last_stat = time.time()
     while True:
         # host -> OCTEON: drain the TAP into H2O
@@ -182,12 +203,18 @@ def main():
         for _ in range(64):
             try:
                 frame = o2h.get()
-            except ValueError as e:
-                # CRC or range error: skip this slot, the ring self-heals
+            except pn.RingError:
+                # Bad length or CRC. get() has already consumed the slot, so
+                # this really does move on; it is counted, never retried.
                 rxdrop += 1
                 continue
             if frame is None:
                 break
+            # The frame is a private copy. Admit it only if it is addressed to
+            # this host's link address from a known peer -- see ingress_ok().
+            if not a.no_filter and not pn.ingress_ok(frame, local_ip, allowed):
+                rxfilt += 1
+                continue
             try:
                 os.write(tapfd, frame)
                 rx += 1
@@ -195,7 +222,8 @@ def main():
                 rxdrop += 1
 
         if time.time() - last_stat > 10:
-            print("ffn_pcnetd: tx=%d rx=%d txdrop=%d rxdrop=%d" % (tx, rx, txdrop, rxdrop), flush=True)
+            print("ffn_pcnetd: tx=%d rx=%d txdrop=%d rxdrop=%d rxfilt=%d"
+                  % (tx, rx, txdrop, rxdrop, rxfilt), flush=True)
             last_stat = time.time()
 
 

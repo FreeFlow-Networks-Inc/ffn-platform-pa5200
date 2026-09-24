@@ -145,4 +145,22 @@ static inline uint32_t ffn_dpnet_slot_off(uint32_t i)
 #define FFN_DPNET_DP_ADDR	"127.1.2.2"
 #define FFN_DPNET_NETMASK	"255.255.255.0"
 
+/* The MP's pcnet address. The CP forwards between the two links, and this is
+ * the ONE destination beyond the CP itself that the CP-side daemon admits from
+ * the DP: the DP may talk to the CP's link address and to the MP, as itself,
+ * and to nothing else. See the ingress filter in ffn_dpnetd.c. */
+#define FFN_DPNET_MP_ADDR	"127.1.1.1"
+
+/* ---- trust ------------------------------------------------------------- */
+
+/* The rings live in DP DRAM, so from the CP's side EVERY field above -- head,
+ * tail, len, crc, payload, and the fields this layout calls CP-owned -- can
+ * hold whatever the DP wrote. The daemon keeps that harmless by rule: a shared
+ * value is read exactly once per operation into a local (no time-of-check /
+ * time-of-use gap), an index is masked with (NSLOTS - 1) before it becomes an
+ * offset, a length is bounded by MAXFRAME and the caller's buffer before a
+ * byte is copied, the CRC is checked on the private copy, and a rejected slot
+ * is consumed rather than retried. What comes out of the ring is then subject
+ * to the CP-side ingress filter before the kernel sees it. */
+
 #endif /* FFN_DPNET_RING_H */
