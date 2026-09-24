@@ -19,7 +19,7 @@ def rpc(resource, action='status', payload=None):
     request={'v':1,'id':str(uuid.uuid4()),'resource':resource,'action':action,'payload':payload or {}}
     response=ControldClient(timeout=130).plane_request(request)
     if not response.get('ok'):
-        raise ValueError('MP request %s: %s (%s)'%(request['id'],response.get('state'),response.get('error')))
+        raise ValueError('MP %s/%s request %s: %s (%s)'%(resource,action,request['id'],response.get('state'),response.get('error')))
     return response['result']
 
 
