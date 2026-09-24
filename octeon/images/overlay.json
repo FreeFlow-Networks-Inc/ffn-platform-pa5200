@@ -254,6 +254,11 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn-fe100-pci.service",
+      "etc/systemd/system/ffn-fe100-pci.service"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn-fe100-links.service",
       "etc/systemd/system/ffn-fe100-links.service"
     ],

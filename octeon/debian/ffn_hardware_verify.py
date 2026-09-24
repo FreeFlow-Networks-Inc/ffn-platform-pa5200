@@ -10,6 +10,8 @@ import time
 def evaluate(snapshot):
     blockers = []
     if snapshot.get('error'): blockers.append(snapshot['error'])
+    if snapshot.get('fe100_pci_driver') != 'ffn_fe100':
+        blockers.append('FE100 PCI driver is not bound')
     if snapshot.get('pid1') not in ('/usr/lib/systemd/systemd', '/lib/systemd/systemd'):
         blockers.append('Native systemd CP is not running')
     bcm = snapshot.get('bcm', {})
@@ -58,8 +60,11 @@ def collect():
     from ffn_faceplate import call
     from ffn_mdio import Mdio
     from ffn_fe100_live_sessions import LiveSessions
+    from ffn_fe100 import bound_resource_path, SYSFS
     result = {'cp_boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
               'pid1': os.readlink('/proc/1/exe'), 'kernel_release': os.uname().release}
+    result['fe100_resource'] = bound_resource_path()
+    result['fe100_pci_driver'] = (Path(SYSFS)/'driver').resolve().name
     result['bcm'] = call({'op': 'status'})
     result['ports'] = call({'op': 'port.list'})['ports']
     # The same lock as the firmware/configuration owners prevents interleaving.

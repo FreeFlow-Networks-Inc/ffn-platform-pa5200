@@ -4,14 +4,12 @@
 """ffn_fe100.py -- read the FE100's control registers. Runs ON the control plane.
 
 The FE100 is a Palo Alto ASIC (PCI feed:fe1c, class 0x020000, BAR0 = 1 MB) on
-the control plane's own PCIe bus with no driver bound to it. This maps its BAR
-through /dev/mem and reads registers by name from the 5951-entry map recovered
+the control plane's own PCIe bus, bound to ffn_fe100. This maps its PCI resource0
+and reads registers by name from the 5951-entry map recovered
 from the vendor's libpandp_cp.so.
 
-WHY NOT devmem. The OpenWrt busybox on this control plane has no devmem applet,
-and the earlier probe tool assumed one. Rather than add a package to a firewall's
-control plane for one read, this uses the python3 that is already there for
-ffn_bcmd.
+The native Debian CP requires the ffn_fe100 PCI binding before register access.
+It does not fall back to arbitrary physical memory through /dev/mem.
 
 THE BYTE SWAP IS NOT OPTIONAL. The control plane is MIPS64 big-endian and this
 CSR window is not, so every 32-bit read comes back byte-reversed. That was
@@ -36,9 +34,23 @@ import mmap
 import os
 import re
 import sys
+from pathlib import Path
 
 PCI_DEV = "0002:01:00.0"
 SYSFS = "/sys/bus/pci/devices/" + PCI_DEV
+
+
+def bound_resource_path():
+    device = Path(SYSFS)
+    if (device.joinpath('vendor').read_text().strip() != '0xfeed' or
+            device.joinpath('device').read_text().strip() != '0xfe1c'):
+        raise RuntimeError('FE100 PCI identity mismatch')
+    driver = device/'driver'
+    if not driver.is_symlink() or driver.resolve().name != 'ffn_fe100':
+        raise RuntimeError('FE100 must be bound to the ffn_fe100 PCI driver')
+    if bar0_base_and_size()[1] != 0x100000 or not memory_decode_on():
+        raise RuntimeError('FE100 BAR geometry/decode unavailable')
+    return str(device/'resource0')
 
 
 def register_map_path():
@@ -80,19 +92,22 @@ def bswap32(v):
 class Fe100:
     def __init__(self):
         self.base, self.size = bar0_base_and_size()
-        self.fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
-        self.map = mmap.mmap(self.fd, self.size, mmap.MAP_SHARED,
-                             mmap.PROT_READ | mmap.PROT_WRITE,
-                             offset=self.base)
+        self.fd = os.open(bound_resource_path(), os.O_RDWR | os.O_SYNC)
+        try:
+            self.map = mmap.mmap(self.fd, self.size, mmap.MAP_SHARED,
+                                 mmap.PROT_READ | mmap.PROT_WRITE, offset=0)
+        except BaseException:
+            os.close(self.fd)
+            raise
 
     def read32(self, off):
-        if off + 4 > self.size:
+        if off < 0 or off % 4 or off + 4 > self.size:
             raise ValueError("offset 0x%x past the 0x%x BAR" % (off, self.size))
         raw = int.from_bytes(self.map[off:off + 4], "big")
         return bswap32(raw)
 
     def write32(self, off, val):
-        if off + 4 > self.size:
+        if off < 0 or off % 4 or off + 4 > self.size:
             raise ValueError("offset 0x%x past the 0x%x BAR" % (off, self.size))
         self.map[off:off + 4] = bswap32(val & 0xFFFFFFFF).to_bytes(4, "big")
 

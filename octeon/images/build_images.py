@@ -218,7 +218,7 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
     """Build hardware adapters against this image, never import loose old modules."""
     module = work / (role + '-hardware')
     module.mkdir()
-    names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl') if role == 'cp' else (
+    names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl', 'ffn_fe100') if role == 'cp' else (
         'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe')
     for p in (platform / 'octeon/kctl').iterdir():
         if p.suffix in ('.c', '.h'):

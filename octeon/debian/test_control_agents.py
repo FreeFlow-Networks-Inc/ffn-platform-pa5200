@@ -31,7 +31,6 @@ class Agents(unittest.TestCase):
         write('usr/local/sbin/ffn_fe100.py', "PCI_DEV = '0002:01:00.0'\nraise RuntimeError('must never execute')\n")
         write('usr/local/sbin/ffn_fe100_lookup_health.py', '# fixture')
         write('usr/share/ffn/fe100/registers.json', '[]')
-        write('dev/mem', b'')
         prefix = 'sys/bus/pci/devices/0002:01:00.0/'
         write(prefix + 'vendor', '0xfeed'); write(prefix + 'device', '0xfe1c')
         write(prefix + 'resource', '100000 1fffff 200\n')
@@ -47,6 +46,10 @@ class Agents(unittest.TestCase):
             self.assertEqual(observed['userspace']['state'], 'installed-unverified')
             self.assertEqual(len(observed['userspace']['sha256']), 64)
             cp.qualify_fe100_access(observed, {'available': True})
+            self.assertFalse(observed['userspace']['read_verified'])
+            device.joinpath('driver').symlink_to('/drivers/ffn_fe100')
+            device.joinpath('resource0').touch()
+            observed = cp.qualify_fe100_access(cp.fe100_driver_status(root), {'available':True})
             self.assertTrue(observed['userspace']['read_verified'])
             self.assertFalse(observed['forwarding_verified'])
             cp.qualify_fe100_access(observed, {'available': False})

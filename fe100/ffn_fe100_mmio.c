@@ -5,6 +5,7 @@
 #define _DEFAULT_SOURCE
 #include <endian.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -25,6 +26,35 @@ void fe100_unlock(uint32_t dev) { if (dev == 0) pthread_mutex_unlock(&ia_mutex);
 #endif
 static uint32_t block_base = FFN_BLOCK_BASE;
 static int lif_access_table = -1;
+
+/* Select by the caller's discovered BAR address, never an arbitrary physical
+ * address. Only devices actually bound to our PCI driver are eligible. */
+static int open_bound_bar(uint64_t base, int write_access)
+{
+    glob_t paths = {0};
+    int fd = -1;
+    const char *pattern = "/sys/bus/pci/drivers/ffn_fe100/????:??:??.?/resource";
+    if (glob(pattern, 0, NULL, &paths)) {
+        globfree(&paths);
+        return -1;
+    }
+    for (size_t i = 0; i < paths.gl_pathc; i++) {
+        unsigned long long start, end, flags;
+        char resource[512];
+        FILE *f = fopen(paths.gl_pathv[i], "r");
+        if (!f) continue;
+        int count = fscanf(f, "%llx %llx %llx", &start, &end, &flags);
+        fclose(f);
+        if (count != 3 || start != base || end < start ||
+            end - start != 0xfffff || !(flags & 0x200)) continue;
+        int length = snprintf(resource, sizeof(resource), "%s0", paths.gl_pathv[i]);
+        if (length < 0 || (size_t)length >= sizeof(resource)) break;
+        fd = open(resource, (write_access ? O_RDWR : O_RDONLY) | O_SYNC | O_CLOEXEC);
+        break;
+    }
+    globfree(&paths);
+    return fd;
+}
 /* The owner getter dereferences PAN's process-local device object. A lab
  * caller must explicitly select the table before opening this adapter. */
 int ffn_fe100_select_lif_table(unsigned int table)
@@ -52,9 +82,9 @@ int ffn_fe100_open(uint64_t base, const char *log_path, int enable_writes)
     trace = fopen(log_path, "w");
     if (!trace) return -1;
     setvbuf(trace, NULL, _IOLBF, 0);
-    fd = open("/dev/mem", O_RDWR | O_SYNC);
+    fd = open_bound_bar(base, enable_writes);
     if (fd < 0) return -1;
-    regs = mmap(NULL, 0x100000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, base);
+    regs = mmap(NULL, 0x100000, PROT_READ | (enable_writes ? PROT_WRITE : 0), MAP_SHARED, fd, 0);
     close(fd);
     if (regs == MAP_FAILED) { regs = NULL; return -1; }
     writable = enable_writes;

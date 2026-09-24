@@ -135,3 +135,19 @@ saved policy, retry a write, restart forwarding, or change inspection semantics.
 Read-only session planning is exposed by `show platform fe100 sessions [json]`.
 See [session planning and isolated NAT qualification](../fe100/SESSION-PLANNING.md)
 for deployment, freshness checks and the remaining hardware admission gates.
+
+## Live bring-up acknowledgement
+
+The final `ffn_oct.py --plan` step (also consumed by the WebUI) queries
+`ffn-controld` for nonce-validated CP and DP agent observations. It requires
+all processor instances expected by the detected chassis profile, distinct
+boot identities, matching report identities, ready agents, and unexpired
+observations. Expiry uses the MP's monotonic receive age, not processor wall
+clocks that may be unsynchronized during boot.
+
+Control handoff also requires a read-only `plane-lifecycle/status` round trip
+through controld and its MP execution worker. A restart in progress, missing
+worker, changed boot identity, or stale observation keeps the step waiting.
+No configuration is committed and no processor is restarted by this check.
+The plan's ready count describes boot prerequisites and control-channel
+readiness; physical forwarding and policy enforcement have separate checks.
