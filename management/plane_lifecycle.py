@@ -34,7 +34,9 @@ def observations():
         except (ValueError, TypeError, AttributeError):
             boot = None
         result[role] = {'boot_id': boot, 'fresh': a.get('fresh') is True and bool(boot),
-                        'ready': a.get('ready') is True, 'age_seconds': a.get('age_seconds')}
+                        'ready': a.get('ready') is True, 'age_seconds': a.get('age_seconds'),
+                        'restart_acknowledged': report.get('restart_acknowledged') is True,
+                        'runtime': report.get('runtime')}
     return result
 
 
@@ -158,11 +160,13 @@ class Lifecycle:
                     try: after = self.observe()
                     except Exception: sleep(3); continue
                     target = after[role]
-                    if target['fresh'] and target['ready'] and target['boot_id'] != before[role]['boot_id']:
+                    if target['fresh'] and (target['ready'] or target.get('restart_acknowledged')) and target['boot_id'] != before[role]['boot_id']:
                         job['after'] = after
                         if after[other]['fresh'] and before[other]['boot_id'] and after[other]['boot_id'] != before[other]['boot_id']:
                             raise ValueError('Unexpected reboot of the other processor; inspect boot owner')
-                        job.update(status='succeeded', message=role.upper() + ' restarted; new boot and ready agent verified. Traffic recovery must be checked separately.')
+                        message = (role.upper() + ' restarted; new boot and ready agent verified. Traffic recovery must be checked separately.'
+                                   if target['ready'] else role.upper() + ' restarted into recovery runtime; control agent acknowledged the new boot. Dataplane is not ready for forwarding.')
+                        job.update(status='succeeded', ready=target['ready'], message=message)
                         break
                     sleep(3)
                 else: raise ValueError('Restart not verified: no new ready processor boot before deadline')

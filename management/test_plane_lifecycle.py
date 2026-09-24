@@ -68,6 +68,15 @@ class LifecycleTests(unittest.TestCase):
         result = self.client.work(job['id'],clock=Mock(side_effect=[0,1,31]),sleep=Mock())
         self.assertEqual(result['status'],'failed')
 
+    def test_recovery_ack_is_explicitly_degraded(self):
+        job=self.client.submit(self.payload())
+        new=copy.deepcopy(self.before)
+        new['dp'].update(boot_id='c'*32,ready=False,restart_acknowledged=True,runtime='recovery')
+        self.client.observe.side_effect=[self.before,new]
+        result=self.client.work(job['id'])
+        self.assertEqual(result['status'],'succeeded');self.assertFalse(result['ready'])
+        self.assertIn('not ready for forwarding',result['message'])
+
     def test_other_processor_reset_is_reported(self):
         job = self.client.submit(self.payload())
         new = copy.deepcopy(self.before)

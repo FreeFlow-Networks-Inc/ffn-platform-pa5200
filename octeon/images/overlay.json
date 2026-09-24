@@ -114,6 +114,31 @@
   "cp": [
     [
       "platform",
+      "management/native_plane_boot.py",
+      "usr/local/sbin/native_plane_boot.py"
+    ],
+    [
+      "platform",
+      "management/plane_restart_node.py",
+      "usr/local/sbin/plane_restart_node.py"
+    ],
+    [
+      "platform",
+      "management/dp_restart_agent.py",
+      "usr/local/sbin/dp_restart_agent.py"
+    ],
+    [
+      "platform",
+      "management/ffn-native-dp-boot.service",
+      "etc/systemd/system/ffn-native-dp-boot.service"
+    ],
+    [
+      "platform",
+      "octeon/dpagent/ffn_dpsh2.py",
+      "usr/local/sbin/ffn_dpsh2.py"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn-cp-nfs.service",
       "etc/systemd/system/ffn-cp-nfs.service"
     ],

@@ -1,0 +1,10 @@
+[Unit]
+Description=PA-5200 native DP kernel boot owner on CP
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/bin/python3 /usr/local/sbin/native_plane_boot.py dp boot
+TimeoutStartSec=infinity
+KillMode=process
+UMask=0077
