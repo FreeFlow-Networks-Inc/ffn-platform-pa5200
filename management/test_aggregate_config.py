@@ -19,6 +19,18 @@ FACE={'ports':[{'port':p,'available':True,'enabled':True,'link':True,'speed_mbps
 
 
 class AggregateTests(unittest.TestCase):
+    def test_object_addresses_resolve_without_affecting_lacp_configuration(self):
+        raw=XML.replace(b'<dhcp-client>',b'<ip><entry name="WAN"/></ip><dhcp-client>').replace(b'<enable>yes</enable><create-default-route>',b'<enable>no</enable><create-default-route>')
+        raw=raw.replace(b'</config>',b'<shared><address><entry name="WAN"><ip-netmask>203.0.113.7/28</ip-netmask></entry><entry name="LAN"><ip-netmask>192.0.2.9/24</ip-netmask></entry></address></shared></config>')
+        raw=raw.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag><ip><entry name="LAN"/></ip></entry></units>')
+        group=plan(raw)['aggregates'][0]
+        self.assertEqual(group['network']['addresses'],['203.0.113.7/28'])
+        self.assertEqual(group['subinterfaces'][0]['addresses'],['192.0.2.9/24'])
+        self.assertEqual(group['errors'],[])
+        edited=plan(raw.replace(b'192.0.2.9/24',b'192.0.2.10/24'))['aggregates'][0]
+        self.assertEqual(edited['lacp'],group['lacp'])
+        self.assertEqual(edited['members'],group['members'])
+        self.assertEqual(edited['subinterfaces'][0]['addresses'],['192.0.2.10/24'])
     def test_vlan_units_do_not_block_parent_lacp(self):
         raw=XML.replace(b'</bond>',b'</bond><units><entry name="ae1.69"><tag>69</tag><ip><entry name="192.0.2.1/24"/></ip></entry></units>')
         group=plan(raw)['aggregates'][0]
