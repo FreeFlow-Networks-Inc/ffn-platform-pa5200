@@ -186,10 +186,10 @@ def main():
         if not r.get('completed') or any('FFN_FAIL' in s for s in r.get('markers',[])):
             raise RuntimeError('BCM route failed')
         return r
-    ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
+    ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
     err=tempfile.TemporaryFile(mode='w+')
     cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env LD_LIBRARY_PATH='+ld+
-        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
+        ' LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
     def response():
         if not select.select([cp.stdout],[],[],55)[0]:raise TimeoutError('CP timeout')

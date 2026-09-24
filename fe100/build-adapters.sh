@@ -8,10 +8,16 @@ mkdir -p "$out"
 "$cc" -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
     -o "$out/libffn-fe100-diagnostic.so" "$src/ffn_fe100_flow_memory_mmio.c"
 "$cc" -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
+    -o "$out/libffn-fe100-flow-memory.so" "$src/ffn_fe100_flow_memory_mmio.c"
+"$cc" -shared -fPIC -O2 -Wall -Wextra -Werror \
+    -o "$out/libffn-fe100-ddr-capture.so" "$src/ffn_fe100_ddr_capture.c"
+"$cc" -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
     -o "$out/libffn-fe100-mmio.so" "$src/ffn_fe100_mmio.c"
 "$cc" -DFFN_BLOCK_BASE=0x8000 -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
     -o "$out/libffn-fe100-tmi-mmio.so" "$src/ffn_fe100_mmio.c"
 "$cc" -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
     -o "$out/libffn-fe100-tables.so" "$src/ffn_fe100_mmio.c"
+"$cc" -DFFN_BLOCK_BASE=0xa0000 -shared -fPIC -O2 -Wall -Wextra -Werror -pthread \
+    -o "$out/libffn-fe100-ddr-mmio.so" "$src/ffn_fe100_mmio.c"
 "$cc" -shared -fPIC -O2 -Wall -Wextra -Werror \
     -o "$out/libffn-gearbox-mdio.so" "$src/ffn_gearbox_mdio.c"

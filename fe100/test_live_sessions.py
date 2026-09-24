@@ -3,10 +3,21 @@ import json
 from pathlib import Path
 import tempfile
 from ffn_fe100_clocks import SHA
-from ffn_fe100_live_sessions import prerequisites, calibration_journals, action_prerequisites
+from ffn_fe100_live_sessions import prerequisites, calibration_journals, action_prerequisites, pipeline_prerequisites
 
 
 class SessionPrerequisites(unittest.TestCase):
+    def test_ready_doorbell_does_not_hide_pipeline_fault_or_busy_ia(self):
+        values = {0x48018:1, 0x40200:0x4300, 0x48080:0x4300,
+                  0x70500:0x4300, 0x4080c:1 << 23}
+        self.assertEqual(pipeline_prerequisites(values), [])
+        for register in (0x40200, 0x48080, 0x70500):
+            for error in (0x1000, 0x2000):
+                self.assertTrue(pipeline_prerequisites(values | {register:0x4300 | error}))
+        for code in (0, 2, 3, 4, 5, 6, 7):
+            self.assertTrue(pipeline_prerequisites(values | {0x4080c:code << 23}))
+        self.assertTrue(pipeline_prerequisites({}))
+
     def setUp(self):
         self.values = {0x40010:0xfffff,0x40014:0,0x40404:0x1e000,
                        0x40400:0x2000,0x48708:7,0x48018:1}

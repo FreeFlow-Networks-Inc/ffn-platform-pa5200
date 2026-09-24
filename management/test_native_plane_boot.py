@@ -100,7 +100,22 @@ class NativeBootTests(unittest.TestCase):
                 ['systemctl','start','transport.service']])
             run.reset_mock();observe.return_value=dict(before,boot_id='unexpected')
             with self.assertRaisesRegex(RuntimeError,'DP boot changed'):node.reconnect_dp(before)
-            self.assertEqual(run.call_count,1)
+            self.assertEqual(run.call_count,2)
+            self.assertEqual(stop.call_count,3)  # entry twice, failed identity once
+
+    def test_nfs_root_is_restored_before_dp_identity_probe(self):
+        cfg={'pci':'0003:03:00.0','devnum':3,'tools':{'csr':{'path':'/native/csr'}},
+             'transport':{'unit':'transport.service'},'root_server_unit':'nfs.service'}
+        before={'boot_id':'unchanged','notes_sha256':'same'}
+        events=[]
+        def observe(*args,**kwargs):
+            self.assertIn('root-ready',events)
+            return before
+        with patch.object(node,'profile',return_value=cfg),patch.object(boot,'preflight'), \
+                patch.object(boot,'exclusive',return_value=nullcontext()),patch.object(boot,'stop_transport'), \
+                patch.object(boot,'run'),patch.object(node,'Path'),patch.object(node,'observe',side_effect=observe), \
+                patch.object(boot,'start_root_server',side_effect=lambda _:events.append('root-ready')):
+            self.assertEqual(node.reconnect_dp(before),before)
 
     def test_root_server_is_started_only_when_provisioned(self):
         with patch.object(boot,'run') as run:

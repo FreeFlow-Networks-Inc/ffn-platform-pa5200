@@ -25,7 +25,7 @@ def main():
     fd = int(os.environ['FFN_FE100_LOCK_FD'])
     if os.readlink('/proc/self/fd/'+str(fd)) != '/run/ffn-fe100-tables.lock':
         raise RuntimeError('missing parent table lock')
-    libpath = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+    libpath = '/usr/local/lib64/libpandp_cp.so.1.0'
     with open(libpath, 'rb') as f:
         if hashlib.file_digest(f, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
             raise RuntimeError('owner ABI changed')

@@ -20,7 +20,7 @@ if not (0 <= args.port <= 255 and 0 <= args.device <= 31 and args.swdev in (0,1)
     p.error('invalid port-map address')
 lock = open('/run/ffn-fe100-tables.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library = '/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library, 'rb') as source:
     if hashlib.file_digest(source, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')

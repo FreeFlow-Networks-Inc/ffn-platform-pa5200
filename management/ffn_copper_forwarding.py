@@ -15,7 +15,7 @@ from ffn_faceplate import call
 STATE=Path('/etc/ffn/copper-forwarding.json')
 LOCK=Path('/run/ffn-copper-forwarding.lock')
 QUALIFIED=Path('/etc/ffn/copper-forwarding-qualified.json')
-SCRIPT=Path('/opt/ffn-compat/tmp/bcmcfg/ffn_bcm_forward_test.c')
+SCRIPT=Path('/usr/share/broadcom/ffn_bcm_forward_test.c')
 PORTS={3:14,4:15}
 
 RECIPE=r'''

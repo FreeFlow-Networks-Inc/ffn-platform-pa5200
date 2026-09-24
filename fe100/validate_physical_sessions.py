@@ -137,10 +137,10 @@ def main():
         report.setdefault('bcm',[]).append(result);save()
         if not result.get('completed') or any('FFN_FAIL' in l for l in result.get('markers',[])):
             raise RuntimeError('BCM recipe failed: '+json.dumps(result))
-    ld='/opt/ffn-compat/tmp/dpfs/usr/local/lib64:/opt/ffn-compat/tmp/dpfs/usr/local/lib64/3p:/opt/ffn-compat/tmp/dpfs/usr/lib64'
+    ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
     stderr=tempfile.TemporaryFile(mode='w+')
     cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env LD_LIBRARY_PATH='+ld+
-        ' python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve'],stdin=subprocess.PIPE,
+        ' LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve'],stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,stderr=stderr,text=True)
     def response():
         if not select.select([cp.stdout],[],[],55)[0]:raise TimeoutError('CP test response timeout')

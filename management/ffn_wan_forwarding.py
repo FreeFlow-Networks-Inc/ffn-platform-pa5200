@@ -15,7 +15,7 @@ from ffn_faceplate import call
 STATE=Path('/etc/ffn/wan-forwarding.json')
 PROOF=Path('/etc/ffn/wan-qualified.json')
 LOCK=Path('/run/ffn-wan-forwarding.lock')
-SCRIPT=Path('/opt/ffn-compat/tmp/bcmcfg/ffn_bcm_forward_test.c')
+SCRIPT=Path('/usr/share/broadcom/ffn_bcm_forward_test.c')
 RECIPE=r'''
 int ffn_wan_queues(int unit,int port,int numq,uint32 flags,int gport,void *data) {
  int rv; int *queues=data;

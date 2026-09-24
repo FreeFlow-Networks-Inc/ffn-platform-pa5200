@@ -40,6 +40,18 @@ class Copper:
         self.write(7, 0, self.read(7, 0) | 0x1200)
         self.handshake()
         print('PHY %d copper enabled, autonegotiation restarted' % self.phy, flush=True)
+    def prepare_disabled(self):
+        """Leave new firmware controllable but electrically disabled."""
+        if self.read(30, 0x400f) in (0, 65535) or self.read(1, 0) & 0x8000:
+            raise RuntimeError('cannot configure a PHY without running firmware')
+        self.handshake()
+        control = self.read(30, 0x401a)
+        desired = (control & ~0x8180) | 0x80
+        if desired != control:
+            self.write(30, 0x401a, desired)
+            self.handshake()
+        if self.read(30, 0x401a) & 0x8180 != 0x80:
+            raise RuntimeError('disabled copper state did not read back')
     def wait_arm(self):
         end = time.monotonic() + 1
         while not self.read(1, 0xa818) & 1:
@@ -65,7 +77,7 @@ class Copper:
         version = self.read(30, 0x400f)
         if version and not self.read(1, 0) & 0x8000:
             print('PHY %d firmware already running: 0x%04x' % (self.phy, version), flush=True)
-            return
+            return False
         if self.read(30, 0x401a) & 0x2000:
             raise RuntimeError('SPI boot strap: refusing this MDIO-only sequence')
         # Put the embedded ARM into a boot-ROM loop while its RAM is filled.
@@ -98,6 +110,8 @@ class Copper:
             if time.monotonic() >= end: raise RuntimeError('firmware did not start')
             time.sleep(0.1)
         print('PHY %d firmware booted: 0x%04x' % (self.phy, version), flush=True)
+        self.prepare_disabled()
+        return True
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

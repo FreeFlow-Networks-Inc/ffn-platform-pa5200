@@ -37,6 +37,17 @@ class BuildInputTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_c45_read_phase_requires_device_address(self):
+        path = self.root / 'drivers/net/mdio/mdio-cavium.c'
+        path.parent.mkdir(parents=True)
+        broken = ('int cavium_mdiobus_read_c45() { smi_cmd.s.phy_op = 3; '
+                  'smi_cmd.s.reg_adr = regnum; oct_mdio_writeq(); } EXPORT_SYMBOL(x)')
+        path.write_text(broken)
+        with self.assertRaisesRegex(ValueError, 'Clause 45'):
+            b.check_mdio_source(self.root)
+        path.write_text(broken.replace('= regnum;', '= devad;'))
+        b.check_mdio_source(self.root)
+
     def test_cp_requires_cooling_support_in_its_own_kernel(self):
         base = ''.join('CONFIG_' + name + '=y\n' for name in
                        ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'))
@@ -63,6 +74,16 @@ class BuildInputTests(unittest.TestCase):
             p.write_bytes(invalid)
             with self.assertRaises(ValueError):
                 b.elf(p)
+
+    def test_cp_overlay_contains_hardware_owner_dependencies(self):
+        overlay=json.loads(Path(__file__).with_name('overlay.json').read_text())
+        paths={row[2] for row in overlay['cp']}
+        for name in ('usr/local/ffn/ffn_bcm_link.py',
+                     'usr/local/sbin/ffn_packet_fabric.py',
+                     'usr/local/share/ffn/bcm/ffn_bcm_front_init.c',
+                     'etc/systemd/system/ffn-mdio.service',
+                     'usr/local/sbin/ffn_hardware_verify.py'):
+            self.assertIn(name,paths)
 
     def test_pem_delimiter_constants_are_not_private_keys(self):
         delimiter=b'-----BEGIN OPENSSH PRIVATE KEY-----'
@@ -266,8 +287,10 @@ class BuildInputTests(unittest.TestCase):
         out = self.root / 'out'
         with patch.object(b, 'revision', return_value='a'*40), patch.object(b, 'archive_git', side_effect=archive), \
                 patch.object(b, 'run', side_effect=compiler), patch.object(b, 'output', side_effect=lambda args: 'mips64-linux-gnuabi64' if args[-1] == '-dumpmachine' else 'gcc test'), \
-                patch.object(b, 'check_host'):
+                patch.object(b, 'check_host'), patch.object(b, 'check_mdio_source'), \
+                patch.object(b, 'build_hardware') as hardware:
             b.build(profile, platform, platform, out)
+            self.assertEqual([c.args[3] for c in hardware.call_args_list], ['cp', 'dp'])
         manifest = json.loads((out / 'manifest.json').read_text())
         self.assertEqual({a['role'] for a in manifest['assets']}, {'cp', 'dp'})
         for asset in manifest['assets']:

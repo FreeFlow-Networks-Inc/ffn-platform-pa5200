@@ -15,6 +15,7 @@ import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import image_policy
@@ -170,7 +171,7 @@ def safe_install(source, root, destination):
             raise ValueError('Image overlay crosses symlink: ' + destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-    target.chmod(0o755 if destination.endswith('.py') else 0o644)
+    target.chmod(0o755 if destination.endswith(('.py', '.sh')) else 0o644)
 
 
 def archive_git(repo, dest, commit):
@@ -187,7 +188,7 @@ def image_owner(member, owners):
 
 
 def check_host():
-    if os.name != 'posix' or not hasattr(tarfile, 'data_filter'):
+    if os.name != 'posix' or sys.version_info < (3, 12) or not hasattr(tarfile, 'data_filter'):
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
 
 
@@ -201,6 +202,44 @@ def check_kernel_config(conf, role):
             value = values.get('CONFIG_' + symbol)
             if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
                 raise ValueError('Missing CP cooling kernel requirement: ' + symbol)
+
+
+def check_mdio_source(tree):
+    source = (tree / 'drivers/net/mdio/mdio-cavium.c').read_text()
+    start = source.index('int cavium_mdiobus_read_c45')
+    read = source[start:source.index('EXPORT_SYMBOL', start)]
+    phase = read[read.index('smi_cmd.s.phy_op = 3'):]
+    phase = phase[:phase.index('oct_mdio_writeq')]
+    if not re.search(r'smi_cmd\.s\.reg_adr\s*=\s*devad\s*;', phase):
+        raise ValueError('CP requires the Cavium Clause 45 device-address fix')
+
+
+def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work):
+    """Build hardware adapters against this image, never import loose old modules."""
+    module = work / (role + '-hardware')
+    module.mkdir()
+    names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl') if role == 'cp' else (
+        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe')
+    for p in (platform / 'octeon/kctl').iterdir():
+        if p.suffix in ('.c', '.h'):
+            shutil.copyfile(p, module / p.name)
+    (module / 'Makefile').write_text('obj-m += ' + ' '.join(n + '.o' for n in names) + '\n')
+    run(['make', '-C', tree, 'M=' + str(module), 'ARCH=mips',
+         'CROSS_COMPILE=' + cross, 'LOCALVERSION=', 'KCFLAGS=-Werror', 'modules'])
+    for name in names:
+        artifact = module / (name + '.ko')
+        elf(artifact)
+        modules = image_policy.root_path(root, 'lib/modules')
+        safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    if role == 'cp':
+        image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
+                              output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+        adapters = work / 'fe100-adapters'
+        run(['sh', platform / 'fe100/build-adapters.sh', adapters],
+            env=dict(os.environ, CC=userspace_cross + 'gcc'))
+        for artifact in adapters.glob('*.so'):
+            elf(artifact)
+            safe_install(artifact, root, 'usr/local/lib/ffn/' + artifact.name)
 
 
 def build(config, platform, core, out):
@@ -233,6 +272,8 @@ def build(config, platform, core, out):
             with tarfile.open(source_archive) as tar:
                 tar.extractall(tree, filter='data')
             kernel_version = image_policy.kernel(tree)
+            if role == 'cp':
+                check_mdio_source(tree)
             seed = pinned_file(cfg['rootfs'])
             initramfs = pinned_file(cfg['initramfs'])
             audit_initramfs(initramfs)
@@ -288,6 +329,8 @@ def build(config, platform, core, out):
             run([cross + 'strip', '-o', bundle / 'vmlinux', tree / 'vmlinux'])
             elf(bundle / 'vmlinux')
             release = (tree / 'include/config/kernel.release').read_text().strip()
+            build_hardware(platform, tree, root, role, cross,
+                           cfg.get('userspace_cross_compile', cross), release, work)
             run(['depmod', '-b', root, release])
             shutil.copyfile(tree / '.config', bundle / 'kernel.config')
             shutil.copyfile(initramfs, out / (role + '-initramfs.cpio'))

@@ -36,7 +36,7 @@ if not (args.apply or args.inspect):
     raise SystemExit(0)
 lock = open('/run/ffn-fe100-tables.lock', 'w')
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-library = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+library = '/usr/local/lib64/libpandp_cp.so.1.0'
 with open(library, 'rb') as f:
     if hashlib.file_digest(f, 'sha256').hexdigest() != 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9':
         raise SystemExit('owner ABI changed')

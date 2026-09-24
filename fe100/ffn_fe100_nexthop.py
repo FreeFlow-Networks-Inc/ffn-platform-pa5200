@@ -16,7 +16,7 @@ import struct
 import subprocess
 import sys
 
-LIB = '/opt/ffn-compat/tmp/dpfs/usr/local/lib64/libpandp_cp.so.1.0'
+LIB = '/usr/local/lib64/libpandp_cp.so.1.0'
 SHA = 'b57227a460144c8c2545fc2e268b31f475ef72ac2a6f1d457387ab46d842c3e9'
 
 

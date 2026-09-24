@@ -12,7 +12,7 @@ from native_plane_boot import profile, sha
 
 STATE = Path('/var/lib/ffn/plane-restart')
 CP_UNITS = ('ffn-management-i2c.service','ffn-thermal.service','ffn-bcmd.service',
-            'ffn-front-ports.service','ffn-copper.service','ffn-fe100-links.service')
+            'ffn-front-ports.service','ffn-mdio.service','ffn-copper.service','ffn-fe100-links.service')
 
 
 def save(path,data):
@@ -93,11 +93,18 @@ def reconnect_dp(before):
         # Restore only the mailbox/transport window; never reset the DP here.
         run([cfg['tools']['csr']['path'],'--devnum='+str(cfg['devnum']),
              'PEM0_BAR1_INDEX1','0x11'],env=dict(os.environ,**cfg.get('environment',{})),hardware=True)
-        after=observe('dp',owned=True)
-        if any(after[key]!=before[key] for key in ('boot_id','notes_sha256')):
-            raise RuntimeError('DP boot changed during CP restart; transport remains stopped')
+        # A native DP may mount its root over this transport. Restore NFS before
+        # asking its shell to execute binaries; otherwise observation deadlocks
+        # waiting for the very root server it is meant to authorize.
         run(['systemctl','start',cfg['transport']['unit']],timeout=30)
         start_root_server(cfg)
+        try:
+            after=observe('dp',owned=True)
+            if any(after[key]!=before[key] for key in ('boot_id','notes_sha256')):
+                raise RuntimeError('DP boot changed during CP restart')
+        except Exception:
+            stop_transport(cfg)
+            raise
     return after
 
 

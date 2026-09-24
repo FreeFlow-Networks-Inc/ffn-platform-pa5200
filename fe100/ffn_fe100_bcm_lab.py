@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 ROOT=Path('/var/lib/ffn/fe100')
 STATE=ROOT/'bcm-lab-baseline.json'
-SCRIPT=Path('/opt/ffn-compat/tmp/bcmcfg/ffn_bcm_forward_test.c')
+SCRIPT=Path('/usr/share/broadcom/ffn_bcm_forward_test.c')
 TEMPLATE=Path('/usr/local/share/ffn/fe100-lab/ffn_bcm_forward_test.c')
 MODES={'offload-rule-delete':30,'offload-rule-counters':31,
        'session-path-inspect':43,'session-path-enable':44,'session-path-restore':45,
