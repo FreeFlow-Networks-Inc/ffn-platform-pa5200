@@ -51,6 +51,8 @@ def profile(role):
 
 def preflight(cfg):
     transport_service(cfg)
+    if cfg.get('root_server_unit'):
+        transport_service({'transport':{'unit':cfg['root_server_unit']}})
     endpoint = Path('/sys/bus/pci/devices') / cfg['pci']
     identity = (endpoint/'vendor').read_text().strip()[2:] + (endpoint/'device').read_text().strip()[2:]
     expected = '177d9700' if cfg['role'] == 'cp' else '177d0095'
@@ -91,6 +93,12 @@ def transport_service(cfg):
             or not Path(fragment).is_file()):
         raise ValueError('Persistent transport service required before reset: '+unit)
     return state
+
+
+def start_root_server(cfg):
+    if cfg.get('root_server_unit'):
+        run(['systemctl','start',cfg['root_server_unit']],timeout=90)
+        run(['systemctl','is-active','--quiet',cfg['root_server_unit']],timeout=10)
 
 
 @contextmanager
@@ -190,6 +198,7 @@ def boot(cfg):
             for _ in range(3):
                 run(['systemctl','is-active','--quiet',cfg['transport']['unit']],timeout=10)
                 time.sleep(1)
+            start_root_server(cfg)
         except Exception:
             # After a reset, blindly restarting a BAR writer could hang the host.
             if not reset: run(['systemctl','start',cfg['transport']['unit']],timeout=45)

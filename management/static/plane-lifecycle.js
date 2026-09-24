@@ -49,7 +49,9 @@
       try {
         state = await request('status', {});
         if (!root.isConnected) return;
-        notice.textContent = state.job?.message || 'Each action targets one processor. Restarts are serialized because CP owns the DP control path.';
+        notice.textContent = state.job?.message
+          ? (['succeeded','failed'].includes(state.job.status) ? 'Last restart: ' : '') + state.job.message
+          : 'Each action targets one processor. Restarts are serialized because CP owns the DP control path.';
         for (const role of ['cp','dp']) {
           const item = state.roles[role], card = cards[role];
           card.status.textContent = (item.fresh ? (item.ready ? 'Agent ready' : 'Agent connected; not ready') : 'Agent observation unavailable or stale') + (item.boot_id ? ' · Boot ' + item.boot_id : '');

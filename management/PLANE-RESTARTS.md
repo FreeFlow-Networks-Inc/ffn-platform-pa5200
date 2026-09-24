@@ -53,6 +53,21 @@ DP boot ID and kernel notes and performs no DP reset in this reconnect path.
 
 Provision root-owned, non-group/world-writable JSON boot profiles at
 `/etc/ffn/plane-boot/cp.json` on MP and `/etc/ffn/plane-boot/dp.json` on CP.
+
+For a DP image using a Debian NFS root exported by CP, the protected DP profile
+also selects `root_server_unit`, normally `ffn-cp-nfs.service`. Provision the
+native Debian NFS packages, export, and persistent unit before selecting this
+profile. The boot executor validates the unit before reset and starts it after
+the DP transport. CP restart restoration starts it again after reconnecting the
+unchanged DP. Do not enable the NFS server before its transport address exists.
+
+Once the native DP root is active, install and enable `ffn-dp-agent.service` and
+select the native DP SSH stream with `install-control-channel.py`. Pin the
+provisioned DP host key; never disable SSH host verification. Confirm a fresh
+`state/agents` report whose DP boot ID matches the boot executor, with both the
+agent and PID 1 in the same Debian root. CPU statistics must come from that
+stream's DP resource sampler. Recovery acknowledgement, native agent readiness,
+packet initialization, and forwarding verification are separate states.
 Each schema-1 profile contains `role`, `pci`, `devnum`, `cores`, `fdt`, `extra`,
 `kernel`, `bootloader`, `tools`, `transport`, and optional `environment`.
 Kernel, bootloader and tool entries contain absolute `path` and `sha256`;

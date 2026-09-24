@@ -83,7 +83,7 @@ def wait_dp_owner():
 
 
 def reconnect_dp(before):
-    from native_plane_boot import preflight, exclusive, stop_transport, run
+    from native_plane_boot import preflight, exclusive, stop_transport, run, start_root_server
     cfg=profile('dp');preflight(cfg)
     with exclusive('/run/ffn-dp-reset.lock'):
         stop_transport(cfg)
@@ -97,6 +97,7 @@ def reconnect_dp(before):
         if any(after[key]!=before[key] for key in ('boot_id','notes_sha256')):
             raise RuntimeError('DP boot changed during CP restart; transport remains stopped')
         run(['systemctl','start',cfg['transport']['unit']],timeout=30)
+        start_root_server(cfg)
     return after
 
 

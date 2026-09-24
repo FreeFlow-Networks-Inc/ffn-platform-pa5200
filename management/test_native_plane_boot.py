@@ -102,5 +102,13 @@ class NativeBootTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'DP boot changed'):node.reconnect_dp(before)
             self.assertEqual(run.call_count,1)
 
+    def test_root_server_is_started_only_when_provisioned(self):
+        with patch.object(boot,'run') as run:
+            boot.start_root_server({});run.assert_not_called()
+            boot.start_root_server({'root_server_unit':'ffn-cp-nfs.service'})
+            self.assertEqual([c.args[0] for c in run.call_args_list],[
+                ['systemctl','start','ffn-cp-nfs.service'],
+                ['systemctl','is-active','--quiet','ffn-cp-nfs.service']])
+
 
 if __name__=='__main__':unittest.main()
