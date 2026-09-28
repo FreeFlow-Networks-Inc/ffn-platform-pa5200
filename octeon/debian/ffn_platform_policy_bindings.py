@@ -12,6 +12,69 @@ import time
 import uuid
 
 
+def preview(xml,current,addresses):
+    """Compile candidate aggregates without claiming a live DP attachment.
+
+    This inventory is used only by nft --check. Apply and the forwarding lease
+    continue to require discover() evidence from the real owner on this boot.
+    """
+    import copy
+    import ipaddress
+    from ffn_policy_config import parse
+    from ffn_interface_addresses import resolved_config
+    root=resolved_config(parse(xml))
+    current=copy.deepcopy(current);addresses=copy.deepcopy(addresses);pending=[];seen=set()
+    index=0x70000000
+    for device in root.findall('devices/entry'):
+        for parent in device.findall('network/interface/aggregate-ethernet/entry'):
+            name=parent.get('name','')
+            if not re.fullmatch(r'ae(?:[1-9]|1[0-2])',name) or name in seen:
+                raise ValueError('Invalid or duplicate candidate aggregate: '+name)
+            seen.add(name)
+            members=[e for e in device.findall('network/interface/ethernet/entry') if e.findtext('aggregate-group')==name]
+            names=[e.get('name','') for e in members]
+            if (not 2<=len(names)<=8 or len(set(names))!=len(names) or
+                    any(not re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',n) for n in names)):
+                raise ValueError(name+': aggregate requires 2..8 unique faceplate members')
+            mode=parent.findtext('bond/mode',parent.findtext('layer3/bond/mode','802.3ad'))
+            if mode not in ('802.3ad','lacp'):raise ValueError(name+': unsupported aggregate mode')
+            layer=parent.find('layer3')
+            rows=[]
+            if layer is not None:
+                if parent.findtext('aggregate-only')!='yes':rows.append((name,layer))
+                tags=set()
+                for unit in layer.findall('units/entry'):
+                    child=unit.get('name','');tag=unit.findtext('tag','')
+                    if (not re.fullmatch(re.escape(name)+r'\.[1-9][0-9]{0,3}',child) or
+                            not tag.isdigit() or not 1<=int(tag)<=4094 or int(tag) in tags or child in seen):
+                        raise ValueError(name+': invalid or duplicate aggregate VLAN unit')
+                    tags.add(int(tag));seen.add(child);rows.append((child,unit))
+            for logical,node in rows:
+                if parent.findtext('link-state','auto')=='down':
+                    current.pop(logical,None);continue
+                values=[ipaddress.ip_interface(e.get('name','')) for e in node.findall('ip/entry')]
+                if not values:
+                    # DHCP must have an actual lease before address-dependent NAT
+                    # can be checked; never invent a prospective leased address.
+                    if node.findtext('dhcp-client/enable')!='yes' and logical in current:
+                        dev=current[logical]['device']
+                        addresses[dev]=dict(ifname=dev,addr_info=[])
+                    continue
+                if node.findtext('dhcp-client/enable')=='yes':raise ValueError(logical+': choose DHCP or static addresses')
+                if logical not in current:
+                    index+=1
+                    while index in {r['index'] for r in current.values()}:index+=1
+                    dev='ffnvp'+str(index-0x70000000)
+                    while dev in addresses:dev+='x'
+                    if len(dev)>15:raise ValueError('Candidate interface preview capacity exhausted')
+                    current[logical]=dict(device=dev,index=index,alias='candidate-preview')
+                    pending.append(logical)
+                dev=current[logical]['device']
+                addresses[dev]=dict(ifname=dev,addr_info=[dict(family='inet' if a.version==4 else 'inet6',
+                    local=str(a.ip),prefixlen=a.network.prefixlen) for a in values])
+    return current,addresses,pending
+
+
 def trusted(path):
     st=path.stat()
     return st.st_uid==0 and not st.st_mode & 0o022

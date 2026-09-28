@@ -8,6 +8,36 @@ import ffn_platform_policy_bindings as binding
 
 
 class BindingTests(unittest.TestCase):
+    def candidate(self,extra=''):
+        return '''<config><devices><entry><network><interface><ethernet>
+        <entry name="ethernet1/21"><aggregate-group>ae1</aggregate-group></entry>
+        <entry name="ethernet1/22"><aggregate-group>ae1</aggregate-group></entry>
+        </ethernet><aggregate-ethernet><entry name="ae1"><layer3>
+        <ip><entry name="LAN gateway"/></ip>'''+extra+'''</layer3></entry></aggregate-ethernet>
+        </interface></network><vsys><entry name="vsys1"><address><entry name="LAN gateway">
+        <ip-netmask>192.0.2.1/24</ip-netmask></entry></address></entry></vsys></entry></devices></config>'''
+
+    def test_candidate_preview_resolves_objects_without_commissioning(self):
+        live={'ethernet1/1':dict(device='p1',index=4,alias='wan')};addresses={'p1':dict(ifname='p1')}
+        current,rows,pending=binding.preview(self.candidate(),live,addresses)
+        self.assertEqual(pending,['ae1']);self.assertNotIn('ae1',live)
+        self.assertEqual(addresses,{'p1':dict(ifname='p1')})
+        self.assertEqual(rows[current['ae1']['device']]['addr_info'][0]['local'],'192.0.2.1')
+        self.assertEqual(current['ae1']['alias'],'candidate-preview')
+        self.assertEqual(binding.discover({},self.run,self.proc,102),{})
+
+    def test_candidate_units_and_invalid_references(self):
+        unit='<units><entry name="ae1.69"><tag>69</tag><ip><entry name="198.51.100.1/24"/></ip></entry></units>'
+        current,rows,pending=binding.preview(self.candidate(unit),{},{});self.assertEqual(pending,['ae1','ae1.69'])
+        for xml in [self.candidate().replace('ethernet1/22','ethernet1/21'),
+                    self.candidate().replace('name="LAN gateway"/>','name="missing"/>'),
+                    self.candidate(unit.replace('<tag>69','<tag>4095'))]:
+            with self.assertRaises(ValueError):binding.preview(xml,{},{})
+
+    def test_candidate_preview_never_invents_dhcp_address(self):
+        xml=self.candidate().replace('<ip><entry name="LAN gateway"/></ip>','<dhcp-client><enable>yes</enable></dhcp-client>')
+        self.assertEqual(binding.preview(xml,{},{}),({},{},[]))
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.run=self.root/'run';self.proc=self.root/'proc'
