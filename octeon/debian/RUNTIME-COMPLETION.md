@@ -43,3 +43,17 @@ NAT64/NPTv6 and FE100 action codecs are not evidence of production hardware
 forwarding. Their commissioning gates remain in effect. QoS, PBF and decryption
 also require their respective enforcement providers; installed controls do not
 claim those providers are qualified.
+
+Candidate policy validation and first aggregate Commit
+----------------------------------------------------
+Security/NAT validation may use the selected platform's candidate aggregate
+inventory for nftables check-only compilation. Address objects are resolved
+from the submitted configuration; no customer mapping is written and no link,
+route, policy or LACP owner is created. New aggregates are reported as pending
+interfaces, never acknowledged runtime bindings. DHCP addresses are not guessed.
+
+Apply, replay and the forwarding lease always rediscover real owners and require
+current-boot LACP/network evidence. A successful candidate check therefore does
+not mean the aggregate is active. Configd must still observe its commissioned
+attachment before activating the policy. Unsupported actions or inspection and
+logging requests continue to block validation.
