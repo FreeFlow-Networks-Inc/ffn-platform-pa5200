@@ -51,7 +51,8 @@ class BuildInputTests(unittest.TestCase):
     def test_cp_requires_cooling_support_in_its_own_kernel(self):
         base = ''.join('CONFIG_' + name + '=y\n' for name in
                        ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'))
-        b.check_kernel_config(base, 'dp')
+        with self.assertRaisesRegex(ValueError, 'DP policy'):
+            b.check_kernel_config(base, 'dp')
         with self.assertRaisesRegex(ValueError, 'cooling'):
             b.check_kernel_config(base, 'cp')
         cooling = ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM')
@@ -64,6 +65,17 @@ class BuildInputTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'cooling'):
             b.check_kernel_config(modular, 'cp')
         b.check_kernel_config(modular + 'CONFIG_MODULES=y\n', 'cp')
+
+    def test_dp_requires_policy_and_session_accounting_kernel(self):
+        base = ''.join('CONFIG_' + name + '=y\n' for name in
+                       ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS', 'MODULES'))
+        complete = base + ''.join('CONFIG_' + n + '=y\n' for n in b.DP_POLICY_BUILTINS)
+        complete += ''.join('CONFIG_' + n + '=m\n' for n in b.DP_POLICY_MODULES)
+        b.check_kernel_config(complete, 'dp')
+        for name in b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'DP policy'):
+                b.check_kernel_config('\n'.join(line for line in complete.splitlines()
+                    if not line.startswith('CONFIG_' + name + '=')), 'dp')
 
     def test_elf_endianness_and_machine(self):
         p = self.root / 'elf'
@@ -237,6 +249,11 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
+        for role, units in [('cp', ['ffn-copper-link.timer']),
+                            ('dp', ['ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'])]:
+            for unit in units:
+                (platform / unit).write_text('[Unit]\n')
+                overlay[role].append(['platform', unit, 'etc/systemd/system/' + unit])
         (platform / 'octeon/images/overlay.json').write_text(json.dumps(overlay))
         root = self.root / 'seed'
         debian_metadata(root)
@@ -256,7 +273,7 @@ class BuildInputTests(unittest.TestCase):
         config = self.root / 'config'
         config.write_text(''.join('CONFIG_'+s+'=y\n' for s in
                                  ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS',
-                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM')))
+                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
         def pin(p):
             return dict(path=str(p), sha256=b.sha(p))
         inputs = dict(kernel_repository=str(platform), kernel_commit='c'*40,

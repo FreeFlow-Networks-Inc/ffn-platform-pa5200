@@ -12,6 +12,8 @@ import shutil
 import subprocess
 
 SOURCES={'nft_numgen':'net/netfilter/nft_numgen.c','nft_hash':'net/netfilter/nft_hash.c',
+         'nft_fib':'net/netfilter/nft_fib.c','nft_fib_ipv4':'net/ipv4/netfilter/nft_fib_ipv4.c',
+         'nft_fib_ipv6':'net/ipv6/netfilter/nft_fib_ipv6.c','nft_fib_inet':'net/netfilter/nft_fib_inet.c',
          'sch_htb':'net/sched/sch_htb.c','sch_fq_codel':'net/sched/sch_fq_codel.c',
          'cls_fw':'net/sched/cls_fw.c'}
 

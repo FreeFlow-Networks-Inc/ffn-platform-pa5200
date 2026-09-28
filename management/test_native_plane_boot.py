@@ -72,6 +72,17 @@ class NativeBootTests(unittest.TestCase):
         with patch.object(node.subprocess,'run',side_effect=results),patch.object(node.time,'sleep') as sleep:
             node.wait_dp_owner();sleep.assert_called_once_with(1)
 
+    def test_runtime_services_must_be_ready_before_configuration_replay(self):
+        starting={'ready':True,'boot_id':'one','runtime_services_ready':False}
+        ready=dict(starting,runtime_services_ready=True)
+        with patch.object(node,'observe',side_effect=[starting,ready]),patch.object(node.time,'sleep') as sleep:
+            self.assertTrue(node.wait_dp_services()['runtime_services_ready']);sleep.assert_called_once_with(2)
+        with patch.object(node,'observe',side_effect=[starting,dict(ready,boot_id='two')]),patch.object(node.time,'sleep'):
+            with self.assertRaisesRegex(RuntimeError,'boot changed'):node.wait_dp_services()
+        text=self.report('/usr/lib/systemd/systemd','ID=debian\nFFN-SERVICES:ready')
+        self.assertTrue(node.parse_observation(text,'test')['runtime_services_ready'])
+        self.assertFalse(node.parse_observation(self.report('/usr/lib/systemd/systemd','ID=debian'),'test')['runtime_services_ready'])
+
     def test_transient_transport_cannot_be_used_for_restart(self):
         state=Mock(stdout='LoadState=loaded\nTransient=yes\nFragmentPath=/run/systemd/transient/transport.service\n')
         with patch.object(boot.subprocess,'run',return_value=state):

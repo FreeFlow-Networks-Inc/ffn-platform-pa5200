@@ -35,6 +35,16 @@ class PacketInit(unittest.TestCase):
                 reconcile(boot,root=root,boot_id=lambda:boot,boot_check=lambda:dict(ready=True),loader=lambda argv,**kw:calls.append(argv),read=lambda:dict(dma_error=-5),lock_path=root/'lock')
             self.assertEqual(calls,[['modprobe','ffn_dp_packet_init']])
 
+    def test_reconcile_loads_missing_internal_link_driver_after_reboot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'status').touch();boot=str(uuid.uuid4());calls=[]
+            value=dict(pki_active=0,pki_enabled=1,pko_enabled=1,
+                       trunk=dict(running=True,dq_open=True,error=0),**{flag:True for flag in STAGES.values()})
+            with patch('ffn_dp_link.STATUS',root/'missing-link'), patch('ffn_dp_link.ensure',return_value={'internal_link_ready':True}):
+                result=reconcile(boot,root=root,boot_id=lambda:boot,boot_check=lambda:dict(ready=True),
+                    loader=lambda argv,**kw:calls.append(argv),read=lambda:value,lock_path=root/'lock')
+            self.assertTrue(result['ready']);self.assertEqual(calls,[['modprobe','ffn_dp_link']])
+
     def test_trunk_transition_fixed_argv_and_readback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

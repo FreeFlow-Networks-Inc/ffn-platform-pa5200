@@ -24,7 +24,7 @@ def security_guards(links):
     lease gate. Aggregate restart still installs the original default-deny guard.
     """
     active=discover(links)
-    parents=sorted({name.split('.')[0] for name in active})
+    parents=sorted({name.split('.')[0] for name in active if re.fullmatch(r'ae[1-9][0-9]*(?:\.[1-9][0-9]{0,3})?',name)})
     result={}
     for parent in parents:
         table='ffn_aggregate_'+parent
@@ -35,10 +35,31 @@ def security_guards(links):
     return result
 
 
+def wan_binding(links,run,proc,now,boot):
+    """Discover the existing WAN owner's port; never persist customer bindings."""
+    path=run/'ffn-fabric.json'
+    try:
+        if not trusted(path):return {}
+        row=json.loads(path.read_text())
+        if (row.get('owner')!='wan1' or row.get('boot_id')!=boot or row.get('ports')!=[1]
+                or not 0<=now-row['updated_monotonic']<=5):return {}
+        pid=row['pid']
+        if type(pid) is not int or pid<=1:return {}
+        process=(proc/str(pid)/'stat').read_text().rsplit(') ',1)[1].split()
+        if process[19]!=str(row['process_start']) or process[0]=='Z':return {}
+        link=links.get('p1',{})
+        if (type(link.get('ifindex')) is not int or row.get('interfaces',{}).get('p1')!=link['ifindex']
+                or link.get('master') or 'UP' not in link.get('flags',[])
+                or link.get('linkinfo',{}).get('info_kind')!='tun'
+                or link.get('linkinfo',{}).get('info_data',{}).get('type')!='tap'):return {}
+        return {'ethernet1/1':'p1'}
+    except (OSError,ValueError,TypeError,KeyError,IndexError):return {}
+
+
 def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
     now=time.monotonic() if now is None else now
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip()
-    result={}
+    result=wan_binding(links,run,proc,now,boot)
     for path in run.glob('ffn-aggregate-*-status.json'):
         try:
             if not trusted(path):continue

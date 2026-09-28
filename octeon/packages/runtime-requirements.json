@@ -7,5 +7,7 @@
     "nfs-common", "ffn-octeon-transport"
   ],
   "cp": ["nfs-kernel-server", "rpcbind"],
-  "dp": ["nftables", "conntrack", "ethtool"]
+  "dp": ["nftables", "conntrack", "conntrackd", "nfct", "ethtool",
+         "tcpdump", "iputils-ping", "iputils-arping", "iputils-tracepath",
+         "traceroute", "iperf3", "socat"]
 }

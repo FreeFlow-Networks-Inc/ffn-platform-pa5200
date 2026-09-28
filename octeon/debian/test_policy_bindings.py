@@ -52,13 +52,28 @@ class BindingTests(unittest.TestCase):
         self.assertIn('ae7.123',self.discover())
 
     def test_only_acknowledged_parent_gets_a_conditional_guard(self):
-        with patch.object(binding,'discover',return_value={'ae7.123':'ae7.123'}):
+        with patch.object(binding,'discover',return_value={'ae7.123':'ae7.123','ethernet1/1':'p1'}):
             guards=binding.security_guards(self.links)
         self.assertEqual(set(guards),{'ffn_aggregate_ae7'})
         self.assertIn('"ae7.*"',guards['ffn_aggregate_ae7'])
         self.assertEqual(guards['ffn_aggregate_ae7'].count('meta mark & 0x80000000 == 0 counter drop'),2)
         with patch.object(binding,'discover',return_value={}):
             self.assertEqual(binding.security_guards(self.links),{})
+
+    def test_wan_binding_requires_current_process_heartbeat_and_tap(self):
+        row=dict(owner='wan1',boot_id=self.token,pid=42,process_start='900',ports=[1],
+                 updated_monotonic=100,interfaces={'p1':4})
+        link=dict(ifindex=4,flags=['UP'],linkinfo=dict(info_kind='tun',info_data={'type':'tap'}))
+        path=self.run/'ffn-fabric.json'
+        def read():
+            path.write_text(json.dumps(row))
+            with patch.object(binding,'trusted',return_value=True):
+                return binding.discover({'p1':link},self.run,self.proc,102)
+        self.assertEqual(read(),{'ethernet1/1':'p1'})
+        for key,value in [('boot_id','old'),('process_start','replaced'),('updated_monotonic',96),('ports',[2])]:
+            old=row[key];row[key]=value;self.assertEqual(read(),{});row[key]=old
+        for key,value in [('ifindex',5),('flags',[]),('master','bridge')]:
+            saved=copy.deepcopy(link);link[key]=value;self.assertEqual(read(),{});link=saved
 
 
 if __name__=='__main__':unittest.main()

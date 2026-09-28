@@ -9,7 +9,7 @@ from pathlib import Path
 import subprocess
 import tarfile
 
-NAMES=('nft_numgen','nft_hash','sch_htb','sch_fq_codel','cls_fw')
+NAMES=('nft_numgen','nft_hash','nft_fib','nft_fib_ipv4','nft_fib_ipv6','nft_fib_inet','sch_htb','sch_fq_codel','cls_fw')
 
 
 def main():

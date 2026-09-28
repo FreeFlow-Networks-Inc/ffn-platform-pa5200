@@ -43,6 +43,16 @@ class Probe(unittest.TestCase):
                     with self.assertRaises(BlockingIOError):
                         with wan.ownership():pass
 
+    def test_status_reports_missing_trunk_without_hiding_boot_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(wan,'FABRIC_LOCK',Path(temp)/'fabric'), patch.object(wan,'PORT_LOCK',Path(temp)/'port'), \
+                    patch.object(wan,'validate_trunk',side_effect=ValueError('missing trunk')), \
+                    patch('ffn_dp_boot_health.inspect_boot',return_value={'ready':True}):
+                state=wan.status()
+            self.assertTrue(state['boot_ready']);self.assertTrue(state['fabric_available'])
+            self.assertFalse(state['fabric_ready']);self.assertEqual(state['fabric_error'],'missing trunk')
+            self.assertTrue(state['boot_id'])
+
     def test_discover_is_valid_bootp_and_ipv4(self):
         mac=bytes.fromhex('020000000001');packet=discover(mac,123)
         self.assertEqual(checksum(packet[14:34]),0)
