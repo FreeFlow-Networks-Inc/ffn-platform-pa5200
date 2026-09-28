@@ -36,7 +36,23 @@ class BindingTests(unittest.TestCase):
 
     def test_candidate_preview_never_invents_dhcp_address(self):
         xml=self.candidate().replace('<ip><entry name="LAN gateway"/></ip>','<dhcp-client><enable>yes</enable></dhcp-client>')
-        self.assertEqual(binding.preview(xml,{},{}),({},{},[]))
+        current,rows,pending=binding.preview(xml,{},{})
+        self.assertEqual(pending,['ae1']);self.assertEqual(rows[current['ae1']['device']]['addr_info'],[])
+
+    def test_disconnected_physical_interface_and_object_validate_without_owner(self):
+        xml=self.candidate().replace('</ethernet>','<entry name="ethernet1/5"><link-state>down</link-state><layer3><ip><entry name="LAN gateway"/></ip></layer3></entry></ethernet>')
+        current,rows,pending=binding.preview(xml,{},{})
+        self.assertIn('ethernet1/5',pending)
+        self.assertEqual(rows[current['ethernet1/5']['device']]['addr_info'][0]['local'],'192.0.2.1')
+        self.assertEqual(binding.discover({},self.run,self.proc,102),{})
+
+    def test_removed_or_non_routed_interface_cannot_use_stale_binding(self):
+        live={'ethernet1/5':dict(device='p5',index=5,alias='old')}
+        self.assertNotIn('ethernet1/5',binding.preview(self.candidate(),live,{})[0])
+
+    def test_candidate_admin_down_aggregate_is_still_configurable(self):
+        xml=self.candidate().replace('<entry name="ae1">','<entry name="ae1"><link-state>down</link-state>')
+        self.assertIn('ae1',binding.preview(xml,{}, {})[0])
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -63,9 +79,13 @@ class BindingTests(unittest.TestCase):
     def test_stale_dead_or_replaced_owner_withdrawn(self):
         for key,value in [('boot_id','old'),('process_start','901'),('updated_monotonic',95),
                           ('updated_monotonic',103),('gates_verified',False),('network_ready',False),
-                          ('distributing',[]),('control_only',True),('network_update_pending',True)]:
+                          ('control_only',True),('network_update_pending',True)]:
             old=copy.deepcopy(self.row);self.row[key]=value
             self.assertEqual(self.discover(),{},key);self.row=old
+
+    def test_configured_owner_without_carrier_or_dhcp_lease_remains_bound(self):
+        self.row.update(distributing=[],network_ready=False,configuration_ready=True)
+        self.assertEqual(self.discover(),{'ae7':'ae7','ae7.123':'ae7.123'})
     def test_child_requires_alias_tag_parent_and_apply(self):
         baseline=copy.deepcopy(self.links)
         for change in ({'ifalias':'foreign'},{'link_index':11},{'master':'bridge'},

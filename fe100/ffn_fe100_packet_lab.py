@@ -29,7 +29,10 @@ from ffn_fe100_nexthop import LIB, SHA, encode as next_hop
 FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN','13'))
 if FRONT_RETURN not in (5,13):raise ValueError('unsupported front return')
 EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
+if os.environ.get('FFN_FE100_MAC_SINGLE')=='1':EGRESS=FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
+MAC_LOOPBACK=os.environ.get('FFN_FE100_MAC_LOOPBACK')=='1'
+RETURN_PORT=EGRESS if MAC_LOOPBACK else FRONT_RETURN
 NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
 PROTOCOL={'udp':17,'tcp':6}[os.environ.get('FFN_FE100_LAB_PROTOCOL','udp')]
 LAB_LIF=2 if FRONT_RETURN==5 else 1
@@ -103,10 +106,11 @@ def worker(request, fd):
              'spm':(0x70000,2,'fetch_spm_entry','set_spm_entry'),
              'lef':(0x58000,10,'fetch_lef_entry','insert_lef_entry'),
              'txport':(0x10000,3,'get_tx_portmap_entry','set_tx_portmap_entry'),
+             'rxport':(0x10000,1,'get_rx_portmap_entry','set_rx_portmap_entry'),
              'nexthop':(0x50000,16,'fetch_nexthop_entry','insert_nexthop_entry')}
     base, size, getname, putname = specs[kind]
     index = request['index']
-    if index not in (range(55) if kind == 'parser' else (5,13) if kind=='txport' else (52,53,54,55) if kind=='spm' else (1,2,31) if kind == 'lif' else (30,31)):
+    if index not in (range(55) if kind == 'parser' else (5,13) if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (1,2,31) if kind == 'lif' else (30,31)):
         raise ValueError('outside reserved lab indices')
     if 'lib' not in WORKER_STATE and hashlib.sha256(Path(LIB).read_bytes()).hexdigest() != SHA:
         raise RuntimeError('owner ABI changed')
@@ -135,7 +139,16 @@ def worker(request, fd):
     if kind=='qm' and 'data' not in request:data=data[:7]+b'\x01'+data[8:]
     entry = (C.c_ubyte*size).from_buffer_copy(data)
     op = request['op']
-    if op == 'delete':
+    if kind=='rxport':
+        # Reference owner ABI: key is swdev/device/BCM port; fetch's third
+        # argument is int*, set's is int, delete takes only the key pointer.
+        key=(C.c_ubyte*3)(0,0,7 if index==13 else 16)
+        result=C.c_int(data[0])
+        if op not in ('fetch','insert','delete'):raise ValueError('invalid RX map operation')
+        fn=getattr(lib,'pan_fe100_'+({'fetch':getname,'insert':putname,'delete':'delete_rx_portmap_entry'}[op]))
+        fn.argtypes=[C.c_uint32,C.c_void_p]+([] if op=='delete' else [C.POINTER(C.c_int) if op=='fetch' else C.c_int])
+        args=(0,key) if op=='delete' else (0,key,C.byref(result) if op=='fetch' else result.value)
+    elif op == 'delete':
         if kind not in ('acl','qm','nexthop','lef','txport','lif'): raise ValueError('delete not supported')
         fn = getattr(lib,'pan_fe100_delete_'+('tx_portmap' if kind=='txport' else kind)+'_entry')
         fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind in ('lef','txport','lif') else 2)
@@ -150,6 +163,7 @@ def worker(request, fd):
     try: rc = fn(*args)
     finally: shim.ffn_flow_watchdog(0)
     if shim.ffn_fe100_faults(): raise RuntimeError('register scope violation; inspect '+trace)
+    if kind=='rxport':entry=bytes((result.value,))
     return {'rc':rc,'data':bytes(entry).hex(),'trace':trace}
 
 
@@ -160,6 +174,7 @@ class Lab:
         self.path = ROOT/('packet-session-'+str(time.time_ns())+'.json')
         self.record = {'schema':1,'owner_sha256':SHA,
                        'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
+                                  'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,
                                   'session_key':KEY.hex(),'return_key':RETURN_KEY.hex()},
                        'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                        'changes':[], 'snapshots':{}, 'stage':'preflight', 'session_offload_verified':False}
@@ -234,14 +249,14 @@ class Lab:
             if self.call('nexthop',index=index)['rc'] != 3: raise RuntimeError('lab next-hop occupied')
         if self.call('acl')['rc'] != 3: raise RuntimeError('lab ACL occupied')
         if VLAN_RETURN:
-            if EGRESS==FRONT_RETURN:raise RuntimeError('VLAN return requires distinct ports')
+            if EGRESS==FRONT_RETURN and not MAC_LOOPBACK:raise RuntimeError('VLAN return requires distinct ports')
             if self.call('lif',index=31)['rc']!=3:raise RuntimeError('return LIF31 occupied')
             if self.call('session',data=RETURN_IDENTITY)['rc']!=3:raise RuntimeError('return flow already owned')
         lif = self.call('lif',index=LAB_LIF)
         expected = bytearray(36)
         struct.pack_into('>III',expected,4,0x80050000,8,FRONT_RETURN<<16)
         expected[16:26]=(63<<32).to_bytes(10,'big');expected[26:36]=(FRONT_RETURN<<32).to_bytes(10,'big')
-        if lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]:
+        if not (MAC_LOOPBACK and lif['rc']==3) and (lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]):
             raise RuntimeError('ingress LIF differs from front-port baseline')
         from ffn_fe100_parser_apply import SOURCE, encode
         source = SOURCE.read_bytes()
@@ -258,6 +273,11 @@ class Lab:
         self.write('acl',31,bytes(acl))
         front_return='FFN_FE100_FRONT_RETURN' in os.environ
         if front_return:
+            for port in sorted({FRONT_RETURN,RETURN_PORT}):
+                mapping=bytes((port,));rx=self.call('rxport',index=port)
+                if rx['rc'] not in (0,3) or (rx['rc']==0 and rx['data']!=mapping.hex()):
+                    raise RuntimeError('RX port mapping conflict')
+                if rx['rc']==3:self.write('rxport',port,mapping)
             from ffn_fe100_nexthop import encode_front
             if self.call('lef')['rc']!=3:raise RuntimeError('LEF31 occupied')
             if self.call('qm')['rc']!=3:raise RuntimeError('QMAP31 occupied')
@@ -281,8 +301,8 @@ class Lab:
             # Packed owner DWARF: VID at key bits49:38; pport at37:32.
             expected[16:26]=((4095<<38)|(63<<32)).to_bytes(10,'big')
             capture=bytearray(expected)
-            struct.pack_into('>II',capture,4,0x80050000,(4093<<16)|8)
-            capture[26:36]=((4000<<38)|(FRONT_RETURN<<32)).to_bytes(10,'big')
+            struct.pack_into('>III',capture,4,0x80050000,(4093<<16)|8,RETURN_PORT<<16)
+            capture[26:36]=((4000<<38)|(RETURN_PORT<<32)).to_bytes(10,'big')
             self.record['return_session_touched']=True;self.save()
             self.write('lif',31,bytes(capture))
         self.write('lif',LAB_LIF,bytes(expected))

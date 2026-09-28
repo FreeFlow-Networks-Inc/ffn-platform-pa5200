@@ -79,7 +79,7 @@ def expected_return(token,count,front5=False,nat=None,protocol='udp'):
     return [vlan_return_frame(f) for f in packets]
 
 
-def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp'):
+def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp',mac_loopback=False,single_port=False):
     expected=expected_return(token,count,front5,nat,protocol)
     while select.select([sock],[],[],0)[0]:sock.recv(65536)
     capture_drops(sock)
@@ -96,7 +96,7 @@ def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp'):
                 if len(raw)>=32:
                     port=(int.from_bytes(raw[24:28],'big')>>22)&63
                     item['received_port']=port
-                    if port==(5 if front5 else 13):
+                    if port==((13 if front5 else 5) if mac_loopback and not single_port else (5 if front5 else 13)):
                         item['rewritten']=[i for i,f in enumerate(expected) if raw[32:]==f]
                 packets.append(item)
             if process.poll() is not None:break
@@ -112,12 +112,13 @@ def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp'):
         if process.poll() is None:process.kill();process.communicate()
 
 
-def probe(token,count,baseline,front5=False,cross=False,nat=None,protocol='udp'):
+def probe(token,count,baseline,front5=False,cross=False,nat=None,protocol='udp',mac_loopback=False):
     from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
     validate_trunk('ffnpkt0')
     status=lambda:json.loads(Path('/sys/kernel/debug/ffn_dp_packet_init/status').read_text())
     before=status();expected=directional_frames(token,count,front5,nat,protocol);rewritten=[DMAC+f[6:] for f in expected]
     inject=13 if front5 else 5;ingress=5 if front5 else 13
+    if mac_loopback:inject=ingress
     found=[]
     with socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3)) as sock:
         capture_buffer(sock)
@@ -154,11 +155,15 @@ def main():
     p.add_argument('--cross',action='store_true',help='forward to the other front port; capture its DAC return')
     p.add_argument('--vlan-return',action='store_true',help='experimental tagged FE100 return to MP capture')
     p.add_argument('--nat',choices=('address','port'),help='isolated IPv4 NAT or port translation qualification')
+    p.add_argument('--mac-loopback',action='store_true',help='supervised internal MAC loops on unused ports; no external wire qualification')
+    p.add_argument('--single-port',action='store_true',help='use only the ingress MAC loop, with a tagged return to the same port')
     p.add_argument('--protocol',choices=('udp','tcp'),default='udp',help='isolated rewrite/checksum probe; no TCP state admission')
     p.add_argument('--count',type=int,choices=range(1,5),default=1);a=p.parse_args()
     if a.vlan_return and not a.cross:p.error('--vlan-return requires --cross')
+    if a.mac_loopback and not a.probe and not (a.cross and a.vlan_return):p.error('--mac-loopback requires --cross --vlan-return')
+    if a.single_port and (not a.mac_loopback or a.nat):p.error('--single-port requires --mac-loopback and no NAT')
     if a.nat and not a.probe and not (a.cross and a.vlan_return):p.error('--nat requires --cross --vlan-return')
-    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat,a.protocol)));return
+    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat,a.protocol,a.mac_loopback)));return
     if subprocess.run(['systemctl','is-active','--quiet','ffn-fabric.service']).returncode==0:
         raise RuntimeError('software fabric must be stopped')
     report={'schema':1,'scope':'front5 FE100 egress -> DAC -> front13 DP capture' if a.front5 else 'front13 FE100 egress -> DAC -> front5 DP capture',
@@ -166,20 +171,49 @@ def main():
             'session_offload_verified':False}
     ingress=5 if a.front5 else 13
     egress=18-ingress if a.cross else ingress
+    if a.single_port:egress=ingress
     report.update(ingress=ingress,egress=egress,nat_mode=a.nat,protocol=a.protocol,nat_direction_verified=False,
                   production_nat_qualified=False,distinct_port_direction_verified=False)
     report['scope']=f'front{ingress} -> FE100 -> front{egress} -> DAC -> DP capture'
     if a.vlan_return:report['scope']=f'front{ingress} -> FE100 -> front{egress} VLAN4000 -> DAC -> front{ingress} -> FE100 -> MP capture'
+    report['internal_mac_loopback']=a.mac_loopback
+    report['single_port']=a.single_port
+    report['external_wire_verified']=False
+    if a.mac_loopback:report['scope']=f'internal MAC{ingress} -> FE100 -> MAC{egress} VLAN4000 -> internal loop -> FE100 -> MP capture'
     path=Path('/var/log')/('ffn-front-session-'+str(time.time_ns())+'.json')
     save=lambda:path.write_text(json.dumps(report,indent=2))
     report['production_owners']=aggregate_owners();save()
+    configuration=Path('/var/lib/ffn-ngfw/config/running-config.xml')
+    original_configuration=configuration.read_bytes() if a.mac_loopback else None
+    if a.mac_loopback:
+        import xml.etree.ElementTree as ET
+        for filename in ('running-config.xml','candidate-config.xml'):
+            root=ET.fromstring(configuration.with_name(filename).read_bytes())
+            for entry in root.findall('.//network/interface/ethernet/entry'):
+                if entry.get('name') in (('ethernet1/'+str(ingress),) if a.single_port else ('ethernet1/5','ethernet1/13')):
+                    if any(entry.find(mode) is not None for mode in ('layer3','layer2','virtual-wire','tap','aggregate-group')):
+                        raise RuntimeError('MAC lab ports must be unconfigured in candidate and running configuration')
+    mac=None
+    def mac_command(op=None):
+        if op:
+            mac.stdin.write(json.dumps({'op':op})+'\n');mac.stdin.flush()
+        if not select.select([mac.stdout],[],[],20)[0]:raise TimeoutError('MAC lab supervisor timed out')
+        line=mac.stdout.readline()
+        if not line:raise RuntimeError('MAC lab supervisor exited')
+        return json.loads(line)
     def production_check():
         if aggregate_owners()!=report['production_owners']:
             raise RuntimeError('Production aggregate lifetime changed; isolated lab aborted')
+        if a.mac_loopback and configuration.read_bytes()!=original_configuration:
+            raise RuntimeError('Configuration changed during MAC lab')
+        if mac is not None and mac_command('status').get('ready') is not True:
+            raise RuntimeError('MAC lab is not ready')
     def route(mode,ids=None):
+        payload={'mode':mode,'ids':ids or {}}
+        if a.single_port and mode=='baseline-begin':payload['ports']=[16 if ingress==5 else 7]
         result=subprocess.run(['/usr/local/sbin/ffn-cp',
             'python3 /usr/local/sbin/ffn_fe100_bcm_lab.py'],
-            input=json.dumps({'mode':mode,'ids':ids or {}}),capture_output=True,text=True,timeout=30)
+            input=json.dumps(payload),capture_output=True,text=True,timeout=30)
         if result.returncode:raise RuntimeError('BCM lab operation failed: '+result.stdout[-3000:]+result.stderr[-1000:])
         r=json.loads(result.stdout)
         report.setdefault('bcm',[]).append(r);save()
@@ -188,7 +222,7 @@ def main():
         return r
     ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
     err=tempfile.TemporaryFile(mode='w+')
-    cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env LD_LIBRARY_PATH='+ld+
+    cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env '+('FFN_FE100_MAC_LOOPBACK=1 ' if a.mac_loopback else '')+('FFN_FE100_MAC_SINGLE=1 ' if a.single_port else '')+'LD_LIBRARY_PATH='+ld+
         ' LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
     def response():
@@ -202,7 +236,7 @@ def main():
         if r.get('restored'):report['cp_cleanup']=r
         if not r.get('ok'):raise RuntimeError('CP operation failed: '+str(r))
         return r['registers']
-    redirected=False;rules=[];capture=None;feature=False;link_raised=False;baseline_started=False
+    redirected=False;rules=[];capture=None;feature=False;link_raised=False;baseline_started=False;redirected_modes=[]
     def create(mode):
         result=route(mode)
         markers='\n'.join(result.get('markers',[]))
@@ -215,6 +249,11 @@ def main():
             report['cp_cleanup']=report['controller'] if report['controller'].get('restored') else response()
             raise RuntimeError('CP hardware prerequisites not satisfied; no packet test was started: '+
                                '; '.join(report['controller'].get('blockers',[])))
+        if a.mac_loopback:
+            mac=subprocess.Popen(['/usr/local/sbin/ffn-cp','python3 /usr/local/sbin/ffn_fe100_mac_lab.py --serve'+(' --port '+str(ingress) if a.single_port else '')],
+                                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
+            report['mac_loopback']=mac_command();save()
+            if report['mac_loopback'].get('ready') is not True:raise RuntimeError('MAC loopback preparation failed')
         report['queue_preparation']=route('queues-prepare');save()
         production_check()
         baseline_started=True
@@ -239,7 +278,10 @@ def main():
                     create(f'cross{ingress}-input-create')
                     create(f'cross{ingress}-return-create')
                 redirected=True
-                route(f'cross{ingress}-release' if a.cross and not a.vlan_return else ('front5-session-enable' if a.front5 else 'session-path-enable'))
+                if a.mac_loopback:
+                    for mode in (('front5-session' if a.front5 else 'session-path',) if a.single_port else ('session-path','front5-session')):
+                        redirected_modes.append(mode);route(mode+'-enable')
+                else:route(f'cross{ingress}-release' if a.cross and not a.vlan_return else ('front5-session-enable' if a.front5 else 'session-path-enable'))
             before=command(op)
             production_check()
             token=uuid.uuid4().hex
@@ -248,10 +290,11 @@ def main():
             if phase=='baseline':argv+=['--baseline']
             if a.front5:argv+=['--front5']
             if a.cross:argv+=['--cross']
+            if a.mac_loopback:argv+=['--mac-loopback']
             if a.nat:argv+=['--nat',a.nat]
             argv+=['--protocol',a.protocol]
             if capture is not None and phase!='baseline':
-                result=capture_return(capture,argv,token,a.count,a.front5,a.nat,a.protocol)
+                result=capture_return(capture,argv,token,a.count,a.front5,a.nat,a.protocol,a.mac_loopback,a.single_port)
             else:
                 r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
                 if r.returncode:raise RuntimeError('DP probe failed: '+r.stderr[-2000:])
@@ -269,8 +312,10 @@ def main():
     except BaseException as e:report['error']=str(e);raise
     finally:
         if redirected:
-            try:route(f'cross{ingress}-restore' if a.cross and not a.vlan_return else ('front5-session-restore' if a.front5 else 'session-path-restore'))
-            except Exception as e:report['cleanup_errors'].append(str(e))
+            for mode in ([m+'-restore' for m in reversed(redirected_modes)] if a.mac_loopback else
+                         [f'cross{ingress}-restore' if a.cross and not a.vlan_return else ('front5-session-restore' if a.front5 else 'session-path-restore')]):
+                try:route(mode)
+                except Exception as e:report['cleanup_errors'].append(str(e))
         for rule in reversed(rules):
             try:route('offload-rule-delete',rule)
             except Exception as e:report['cleanup_errors'].append(str(e))
@@ -283,6 +328,12 @@ def main():
             cp.wait(timeout=30)
             if not report.get('cp_cleanup',{}).get('restored'):raise RuntimeError('CP cleanup not verified')
         except Exception as e:report['cleanup_errors'].append(str(e))
+        if mac is not None:
+            try:
+                report['mac_cleanup']=mac_command('finish')
+                mac.wait(timeout=25)
+                if not report['mac_cleanup'].get('restored'):raise RuntimeError('MAC port cleanup not verified')
+            except Exception as e:report['cleanup_errors'].append(str(e))
         if capture is not None:capture.close()
         for enabled,argv in ((feature,['ethtool','-K','enp8s0f1','rx-all','off']),
                              (link_raised,['ip','link','set','dev','enp8s0f1','down'])):
@@ -290,8 +341,9 @@ def main():
                 try:subprocess.run(argv,check=True,capture_output=True)
                 except Exception as e:report['cleanup_errors'].append(str(e))
         report['session_offload_verified'] &= not bool(report['cleanup_errors'])
-        report['distinct_port_direction_verified']=a.cross and report['session_offload_verified']
+        report['distinct_port_direction_verified']=a.cross and not a.single_port and report['session_offload_verified']
         report['nat_direction_verified']=bool(a.nat) and report['session_offload_verified']
+        report['external_wire_verified']=not a.mac_loopback and report['session_offload_verified']
         save();print(json.dumps({'verified':report['session_offload_verified'],
             'cleanup_errors':report['cleanup_errors'],'report':str(path)}),flush=True)
     raise SystemExit(0 if report['session_offload_verified'] else 2)

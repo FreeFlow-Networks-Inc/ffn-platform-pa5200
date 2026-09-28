@@ -324,9 +324,10 @@ def serve(intent):
                         local={ipaddress.ip_interface(lease_data['address']).ip.packed} if lease_data.get('token')==intent['token'] and lease_data.get('address') else set()
                     row=dict(result,group=name,token=intent['token'],boot_id=boot(),pid=os.getpid(),
                         process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],updated_monotonic=now,
-                        control_only=intent['control_only'],attachment_ready=bool(result['distributing']) and fd is not None and network.get('enabled',True) and network_current,
+                        control_only=intent['control_only'],attachment_ready=fd is not None and vlan.carrying(network) and network_current,
+                        configuration_ready=network_current and not intent['control_only'],
                         configuration_revision=applied_revision,network_error=network_error,network_update_pending=not network_current,
-                        subinterfaces=[dict(u,applied=network_current and bool(result['distributing']),state='active' if network_current and result['distributing'] else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
+                        subinterfaces=[dict(u,applied=network_current,state='active' if network_current and result['distributing'] else 'configured' if network_current else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
                         network=network,ports=members,hardware_offload=bool(offload and offload.ready(gates,now)),
                         offload_requested=intent['offload'],offload_tx=offload.transmitted if offload else 0,
                         offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),

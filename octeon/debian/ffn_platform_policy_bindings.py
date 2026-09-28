@@ -13,7 +13,7 @@ import uuid
 
 
 def preview(xml,current,addresses):
-    """Compile candidate aggregates without claiming a live DP attachment.
+    """Compile configured interfaces without requiring carrier or a live owner.
 
     This inventory is used only by nft --check. Apply and the forwarding lease
     continue to require discover() evidence from the real owner on this boot.
@@ -23,22 +23,28 @@ def preview(xml,current,addresses):
     from ffn_policy_config import parse
     from ffn_interface_addresses import resolved_config
     root=resolved_config(parse(xml))
-    current=copy.deepcopy(current);addresses=copy.deepcopy(addresses);pending=[];seen=set()
+    current=copy.deepcopy(current);addresses=copy.deepcopy(addresses);pending=[];seen=set();configured=set()
     index=0x70000000
     for device in root.findall('devices/entry'):
-        for parent in device.findall('network/interface/aggregate-ethernet/entry'):
+        parents=[(p,False) for p in device.findall('network/interface/ethernet/entry')]
+        parents += [(p,True) for p in device.findall('network/interface/aggregate-ethernet/entry')]
+        for parent,aggregate in parents:
             name=parent.get('name','')
-            if not re.fullmatch(r'ae(?:[1-9]|1[0-2])',name) or name in seen:
-                raise ValueError('Invalid or duplicate candidate aggregate: '+name)
+            pattern=r'ae(?:[1-9]|1[0-2])' if aggregate else r'ethernet1/(?:[1-9]|1[0-9]|2[0-4])'
+            if not re.fullmatch(pattern,name) or name in seen:
+                raise ValueError('Invalid or duplicate candidate interface: '+name)
             seen.add(name)
-            members=[e for e in device.findall('network/interface/ethernet/entry') if e.findtext('aggregate-group')==name]
-            names=[e.get('name','') for e in members]
-            if (not 2<=len(names)<=8 or len(set(names))!=len(names) or
-                    any(not re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',n) for n in names)):
-                raise ValueError(name+': aggregate requires 2..8 unique faceplate members')
-            mode=parent.findtext('bond/mode',parent.findtext('layer3/bond/mode','802.3ad'))
-            if mode not in ('802.3ad','lacp'):raise ValueError(name+': unsupported aggregate mode')
+            if aggregate:
+                members=[e for e in device.findall('network/interface/ethernet/entry') if e.findtext('aggregate-group')==name]
+                names=[e.get('name','') for e in members]
+                if (not 2<=len(names)<=8 or len(set(names))!=len(names) or
+                        any(not re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',n) for n in names)):
+                    raise ValueError(name+': aggregate requires 2..8 unique faceplate members')
+                mode=parent.findtext('bond/mode',parent.findtext('layer3/bond/mode','802.3ad'))
+                if mode not in ('802.3ad','lacp'):raise ValueError(name+': unsupported aggregate mode')
             layer=parent.find('layer3')
+            if not aggregate and parent.find('aggregate-group') is not None and layer is not None:
+                raise ValueError(name+': aggregate member cannot also have layer3 settings')
             rows=[]
             if layer is not None:
                 if parent.findtext('aggregate-only')!='yes':rows.append((name,layer))
@@ -50,17 +56,9 @@ def preview(xml,current,addresses):
                         raise ValueError(name+': invalid or duplicate aggregate VLAN unit')
                     tags.add(int(tag));seen.add(child);rows.append((child,unit))
             for logical,node in rows:
-                if parent.findtext('link-state','auto')=='down':
-                    current.pop(logical,None);continue
+                configured.add(logical)
                 values=[ipaddress.ip_interface(e.get('name','')) for e in node.findall('ip/entry')]
-                if not values:
-                    # DHCP must have an actual lease before address-dependent NAT
-                    # can be checked; never invent a prospective leased address.
-                    if node.findtext('dhcp-client/enable')!='yes' and logical in current:
-                        dev=current[logical]['device']
-                        addresses[dev]=dict(ifname=dev,addr_info=[])
-                    continue
-                if node.findtext('dhcp-client/enable')=='yes':raise ValueError(logical+': choose DHCP or static addresses')
+                if values and node.findtext('dhcp-client/enable')=='yes':raise ValueError(logical+': choose DHCP or static addresses')
                 if logical not in current:
                     index+=1
                     while index in {r['index'] for r in current.values()}:index+=1
@@ -72,6 +70,9 @@ def preview(xml,current,addresses):
                 dev=current[logical]['device']
                 addresses[dev]=dict(ifname=dev,addr_info=[dict(family='inet' if a.version==4 else 'inet6',
                     local=str(a.ip),prefixlen=a.network.prefixlen) for a in values])
+    # The proposal, including removals/mode changes, is authoritative. Stale
+    # runtime attachments must not validate references absent from this config.
+    current={k:v for k,v in current.items() if k in configured}
     return current,addresses,pending
 
 
@@ -131,7 +132,7 @@ def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
             if path.name!='ffn-aggregate-'+name+'-status.json' or str(uuid.UUID(token))!=token:continue
             if row['boot_id']!=boot or not 0<=now-row['updated_monotonic']<=5:continue
             if (row.get('control_only') or row.get('fault') or not row.get('gates_verified') or
-                not row.get('distributing') or not row.get('network_ready') or row.get('network_update_pending')):continue
+                not row.get('configuration_ready',row.get('network_ready')) or row.get('network_update_pending')):continue
             pid=row['pid']
             if type(pid) is not int or pid<=1:continue
             process=(proc/str(pid)/'stat').read_text().rsplit(') ',1)[1].split()

@@ -162,7 +162,9 @@ int ffn_lab_queues(int unit,int port,int numq,uint32 flags,int gport,void *data)
     return dict(completed=True,markers=['FFN_DONE'],queue_ids=queues)
 
 
-def baseline(mode,call,epoch):
+def baseline(mode,call,epoch,ports=(16,7)):
+    if not ports or len(set(ports))!=len(ports) or any(type(p)!=int or p not in (7,16) for p in ports):
+        raise ValueError('Invalid isolated lab baseline ports')
     def get(port):return read_port(execute(port_recipe(port),call),port)
     def set_port(row):
         actual=read_port(execute(port_recipe(row['port'],row['destination'],row['enabled']),call),row['port'])
@@ -171,7 +173,7 @@ def baseline(mode,call,epoch):
     if mode=='baseline-begin':
         if STATE.exists() and json.loads(STATE.read_text()).get('stage')!='restored':
             raise RuntimeError('Pending lab route cleanup must be completed first')
-        rows=[get(p) for p in (16,7)]
+        rows=[get(p) for p in ports]
         if any(r['enabled'] and r['destination']!=24 for r in rows):raise RuntimeError('Unexpected isolated loop owner')
         record=dict(epoch=epoch,stage='preparing',ports=rows);save(record)
         for row in rows:set_port(dict(row,destination=24,enabled=1))
@@ -194,7 +196,7 @@ def run(request):
     from ffn_copper_forwarding import epoch
     mode=request['mode']
     with locked(Path('/run/ffn-fe100-bcm-lab.lock')):
-        if mode in ('baseline-begin','baseline-end'):return baseline(mode,call,epoch())
+        if mode in ('baseline-begin','baseline-end'):return baseline(mode,call,epoch(),request.get('ports',(16,7)))
         if mode=='queues-prepare':return prepare_queues(call,epoch())
         if mode=='queue-status':return queue_ids(call)
         return execute(render(mode,request.get('ids',{})),call)

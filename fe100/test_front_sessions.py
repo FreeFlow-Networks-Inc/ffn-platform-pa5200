@@ -7,6 +7,18 @@ from validate_physical_sessions import checksum
 
 
 class FrontEncoding(unittest.TestCase):
+    def test_internal_loop_uses_egress_port_for_tagged_return(self):
+        import os,subprocess,sys,json
+        from pathlib import Path
+        for ingress in ('5','13'):
+            env=dict(os.environ,FFN_FE100_FRONT_RETURN=ingress,FFN_FE100_CROSS='1',
+                     FFN_FE100_VLAN_RETURN='1',FFN_FE100_MAC_LOOPBACK='1')
+            output=subprocess.check_output([sys.executable,'-c',
+                'import ffn_fe100_packet_lab as x,json;print(json.dumps([x.FRONT_RETURN,x.EGRESS,x.RETURN_PORT]))'],
+                cwd=Path(__file__).resolve().parent,env=env,text=True)
+            a,b,c=json.loads(output)
+            self.assertNotEqual(a,b);self.assertEqual(b,c)
+
     def test_tcp_nat_probe_full_checksums_payload_sequence_and_ttl(self):
         for mode in ('address','port'):
             for reverse in (False,True):

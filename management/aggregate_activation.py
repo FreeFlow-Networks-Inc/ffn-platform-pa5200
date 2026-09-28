@@ -339,9 +339,9 @@ def supervise(name):
                         last_dp=time.monotonic();state['dataplane']=row;state['dp_received_monotonic']=last_dp
                         acknowledged=row.get('configuration_revision')==network_revision(intent)
                         state['configuration_revision']=network_revision(intent)
-                        ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('distributing'))
+                        ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('configuration_ready',False))
                         state['state']='control-only' if intent['control_only'] else 'apply-failed' if row.get('network_error') or state.get('configuration_error') else 'reconciling' if not acknowledged else ('active' if row.get('network_ready') else 'awaiting-address') if ready else 'negotiating'
-                        state['applied']=bool(acknowledged and ready and row.get('network_ready')) and not intent['control_only'] and not state.get('configuration_error')
+                        state['applied']=bool(acknowledged and ready and row.get('configuration_ready',row.get('network_ready'))) and not intent['control_only'] and not state.get('configuration_error') and not row.get('network_error')
                     save()
     except KeyboardInterrupt:state.update(state='stopping',applied=False);save()
     except BaseException as error:
