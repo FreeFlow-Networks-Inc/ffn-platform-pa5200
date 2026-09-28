@@ -179,6 +179,7 @@ def enable_runtime_units(root, role, owners):
     # MP intent and current CP/DP qualification before attaching interfaces.
     units = {'cp': [('timers.target', 'ffn-copper-link.timer')],
              'dp': [('multi-user.target', 'ffn-network.service'),
+                    ('multi-user.target', 'ffn-security-runtime.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
         directory = root / ('etc/systemd/system/' + target + '.wants')
@@ -218,11 +219,23 @@ def check_host():
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
 
 
+DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS',
+                      'NF_CT_NETLINK', 'NF_NAT', 'NF_TABLES', 'NFT_CT')
+DP_POLICY_MODULES = ('NFT_FIB_IPV4', 'NFT_FIB_IPV6', 'NFT_FIB_INET', 'NFT_NUMGEN', 'NFT_HASH')
+
 def check_kernel_config(conf, role):
     values = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_]+)=([ym])$', conf, re.M))
     for symbol in ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS'):
         if values.get('CONFIG_' + symbol) != 'y':
             raise ValueError('Missing kernel requirement: ' + symbol)
+    if role == 'dp':
+        for symbol in DP_POLICY_BUILTINS:
+            if values.get('CONFIG_' + symbol) != 'y':
+                raise ValueError('Missing DP policy kernel requirement: ' + symbol)
+        for symbol in DP_POLICY_MODULES:
+            value = values.get('CONFIG_' + symbol)
+            if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
+                raise ValueError('Missing DP policy kernel requirement: ' + symbol)
     if role == 'cp':
         for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
             value = values.get('CONFIG_' + symbol)

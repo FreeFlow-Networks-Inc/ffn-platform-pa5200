@@ -12,12 +12,12 @@ class RuntimeOverlayTests(unittest.TestCase):
             root = Path(tmp)
             directory = root / 'etc/systemd/system'
             directory.mkdir(parents=True)
-            for name in ('ffn-network.service', 'ffn-aggregate-dp-watchdog.timer'):
+            for name in ('ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'):
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'dp', {})
             build_images.enable_runtime_units(root, 'dp', {})
             links = list(directory.glob('*.wants/*'))
-            self.assertEqual({p.name for p in links}, {'ffn-network.service', 'ffn-aggregate-dp-watchdog.timer'})
+            self.assertEqual({p.name for p in links}, {'ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'})
             self.assertTrue(all(p.is_symlink() and p.is_file() for p in links))
 
     def test_boot_rejects_redirected_unit_directory(self):
@@ -33,6 +33,8 @@ class RuntimeOverlayTests(unittest.TestCase):
         files = {Path(dest).name: (origin, source) for origin, source, dest in manifest['common'] + manifest['dp']}
         for name in ('ffn_network.py', 'ffn_network_init.py', 'ffn_wan_runtime.py',
                      'ffn_wan_probe.py', 'ffn_aggregate_runtime.py', 'ffn_vif_runtime.py',
+                     'ffn_interface_addresses.py', 'ffn_controld_client.py',
+                     'ffn_platform_policy_bindings.py',
                      'ffn-network.service', 'ffn-wan-attachment.service'):
             self.assertIn(name, files)
         for name, (origin, source) in files.items():

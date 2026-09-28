@@ -147,7 +147,7 @@ jobs:
       - name: LACP wire codec, negotiation and OCTEON member transport
         run: cd octeon/debian && python3 -m unittest test_dp_link test_dp_packet_init test_lacp_packets test_lacp_engine test_lacp_trunk test_aggregate_datapath test_aggregate_dhcp test_aggregate_offload
       - name: network config
-        run: cd octeon/debian && python3 test_network_config.py
+        run: cd octeon/debian && python3 -m unittest test_network_config test_policy_bindings test_wan_runtime
       - name: VIF assignments and adapter guards
         run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter test_vif_probe test_network_init
       - name: copper VIF mapping, carrier leases and packet transport

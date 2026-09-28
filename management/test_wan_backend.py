@@ -61,4 +61,36 @@ class Backend(unittest.TestCase):
             execute('apply',self.payload|{'operation':'attach'},no_return,self.drain)
         self.assertNotIn(('cp','start'),self.calls)
         self.assertEqual(self.calls[-1],('cp','abort'))
+    def test_attach_recovers_missing_fabric_after_boot_and_before_wire_probe(self):
+        ready=False
+        def call(role,op,payload):
+            nonlocal ready
+            self.calls.append((role,op))
+            if (role,op)==('cp','status'):
+                return {'revision':3,'epoch':'same','state':{'epoch':'same','enabled':False},'wire_qualified':False}
+            if (role,op)==('dp','status'):
+                return {'boot_id':BOOT,'boot_ready':True,'fabric_available':True,'fabric_ready':ready}
+            if op=='attachment-status':return {'running':False}
+            if op=='reconcile':
+                self.assertEqual(payload,{'boot_id':BOOT});ready=True
+                return {'ready':True,'boot_id':BOOT}
+            if op=='finish':return {'revision':4,'wire_qualified':True}
+            if (role,op)==('cp','start'):return {'revision':5,'ready':{'1':True}}
+            if (role,op)==('dp','start'):return {'running':True}
+            return {}
+        request=self.payload|{'operation':'attach'}
+        self.assertTrue(execute('validate',request,call,self.drain)['validated'])
+        self.assertNotIn(('dp','reconcile'),self.calls);self.calls=[]
+        self.assertTrue(execute('apply',request,call,self.drain)['attachment']['running'])
+        self.assertLess(self.calls.index(('mp','drain')),self.calls.index(('dp','reconcile')))
+        self.assertLess(self.calls.index(('dp','reconcile')),self.calls.index(('cp','prepare')))
+        ready=False;self.calls=[]
+        def stale(role,op,payload):
+            value=call(role,op,payload)
+            if op=='reconcile':value['boot_id']='changed'
+            return value
+        with self.assertRaisesRegex(RuntimeError,'not acknowledged'):
+            execute('apply',request,stale,self.drain)
+        self.assertNotIn(('cp','prepare'),self.calls)
+
 if __name__=='__main__':unittest.main()

@@ -57,6 +57,8 @@ def serve():
                 value={'owner':'wan1','pid':os.getpid(),'boot_id':boot(),
                        'process_start':Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],
                        'ports':[1],'max_mtu':1500,'transport':'direct OCTEON WAN','hardware_offload':False}
+                link=json.loads(subprocess.check_output(['ip','-n','ffn-data','-j','link','show','dev','p1'],text=True))[0]
+                value['interfaces']={'p1':link['ifindex']}
                 STATE.write_text(json.dumps(value))
             for _ in range(2):
                 sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));sock.bind(('ffnpkt0',0));sockets.append(sock)
@@ -84,6 +86,7 @@ def serve():
                     cfg=json.loads(Path('/etc/ffn/network.json').read_text())
                     self.local={ipaddress.ip_interface(a).ip.packed for a in cfg['ports'].get('p1',{}).get('addresses',[])}
                     value['counters']=dict(counts);value['updated_at']=time.time()
+                    value['updated_monotonic']=time.monotonic()
                     temp=STATE.with_suffix('.tmp');temp.write_text(json.dumps(value));temp.replace(STATE)
             transport.FRONT=FRONT
             original_encode=transport.encode

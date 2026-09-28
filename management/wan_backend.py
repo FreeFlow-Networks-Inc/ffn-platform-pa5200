@@ -14,13 +14,18 @@ def remote(role, operation, payload):
         '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp','root@127.1.2.2']
     if role=='cp' and operation in ('status','prepare','finish','abort','recover','start','stop'):
         argv=cp+['python3 /usr/local/sbin/ffn_wan_forwarding.py '+operation]
+    elif role=='dp' and operation=='reconcile':
+        argv=dp+['python3 /usr/local/sbin/ffn_dp_packet_init.py reconcile']
     elif role=='dp' and operation in ('status','probe'):
         argv=dp+['python3 /usr/local/sbin/ffn_wan_probe.py'+(' --status' if operation=='status' else '')]
     elif role=='dp' and operation in ('attachment-status','start','stop'):
         argv=dp+['python3 /usr/local/sbin/ffn_wan_runtime.py '+('status' if operation=='attachment-status' else operation)]
     else:raise ValueError('unsupported WAN remote operation')
     result=subprocess.run(argv,input=json.dumps(payload),text=True,capture_output=True,timeout=40)
-    if result.returncode:raise RuntimeError(role+' WAN operation failed: '+result.stderr[-1000:])
+    if result.returncode:
+        try:detail=json.loads(result.stdout).get('error',result.stderr[-1000:])
+        except ValueError:detail=result.stderr[-1000:]
+        raise RuntimeError(role+' WAN operation failed: '+str(detail)[:1000])
     try:value=json.loads(result.stdout)
     except ValueError as error:raise RuntimeError('invalid WAN agent response') from error
     if not isinstance(value,dict):raise RuntimeError('invalid WAN agent response')
@@ -46,12 +51,23 @@ def execute(action,payload,call=remote,drain=before_commit):
         attachment=call('dp','attachment-status',{})
         if payload['operation']=='attach' and not attachment['running'] and not dp['fabric_available']:
             raise ValueError('Another dataplane packet owner is active')
+        if payload['operation']=='attach' and dp.get('boot_ready',True) is not True:
+            raise ValueError('DP Debian boot is not ready')
         if action=='validate':return {'validated':True}
         barrier=drain(json.dumps(payload,sort_keys=True).encode())
         if payload['operation']=='detach':
             call('dp','stop',{'boot_id':dp['boot_id']})
             result=call('cp','stop',{'revision':current['revision']})
         else:
+            if dp.get('fabric_ready',True) is not True:
+                recovered=call('dp','reconcile',{'boot_id':dp['boot_id']})
+                if recovered.get('ready') is not True or recovered.get('boot_id')!=dp['boot_id']:
+                    raise RuntimeError('DP packet fabric recovery not acknowledged')
+                fresh=call('dp','status',{})
+                if (fresh.get('boot_id')!=dp['boot_id'] or fresh.get('fabric_ready') is not True
+                        or fresh.get('fabric_available') is not True):
+                    raise RuntimeError('DP packet fabric changed during recovery')
+                dp=fresh
             proof=current.get('qualification',{})
             qualified=(current.get('wire_qualified') is True
                        and proof.get('report',{}).get('boot_id')==dp['boot_id'])

@@ -30,6 +30,9 @@ def observe(role, owned=False):
     # Markers are formatted at execution, so the interactive shell's echo cannot
     # be mistaken for a report. Nothing in this command comes from a UI request.
     cmd="printf '\\nBEGIN-%s\\n' '%s'; cat /proc/sys/kernel/random/boot_id; uname -r; sha256sum /sys/kernel/notes; readlink /proc/1/exe; cat /proc/1/root/etc/os-release 2>/dev/null; printf '\\nEND-%s\\n' '%s'" % ('%s',nonce,'%s',nonce)
+    service_probe = "if chroot /proc/1/root /usr/bin/systemctl is-active --quiet ssh.service 2>/dev/null && chroot /proc/1/root /usr/bin/systemctl is-active --quiet ffn-network.service 2>/dev/null; then printf '\\nFFN-SERVICES:%s\\n' ready; fi; "
+    cmd = cmd.replace('cat /proc/1/root/etc/os-release 2>/dev/null; ',
+                      'cat /proc/1/root/etc/os-release 2>/dev/null; ' + service_probe)
     if owned:
         # Only the reset executor calls this while holding the exclusive fence.
         import importlib.util, io
@@ -61,7 +64,8 @@ def parse_observation(text,nonce):
     if boot!=lines[0] or not re.fullmatch('[0-9a-f]{64}',notes):raise ValueError('Invalid DP boot identity')
     ready=lines[3] in ('/usr/lib/systemd/systemd','/lib/systemd/systemd') and any(x in ('ID=debian','ID="debian"') for x in lines[4:])
     return {'boot_id':boot,'kernel_release':lines[1],'notes_sha256':notes,'control_ready':True,
-            'ready':ready,'runtime':'debian-systemd' if ready else 'recovery', 'forwarding_verified':False}
+            'ready':ready,'runtime_services_ready':ready and 'FFN-SERVICES:ready' in lines[4:],
+            'runtime':'debian-systemd' if ready else 'recovery', 'forwarding_verified':False}
 
 
 def active(unit):
@@ -109,6 +113,19 @@ def reconnect_dp(before):
     return after
 
 
+def wait_dp_services():
+    """PID 1 starts before SSH/network; do not replay MP intent into that gap."""
+    current=observe('dp')
+    if not current['ready']:return current  # Recovery images have no services.
+    expected=current['boot_id'];deadline=time.monotonic()+180
+    while time.monotonic()<deadline:
+        if current['boot_id']!=expected:raise RuntimeError('DP boot changed while waiting for runtime services')
+        if current.get('runtime_services_ready'):return current
+        time.sleep(2)
+        current=observe('dp')
+    raise RuntimeError('DP SSH/network services are not ready; configuration replay deferred')
+
+
 def prepare(role):
     before={r:observe(r) for r in ('cp','dp')}
     units=[u for u in CP_UNITS if active(u)] if role=='cp' else []
@@ -127,7 +144,9 @@ def prepare(role):
 def restore(role):
     state=json.loads((STATE/(role+'.json')).read_text())
     if state['role']!=role:raise ValueError('Recovery journal mismatch')
-    if role=='dp':wait_dp_owner()
+    if role=='dp':
+        wait_dp_owner()
+        wait_dp_services()
     if role=='cp':
         for unit in state['units']:
             if unit not in CP_UNITS:raise ValueError('Unexpected recovery unit')

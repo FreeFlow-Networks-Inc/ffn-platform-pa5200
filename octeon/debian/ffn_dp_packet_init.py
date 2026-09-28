@@ -109,7 +109,10 @@ def reconcile(expected_boot, root=ROOT, boot_id=None, boot_check=None,
         if packet.get('dma_error') or packet.get('trunk',{}).get('error') or packet.get('pki_reset_busy'):
             raise RuntimeError('Packet fabric fault requires recovery; automatic reset refused')
         if link is None:
-            from ffn_dp_link import ensure
+            from ffn_dp_link import ensure, STATUS as link_status
+            if not link_status.exists():
+                fence()
+                loader(['modprobe','ffn_dp_link'],check=True,capture_output=True,text=True,timeout=15)
             link=ensure
         fence()
         if link().get('internal_link_ready') is not True:raise RuntimeError('Internal packet link not acknowledged')

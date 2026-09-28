@@ -35,5 +35,6 @@ jobs:
       - name: Validate image inputs, package payloads and boot preflight
         run: |
           python3 -m unittest discover -s octeon/images -p test_build_images.py
+          python3 -m unittest discover -s octeon/images -p test_runtime_overlay.py
           python3 -m unittest discover -s octeon/packages -p test_packages.py
           python3 -m unittest discover -s tools -p test_octboot_policy.py

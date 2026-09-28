@@ -109,6 +109,16 @@
       "core",
       "systemd/ffn-security-runtime.service",
       "etc/systemd/system/ffn-security-runtime.service"
+    ],
+    [
+      "core",
+      "opt/ffn_interface_addresses.py",
+      "usr/local/lib/ffn/ffn_interface_addresses.py"
+    ],
+    [
+      "core",
+      "opt/ffn_controld_client.py",
+      "usr/local/lib/ffn/ffn_controld_client.py"
     ]
   ],
   "cp": [
@@ -738,6 +748,26 @@
       "platform",
       "octeon/debian/ffn_network_init.py",
       "usr/local/sbin/ffn_network_init.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_platform_policy_bindings.py",
+      "usr/local/lib/ffn/ffn_platform_policy_bindings.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_lacp_observer.py",
+      "usr/local/sbin/ffn_lacp_observer.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-security-network.conf",
+      "etc/systemd/system/ffn-security-runtime.service.d/20-network.conf"
+    ],
+    [
+      "platform",
+      "octeon/debian/policy-bindings.json",
+      "etc/ffn/policy-bindings.json"
     ]
   ]
 }

@@ -121,13 +121,18 @@ def probe(seconds=12):
 
 
 def status():
-    validate_trunk('ffnpkt0')
+    from ffn_dp_boot_health import inspect_boot
+    error=None
+    try:validate_trunk('ffnpkt0')
+    except (OSError,ValueError,RuntimeError) as exc:error=str(exc)
     available=True
     try:
         with ownership():pass
     except BlockingIOError:available=False
     return {'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-            'fabric_available':available,'port':1,'bcm_port':28}
+            'fabric_available':available,'fabric_ready':error is None,
+            'boot_ready':inspect_boot().get('ready') is True,'fabric_error':error,
+            'port':1,'bcm_port':28}
 
 
 if __name__=='__main__':
