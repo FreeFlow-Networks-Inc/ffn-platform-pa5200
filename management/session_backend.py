@@ -10,7 +10,10 @@ DP=['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTim
     '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
     '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp','root@127.1.2.2',
     'ip netns exec ffn-data python3 /usr/local/lib/ffn/ffn_session_feed.py']
-CP=['/usr/local/sbin/ffn-cp','python3 /usr/local/sbin/ffn_fe100_session_plan.py']
+CP=['/usr/local/sbin/ffn-cp',
+    'env LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 '
+    'LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps '
+    'python3 /usr/local/sbin/ffn_fe100_session_plan.py']
 
 
 def call(argv,payload):

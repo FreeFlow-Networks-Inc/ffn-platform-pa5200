@@ -50,5 +50,23 @@ class SessionPlanTests(unittest.TestCase):
         row=plan(self.request,{})['sessions'][0]
         self.assertNotIn('directions',row);self.assertIn('unsupported-protocol',row['blockers'])
 
+    def test_l3_observation_retained_but_never_authorizes_hardware(self):
+        row=self.request['observation']['sessions'][0]
+        bindings=self.request['observation']['policy']['bindings']
+        directions=[]
+        for name,dst in [('ethernet1/2','198.51.100.2'),('ae2.80','192.0.2.2')]:
+            directions.append(dict(bindings[name],interface=name,destination=dst,next_hop=dst,
+                mtu=1500,vlan=80 if name=='ae2.80' else None,decrement_ttl=True,
+                source_mac='02:00:00:00:00:01',destination_mac='02:00:00:00:00:02',
+                exceptions=['ttl-expired','mtu-exceeded','ipv4-fragments']))
+        row['l3']=dict(available=True,hardware_admission=False,blockers=[],directions=directions,snapshot_digest='d'*64)
+        result=plan(self.request,{'initialized':True})['sessions'][0]
+        self.assertTrue(result['l3']['available']);self.assertFalse(result['hardware_eligible'])
+        for field,value in [('index',999),('destination','192.0.2.99'),('destination_mac','ff:ff:ff:ff:ff:ff'),
+                            ('decrement_ttl',False),('vlan',True),('mtu',1)]:
+            request=copy.deepcopy(self.request)
+            request['observation']['sessions'][0]['l3']['directions'][0][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):plan(request,{})
+
 
 if __name__=='__main__':unittest.main()

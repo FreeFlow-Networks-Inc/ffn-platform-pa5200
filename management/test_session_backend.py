@@ -15,6 +15,8 @@ class SessionBackendTests(unittest.TestCase):
         self.assertFalse(result['hardware_admission']);self.assertEqual(call.call_count,2)
         self.assertEqual(call.call_args_list[0].args[0],backend.DP)
         self.assertEqual(call.call_args_list[1].args[0],backend.CP)
+        self.assertIn('LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps',backend.CP[1])
+        self.assertIn('LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0',backend.CP[1])
         for action,payload in [('apply',{}),('status',{'nonce':'user'}),('status',[]),('delete',{})]:
             with patch.object(backend,'call') as call,self.assertRaises(ValueError):backend.execute(action,payload)
             call.assert_not_called()
