@@ -13,6 +13,40 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_new_committed_aggregate_starts_through_controller(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_bytes(b'<config/>')
+            digest=hashlib.sha256(path.read_bytes()).hexdigest()
+            initial=dict(revision=7,running_revision=digest,activation=dict(activation_supported=True,groups={}))
+            ready=dict(initial,aggregates=[dict(ae_name='ae1',applied=True,committed=True)])
+            groups=[dict(ae_name='ae1',enabled=True,errors=[])]
+            with patch('configd_applier.rpc',side_effect=[{'accepted':True},ready]) as rpc:
+                observed,errors=configd_applier.converge_aggregates(groups,path,initial,timeout=0)
+            self.assertFalse(errors);self.assertEqual(observed,ready)
+            self.assertEqual(rpc.call_args_list[0].args,('aggregates','apply',dict(
+                group='ae1',operation='activate',running_revision=digest,revision=7)))
+
+    def test_existing_owner_is_never_restarted_for_config_reconciliation(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_bytes(b'<config/>')
+            for owner in ({'fresh':True},{'fresh':False,'state':'unavailable'}):
+                observed=dict(revision=7,running_revision=hashlib.sha256(path.read_bytes()).hexdigest(),
+                    activation=dict(activation_supported=True,groups={'ae1':owner}))
+                with patch('configd_applier.rpc') as rpc:
+                    configd_applier.converge_aggregates([dict(ae_name='ae1',enabled=True,errors=[])],path,observed,timeout=0)
+                rpc.assert_not_called()
+
+    def test_missing_service_and_changed_revision_do_not_activate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_bytes(b'<config/>')
+            for observed in ({'activation':{'activation_supported':False}},
+                             {'running_revision':'stale','activation':{'activation_supported':True,'groups':{}}}):
+                with patch('configd_applier.rpc') as rpc:
+                    _,errors=configd_applier.converge_aggregates([dict(ae_name='ae1',enabled=True,errors=[])],path,observed,timeout=0)
+                self.assertIn('ae1',errors);rpc.assert_not_called()
+
     def test_missing_address_object_fails_before_any_hardware_calls(self):
         xml='<config><devices><entry name="localhost.localdomain"><network><interface><ethernet><entry name="ethernet1/1"><layer3><ip><entry name="missing"/></ip></layer3></entry></ethernet></interface></network></entry></devices></config>'
         with tempfile.TemporaryDirectory() as temp:
