@@ -36,6 +36,19 @@ class FabricTests(unittest.TestCase):
         self.assertEqual(self.writes,[])
         self.assertNotIn('pending',json.loads(self.path.read_text()))
 
+    def test_empty_native_raw_trunk_can_be_initialized(self):
+        self.header=2
+        self.assertTrue(fabric.ensure([23,24],'epoch',self.read)['ready'])
+        self.assertEqual(self.writes,[(24,2),(24,1),(34,1),(35,1)])
+
+    def test_occupied_raw_or_unrecognized_trunk_is_preserved(self):
+        for header,queues in ((2,8),(3,0),(99,0)):
+            with self.subTest(header=header):
+                self.header=header;self.queues[35]=queues
+                with self.assertRaisesRegex(RuntimeError,'occupied'):
+                    fabric.ensure([23,24],'epoch',self.read)
+                self.assertEqual(self.writes,[])
+
     def test_unknown_partial_allocation_is_never_repeated(self):
         self.header=11;self.fail=True
         with self.assertRaisesRegex(RuntimeError,'lost SDK'):fabric.ensure([23,24],'epoch',self.read)

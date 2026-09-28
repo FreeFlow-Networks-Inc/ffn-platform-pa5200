@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/bin/python3 /usr/local/sbin/ffn_network_init.py
 ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_network.py apply
 ExecStop=/usr/bin/python3 /usr/local/sbin/ffn_network.py stop
 TimeoutStartSec=90

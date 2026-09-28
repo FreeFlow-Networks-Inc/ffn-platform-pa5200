@@ -237,6 +237,11 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
+        for role, units in [('cp', ['ffn-copper-link.timer']),
+                            ('dp', ['ffn-network.service', 'ffn-aggregate-dp-watchdog.timer'])]:
+            for unit in units:
+                (platform / unit).write_text('[Unit]\n')
+                overlay[role].append(['platform', unit, 'etc/systemd/system/' + unit])
         (platform / 'octeon/images/overlay.json').write_text(json.dumps(overlay))
         root = self.root / 'seed'
         debian_metadata(root)

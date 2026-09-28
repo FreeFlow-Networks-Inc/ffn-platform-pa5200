@@ -174,6 +174,32 @@ def safe_install(source, root, destination):
     target.chmod(0o755 if destination.endswith(('.py', '.sh')) else 0o644)
 
 
+def enable_runtime_units(root, role, owners):
+    # Only infrastructure starts automatically. Packet owners still require
+    # MP intent and current CP/DP qualification before attaching interfaces.
+    units = {'cp': [('timers.target', 'ffn-copper-link.timer')],
+             'dp': [('multi-user.target', 'ffn-network.service'),
+                    ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
+    for target, unit in units[role]:
+        directory = root / ('etc/systemd/system/' + target + '.wants')
+        for parent in [directory, *directory.parents]:
+            if parent == root:
+                break
+            if parent.is_symlink():
+                raise ValueError('Runtime unit directory crosses image symlink')
+        source = root / 'etc/systemd/system' / unit
+        if source.is_symlink() or not source.is_file():
+            raise ValueError('Missing runtime unit: ' + unit)
+        directory.mkdir(parents=True, exist_ok=True)
+        link = directory / unit
+        if link.is_symlink() or link.exists():
+            if not link.is_symlink() or os.readlink(link) != '../' + unit:
+                raise ValueError('Conflicting runtime unit: ' + unit)
+        else:
+            link.symlink_to('../' + unit)
+        owners.pop(link.relative_to(root).as_posix(), None)
+
+
 def archive_git(repo, dest, commit):
     run(['git', '-C', repo, 'archive', '--format=tar', '--output', dest, commit])
 
@@ -305,6 +331,7 @@ def build(config, platform, core, out):
                 base = {'core': core, 'platform': platform}[origin]
                 safe_install(base / source, root, destination)
                 owners.pop(destination, None)
+            enable_runtime_units(root, role, owners)
             marker = root / 'etc/ffn-image-role'
             if marker.parent.is_symlink() or marker.is_symlink():
                 raise ValueError('Role marker crosses an image symlink')

@@ -65,7 +65,7 @@ int ffn_fabric_inventory(int unit,int port,int numq,uint32 flags,int gport,void 
   if(rv==0)rv=bcm_cosq_gport_connection_set(0,&connection);
  }
  if(op==2 && rv==0 && header!=BCM_SWITCH_PORT_HEADER_TYPE_TM_SSP) {
-  if(q[37]!=0 || header!=BCM_SWITCH_PORT_HEADER_TYPE_ETH)rv=-8;
+  if(q[37]!=0 || (header!=BCM_SWITCH_PORT_HEADER_TYPE_ETH && header!=BCM_SWITCH_PORT_HEADER_TYPE_RAW))rv=-8;
   if(rv==0)rv=bcm_switch_control_port_set(0,24,bcmSwitchPortHeaderType,BCM_SWITCH_PORT_HEADER_TYPE_TM);
   if(rv==0)rv=bcm_switch_control_port_set(0,24,bcmSwitchPortHeaderType,BCM_SWITCH_PORT_HEADER_TYPE_TM_SSP);
  }
@@ -129,7 +129,9 @@ def _ensure(ports,expected_epoch,read):
     observed={p:read(p) for p in required}
     if any(row['queues'] not in (0,QUEUES) for row in observed.values()):raise RuntimeError('Conflicting packet fabric queue layout')
     if observed[TRUNK]['header']!=11:
-        if observed[TRUNK]['header']!=1 or observed[TRUNK]['bundles']!=0:raise RuntimeError('Cannot change an occupied packet trunk header')
+        # Native CP images may initialize the empty internal trunk as RAW (2)
+        # rather than ETH (1). Both require the same fenced TM -> TM_SSP setup.
+        if observed[TRUNK]['header'] not in (1,2) or observed[TRUNK]['bundles']!=0:raise RuntimeError('Cannot change an occupied packet trunk header')
         fence();saved['pending']={'operation':'header'};atomic(STATE,saved)
         after=read(TRUNK,2);fence()
         if after['header']!=11:raise RuntimeError('Packet trunk header not verified')
