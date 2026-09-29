@@ -163,7 +163,7 @@ jobs:
       - name: Physical interface attachment ownership
         run: cd management && python3 -m unittest test_physical_backend test_physical_forwarding test_configd_applier
       - name: CP and DP control telemetry
-        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent test_port_led_enable
       - name: live bring-up handshake and control handoff
         run: PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH" python3 -m unittest discover -s management -p test_bringup_handoff.py
       - name: FE100 NAT encoding, ownership and recovery (no hardware)

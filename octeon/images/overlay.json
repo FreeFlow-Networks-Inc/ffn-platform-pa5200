@@ -124,6 +124,11 @@
       "platform",
       "management/session_stream.py",
       "usr/local/lib/ffn/session_stream.py"
+    ],
+    [
+      "core",
+      "opt/ffn_vrrp.py",
+      "usr/local/lib/ffn/ffn_vrrp.py"
     ]
   ],
   "cp": [
@@ -651,6 +656,16 @@
       "platform",
       "fe100/ffn_fe100_session_stream.py",
       "usr/local/sbin/ffn_fe100_session_stream.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_port_led_enable.py",
+      "usr/local/sbin/ffn_port_led_enable.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-port-led-enable.service",
+      "etc/systemd/system/ffn-port-led-enable.service"
     ]
   ],
   "dp": [

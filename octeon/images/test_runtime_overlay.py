@@ -49,6 +49,16 @@ class RuntimeOverlayTests(unittest.TestCase):
         cp = {Path(dest).name for _, _, dest in manifest['cp']}
         self.assertTrue({'ffn_copper_link.py', 'ffn-copper-link.service', 'ffn-copper-link.timer'} <= cp)
         self.assertTrue({'ffn-aggregate-watchdog.service', 'ffn-aggregate-watchdog.timer'} <= cp)
+        self.assertTrue({'ffn_port_led_enable.py', 'ffn-port-led-enable.service'} <= cp)
+        self.assertIn('ffn_vrrp.py', files)
+
+    def test_cp_boot_enables_front_led_service(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); directory = root / 'etc/systemd/system'; directory.mkdir(parents=True)
+            for name in ('ffn-copper-link.timer', 'ffn-fe100-recovery.timer', 'ffn-aggregate-watchdog.timer', 'ffn-port-led-enable.service'):
+                (directory / name).write_text('[Unit]\n')
+            build_images.enable_runtime_units(root, 'cp', {})
+            self.assertTrue((directory / 'multi-user.target.wants/ffn-port-led-enable.service').is_file())
 
 
 if __name__ == '__main__':

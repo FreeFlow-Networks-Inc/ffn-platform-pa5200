@@ -259,7 +259,7 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
-        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer']),
+        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-port-led-enable.service']),
                             ('dp', ['ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')
