@@ -94,7 +94,6 @@ class PlatformApplier:
         device=root.find("./devices/entry[@name='localhost.localdomain']")
         if device is None: return
         if device.find('./deviceconfig/system/mp-interfaces/entry') is not None:
-            import hashlib
             observed=rpc('mp-interfaces')
             try:
                 result=rpc('mp-interfaces','apply',{'revision':observed['revision'],
@@ -105,6 +104,18 @@ class PlatformApplier:
                 status.fail('mp-interfaces','pa5200-mp',str(error))
         faceplate=rpc('faceplate')
         network=rpc('network')
+        configuration_revision=hashlib.sha256(Path(self.config).read_bytes()).hexdigest()
+        configured_physical={e.get('name'):e for e in device.findall('./network/interface/ethernet/entry')}
+        for port in network.get('backend',{}).get('ports',[]):
+            if port==1:continue
+            entry=configured_physical.get('ethernet1/'+str(port))
+            if entry is None or entry.find('layer3') is None or entry.find('aggregate-group') is not None:
+                try:
+                    owner=rpc('physical-ports','lookup',{'port':port})
+                    rpc('physical-ports','apply',dict(port=port,operation='detach',running_revision=configuration_revision,revision=owner['config']['revision']))
+                except (ValueError,RuntimeError) as error:
+                    status.fail('ethernet1/'+str(port)+'/attachment','pa5200',str(error))
+        if status.errors:return
         from aggregate_config import compile_device,readiness
         groups,orphans=compile_device(device)
         aggregate_errors={g['ae_name']:'; '.join(b['message'] for b in readiness(g,faceplate,network,{})['blockers']) for g in groups}
@@ -172,9 +183,8 @@ class PlatformApplier:
             if key not in network['config']['ports']:
                 if l3 is None:
                     status.ok(name+'/dataplane',None,{'mode':'disabled'},'pa5200','None: no dataplane attachment configured');continue
-                status.fail(name,'pa5200','No commissioned dataplane attachment for this port');continue
-            desired={'mode':'l3','addresses':[e.get('name') for e in l3.findall('./ip/entry')]} if enabled and l3 is not None else {'mode':'disabled'}
-            if enabled and l3 is not None:
+            desired={'mode':'l3','addresses':[e.get('name') for e in l3.findall('./ip/entry')]} if l3 is not None else {'mode':'disabled'}
+            if l3 is not None:
                 from ffn_interface_management import profile
                 try:
                     desired['management']=profile(device,l3.findtext('interface-management-profile',''))
@@ -206,9 +216,22 @@ class PlatformApplier:
                 status.fail('ethernet1/1/attachment','pa5200',str(error))
         unavailable={key for key,value in patches.items() if value['mode']!='disabled'
                      and int(key[1:]) not in network.get('backend',{}).get('ports',[])}
+        # A live DP process alone does not prove its CP redirect survived a
+        # switch restart. Reconcile both owners for every requested L3 port.
+        physical={key for key,value in patches.items() if key!='p1' and value['mode']!='disabled'}
+        for key in sorted(physical):
+            port=int(key[1:])
+            try:
+                if hashlib.sha256(Path(self.config).read_bytes()).hexdigest()!=configuration_revision:
+                    raise ValueError('Running configuration changed before physical attachment')
+                owner=rpc('physical-ports','lookup',{'port':port})
+                rpc('physical-ports','apply',dict(port=port,operation='attach',running_revision=configuration_revision,revision=owner['config']['revision']))
+                network=rpc('network')
+                if port in network.get('backend',{}).get('ports',[]):unavailable.discard(key)
+            except (ValueError,RuntimeError) as error:status.fail('ethernet1/'+str(port)+'/attachment','pa5200',str(error))
         for key in unavailable:
             status.fail('ethernet1/'+key[1:],'pa5200','Physical forwarding attachment is inactive; interface address and management profile were not applied')
-        changed={key:value for key,value in patches.items() if key not in unavailable and network['config']['ports'][key]!=value}
+        changed={key:value for key,value in patches.items() if key not in unavailable and network['config']['ports'].get(key)!=value}
         if changed:
             rpc('network','apply',{'revision':network['config']['revision'],'ports':changed})
             network=rpc('network')
@@ -255,9 +278,14 @@ def committed_routes(device,config,db='/var/lib/ffn-ngfw/config-v2.db'):
             for dst,via,dev,metric,vr in legacy:
                 if vr!='default':raise ValueError('Legacy non-default router requires an explicit DP VRF mapping')
                 if dst not in {r['dst'] for r in rows}:rows.append(dict(dst=dst,via=via,dev=dev,metric=metric))
-    result=[]
+    result=[];identities=set()
     for row in rows:
         row['dst']=str(ipaddress.ip_network(row['dst'],strict=True))
+        identity=(row['dst'],row['metric'])
+        if identity in identities:
+            raise ValueError('Multiple routes to '+row['dst']+' use metric '+str(row['metric'])+
+                             '; choose distinct primary/backup metrics or configure a supported ECMP route')
+        identities.add(identity)
         match=re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',row['dev'] or '')
         if match:row['dev']='p'+match[1]
         if not row['dev'] and row['via']:
@@ -267,6 +295,11 @@ def committed_routes(device,config,db='/var/lib/ffn-ngfw/config-v2.db'):
             if len(matches)!=1:raise ValueError('Static route gateway needs an unambiguous Layer 3 egress interface')
             row['dev']=matches[0]
         if row['dev'] not in config['ports']:raise ValueError('Static route egress is not mapped to a dataplane port')
+        if row['via']:
+            gateway=ipaddress.ip_address(row['via']);settings=config['ports'][row['dev']]
+            if not any(gateway in ipaddress.ip_interface(a).network for a in settings.get('addresses',[])):
+                raise ValueError('Gateway '+str(gateway)+' is outside the configured prefixes on '+row['dev']+
+                                 '; correct the interface prefix or next hop')
         if not row['via']:row.pop('via')
         result.append(row)
     return result

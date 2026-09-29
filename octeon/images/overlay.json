@@ -601,6 +601,11 @@
       "platform",
       "octeon/debian/ffn-copper-link.timer",
       "etc/systemd/system/ffn-copper-link.timer"
+    ],
+    [
+      "platform",
+      "management/ffn_physical_forwarding.py",
+      "usr/local/sbin/ffn_physical_forwarding.py"
     ]
   ],
   "dp": [
@@ -778,6 +783,16 @@
       "platform",
       "octeon/debian/policy-bindings.json",
       "etc/ffn/policy-bindings.json"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_physical_runtime.py",
+      "usr/local/sbin/ffn_physical_runtime.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-physical@.service",
+      "etc/systemd/system/ffn-physical@.service"
     ]
   ]
 }

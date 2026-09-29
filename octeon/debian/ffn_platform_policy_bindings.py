@@ -120,10 +120,34 @@ def wan_binding(links,run,proc,now,boot):
     except (OSError,ValueError,TypeError,KeyError,IndexError):return {}
 
 
+def physical_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
+    """Current physical TAP process evidence, independent of physical carrier."""
+    now=time.monotonic() if now is None else now
+    boot=(proc/'sys/kernel/random/boot_id').read_text().strip();result={}
+    for path in run.glob('ffn-physical-*-status.json'):
+        try:
+            if not trusted(path):continue
+            row=json.loads(path.read_text());ports=row['ports']
+            if not isinstance(ports,list) or len(ports)!=1 or type(ports[0]) is not int or not 2<=ports[0]<=24:continue
+            port=ports[0];name='p'+str(port)
+            if path.name!='ffn-physical-'+str(port)+'-status.json' or row['owner']!='physical-'+str(port):continue
+            if row['boot_id']!=boot or not 0<=now-row['updated_monotonic']<=5:continue
+            if type(row['pid']) is not int or row['pid']<=1:continue
+            process=(proc/str(row['pid'])/'stat').read_text().rsplit(') ',1)[1].split()
+            if process[0]=='Z' or process[19]!=str(row['process_start']):continue
+            link=links.get(name,{})
+            if (type(link.get('ifindex')) is not int or row.get('interfaces',{}).get(name)!=link['ifindex'] or link.get('master') or
+                link.get('linkinfo',{}).get('info_kind')!='tun' or link.get('linkinfo',{}).get('info_data',{}).get('type')!='tap'):continue
+            result['ethernet1/'+str(port)]=name
+        except (OSError,ValueError,TypeError,KeyError,IndexError):continue
+    return result
+
+
 def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
     now=time.monotonic() if now is None else now
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip()
     result=wan_binding(links,run,proc,now,boot)
+    result.update(physical_bindings(links,run,proc,now))
     for path in run.glob('ffn-aggregate-*-status.json'):
         try:
             if not trusted(path):continue

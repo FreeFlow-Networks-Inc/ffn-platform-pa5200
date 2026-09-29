@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN direct OCTEON physical port %i attachment
+Requires=ffn-network.service
+After=ffn-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_physical_runtime.py serve %i
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=2

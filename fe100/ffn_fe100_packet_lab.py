@@ -32,6 +32,7 @@ EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RE
 if os.environ.get('FFN_FE100_MAC_SINGLE')=='1':EGRESS=FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
 MAC_LOOPBACK=os.environ.get('FFN_FE100_MAC_LOOPBACK')=='1'
+SMAC_REWRITE=os.environ.get('FFN_FE100_SMAC_LAB')=='1'
 RETURN_PORT=EGRESS if MAC_LOOPBACK else FRONT_RETURN
 NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
 PROTOCOL={'udp':17,'tcp':6}[os.environ.get('FFN_FE100_LAB_PROTOCOL','udp')]
@@ -39,9 +40,10 @@ LAB_LIF=2 if FRONT_RETURN==5 else 1
 KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,PROTOCOL,4094) if FRONT_RETURN==5 else
        key4('198.18.0.1', '198.18.0.2', 49000, 49001, PROTOCOL, 4094))
 if NAT_MODE:
-    if not VLAN_RETURN or EGRESS==FRONT_RETURN:raise ValueError('NAT lab requires isolated cross-port VLAN return')
+    if not VLAN_RETURN or (EGRESS==FRONT_RETURN and not MAC_LOOPBACK):
+        raise ValueError('NAT lab requires isolated cross-port or internal MAC VLAN return')
     from ffn_fe100_nat_lab import tuples
-    ORIGINAL,TRANSLATED=tuples(NAT_MODE,FRONT_RETURN==5)
+    ORIGINAL,TRANSLATED=tuples(NAT_MODE,(FRONT_RETURN==5)!=(os.environ.get('FFN_FE100_NAT_REVERSE')=='1'))
     KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],PROTOCOL,4094)
 IDENTITY = entry4(KEY, 1001)
 FORWARD = (nat_entry4(KEY,1001,31,TRANSLATED) if NAT_MODE else
@@ -105,6 +107,7 @@ def worker(request, fd):
              'qm':(0x80000,84,'fetch_qm_entry','insert_qm_entry'),
              'spm':(0x70000,2,'fetch_spm_entry','set_spm_entry'),
              'lef':(0x58000,10,'fetch_lef_entry','insert_lef_entry'),
+             'smac':(0x50000,8,'fetch_smac_entry','insert_smac_entry'),
              'txport':(0x10000,3,'get_tx_portmap_entry','set_tx_portmap_entry'),
              'rxport':(0x10000,1,'get_rx_portmap_entry','set_rx_portmap_entry'),
              'nexthop':(0x50000,16,'fetch_nexthop_entry','insert_nexthop_entry')}
@@ -149,10 +152,10 @@ def worker(request, fd):
         fn.argtypes=[C.c_uint32,C.c_void_p]+([] if op=='delete' else [C.POINTER(C.c_int) if op=='fetch' else C.c_int])
         args=(0,key) if op=='delete' else (0,key,C.byref(result) if op=='fetch' else result.value)
     elif op == 'delete':
-        if kind not in ('acl','qm','nexthop','lef','txport','lif'): raise ValueError('delete not supported')
+        if kind not in ('acl','qm','nexthop','lef','txport','lif','smac'): raise ValueError('delete not supported')
         fn = getattr(lib,'pan_fe100_delete_'+('tx_portmap' if kind=='txport' else kind)+'_entry')
-        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind in ('lef','txport','lif') else 2)
-        args = (0,index) if kind in ('lef','txport','lif') else (0,1 if kind in ('acl','qm') else 0,index)
+        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind in ('lef','txport','lif','smac') else 2)
+        args = (0,index) if kind in ('lef','txport','lif','smac') else (0,1 if kind in ('acl','qm') else 0,index)
     else:
         if op not in ('fetch','insert'): raise ValueError('invalid table operation')
         fn = getattr(lib,'pan_fe100_'+(getname if op == 'fetch' else putname))
@@ -248,6 +251,7 @@ class Lab:
         for index in (30,31):
             if self.call('nexthop',index=index)['rc'] != 3: raise RuntimeError('lab next-hop occupied')
         if self.call('acl')['rc'] != 3: raise RuntimeError('lab ACL occupied')
+        if SMAC_REWRITE and self.call('smac')['rc']!=3:raise RuntimeError('lab source-MAC slot occupied')
         if VLAN_RETURN:
             if EGRESS==FRONT_RETURN and not MAC_LOOPBACK:raise RuntimeError('VLAN return requires distinct ports')
             if self.call('lif',index=31)['rc']!=3:raise RuntimeError('return LIF31 occupied')
@@ -293,7 +297,11 @@ class Lab:
             self.record['bcm_queue_ids']=queues;self.save()
             self.write('qm',31,front_qmap(FORWARD,FRONT_RETURN,queues[physical]))
             self.write('lef',31,struct.pack('>IIH',0x80000000|(EGRESS<<16),0,0))
-            wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None)
+            if SMAC_REWRITE:
+                from ffn_fe100_nexthop import encode_smac
+                self.write('smac',31,encode_smac('02:52:20:ab:cd:ef'))
+            wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None,
+                                smac_index=31 if SMAC_REWRITE else None)
         else:wanted=next_hop(destination=8,dmac='02:52:20:ab:cd:ee')
         self.write('nexthop',31,wanted)
         struct.pack_into('>II',expected,4,0x80040000,(4094<<16)|30)

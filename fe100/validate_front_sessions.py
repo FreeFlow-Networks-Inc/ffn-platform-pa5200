@@ -34,12 +34,12 @@ def aggregate_owners(root=Path('/var/lib/ffn-ngfw/aggregate-runtime'),now=None):
     return owners
 
 
-def directional_frames(token,count,front5=False,nat=None,protocol='udp'):
+def directional_frames(token,count,front5=False,nat=None,protocol='udp',reverse_nat=False):
     from ffn_fe100_nat_lab import probe_frames
     result=probe_frames(token,count,protocol)
     if nat:
         from ffn_fe100_nat_lab import tuples,rewrite
-        original,_=tuples(nat,front5)
+        original,_=tuples(nat,front5!=reverse_nat)
         return [rewrite(f,original) for f in result]
     if not front5:return result
     # Swapping source/destination words preserves IP and TCP/UDP one's-complement
@@ -70,17 +70,18 @@ def capture_drops(sock):
     return struct.unpack('=II',sock.getsockopt(263,6,8))[1]
 
 
-def expected_return(token,count,front5=False,nat=None,protocol='udp'):
-    packets=directional_frames(token,count,front5,nat,protocol)
+def expected_return(token,count,front5=False,nat=None,protocol='udp',source_mac=None,reverse_nat=False):
+    packets=directional_frames(token,count,front5,nat,protocol,reverse_nat)
     if nat:
         from ffn_fe100_nat_lab import tuples,rewrite
-        _,translated=tuples(nat,front5)
+        _,translated=tuples(nat,front5!=reverse_nat)
         packets=[rewrite(f,translated) for f in packets]
+    if source_mac is not None:packets=[f[:6]+bytes.fromhex(source_mac.replace(':',''))+f[12:] for f in packets]
     return [vlan_return_frame(f) for f in packets]
 
 
-def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp',mac_loopback=False,single_port=False):
-    expected=expected_return(token,count,front5,nat,protocol)
+def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp',mac_loopback=False,single_port=False,source_mac=None,reverse_nat=False):
+    expected=expected_return(token,count,front5,nat,protocol,source_mac,reverse_nat)
     while select.select([sock],[],[],0)[0]:sock.recv(65536)
     capture_drops(sock)
     process=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -112,11 +113,11 @@ def capture_return(sock,argv,token,count,front5,nat=None,protocol='udp',mac_loop
         if process.poll() is None:process.kill();process.communicate()
 
 
-def probe(token,count,baseline,front5=False,cross=False,nat=None,protocol='udp',mac_loopback=False):
+def probe(token,count,baseline,front5=False,cross=False,nat=None,protocol='udp',mac_loopback=False,reverse_nat=False):
     from ffn_dp_packet_transport import encode,decode_otmh_ssp,validate_trunk
     validate_trunk('ffnpkt0')
     status=lambda:json.loads(Path('/sys/kernel/debug/ffn_dp_packet_init/status').read_text())
-    before=status();expected=directional_frames(token,count,front5,nat,protocol);rewritten=[DMAC+f[6:] for f in expected]
+    before=status();expected=directional_frames(token,count,front5,nat,protocol,reverse_nat);rewritten=[DMAC+f[6:] for f in expected]
     inject=13 if front5 else 5;ingress=5 if front5 else 13
     if mac_loopback:inject=ingress
     found=[]
@@ -155,15 +156,19 @@ def main():
     p.add_argument('--cross',action='store_true',help='forward to the other front port; capture its DAC return')
     p.add_argument('--vlan-return',action='store_true',help='experimental tagged FE100 return to MP capture')
     p.add_argument('--nat',choices=('address','port'),help='isolated IPv4 NAT or port translation qualification')
+    p.add_argument('--reverse-nat',action='store_true',help='reverse the translated tuple without changing physical test ports')
     p.add_argument('--mac-loopback',action='store_true',help='supervised internal MAC loops on unused ports; no external wire qualification')
     p.add_argument('--single-port',action='store_true',help='use only the ingress MAC loop, with a tagged return to the same port')
+    p.add_argument('--rewrite-source-mac',action='store_true',help='qualify the reserved source-MAC table and next-hop rewrite')
     p.add_argument('--protocol',choices=('udp','tcp'),default='udp',help='isolated rewrite/checksum probe; no TCP state admission')
     p.add_argument('--count',type=int,choices=range(1,5),default=1);a=p.parse_args()
     if a.vlan_return and not a.cross:p.error('--vlan-return requires --cross')
     if a.mac_loopback and not a.probe and not (a.cross and a.vlan_return):p.error('--mac-loopback requires --cross --vlan-return')
-    if a.single_port and (not a.mac_loopback or a.nat):p.error('--single-port requires --mac-loopback and no NAT')
+    if a.single_port and not a.mac_loopback:p.error('--single-port requires --mac-loopback')
+    if a.rewrite_source_mac and not (a.mac_loopback and a.vlan_return):p.error('--rewrite-source-mac requires internal MAC VLAN return')
     if a.nat and not a.probe and not (a.cross and a.vlan_return):p.error('--nat requires --cross --vlan-return')
-    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat,a.protocol,a.mac_loopback)));return
+    if a.reverse_nat and not a.nat:p.error('--reverse-nat requires --nat')
+    if a.probe:print(json.dumps(probe(a.probe,a.count,a.baseline,a.front5,a.cross,a.nat,a.protocol,a.mac_loopback,a.reverse_nat)));return
     if subprocess.run(['systemctl','is-active','--quiet','ffn-fabric.service']).returncode==0:
         raise RuntimeError('software fabric must be stopped')
     report={'schema':1,'scope':'front5 FE100 egress -> DAC -> front13 DP capture' if a.front5 else 'front13 FE100 egress -> DAC -> front5 DP capture',
@@ -178,6 +183,8 @@ def main():
     if a.vlan_return:report['scope']=f'front{ingress} -> FE100 -> front{egress} VLAN4000 -> DAC -> front{ingress} -> FE100 -> MP capture'
     report['internal_mac_loopback']=a.mac_loopback
     report['single_port']=a.single_port
+    report['source_mac_rewrite']='02:52:20:ab:cd:ef' if a.rewrite_source_mac else None
+    report['nat_reverse']=a.reverse_nat
     report['external_wire_verified']=False
     if a.mac_loopback:report['scope']=f'internal MAC{ingress} -> FE100 -> MAC{egress} VLAN4000 -> internal loop -> FE100 -> MP capture'
     path=Path('/var/log')/('ffn-front-session-'+str(time.time_ns())+'.json')
@@ -222,7 +229,7 @@ def main():
         return r
     ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
     err=tempfile.TemporaryFile(mode='w+')
-    cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env '+('FFN_FE100_MAC_LOOPBACK=1 ' if a.mac_loopback else '')+('FFN_FE100_MAC_SINGLE=1 ' if a.single_port else '')+'LD_LIBRARY_PATH='+ld+
+    cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env '+('FFN_FE100_NAT_REVERSE=1 ' if a.reverse_nat else '')+('FFN_FE100_SMAC_LAB=1 ' if a.rewrite_source_mac else '')+('FFN_FE100_MAC_LOOPBACK=1 ' if a.mac_loopback else '')+('FFN_FE100_MAC_SINGLE=1 ' if a.single_port else '')+'LD_LIBRARY_PATH='+ld+
         ' LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)
     def response():
@@ -292,9 +299,10 @@ def main():
             if a.cross:argv+=['--cross']
             if a.mac_loopback:argv+=['--mac-loopback']
             if a.nat:argv+=['--nat',a.nat]
+            if a.reverse_nat:argv+=['--reverse-nat']
             argv+=['--protocol',a.protocol]
             if capture is not None and phase!='baseline':
-                result=capture_return(capture,argv,token,a.count,a.front5,a.nat,a.protocol,a.mac_loopback,a.single_port)
+                result=capture_return(capture,argv,token,a.count,a.front5,a.nat,a.protocol,a.mac_loopback,a.single_port,report['source_mac_rewrite'],a.reverse_nat)
             else:
                 r=subprocess.run(argv,capture_output=True,text=True,timeout=20)
                 if r.returncode:raise RuntimeError('DP probe failed: '+r.stderr[-2000:])

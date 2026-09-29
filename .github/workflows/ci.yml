@@ -160,6 +160,8 @@ jobs:
         run: |
           cd management && python3 -m unittest test_wan_forwarding test_wan_backend
           cd ../octeon/debian && python3 test_wan_probe.py
+      - name: Physical interface attachment ownership
+        run: cd management && python3 -m unittest test_physical_backend test_physical_forwarding test_configd_applier
       - name: CP and DP control telemetry
         run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
       - name: live bring-up handshake and control handoff

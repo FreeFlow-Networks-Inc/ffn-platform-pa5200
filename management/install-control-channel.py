@@ -51,6 +51,7 @@ def main():
     worker['commands']['wan-path']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'wan_backend.py'),a]
                                    for a in ('status','validate','apply')}
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
+    worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
     worker['commands']['plane-images']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_images.py'),a]
                                        for a in ('status','validate','apply')}
     worker['commands']['plane-lifecycle']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_lifecycle.py'),a]

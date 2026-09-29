@@ -50,6 +50,20 @@ class BindingTests(unittest.TestCase):
         live={'ethernet1/5':dict(device='p5',index=5,alias='old')}
         self.assertNotIn('ethernet1/5',binding.preview(self.candidate(),live,{})[0])
 
+    def test_physical_owner_without_carrier_and_stale_evidence(self):
+        row=dict(owner='physical-5',ports=[5],boot_id=self.token,pid=42,process_start='900',
+                 updated_monotonic=100,interfaces={'p5':15})
+        path=self.run/'ffn-physical-5-status.json'
+        links={'p5':dict(ifindex=15,flags=[],operstate='DOWN',linkinfo=dict(info_kind='tun',info_data={'type':'tap'}))}
+        with patch.object(binding,'trusted',return_value=True):
+            path.write_text(json.dumps(row))
+            self.assertEqual(binding.discover(links,self.run,self.proc,102),{'ethernet1/5':'p5'})
+            for key,value in [('boot_id','old'),('process_start','901'),('updated_monotonic',90),('owner','wan1')]:
+                path.write_text(json.dumps(dict(row,**{key:value})))
+                self.assertEqual(binding.discover(links,self.run,self.proc,102),{},key)
+            path.write_text(json.dumps(row));links['p5']['ifindex']=16
+            self.assertEqual(binding.discover(links,self.run,self.proc,102),{})
+
     def test_candidate_admin_down_aggregate_is_still_configurable(self):
         xml=self.candidate().replace('<entry name="ae1">','<entry name="ae1"><link-state>down</link-state>')
         self.assertIn('ae1',binding.preview(xml,{}, {})[0])

@@ -123,6 +123,20 @@ class ApplyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):configd_applier.rpc('network','apply',{'revision':9})
             direct.assert_not_called()
 
+    def test_route_conflicts_and_gateway_prefix_have_actionable_errors(self):
+        from xml.etree import ElementTree as ET
+        dev=ET.fromstring('''<entry><network><virtual-router><ffn-candidate-managed>yes</ffn-candidate-managed>
+        <entry name="default"><routing-table><ip><static-route><entry name="wan"><destination>0.0.0.0/0</destination>
+        <nexthop><ip-address>192.0.2.254</ip-address></nexthop><interface>ethernet1/1</interface><metric>100</metric>
+        </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
+        config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/32']}}}
+        with self.assertRaisesRegex(ValueError,'outside the configured prefixes'):configd_applier.committed_routes(dev,config)
+        config['ports']['p1']['addresses']=['192.0.2.1/24']
+        routes=dev.find('.//static-route');routes.append(copy.deepcopy(routes[0]))
+        with self.assertRaisesRegex(ValueError,'primary/backup metrics'):configd_applier.committed_routes(dev,config)
+        routes[1].find('metric').text='200'
+        self.assertEqual(len(configd_applier.committed_routes(dev,config)),2)
+
     def test_interface_config_reaches_mp_and_unsupported_is_error(self):
         xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>
         <entry name="ethernet1/1"><layer3/></entry>
