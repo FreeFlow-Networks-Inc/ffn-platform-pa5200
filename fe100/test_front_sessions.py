@@ -7,6 +7,51 @@ from validate_physical_sessions import checksum
 
 
 class FrontEncoding(unittest.TestCase):
+    def test_source_mac_rewrite_preserves_vlan_egress_and_checksums(self):
+        from ffn_fe100_nexthop import encode_smac
+        mac='02:52:20:ab:cd:ef'
+        raw=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000,smac_index=31)
+        self.assertEqual(raw[:8].hex(),'0085801f001f0fa0')
+        self.assertEqual(encode_smac(mac).hex(),'8000025220abcdef')
+        for bad in (True,-1,1024):
+            with self.assertRaises(ValueError):encode_front(31,smac_index=bad)
+        for bad in ('ff:ff:ff:ff:ff:ff','00:00:00:00:00:00','01:00:00:00:00:01'):
+            with self.assertRaises(ValueError):encode_smac(bad)
+        before=expected_return('12'*16,1,nat='port',protocol='tcp')[0]
+        after=expected_return('12'*16,1,nat='port',protocol='tcp',source_mac=mac)[0]
+        self.assertEqual(after[:6],before[:6]);self.assertEqual(after[12:],before[12:])
+        self.assertEqual(after[6:12],bytes.fromhex(mac.replace(':','')))
+
+    def test_nat_internal_loop_is_explicitly_scoped(self):
+        import os,subprocess,sys,json
+        from pathlib import Path
+        env=dict(os.environ,FFN_FE100_FRONT_RETURN='13',FFN_FE100_CROSS='1',
+                 FFN_FE100_VLAN_RETURN='1',FFN_FE100_MAC_LOOPBACK='1',FFN_FE100_MAC_SINGLE='1',FFN_FE100_NAT_LAB='port')
+        command=[sys.executable,'-c','import ffn_fe100_packet_lab as x,json;print(json.dumps([x.FRONT_RETURN,x.EGRESS,x.RETURN_PORT]))']
+        cwd=Path(__file__).resolve().parent
+        self.assertEqual(json.loads(subprocess.check_output(command,cwd=cwd,env=env,text=True)),[13,13,13])
+        env['FFN_FE100_MAC_LOOPBACK']='0'
+        self.assertNotEqual(subprocess.run(command,cwd=cwd,env=env,capture_output=True).returncode,0)
+
+    def test_reverse_nat_tuple_is_independent_of_physical_port(self):
+        for protocol in ('tcp','udp'):
+            self.assertEqual(directional_frames('12'*16,2,False,'port',protocol,True),
+                             directional_frames('12'*16,2,True,'port',protocol))
+            self.assertEqual(expected_return('12'*16,2,False,'port',protocol,reverse_nat=True),
+                             expected_return('12'*16,2,True,'port',protocol))
+
+    def test_internal_loop_uses_egress_port_for_tagged_return(self):
+        import os,subprocess,sys,json
+        from pathlib import Path
+        for ingress in ('5','13'):
+            env=dict(os.environ,FFN_FE100_FRONT_RETURN=ingress,FFN_FE100_CROSS='1',
+                     FFN_FE100_VLAN_RETURN='1',FFN_FE100_MAC_LOOPBACK='1')
+            output=subprocess.check_output([sys.executable,'-c',
+                'import ffn_fe100_packet_lab as x,json;print(json.dumps([x.FRONT_RETURN,x.EGRESS,x.RETURN_PORT]))'],
+                cwd=Path(__file__).resolve().parent,env=env,text=True)
+            a,b,c=json.loads(output)
+            self.assertNotEqual(a,b);self.assertEqual(b,c)
+
     def test_tcp_nat_probe_full_checksums_payload_sequence_and_ttl(self):
         for mode in ('address','port'):
             for reverse in (False,True):

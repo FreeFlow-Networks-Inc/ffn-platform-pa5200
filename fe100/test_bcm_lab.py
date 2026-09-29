@@ -71,6 +71,11 @@ class BcmLabTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):lab.baseline('baseline-end',self.call,'epoch')
         self.assertEqual(self.writes,[])
 
+    def test_single_port_baseline_does_not_redirect_other_port(self):
+        lab.baseline('baseline-begin',self.call,'epoch',ports=(7,))
+        lab.baseline('baseline-end',self.call,'epoch')
+        self.assertEqual(self.routes[16],(0,0));self.assertEqual(self.writes,[7,7])
+
     def test_no_broad_allocation_link_control_or_unknown_cleanup_ids(self):
         for mode in ('dp-queues-allocate','front-allocate','autoneg-enable','nif-enable'):
             with self.assertRaises(ValueError):lab.render(mode,{})

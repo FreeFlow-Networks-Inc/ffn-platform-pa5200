@@ -16,6 +16,17 @@ def install_guards(target):
     original_prepare, original_run = target.prepare, target.run
     original_interfaces = target.routing_interfaces
     original_attached = target.attached_interfaces
+    original_backend = target.backend
+
+    def backend():
+        result=dict(original_backend())
+        if target.exists():
+            from ffn_platform_policy_bindings import physical_bindings
+            links={p['ifname']:p for p in json.loads(target.ip('-d','-j','link'))}
+            physical=physical_bindings(links)
+            result['ports']=sorted(set(result.get('ports',[]))|{int(p[1:]) for p in physical.values()})
+            if physical:result.update(transport='direct OCTEON physical attachments',max_mtu=1500)
+        return result
 
     def vif_config():
         path = target.STATE.with_name('vifs.json')
@@ -73,6 +84,7 @@ def install_guards(target):
     target.prepare, target.run = prepare, run
     target.routing_interfaces = routing_interfaces
     target.attached_interfaces = attached_interfaces
+    target.backend = backend
     target._pa5200_assignment_guards = True
 
 

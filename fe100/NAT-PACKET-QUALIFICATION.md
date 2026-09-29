@@ -30,6 +30,35 @@ report hashes. Full packet reports and their combined audit remain on MP at
 not TCP connection or production NAT qualification. The focused MIPS64 Python
 suite passed 105 tests.
 
+## Internal MAC and routed source-MAC checks, 2026-09-28
+
+The commissioning harness also supports `--mac-loopback --single-port` on an
+unconfigured front port. This avoids needing a test cable or borrowing a
+configured WAN interface. It refuses configured candidate/running ports and
+restores the MAC, BCM and FE100 journals before reporting success.
+
+Three one-packet cases passed baseline, miss, hit, drop, removal and cleanup:
+UDP address/port translation; TCP address/port translation with source-MAC
+rewrite; and reverse TCP translation with source-MAC rewrite. The independent
+auditor recomputed the complete expected frames, including TTL, VLAN and both
+checksums. Reports remain on MP in
+`/var/log/ffn-fe100-nat-internal-qualification.json`.
+
+Source-MAC rewriting uses a separately journaled SMAC entry and the next-hop's
+source-MAC selector. The codec accepts the MAC and table index as arguments;
+the fixed MAC is confined to the lab fixture. Slot occupancy, write/readback,
+exact cleanup and the pinned native ABI are checked.
+
+```sh
+python3 /usr/local/sbin/validate_front_sessions.py \
+  --cross --vlan-return --mac-loopback --single-port \
+  --nat port --protocol tcp --rewrite-source-mac --reverse-nat --count 1
+python3 /usr/local/sbin/validate_nat_results.py --internal REPORT.json
+```
+
+These are sequential internal probes, not external wire, simultaneous TCP
+session or production offload qualification. Production admission stays disabled.
+
 ## Queue-map correction
 
 The original-address QMAP fixture produced four session hits, four egress

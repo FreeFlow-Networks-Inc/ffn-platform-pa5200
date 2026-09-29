@@ -15,6 +15,8 @@ def capabilities():
                 encoded_actions=['forward','drop','ttl-decrement','snat','dnat','snat-and-dnat','port-translation'],
                 native_nat_layout='ports-then-addresses', wire_nat_layout='addresses-then-ports',
                 session_planning='on-demand acknowledged DP observation via MP controld to CP',
+                paired_session_lifecycle=dict(implemented=True,production_connected=False,
+                    directional_zones=True,dependency_invalidation=True,producer_process_fencing=True),
                 nat_packet_qualification=False, production_admission=False,
                 translation_types={
                     'ipv4':dict(codec=True,production_admission=False),
@@ -27,6 +29,12 @@ def capabilities():
 
 
 def session_pair4(session_id, original, reply, zone, next_hops):
+    """Encode two directions, each in its ingress lookup zone.
+
+    A scalar zone retains the original same-zone API. A pair describes the
+    original and reply ingress zones; NAT does not rewrite the lookup zone.
+    The trusted path owner, never an unverified session producer, supplies it.
+    """
     fields={'source','destination','source_port','destination_port','protocol'}
     for row in (original,reply):
         if not isinstance(row,dict) or set(row)!=fields:
@@ -35,9 +43,13 @@ def session_pair4(session_id, original, reply, zone, next_hops):
         raise ValueError('conntrack directions have different protocols')
     if not isinstance(next_hops,(tuple,list)) or len(next_hops)!=2:
         raise ValueError('two verified directional next hops required')
+    zones=(zone,zone) if type(zone) is int else zone
+    if not isinstance(zones,(tuple,list)) or len(zones)!=2:
+        raise ValueError('two verified directional lookup zones required')
+    for value in zones:uint(value,16,'zone')
     sid=uint(session_id,31,'session ID');entries=[]
-    for i,(row,peer,hop) in enumerate(zip((original,reply),(reply,original),next_hops)):
-        key=key4(row['source'],row['destination'],row['source_port'],row['destination_port'],row['protocol'],zone)
+    for i,(row,peer,hop,lookup_zone) in enumerate(zip((original,reply),(reply,original),next_hops,zones)):
+        key=key4(row['source'],row['destination'],row['source_port'],row['destination_port'],row['protocol'],lookup_zone)
         translated=dict(source=peer['destination'],destination=peer['source'],
                         source_port=peer['destination_port'],destination_port=peer['source_port'])
         if translated=={k:v for k,v in row.items() if k!='protocol'}:

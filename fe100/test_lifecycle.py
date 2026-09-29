@@ -4,7 +4,8 @@ from ffn_fe100_policy import PolicyOwner, digest
 from ffn_fe100_sessions import SessionManager
 from test_sessions import Backend
 
-BOOT='11111111-1111-4111-8111-111111111111'
+BOOT=dict(boot_id='11111111-1111-4111-8111-111111111111',pid=123,process_start='456',
+          stream_id='22222222-2222-4222-8222-222222222222')
 
 
 class Lifecycle(unittest.TestCase):
@@ -68,3 +69,33 @@ class Lifecycle(unittest.TestCase):
         self.assertFalse(self.backend.rows)
         with self.assertRaises(ValueError):self.life.start(BOOT,0,'a'*64)
         self.assertFalse(self.owner.status()['admission_enabled'])
+
+    def test_pid_reuse_and_new_stream_on_same_boot_fence(self):
+        for changed in ({'pid':124},{'process_start':'457'},
+                        {'stream_id':'33333333-3333-4333-8333-333333333333'}):
+            self.setUp();self.open()
+            with self.assertRaises(RuntimeError):self.life.event(BOOT | changed,2,'heartbeat',{})
+            self.assertFalse(self.backend.rows);self.assertFalse(self.life.status()['synchronized'])
+
+    def test_malformed_identity_or_sequence_fences_existing_sessions(self):
+        for producer,sequence in ((BOOT,True),(BOOT,-1),(BOOT,2**64),({},2),
+                                  (BOOT | {'pid':True},2),(BOOT | {'process_start':'0'},2)):
+            self.setUp();self.open()
+            with self.assertRaises(ValueError):self.life.event(producer,sequence,'heartbeat',{})
+            self.assertFalse(self.backend.rows);self.assertFalse(self.life.status()['synchronized'])
+
+    def test_clock_fault_fences_even_before_heartbeat_expiry(self):
+        for invalid in (float('nan'),float('inf'),-1,True,.5):
+            self.setUp();self.now=1;self.open();self.now=invalid
+            with self.assertRaises(RuntimeError):self.life.tick()
+            self.assertFalse(self.backend.rows);self.assertFalse(self.life.status()['synchronized'])
+
+    def test_duplicate_open_cannot_extend_lease(self):
+        self.open()
+        with self.assertRaises(ValueError):self.life.event(BOOT,2,'open',self.request)
+        self.assertFalse(self.backend.rows)
+
+    def test_invalid_resynchronization_drains_first(self):
+        self.open()
+        with self.assertRaises(ValueError):self.life.start({},1,'a'*64)
+        self.assertFalse(self.backend.rows);self.assertFalse(self.life.status()['synchronized'])

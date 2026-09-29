@@ -11,22 +11,30 @@ from validate_front_sessions import expected_return,qualifies_front
 CASES=set(itertools.product(('udp','tcp'),('address','port'),(5,13)))
 
 
-def audit(report):
+def audit(report,internal=False):
     protocol=report.get('protocol','udp');mode=report['nat_mode'];ingress=report['ingress']
     case=(protocol,mode,ingress)
-    if case not in CASES or report['egress']!=18-ingress:raise ValueError('Unsupported isolated NAT case')
+    if case not in CASES or report['egress']!=(ingress if internal else 18-ingress):raise ValueError('Unsupported isolated NAT case')
+    if internal and (report.get('internal_mac_loopback') is not True or report.get('single_port') is not True or
+                     report.get('external_wire_verified') is not False or report.get('mac_cleanup',{}).get('restored') is not True):
+        raise ValueError('Internal MAC loop evidence and cleanup required')
+    if not internal and report.get('internal_mac_loopback'):raise ValueError('Internal loops cannot qualify external wire forwarding')
     if (report.get('error') or report.get('cleanup_errors') or report.get('nat_direction_verified') is not True or
         report.get('production_nat_qualified') is not False or report.get('session_offload_verified') is not True or
         report.get('cp_cleanup',{}).get('restored') is not True or report.get('baseline_cleanup',{}).get('restored') is not True):
         raise ValueError('Unverified NAT result or cleanup')
     phases=report['phases']
-    if set(phases)!={'baseline','miss','hit','drop','removed'} or any(p['count']!=4 for p in phases.values()) or not qualifies_front(phases):
+    count=phases.get('hit',{}).get('count') if internal else 4
+    if (type(count) is not int or not 1<=count<=4 or set(phases)!={'baseline','miss','hit','drop','removed'} or
+        any(p['count']!=count for p in phases.values()) or not qualifies_front(phases)):
         raise ValueError('Incomplete packet/counter qualification')
     for name,phase in phases.items():
         fields=('capture_drops',) if name=='baseline' else ('capture_drops','dp_capture_drops')
         if any(type(phase.get(key)) is not int or phase[key]!=0 for key in fields):
             raise ValueError('Missing or lossy packet capture evidence')
-    hit=phases['hit'];expected=expected_return(hit['token'],4,ingress==5,mode,protocol)
+    source_mac=report.get('source_mac_rewrite');reverse=report.get('nat_reverse',False)
+    if type(reverse) is not bool or source_mac not in (None,'02:52:20:ab:cd:ef'):raise ValueError('Unsupported NAT rewrite fixture')
+    hit=phases['hit'];expected=expected_return(hit['token'],count,ingress==5,mode,protocol,source_mac,reverse)
     actual=[]
     for packet in hit['packets']:
         raw=bytes.fromhex(packet['raw'])
@@ -40,7 +48,8 @@ def audit(report):
     epoch=report['baseline_cleanup']['baseline']['epoch']
     if hardware['owner_sha256']!=SHA or not epoch.startswith(hardware['cp_boot_id']+':'):
         raise ValueError('Hardware lifetime or owner ABI mismatch')
-    return dict(protocol=protocol,translation=mode,ingress=ingress,egress=18-ingress,packets=4,
+    return dict(protocol=protocol,translation=mode,ingress=ingress,egress=report['egress'],packets=count,
+                internal_mac_loopback=internal,source_mac_rewrite=source_mac is not None,nat_reverse=reverse,
                 cp_boot_id=hardware['cp_boot_id'],bcm_epoch=epoch,production_owners=report['production_owners'])
 
 
@@ -60,9 +69,13 @@ def summarize(reports):
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('reports',nargs='+',type=Path);args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('reports',nargs='+',type=Path)
+    parser.add_argument('--internal',action='store_true',help='audit internal MAC probes without external-wire qualification');args=parser.parse_args()
     raw=[p.read_bytes() for p in args.reports]
-    result=summarize([json.loads(data) for data in raw])
+    reports=[json.loads(data) for data in raw]
+    result=(dict(schema=1,scope='internal MAC NAT rewrite probes',cases=[audit(r,True) for r in reports],
+                 production_admission=False,external_wire_verified=False,tcp_state_tracking_verified=False)
+            if args.internal else summarize(reports))
     result['sources']=[dict(path=str(p),sha256=hashlib.sha256(data).hexdigest()) for p,data in zip(args.reports,raw)]
     print(json.dumps(result,indent=2))
 

@@ -47,6 +47,13 @@ journal is blocked and empty. It means known journal-owned sessions are
 absent; it does not certify the whole ASIC's tables or production forwarding.
 Consumers must also honor the enclosing agent's freshness.
 
+The CP image overlay includes both recovery units and the image builder enables
+`ffn-fe100-recovery.timer` under `timers.target`. A packaging omission found on
+2026-09-29 left the deployed timer absent even though its Python recovery code
+was present. The timer was restored and enabled; a live run acknowledged an
+empty drain at policy revision 24. Image tests check the shipped units and the
+timer symlink inside the generated CP archive so future images retain it.
+
 FFN-CLI `show platform fe100` includes driver, policy, and recovery observations
 through MP controld. No new direct WebUI or CLI hardware-control path is added.
 
