@@ -48,6 +48,7 @@ class RuntimeOverlayTests(unittest.TestCase):
                         self.assertIn(module + '.py', files, name + ' requires ' + module)
         cp = {Path(dest).name for _, _, dest in manifest['cp']}
         self.assertTrue({'ffn_copper_link.py', 'ffn-copper-link.service', 'ffn-copper-link.timer'} <= cp)
+        self.assertTrue({'ffn-aggregate-watchdog.service', 'ffn-aggregate-watchdog.timer'} <= cp)
 
 
 if __name__ == '__main__':

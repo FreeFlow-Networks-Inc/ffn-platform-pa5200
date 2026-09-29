@@ -26,6 +26,8 @@ FACEPLATE_LOCK=Path('/run/ffn-faceplate.lock')
 SCRIPT=Path('/usr/share/broadcom/ffn_bcm_forward_test.c')
 PORTS=dict(enumerate((16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35),5))
 LEASE=15
+AUTO_SETTLE=8
+AUTO_RETRY=60
 RECIPE=r'''
 int ffn_ae_q(int unit,int port,int numq,uint32 flags,int gport,void *data) {
  int rv; int *q=data;
@@ -50,6 +52,41 @@ int ffn_ae_q(int unit,int port,int numq,uint32 flags,int gport,void *data) {
 
 
 def load():return json.loads(STATE.read_text()) if STATE.exists() else {'groups':{}}
+
+
+def detect_speeds(state,physical,now):
+    """Autoneg first, then bounded SDK-supported rate trials for fixed peers.
+
+    Never touch a member with carrier or a manually selected speed. The XML
+    remains Auto; these are leased runtime observations, discarded at recovery.
+    Each call makes at most one rate change and never waits under the SDK lock.
+    """
+    for port in state['ports']:
+        row=state.get('auto_speed',{}).get(str(port))
+        if row is None:continue
+        live=physical.get(PORTS[port],{})
+        if live.get('enabled') is not True:continue
+        if live.get('link') is True:
+            row.update(state='linked',selected_speed=live.get('speed_mb'),next_at=now+AUTO_SETTLE)
+            continue
+        if now<row['next_at']:continue
+        if row['state'] in ('waiting','linked'):
+            speed='auto';row['remaining']=list(row['supported'])
+        elif row['remaining']:
+            speed=str(row['remaining'].pop(0))
+        else:speed='auto'
+        with FACEPLATE_LOCK.open('a') as guard:
+            acquire(guard)
+            # Recheck immediately before a mutation; carrier may have appeared
+            # since this heartbeat's first inventory.
+            latest={p['port']:p for p in call({'op':'port.list'})['ports']}
+            if latest.get(PORTS[port],{}).get('link') is True:continue
+            call({'op':'port.link.set','port':PORTS[port],'speed':speed})
+        waiting=speed=='auto' and not row['remaining']
+        row.update(state='waiting' if waiting else 'autoneg' if speed=='auto' else 'probing',
+                   attempted_speed=speed,selected_speed=None,next_at=now+(AUTO_RETRY if waiting else AUTO_SETTLE))
+        return port
+    return None
 
 
 class HardwareBusy(RuntimeError):
@@ -193,7 +230,15 @@ def execute(action,payload):
                 if offload:
                     from ffn_aggregate_bcm_lag import trunk
                     if trunk(int(name[2:]))['exists']:raise ValueError('BCM trunk already exists; refusing adoption')
-                state=dict(token=payload['token'],epoch=current,ports=ports,previous_speeds=old,phase='preparing',heartbeat=time.monotonic(),offload=offload,trunk_created=False)
+                auto_speed={}
+                for p in ports:
+                    if speeds[str(p)]=='auto':
+                        supported=call({'op':'port.link.status','port':PORTS[p]})['supported_speeds']
+                        supported=sorted(set(supported),reverse=True)
+                        auto_speed[str(p)]=dict(state='autoneg',supported=supported,remaining=list(supported),
+                            selected_speed=None,next_at=time.monotonic()+AUTO_SETTLE)
+                state=dict(token=payload['token'],epoch=current,ports=ports,previous_speeds=old,
+                    auto_speed=auto_speed,phase='preparing',heartbeat=time.monotonic(),offload=offload,trunk_created=False)
                 cfg['groups'][name]=state;atomic(STATE,cfg)
                 try:
                     if offload:
@@ -223,6 +268,11 @@ def execute(action,payload):
                 wire=hardware(p)
                 if wire['enabled']!=1 or wire['destination']!=24:raise RuntimeError('Aggregate ingress ownership lost')
             physical={p['port']:p for p in call({'op':'port.list'})['ports']}
+            if action=='heartbeat':
+                changed=detect_speeds(state,physical,time.monotonic())
+                if changed is not None:
+                    # Require the next fresh readback before giving DP carrier.
+                    physical[PORTS[changed]]=dict(physical.get(PORTS[changed],{}),link=False)
             for p in state['ports']:
                 live=physical.get(PORTS[p],{})
                 links.append(dict(port=p,up=live.get('enabled') is True and live.get('link') is True,speed_mbps=live.get('speed_mb',0)))
@@ -247,7 +297,8 @@ def execute(action,payload):
                 offload_status=dict(lag,verified=True)
             if epoch()!=current:raise RuntimeError('BCM owner changed during observation')
             state['heartbeat']=time.monotonic();atomic(STATE,cfg)
-        return dict(group=name,token=state['token'],epoch=current,phase=state['phase'],links=links,offload=offload_status)
+        return dict(group=name,token=state['token'],epoch=current,phase=state['phase'],links=links,
+                    auto_speed=state.get('auto_speed',{}),offload=offload_status)
 
 
 def heartbeat(payload,deadline=None):

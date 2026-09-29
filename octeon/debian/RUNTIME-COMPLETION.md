@@ -57,3 +57,17 @@ current-boot LACP/network evidence. A successful candidate check therefore does
 not mean the aggregate is active. Configd must still observe its commissioned
 attachment before activating the policy. Unsupported actions or inspection and
 logging requests continue to block validation.
+
+Aggregate activation from Commit
+-------------------------------
+The MP control-channel installer includes ffn-aggregate@.service. CP images
+include and enable the aggregate ownership watchdog. Configd starts new,
+committed aggregates through controld and waits for current acknowledgement;
+existing supervisors retain LACP while reconciling network-only changes.
+
+For members configured with Auto speed, the CP first allows autonegotiation,
+then tries only SDK-reported supported rates when carrier remains absent.
+Trials are spaced, make at most one change per heartbeat, and stop on carrier.
+A failed cycle returns to autonegotiation with a cooldown. Explicit speed
+settings and linked members are never probed. The saved configuration remains
+Auto; selected speed is runtime evidence, not a hardcoded deployment setting.

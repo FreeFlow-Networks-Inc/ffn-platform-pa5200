@@ -559,6 +559,16 @@
     ],
     [
       "platform",
+      "management/ffn-aggregate-watchdog.service",
+      "etc/systemd/system/ffn-aggregate-watchdog.service"
+    ],
+    [
+      "platform",
+      "management/ffn-aggregate-watchdog.timer",
+      "etc/systemd/system/ffn-aggregate-watchdog.timer"
+    ],
+    [
+      "platform",
       "management/ffn_copper_identify.py",
       "usr/local/sbin/ffn_copper_identify.py"
     ],

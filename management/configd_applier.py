@@ -5,6 +5,8 @@ import subprocess
 import uuid
 import ipaddress
 import sqlite3
+import hashlib
+import time
 import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -41,6 +43,43 @@ def validate_physical_options(entry):
         if value!='no':raise ValueError('LLDP enable must be yes or no')
 
 
+def converge_aggregates(groups, config, observed, timeout=60):
+    """Start new committed owners; existing supervisors retain their LACP lease."""
+    expected=hashlib.sha256(Path(config).read_bytes()).hexdigest()
+    errors={};started=False
+    if not observed.get('activation',{}).get('activation_supported'):
+        return observed,{g['ae_name']:'Aggregate supervisor service is missing; install the selected platform runtime' for g in groups}
+    for group in groups:
+        name=group['ae_name']
+        if group['errors'] or not group['enabled']:continue
+        if observed.get('running_revision')!=expected:
+            errors[name]='Running configuration changed during aggregate reconciliation';continue
+        runtime=observed.get('activation',{}).get('groups',{}).get(name)
+        if runtime is not None:
+            # A live owner reconciles address/profile edits itself. An existing
+            # failed owner needs its guarded recovery path, not a second owner.
+            continue
+        try:
+            if hashlib.sha256(Path(config).read_bytes()).hexdigest()!=expected:
+                raise ValueError('Running configuration changed during aggregate reconciliation')
+            rpc('aggregates','apply',dict(group=name,operation='activate',
+                running_revision=expected,revision=observed['revision']))
+            started=True
+            observed=rpc('aggregates')
+        except Exception as error:errors[name]=str(error)
+    deadline=time.monotonic()+timeout
+    wanted={g['ae_name'] for g in groups if not g['errors'] and g['enabled'] and g['ae_name'] not in errors}
+    while wanted and time.monotonic()<deadline:
+        ready={r['ae_name'] for r in observed.get('aggregates',[]) if r.get('applied') and r.get('committed')}
+        if wanted<=ready:break
+        owners=observed.get('activation',{}).get('groups',{})
+        if not started and not any(owners.get(n,{}).get('fresh') or owners.get(n,{}).get('recovery_stage') for n in wanted):break
+        if observed.get('running_revision')!=expected:break
+        time.sleep(2)
+        observed=rpc('aggregates')
+    return observed,errors
+
+
 class PlatformApplier:
     def __init__(self, config): self.config=config
 
@@ -72,12 +111,14 @@ class PlatformApplier:
         aggregate_applied={};aggregate_units={}
         if groups:
             observed_aggregates=rpc('aggregates')
+            observed_aggregates,start_errors=converge_aggregates(groups,self.config,observed_aggregates)
             for row in observed_aggregates.get('aggregates',[]):
                 aggregate_units.update({u['name']:u for u in row.get('subinterfaces',[])})
                 if row.get('applied') and row.get('committed'):
                     aggregate_applied[row['ae_name']]=row
                 else:
                     aggregate_errors[row['ae_name']]='; '.join(b['message'] for b in row.get('blockers',[])) or 'Activate the committed aggregate through the MP controller'
+            aggregate_errors.update(start_errors)
         patches={}
         requested=[]
         entries=device.findall('./network/interface/ethernet/entry')

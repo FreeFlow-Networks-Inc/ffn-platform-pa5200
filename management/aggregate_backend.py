@@ -56,6 +56,8 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             peers=[]
             for member in row['members']:
                 observed=dp.get('members',{}).get(str(member['port']),{})
+                member['attached']=bool(dp.get('attachment_ready') and dp.get('gates_verified') and
+                                        member['port'] in dp.get('ports',[]))
                 peer=observed.get('peer')
                 member['partner_observation']=dict(actor=peer) if peer else None
                 member['lacp_runtime']=observed
@@ -66,7 +68,8 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
             row['offload_scope']=dp.get('offload_scope')
             row['offload_tx']=dp.get('offload_tx',0)
             if runtime.get('control_only'):row['blockers'].append(dict(code='control-only',message='LACP qualification only; data collection, DHCP and routing are disabled'))
-            elif dp.get('network',{}).get('enabled',True) or dp.get('network',{}).get('units'):row['blockers'].append(dict(code='transit-policy',message='Aggregate and VLAN transit defaults to deny until a security-policy binding is implemented'))
+            elif dp.get('network',{}).get('enabled',True) or dp.get('network',{}).get('units'):
+                row['transit_requirement']='Transit requires separate Security/NAT dataplane acknowledgement; LACP alone does not authorize traffic'
             if dp.get('network_error'):row['blockers'].append(dict(code='network-apply',message=dp['network_error']))
             if runtime.get('configuration_error'):row['blockers'].append(dict(code='network-configuration',message=runtime['configuration_error']))
             elif dp.get('network_update_pending'):row['blockers'].append(dict(code='network-pending',message='Parent networking is updating; LACP is retained'))

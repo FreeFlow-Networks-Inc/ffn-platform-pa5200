@@ -64,6 +64,11 @@ def main():
             saved=backup/path.relative_to('/');saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,saved)
         temp=path.with_name(path.name+'.control-new');temp.write_text(data);temp.chmod(mode);temp.replace(path)
     write(config,json.dumps(worker,indent=2)+'\n',0o600)
+    # Runtime Python modules alone cannot activate an aggregate. Install its
+    # lifecycle unit with the selected MP channel; configd starts only committed
+    # definitions, so installing this template does not enable any front port.
+    write('/etc/systemd/system/ffn-aggregate@.service',
+          Path(__file__).with_name('ffn-aggregate@.service').read_text())
     write('/etc/ffn/controld.json',json.dumps(configuration(),indent=2)+'\n',0o600)
     # systemd exposes only this credential to the service. ProtectHome remains
     # enabled and private SSH keys never enter the source or telemetry stream.

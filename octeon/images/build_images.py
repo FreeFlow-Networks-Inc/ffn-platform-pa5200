@@ -177,7 +177,8 @@ def safe_install(source, root, destination):
 def enable_runtime_units(root, role, owners):
     # Only infrastructure starts automatically. Packet owners still require
     # MP intent and current CP/DP qualification before attaching interfaces.
-    units = {'cp': [('timers.target', 'ffn-copper-link.timer')],
+    units = {'cp': [('timers.target', 'ffn-copper-link.timer'),
+                    ('timers.target', 'ffn-aggregate-watchdog.timer')],
              'dp': [('multi-user.target', 'ffn-network.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
