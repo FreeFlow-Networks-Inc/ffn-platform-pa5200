@@ -131,7 +131,9 @@ jobs:
       - name: bcm agent -- dsc parsing
         run: cd octeon/bcmagent && python3 test_dscparse.py
       - name: bcm agent -- VLAN/STP/trunk ops
-        run: cd octeon/bcmagent && python3 test_l2_ops.py
+        run: cd octeon/bcmagent && python3 -m unittest test_l2_ops test_trunk_readback
+      - name: BCM SDK reference readback
+        run: cd management && python3 -m unittest test_bcm_reference
       - name: bcm agent -- ps parsing
         run: cd octeon/bcmagent && python3 test_psparse.py
       - name: bcm agent -- SOC property drift (declared vs the chip we ran)

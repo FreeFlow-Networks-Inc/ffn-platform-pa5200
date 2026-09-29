@@ -185,32 +185,29 @@ class StpSet(unittest.TestCase):
 
 class Trunk(unittest.TestCase):
     def test_builds_members_and_calls_set(self):
-        c = FakeChip("FFNTC 0\nFFNRV 0\n")
+        c = FakeChip("FFN_TRUNK_OP 0 0 1 0\nFFN_TRUNK 1 0 2 9\nFFN_TRUNK_MEMBER 0 8 0\nFFN_TRUNK_MEMBER 0 9 0\nFFN_TRUNK_DONE\n")
         r = bcmd.op_trunk_create(c, {"tid": 1, "ports": [8, 9]})
-        self.assertIn("bcm_trunk_member_t_init(&mem[0])", c.last)
-        self.assertIn("mem[1].gport = 9", c.last)
-        self.assertIn("bcm_trunk_create_id(0, 0, 1)", c.last)
-        self.assertIn("bcm_trunk_set(0, 1, &ti, 2, mem)", c.last)
+        self.assertIn("BCM_GPORT_SYSTEM_PORT_ID_SET", c.last)
+        self.assertIn("bcm_trunk_create(0,BCM_TRUNK_FLAG_WITH_ID,&tid)", c.last)
+        self.assertIn("bcm_trunk_get", c.last)
         self.assertEqual(r["members"], [8, 9])
 
     def test_member_count_bounds(self):
-        for ports in ([8], list(range(1, 10))):
+        for ports in ([8,8], [True], list(range(1, 10))):
             with self.assertRaises(ValueError):
                 bcmd.op_trunk_create(FakeChip(), {"tid": 1, "ports": ports})
 
     def test_set_failure_raises_and_reports_both_statuses(self):
-        c = FakeChip("FFNTC 0\nFFNRV -4\n")
+        c = FakeChip("FFN_TRUNK_OP -4 0 1 0\nFFN_TRUNK_DONE\n")
         with self.assertRaises(RuntimeError) as e:
             bcmd.op_trunk_create(c, {"tid": 1, "ports": [8, 9]})
-        self.assertIn("bcm_trunk_set", str(e.exception))
+        self.assertIn("rv=-4", str(e.exception))
 
-    def test_create_exists_is_tolerated_when_set_succeeds(self):
-        # Re-running an applier must converge: the trunk already existing is
-        # not a failure as long as the membership set takes.
-        c = FakeChip("FFNTC -8\nFFNRV 0\n")
+    def test_create_existing_identical_trunk_requires_readback(self):
+        c = FakeChip("FFN_TRUNK_OP 0 1 0 0\nFFN_TRUNK 1 0 2 9\nFFN_TRUNK_MEMBER 0 8 0\nFFN_TRUNK_MEMBER 0 9 0\nFFN_TRUNK_DONE\n")
         r = bcmd.op_trunk_create(c, {"tid": 1, "ports": [8, 9]})
-        self.assertEqual(r["create_rv"], -8)
-        self.assertEqual(r["set_rv"], 0)
+        self.assertTrue(r['existed']);self.assertFalse(r['created'])
+        self.assertTrue(r['verified'])
 
 
 class VlanList(unittest.TestCase):

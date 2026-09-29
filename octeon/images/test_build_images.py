@@ -91,6 +91,8 @@ class BuildInputTests(unittest.TestCase):
         overlay=json.loads(Path(__file__).with_name('overlay.json').read_text())
         paths={row[2] for row in overlay['cp']}
         for name in ('usr/local/ffn/ffn_bcm_link.py',
+                     'usr/local/ffn/ffn_bcm_trunk.py',
+                     'usr/local/sbin/ffn_bcm_reference.py',
                      'usr/local/sbin/ffn_packet_fabric.py',
                      'usr/local/share/ffn/bcm/ffn_bcm_front_init.c',
                      'etc/systemd/system/ffn-mdio.service',

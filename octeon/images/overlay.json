@@ -666,6 +666,16 @@
       "platform",
       "octeon/debian/ffn-port-led-enable.service",
       "etc/systemd/system/ffn-port-led-enable.service"
+    ],
+    [
+      "platform",
+      "management/ffn_bcm_reference.py",
+      "usr/local/sbin/ffn_bcm_reference.py"
+    ],
+    [
+      "platform",
+      "octeon/bcmagent/ffn_bcm_trunk.py",
+      "usr/local/ffn/ffn_bcm_trunk.py"
     ]
   ],
   "dp": [

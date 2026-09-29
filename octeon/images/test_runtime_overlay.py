@@ -50,6 +50,7 @@ class RuntimeOverlayTests(unittest.TestCase):
         self.assertTrue({'ffn_copper_link.py', 'ffn-copper-link.service', 'ffn-copper-link.timer'} <= cp)
         self.assertTrue({'ffn-aggregate-watchdog.service', 'ffn-aggregate-watchdog.timer'} <= cp)
         self.assertTrue({'ffn_port_led_enable.py', 'ffn-port-led-enable.service'} <= cp)
+        self.assertTrue({'ffn_bcm_reference.py', 'ffn_bcm_trunk.py'} <= cp)
         self.assertIn('ffn_vrrp.py', files)
 
     def test_cp_boot_enables_front_led_service(self):
