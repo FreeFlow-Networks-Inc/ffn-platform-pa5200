@@ -70,6 +70,13 @@ def main():
     # definitions, so installing this template does not enable any front port.
     write('/etc/systemd/system/ffn-aggregate@.service',
           Path(__file__).with_name('ffn-aggregate@.service').read_text())
+    write('/etc/systemd/system/ffn-fe100-session-feed.service',
+          Path(__file__).with_name('ffn-fe100-session-feed.service').read_text())
+    write('/etc/systemd/system/ffn-fe100-session-feed.service.d/30-control-channel.conf',
+          '[Service]\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
+    wants=Path('/etc/systemd/system/multi-user.target.wants/ffn-fe100-session-feed.service')
+    wants.parent.mkdir(parents=True,exist_ok=True)
+    if not wants.exists() and not wants.is_symlink():wants.symlink_to('../ffn-fe100-session-feed.service')
     write('/etc/ffn/controld.json',json.dumps(configuration(),indent=2)+'\n',0o600)
     # systemd exposes only this credential to the service. ProtectHome remains
     # enabled and private SSH keys never enter the source or telemetry stream.
@@ -78,7 +85,7 @@ def main():
     write('/etc/systemd/system/ffn-manager-v2.service.d/30-control-channel.conf',
           '[Service]\nEnvironment=FFN_CONTROL_GATEWAY=controld\nEnvironment=FFN_PLANE_SOCKET=/run/ffn-plane-mp/control.sock\n')
     print(json.dumps({'configured':True,'backup':str(backup),'restart_required':
-                      ['ffn-plane@mp','ffn-controld','ffn-manager-v2'],'reboot_required':False}))
+                      ['ffn-plane@mp','ffn-controld','ffn-manager-v2','ffn-fe100-session-feed'],'reboot_required':False}))
 
 
 if __name__=='__main__':main()

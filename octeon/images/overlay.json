@@ -119,6 +119,11 @@
       "core",
       "opt/ffn_controld_client.py",
       "usr/local/lib/ffn/ffn_controld_client.py"
+    ],
+    [
+      "platform",
+      "management/session_stream.py",
+      "usr/local/lib/ffn/session_stream.py"
     ]
   ],
   "cp": [
@@ -621,6 +626,11 @@
       "platform",
       "management/ffn_physical_forwarding.py",
       "usr/local/sbin/ffn_physical_forwarding.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_session_stream.py",
+      "usr/local/sbin/ffn_fe100_session_stream.py"
     ]
   ],
   "dp": [
@@ -808,6 +818,16 @@
       "platform",
       "octeon/debian/ffn-physical@.service",
       "etc/systemd/system/ffn-physical@.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_session_stream_dp.py",
+      "usr/local/sbin/ffn_session_stream_dp.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/validate_session_stream.py",
+      "usr/local/sbin/validate_session_stream.py"
     ]
   ]
 }

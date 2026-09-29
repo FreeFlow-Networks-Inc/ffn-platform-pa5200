@@ -236,6 +236,9 @@ class BuildInputTests(unittest.TestCase):
             destinations = [row[2] for row in entries]
             self.assertEqual(len(destinations), len(set(destinations)))
             self.assertIn('usr/local/sbin/ffn_'+role+'_agent.py', destinations)
+            self.assertIn('usr/local/lib/ffn/session_stream.py', destinations)
+            self.assertIn('usr/local/sbin/'+('ffn_fe100_session_stream.py' if role=='cp' else 'ffn_session_stream_dp.py'), destinations)
+            if role=='dp':self.assertIn('usr/local/sbin/validate_session_stream.py', destinations)
             for origin, source, dest in entries:
                 self.assertIn(origin, ('core', 'platform'))
                 self.assertFalse(Path(source).is_absolute())
