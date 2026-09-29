@@ -94,7 +94,11 @@ class BuildInputTests(unittest.TestCase):
                      'usr/local/sbin/ffn_packet_fabric.py',
                      'usr/local/share/ffn/bcm/ffn_bcm_front_init.c',
                      'etc/systemd/system/ffn-mdio.service',
-                     'usr/local/sbin/ffn_fe100_recovery.py',
+                       'usr/local/sbin/ffn_fe100_recovery.py',
+                       'usr/local/sbin/ffn_fe100_path_owner.py',
+                       'usr/local/sbin/ffn_fe100_path_sessions.py',
+                       'usr/local/sbin/ffn_fe100_resource_tables.py',
+                       'usr/local/sbin/validate_path_resources.py',
                      'etc/systemd/system/ffn-fe100-recovery.service',
                      'etc/systemd/system/ffn-fe100-recovery.timer',
                      'usr/local/sbin/ffn_hardware_verify.py'):

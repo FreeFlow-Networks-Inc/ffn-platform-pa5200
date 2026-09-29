@@ -434,6 +434,26 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_path_owner.py",
+      "usr/local/sbin/ffn_fe100_path_owner.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_path_sessions.py",
+      "usr/local/sbin/ffn_fe100_path_sessions.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_resource_tables.py",
+      "usr/local/sbin/ffn_fe100_resource_tables.py"
+    ],
+    [
+      "platform",
+      "fe100/validate_path_resources.py",
+      "usr/local/sbin/validate_path_resources.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy_control.py",
       "usr/local/sbin/ffn_fe100_policy_control.py"
     ],
