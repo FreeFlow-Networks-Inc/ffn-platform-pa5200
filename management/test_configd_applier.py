@@ -105,7 +105,7 @@ class ApplyTests(unittest.TestCase):
         </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
         config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/24']}}}
         self.assertEqual(configd_applier.committed_routes(dev,config),[
-            {'dst':'0.0.0.0/0','via':'192.0.2.254','dev':'p1','metric':100}])
+            {'dst':'0.0.0.0/0','via':'192.0.2.254','dev':'p1','metric':100,'track_link':True,'onlink':False,'monitor':{}}])
         dev.find('.//static-route').clear()
         with patch.object(configd_applier.sqlite3,'connect') as db:
             self.assertEqual(configd_applier.committed_routes(dev,config),[])
@@ -130,7 +130,7 @@ class ApplyTests(unittest.TestCase):
         <nexthop><ip-address>192.0.2.254</ip-address></nexthop><interface>ethernet1/1</interface><metric>100</metric>
         </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
         config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/32']}}}
-        with self.assertRaisesRegex(ValueError,'outside the configured prefixes'):configd_applier.committed_routes(dev,config)
+        self.assertTrue(configd_applier.committed_routes(dev,config)[0]['track_link'])  # Stored intent; runtime withholds an unreachable next hop.
         config['ports']['p1']['addresses']=['192.0.2.1/24']
         routes=dev.find('.//static-route');routes.append(copy.deepcopy(routes[0]))
         with self.assertRaisesRegex(ValueError,'primary/backup metrics'):configd_applier.committed_routes(dev,config)

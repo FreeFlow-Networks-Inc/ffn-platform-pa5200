@@ -269,7 +269,9 @@ def committed_routes(device,config,db='/var/lib/ffn-ngfw/config-v2.db'):
         if vr.get('name')!='default':raise ValueError('Only the default virtual router is commissioned by this platform config adapter')
         for route in vr.findall('./routing-table/ip/static-route/entry'):
             rows.append({'dst':route.findtext('destination',''),'via':route.findtext('nexthop/ip-address',''),
-                         'dev':route.findtext('interface',''),'metric':int(route.findtext('metric','10'))})
+                         'dev':route.findtext('interface',''),'metric':int(route.findtext('metric','10')),
+                         'track_link':True,'onlink':route.findtext('ffn-onlink','no')=='yes',
+                         'monitor':json.loads(route.findtext('ffn-path-monitor','{}'))})
     if parent.findtext('ffn-candidate-managed')!='yes':
         from pathlib import Path
         if Path(db).is_file():
@@ -297,7 +299,7 @@ def committed_routes(device,config,db='/var/lib/ffn-ngfw/config-v2.db'):
         if row['dev'] not in config['ports']:raise ValueError('Static route egress is not mapped to a dataplane port')
         if row['via']:
             gateway=ipaddress.ip_address(row['via']);settings=config['ports'][row['dev']]
-            if not any(gateway in ipaddress.ip_interface(a).network for a in settings.get('addresses',[])):
+            if not row.get('track_link') and not any(gateway in ipaddress.ip_interface(a).network for a in settings.get('addresses',[])):
                 raise ValueError('Gateway '+str(gateway)+' is outside the configured prefixes on '+row['dev']+
                                  '; correct the interface prefix or next hop')
         if not row['via']:row.pop('via')

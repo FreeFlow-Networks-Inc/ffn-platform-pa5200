@@ -6,6 +6,15 @@ from unittest.mock import Mock
 from cli_extension import handle, complete
 
 class CLITests(unittest.TestCase):
+    def test_interface_services_uses_control_daemon_network_status(self):
+        state=dict(fresh=True,channel_ready=True,services=[])
+        api=Mock(return_value={'interface_services':state})
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertTrue(handle('show platform interface-services',api,'ssh-session'))
+        self.assertEqual(json.loads(output.getvalue()),state)
+        api.assert_called_once_with('/api/system/runtime/network',token='ssh-session')
+        self.assertEqual(complete('show platform ','interface-'),['interface-services'])
+
     def test_independent_image_pull_uses_control_daemon(self):
         api = Mock(side_effect=[{'ok':True,'result':{'roles':{'dp':{'revision':7}}}},
                                {'ok':True,'result':{'status':'queued','role':'dp'}}])
