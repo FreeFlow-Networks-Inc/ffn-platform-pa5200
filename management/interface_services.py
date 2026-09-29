@@ -45,7 +45,7 @@ def main():
         while provider.poll() is None:
             try:
                 argv = transport()
-                subprocess.run(argv + ['install -d -m 0700 /run/ffn-interface-services'],
+                subprocess.run(argv + ['python3 /usr/local/lib/ffn/ffn_interface_services.py prepare-transport'],
                                check=True, timeout=20)
                 tunnel = subprocess.Popen(argv[:-1] + ['-N', '-T', '-o', 'ExitOnForwardFailure=yes',
                     '-o', 'StreamLocalBindUnlink=yes', '-R',

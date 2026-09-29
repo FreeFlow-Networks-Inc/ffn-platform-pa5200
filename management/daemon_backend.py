@@ -25,6 +25,12 @@ def require_front_mode(port,config=Path('/var/lib/ffn-ngfw/config/running-config
 
 async def execute(resource, action, payload, backend=None):
     backend=backend or Controller()
+    if resource=='route-links' and action=='refresh':
+        if payload: raise ValueError('Observation refresh takes no payload')
+        observed=await backend.run('network','status')
+        faceplate=await backend.run('faceplate','status')
+        links={'p'+str(p['port']):p.get('available') is True and p.get('enabled') is True and p.get('link') is True for p in faceplate['ports']}
+        return await backend.run('network','health',dict(revision=observed['config']['revision'],boot_id=observed['boot_id'],links=links))
     if resource=='network' and action in ('validate','apply') and payload.get('refresh_route_links') is True:
         if set(payload)!={'revision','refresh_route_links'}: raise ValueError('Invalid link refresh')
         observed=await backend.run('network','status')

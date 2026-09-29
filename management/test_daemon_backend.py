@@ -5,6 +5,18 @@ import tempfile
 from daemon_backend import execute,require_front_mode
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_observation_refresh_is_backend_owned_and_revision_fenced(self):
+        backend=AsyncMock()
+        backend.run.side_effect=[dict(config=dict(revision=9),boot_id='new-boot'),dict(ports=[
+            dict(port=1,available=True,enabled=True,link=True),dict(port=5,available=True,enabled=False,link=True)]),dict(acknowledged=True)]
+        self.assertTrue((await execute('route-links','refresh',{},backend))['acknowledged'])
+        self.assertEqual(backend.run.await_args_list[-1].args,('network','health',dict(revision=9,boot_id='new-boot',links=dict(p1=True,p5=False))))
+        backend.reset_mock()
+        with self.assertRaises(ValueError): await execute('route-links','refresh',{'links':{'p5':True}},backend)
+        backend.run.assert_not_awaited()
+        backend.run.side_effect=[dict(config=dict(revision=9),boot_id='old-boot'),dict(ports=[]),ValueError('revision changed')]
+        with self.assertRaisesRegex(ValueError,'revision changed'): await execute('route-links','refresh',{},backend)
+
     async def test_route_link_refresh_validates_without_changing_hardware(self):
         backend=AsyncMock();backend.run.return_value=dict(config=dict(revision=7),boot_id='boot')
         result=await execute('network','validate',dict(revision=7,refresh_route_links=True),backend)
