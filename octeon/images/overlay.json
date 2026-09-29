@@ -394,6 +394,11 @@
     ],
     [
       "platform",
+      "fe100/validate_nat_lifecycle.py",
+      "usr/local/sbin/validate_nat_lifecycle.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_nexthop.py",
       "usr/local/sbin/ffn_fe100_nexthop.py"
     ],
@@ -426,6 +431,16 @@
       "platform",
       "fe100/ffn_fe100_policy_control.py",
       "usr/local/sbin/ffn_fe100_policy_control.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-recovery.service",
+      "etc/systemd/system/ffn-fe100-recovery.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-recovery.timer",
+      "etc/systemd/system/ffn-fe100-recovery.timer"
     ],
     [
       "platform",

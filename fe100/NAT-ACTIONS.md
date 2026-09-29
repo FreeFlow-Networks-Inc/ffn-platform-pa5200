@@ -7,6 +7,8 @@ no addresses or ports and contains no appliance interface, gateway or customer
 configuration. Source NAT, destination NAT and combined translation use the
 same reversible pair construction. Plain untranslated pairs retain ordinary
 routed forwarding with TTL decrement.
+Each direction can carry its own ingress lookup zone for interzone sessions;
+the transactional manager requires explicit acknowledgement of that zone pair.
 
 The forward action emits the reverse of the kernel's reply tuple; the reverse
 action emits the reverse of its original tuple. SessionManager verifies both
@@ -63,3 +65,10 @@ The isolated physical rewrite milestone is documented in
 translated bytes, IPv4/TCP/UDP checksums, TTL and deletion checks. Paired-session
 lifetime, TCP state, aggregate/VLAN attachment, restart recovery and counter
 handoff remain prerequisites for production session admission.
+
+The paired policy/lifecycle owner now consumes those tuples and invalidates
+them on NAT, route, neighbor or attachment changes. Its MIPS64 native table
+validation passed paired install/readback/removal on 2026-09-29. See
+[the session lifecycle contract and evidence](SESSION-LIFECYCLE.md). The live
+session feed and resource-owner integration remain disconnected; this milestone
+does not enable production hardware NAT.

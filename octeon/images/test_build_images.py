@@ -94,6 +94,9 @@ class BuildInputTests(unittest.TestCase):
                      'usr/local/sbin/ffn_packet_fabric.py',
                      'usr/local/share/ffn/bcm/ffn_bcm_front_init.c',
                      'etc/systemd/system/ffn-mdio.service',
+                     'usr/local/sbin/ffn_fe100_recovery.py',
+                     'etc/systemd/system/ffn-fe100-recovery.service',
+                     'etc/systemd/system/ffn-fe100-recovery.timer',
                      'usr/local/sbin/ffn_hardware_verify.py'):
             self.assertIn(name,paths)
 
@@ -249,7 +252,7 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
-        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer']),
+        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer']),
                             ('dp', ['ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')
@@ -319,6 +322,10 @@ class BuildInputTests(unittest.TestCase):
                 self.assertIn('rootfs/lib/modules/6.18-test', names)
                 self.assertEqual(tar.getmember('rootfs/usr/bin/python3').uid, 1234)
                 self.assertEqual(tar.getmember('rootfs/usr/local/sbin/'+asset['role']+'.py').uid, 0)
+                if asset['role']=='cp':
+                    timer=tar.getmember('rootfs/etc/systemd/system/timers.target.wants/ffn-fe100-recovery.timer')
+                    self.assertTrue(timer.issym())
+                    self.assertEqual(timer.linkname,'../ffn-fe100-recovery.timer')
 
 
 if __name__ == '__main__':
