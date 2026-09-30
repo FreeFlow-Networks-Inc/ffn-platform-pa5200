@@ -14,6 +14,16 @@ Implemented here:
 * `ffn_native_packet.py` is a control ABI. Two pinned native workers process
   receive and transmit independently. Python sees settings and counters only,
   never forwarded packet buffers. CPU selection uses the process affinity mask.
+* `ffn_native_aggregate.py` uses the same workers for aggregate data frames.
+  Native C owns member/SPA admission, VLAN classification, local-address
+  inspection exceptions, per-unit counters and the existing CRC32 rendezvous
+  member selection. A separate native socket filter delivers only LACP frames
+  to the Python control loop. Python retains negotiation and configuration.
+* Aggregate gates expire in C at the earliest active member's carrier or LACP
+  deadline, even while Python is stalled. The conservative group withdrawal
+  also preserves minimum-link requirements. A leased BCM egress acknowledgement
+  may select the hardware trunk; expiry falls back to the eligible software
+  member set. This capability is not production L3/NAT offload qualification.
 * `libffn-hwio.so` owns bounded, atomic Linux I2C transactions and checks complete
   transfer results. Optics and fan-control Python modules invoke that ABI.
 * The image builder compiles these libraries and the existing native inline
@@ -30,6 +40,9 @@ flow queues; no multi-flow scaling or hardware acceleration is implied. Ownershi
 boot identities, stateful policies and interface management permissions remain
 mandatory. Unsupported/malformed inspection verdicts retain the existing engine
 semantics and separate counters; this is not a claim of full IPS coverage.
+Native event descriptors wake paused workers immediately instead of waiting
+for the packet poll timeout. Aggregate configuration transactions withdraw data
+delivery while the network worker applies changes; LACP control continues.
 
 ## Validation
 
@@ -38,18 +51,20 @@ make all test
 sudo python3 test_kernel_packet.py
 ```
 
-Thirteen packet tests, a C hardware-transaction test, and private network/mount
+Thirteen physical packet tests, ten aggregate tests, a C hardware-transaction
+test, and private network/mount
 namespace integration cover native framing, source admission, bounded lengths,
 inspection blocking, configuration replacement, IPv4/IPv6 local services,
 padding, worker order, configuration barriers, lease expiry, actual CPU affinity
 and TAP ioctls. Packet tests and kernel integration passed on
 x86-64 and the MIPS64 Debian DP. The test scanner is never installed in images.
+The aggregate tests cover VLAN-only parents, stable member selection against the
+previous implementation, acknowledgement expiry, network transitions and
+control-wrapper updates without replacing the TAP or worker threads. Real
+AF_PACKET integration verifies separation of data and LACP receive queues.
 
 ## Migration still required
 
-* Aggregate forwarding in `ffn_aggregate_runtime.py`, including per-unit counters,
-  VLAN classification and native enforcement of LACP gate/lease withdrawal.
-  Python may retain the LACP control state machine; data frames must move to C.
 * Legacy commissioning forwarding paths in `ffn_fabric.py`,
   `ffn_dp_packet_transport.py` and other lab/relay tools. The physical production
   owner no longer calls their packet loops.
@@ -59,7 +74,8 @@ x86-64 and the MIPS64 Debian DP. The test scanner is never installed in images.
 * Remaining direct ioctl users, including discovery/diagnostic tools. Convert
   behind bounded native operations with the current ownership and readback checks.
 
-This is the first migration, not completion of the repository-wide conversion.
+Physical and aggregate production owners now use native forwarding. The
+repository-wide conversion and parallel receive-queue work remain incomplete.
 
 ## Throughput target and qualification
 

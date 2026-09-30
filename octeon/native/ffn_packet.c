@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -27,7 +28,8 @@ enum { RX, TX, ENVELOPE_DROP, LENGTH_DROP, PRESSURE_DROP, ADMIN_DROP,
        LOCAL_INPUT, INSPECTION_DROP, BYPASSED, UNSUPPORTED, MALFORMED,
        NO_MATCH, ALERT, BLOCK, OUTGOING, BAD_VERDICT };
 struct ffn_packet {
-    int rx, tx, tap;
+    int rx, tx, tap, wake[2];
+    struct ffn_aggregate *aggregate;
     unsigned source, n4, n6;
     uint8_t local4[FFN_PACKET_LOCAL_MAX][4], local6[FFN_PACKET_LOCAL_MAX][16];
     void *inspection;
@@ -60,6 +62,8 @@ void ffn_packet_close(struct ffn_packet *p)
     if (p->rx >= 0) close(p->rx);
     if (p->tx >= 0) close(p->tx);
     if (p->tap >= 0) close(p->tap);
+    for (unsigned i = 0; i < 2; i++) if (p->wake[i] >= 0) close(p->wake[i]);
+    free(p->aggregate);
     pthread_cond_destroy(&p->changed); pthread_mutex_destroy(&p->control); free(p);
 }
 static struct ffn_packet *allocate(unsigned source)
@@ -69,7 +73,7 @@ static struct ffn_packet *allocate(unsigned source)
     p = calloc(1, sizeof(*p));
     if (p) {
         int rc;
-        p->rx = p->tx = p->tap = -1; p->source = source;
+        p->rx = p->tx = p->tap = p->wake[0] = p->wake[1] = -1; p->source = source;
         rc = pthread_mutex_init(&p->control, NULL);
         if (rc) { free(p); errno = rc; return NULL; }
         rc = pthread_cond_init(&p->changed, NULL);
@@ -102,30 +106,53 @@ static int valid_name(const char *s)
     return strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n
            && strcmp(s, ".") && strcmp(s, "..");
 }
-static int packet_socket(const char *name, unsigned source, int receive)
+static int packet_socket_many(const char *name, const uint32_t *sources, unsigned count, int mode)
 {
     unsigned index = if_nametoindex(name);
     struct sockaddr_ll addr = { .sll_family = AF_PACKET, .sll_ifindex = (int)index };
     int fd, yes = 1, buffer = 4 * 1024 * 1024, error;
-    struct sock_filter instructions[] = {
-        BPF_STMT(BPF_LD | BPF_H | BPF_ABS, 0),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 24, 0, 3),
-        BPF_STMT(BPF_LD | BPF_H | BPF_ABS, 2),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, source, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, 65535),
-        BPF_STMT(BPF_RET | BPF_K, 0)
-    };
-    struct sock_fprog program = { .len = 6, .filter = instructions };
+    struct sock_filter instructions[32];
+    struct sock_fprog program = { .filter = instructions };
+    unsigned used = 0, drop;
+    if (count > 16 || (mode && (!sources || !count))) { errno = EINVAL; return -1; }
+#define INS(code, jt, jf, k) instructions[used++] = (struct sock_filter){code, jt, jf, k}
+    INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 0);
+    INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 24);
+    INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 2);
+    for (unsigned i = 0; i < count; i++) {
+        if (sources[i] > 65535) { errno = EINVAL; return -1; }
+        INS(BPF_JMP | BPF_JEQ | BPF_K, count - i, 0, sources[i]);
+    }
+    drop = used; INS(BPF_RET | BPF_K, 0, 0, 0);
+    instructions[1].jf = (uint8_t)(drop - 2);
+    if (mode == 2) { /* Slow protocol control frames only. */
+        INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 16);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 0x8809);
+        INS(BPF_RET | BPF_K, 0, 0, 0);
+    } else if (mode == 3) { /* No LACP/LLDP copies in the data queue. */
+        INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 16);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 0x8809);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0x88cc);
+        INS(BPF_RET | BPF_K, 0, 0, 0);
+    }
+    INS(BPF_RET | BPF_K, 0, 0, 65535);
+    program.len = (unsigned short)used;
+#undef INS
     if (!index) { errno = ENODEV; return -1; }
-    fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, receive ? htons(3) : 0);
+    fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, mode ? htons(3) : 0);
     if (fd < 0) return -1;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr))) goto fail;
-    if (receive && (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) ||
+    if (mode && (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) ||
         setsockopt(fd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &yes, sizeof(yes)) ||
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof(buffer)))) goto fail;
     return fd;
 fail:
     error = errno; close(fd); errno = error; return -1;
+}
+static int packet_socket(const char *name, unsigned source, int receive)
+{
+    uint32_t sources[] = {source};
+    return packet_socket_many(name, sources, 1, receive);
 }
 struct ffn_packet *ffn_packet_open(const char *wire, const char *namespace,
                                     const char *tap, unsigned source)
@@ -206,6 +233,7 @@ static int io_error(struct ffn_packet *p)
     if (errno == EIO || errno == ENETDOWN) { atomic_fetch_add_explicit(&p->counters[ADMIN_DROP], 1, memory_order_relaxed); return 0; }
     return -1;
 }
+#include "ffn_aggregate_packet.inc"
 static int receive_burst(struct ffn_packet *p)
 {
     uint8_t packet[MAX_FRAME + 5]; unsigned i;
@@ -216,6 +244,10 @@ static int receive_burst(struct ffn_packet *p)
         if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
         if (addr.sll_family == AF_PACKET && addr.sll_pkttype == PACKET_OUTGOING) {
             atomic_fetch_add_explicit(&p->counters[OUTGOING], 1, memory_order_relaxed); continue;
+        }
+        if (p->aggregate) {
+            if (aggregate_receive(p, packet, n)) return -1;
+            continue;
         }
         if (n < 18 || n > MAX_FRAME + 4 || be16(packet) != 24 || be16(packet + 2) != p->source) {
             atomic_fetch_add_explicit(&p->counters[ENVELOPE_DROP], 1, memory_order_relaxed); continue;
@@ -238,6 +270,10 @@ static int transmit_burst(struct ffn_packet *p)
         ssize_t n = read(p->tap, frame, sizeof(frame));
         if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
         if (!n) { errno = EPIPE; return -1; }
+        if (p->aggregate) {
+            if (aggregate_transmit(p, frame, n)) return -1;
+            continue;
+        }
         if (n < 14 || n > MAX_FRAME) { atomic_fetch_add_explicit(&p->counters[LENGTH_DROP], 1, memory_order_relaxed); continue; }
         if (n < 60) { memset(frame + n, 0, (size_t)(60 - n)); n = 60; }
         packet[0] = 1; packet[1] = (uint8_t)(p->source >> 8); packet[2] = (uint8_t)p->source; packet[3] = 0;
@@ -315,8 +351,18 @@ static void *packet_worker(void *argument)
         int stop = p->stopped;
         pthread_mutex_unlock(&p->control);
         if (stop) break;
-        struct pollfd fd = { direction ? p->tap : p->rx, POLLIN, 0 };
-        int result = poll(&fd, 1, 20), failure = 0;
+        struct pollfd fds[2] = {{ direction ? p->tap : p->rx, POLLIN, 0 }, {p->wake[direction], POLLIN, 0}};
+        int result = poll(fds, 2, 20), failure = 0;
+        struct pollfd fd = fds[0];
+        if (fds[1].revents & POLLIN) {
+            uint64_t value; ssize_t got;
+            do { got = read(p->wake[direction], &value, sizeof(value)); } while (got < 0 && errno == EINTR);
+            if (got != sizeof(value) && !(got < 0 && errno == EAGAIN)) {
+                pthread_mutex_lock(&p->control); p->fault = EIO; p->stopped = 1;
+                pthread_cond_broadcast(&p->changed); pthread_mutex_unlock(&p->control);
+            }
+            continue;
+        }
         if (result < 0 && errno != EINTR) failure = errno;
         else if (fd.revents & (POLLHUP | POLLNVAL)) failure = EPIPE;
         else if ((fd.revents & POLLERR) && !direction) failure = EIO;
@@ -341,6 +387,13 @@ int ffn_packet_pause(struct ffn_packet *p)
     if (!p) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&p->control);
     p->pause_requested = 1;
+    for (unsigned i = 0; i < p->started; i++) {
+        uint64_t value = 1; ssize_t sent;
+        do { sent = write(p->wake[i], &value, sizeof(value)); } while (sent < 0 && errno == EINTR);
+        if (sent != sizeof(value) && !(sent < 0 && errno == EAGAIN)) {
+            p->fault = EIO; p->stopped = 1; pthread_cond_broadcast(&p->changed);
+        }
+    }
     while (p->started == 2 && (!p->paused[0] || !p->paused[1]) && !p->stopped)
         pthread_cond_wait(&p->changed, &p->control);
     fault = p->fault;
@@ -372,6 +425,8 @@ int ffn_packet_start(struct ffn_packet *p, int rx_cpu, int tx_cpu)
     if (!CPU_ISSET(rx_cpu, &allowed) || !CPU_ISSET(tx_cpu, &allowed)) { errno = EPERM; return -1; }
     p->pause_requested = 1;
     for (unsigned i = 0; i < 2; i++) {
+        p->wake[i] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (p->wake[i] < 0) { rc = errno; goto fail; }
         rc = pthread_attr_init(&attr); if (rc) goto fail;
         CPU_ZERO(&affinity); CPU_SET(cpus[i], &affinity);
         rc = pthread_attr_setaffinity_np(&attr, sizeof(affinity), &affinity);

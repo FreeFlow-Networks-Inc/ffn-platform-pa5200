@@ -796,6 +796,11 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn_native_aggregate.py",
+      "usr/local/sbin/ffn_native_aggregate.py"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_fabric.py",
       "usr/local/sbin/ffn_fabric.py"
     ],

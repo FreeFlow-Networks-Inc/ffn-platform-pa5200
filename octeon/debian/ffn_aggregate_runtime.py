@@ -9,7 +9,6 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import select
 import signal
@@ -23,8 +22,8 @@ from ffn_aggregate_datapath import Gates
 from ffn_lacp_engine import Engine
 from ffn_lacp_trunk import TrunkLACP
 import ffn_aggregate_vlan as vlan
-from ffn_dp_packet_transport import FRONT,validate_trunk,OTMHDecoder,encode
-from ffn_packet_socket import configure_rx
+from ffn_dp_packet_transport import FRONT,validate_trunk,encode
+from ffn_native_aggregate import AggregateOwner,control_socket
 
 NS='ffn-data'
 
@@ -137,19 +136,6 @@ def validate(intent):
     return intent
 
 
-def tap(name):
-    original=os.open('/proc/self/ns/net',os.O_RDONLY);target=os.open('/run/netns/'+NS,os.O_RDONLY);fd=None
-    try:
-        os.setns(target,0);fd=os.open('/dev/net/tun',os.O_RDWR|os.O_NONBLOCK)
-        request=0x800454ca if platform.machine().startswith('mips') else 0x400454ca
-        fcntl.ioctl(fd,request,struct.pack('16sH',name.encode(),0x1002))
-        return fd
-    except BaseException:
-        if fd is not None:os.close(fd)
-        raise
-    finally:os.setns(original,0);os.close(original);os.close(target)
-
-
 def network_revision(intent):
     return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
 
@@ -202,8 +188,6 @@ def lldp(system,group,port):
 
 def serve(intent):
     intent=validate(intent);name=intent['group'];members=intent['members'];network=intent['network']
-    classifier=vlan.Classifier(name,network)
-    decoder=OTMHDecoder({p:FRONT[p] for p in members})
     if 'octeon' not in Path('/proc/cpuinfo').read_text().lower():raise ValueError('OCTEON dataplane required')
     validate_trunk('ffnpkt0')
     run('systemctl','is-active','--quiet','ffn-aggregate-dp-watchdog.timer')
@@ -213,7 +197,7 @@ def serve(intent):
         collecting=not intent['control_only'],**intent['lacp'])
     from ffn_aggregate_offload import Offload
     offload=Offload(int(name[2:]),members) if intent['offload'] else None
-    fd=None;wire=None;inspector=None;dhcp=None;created=False;guarded=False;counts=collections.Counter()
+    native=None;wire=None;inspector=None;dhcp=None;created=False;guarded=False;counts=collections.Counter()
     worker=None;worker_intent=None;network_error=None;retired_clients=[];unit_status=[];unit_counts={}
     applied_revision=network_revision(intent);attempted_revision=applied_revision;lease_generation=applied_revision
     requested=dict(revision=applied_revision,network=network,lldp=intent['lldp'])
@@ -248,16 +232,19 @@ def serve(intent):
                     apply(NS,name,settings)
                     for address in network['addresses']:ip('address','add',address,'dev',name)
                     unit_status=vlan.reconcile(NS,name,intent['token'],network,ip,run)
-                    fd=tap(name)
+                    aliases={p:0x8000|(i<<8)|int(name[2:]) for i,p in enumerate(sorted(members))} if offload else {}
+                    native=AggregateOwner(name,{p:FRONT[p] for p in members},aliases)
                     if vlan.carrying(network):ip('link','set',name,'up')
                 from ffn_inspection import Inspector
                 inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
-            wire=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));wire.bind(('ffnpkt0',0));wire.setblocking(False)
-            configure_rx(wire,[FRONT[p] for p in members]+(list(offload.aliases) if offload else []))
+                if inspector.error:raise RuntimeError('Initial inspection configuration failed: '+inspector.error)
+            wire=control_socket([FRONT[p] for p in members]+(list(offload.aliases) if offload else []))
             adapter=TrunkLACP(engine,wire)
             started=time.monotonic();next_status=0;next_lldp=0;last_input=started;sequence=-1;buffer=b''
             local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
             while True:
+                # The previous control read quiesced both native workers.
+                # On the first iteration they have not been started yet.
                 now=time.monotonic()
                 if now-last_input>(60 if sequence<0 else 8):raise RuntimeError('MP/CP observation lease expired')
                 engine.tick(now)
@@ -269,7 +256,6 @@ def serve(intent):
                         ack=json.loads(output)
                         if worker.returncode or not ack.get('ok') or ack.get('revision')!=network_revision(worker_intent):raise RuntimeError(error.decode(errors='replace')[-512:] or 'Network update failed')
                         intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network']
-                        classifier=vlan.Classifier(name,network)
                         applied_revision=ack['revision'];network_error=None
                         unit_status=ack.get('subinterfaces',[])
                         local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
@@ -281,7 +267,6 @@ def serve(intent):
                     worker_intent=dict(intent,network=requested['network'],lldp=requested['lldp'])
                     if intent['control_only'] or worker_intent['network']==network and not retry_network:
                         intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network'];applied_revision=attempted_revision
-                        classifier=vlan.Classifier(name,network)
                         atomic(intent_path,dict(intent,network_generation=lease_generation))
                     else:
                         try:
@@ -323,14 +308,20 @@ def serve(intent):
                 if dhcp is not None and dhcp.poll() is not None:network_error='Aggregate DHCP client exited'
                 network_current=network_current and network_error is None
                 if now>=next_status:
-                    next_status=now+1
                     lease=Path('/run/ffn-aggregate-'+name+'-lease.json')
                     lease_data=json.loads(lease.read_text()) if lease.exists() else {}
                     if network['dhcp']:
                         local={ipaddress.ip_interface(lease_data['address']).ip.packed} if lease_data.get('token')==intent['token'] and lease_data.get('address') else set()
+                if native:
+                    counts,unit_counts=native.snapshot(gates,offload,inspector)
+                    native.configure(network,local,gates,engine,offload,network_current and vlan.carrying(network),inspector,now)
+                    native.resume()
+                if now>=next_status:
+                    next_status=now+1
                     row=dict(result,group=name,token=intent['token'],boot_id=boot(),pid=os.getpid(),
                         process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],updated_monotonic=now,
-                        control_only=intent['control_only'],attachment_ready=fd is not None and vlan.carrying(network) and network_current,
+                        packet_execution='native-c' if native else 'control-only',workers=native.workers() if native else None,
+                        control_only=intent['control_only'],attachment_ready=native is not None and vlan.carrying(network) and network_current,
                         configuration_ready=network_current and not intent['control_only'],
                         configuration_revision=applied_revision,network_error=network_error,network_update_pending=not network_current,
                         subinterfaces=[dict(u,applied=network_current,state='active' if network_current and result['distributing'] else 'configured' if network_current else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
@@ -340,7 +331,8 @@ def serve(intent):
                         data_rx=dict(gates.rx),data_tx=dict(gates.tx),gate_drops=gates.dropped,
                         network_ready=network_current and (not network['dhcp'] or bool(local) and not lease_data.get('error')),lease=lease_data)
                     atomic(state_path,row);print(json.dumps(row),flush=True)
-                ready,_,_=select.select([sys.stdin.fileno(),wire]+([fd] if fd is not None and network_current and vlan.carrying(network) else []),[],[],.05)
+                ready,_,_=select.select([sys.stdin.fileno(),wire],[],[],.05)
+                if native:native.pause()
                 # Drain control before packets so a withdrawal closes gates first.
                 if sys.stdin.fileno() in ready:
                     data=os.read(sys.stdin.fileno(),65536)
@@ -371,43 +363,8 @@ def serve(intent):
                         if address[2]==socket.PACKET_OUTGOING:continue
                         if offload:raw=offload.ingress(raw)
                         if adapter.receive(raw,time.monotonic()):continue
-                        item=decoder(raw,members)
-                        if item is None:continue
-                        port,frame=item
-                        if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
-                        attachment=classifier.classify(frame)
-                        if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
-                        unit_name,plain,unit_local=attachment
-                        if fd is None:counts['control_only_drop']+=1;continue
-                        if frame[12:14]==b'\x88\xcc':continue
-                        destination=frame[30:34] if frame[12:14]==b'\x08\x00' and len(frame)>=34 else frame[38:54] if frame[12:14]==b'\x86\xdd' and len(frame)>=54 else None
-                        if not unit_local and not (unit_name==name and destination in local) and not inspector.allow(port,plain):counts['inspection_drop']+=1;continue
-                        def deliver(_port,payload):
-                            if os.write(fd,payload)!=len(payload):raise OSError('Short aggregate TAP write')
-                        engine.tick(time.monotonic())
-                        try:
-                            if gates.receive(port,frame,deliver):
-                                counter=unit_counts.setdefault(unit_name,collections.Counter());counter['rx_packets']+=1;counter['rx_bytes']+=len(frame)
-                        except BlockingIOError:counts['rx_queue_drop']+=1
-                if fd is not None and fd in ready:
-                    frame=os.read(fd,network['mtu']+19)
-                    if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
-                    attachment=classifier.classify(frame)
-                    if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
-                    unit_name=attachment[0]
-                    def send(port,payload):
-                        packet=encode(port,payload)
-                        if wire.send(packet)!=len(packet):raise OSError('Short aggregate data write')
-                    engine.tick(time.monotonic())
-                    def send_hardware(packet):
-                        if wire.send(packet)!=len(packet):raise OSError('Short hardware aggregate write')
-                    try:
-                        if not offload or not offload.transmit(frame,gates,time.monotonic(),send_hardware):
-                            sent=gates.transmit(frame,send)
-                            if sent is not None:
-                                counter=unit_counts.setdefault(unit_name,collections.Counter());counter['tx_packets']+=1;counter['tx_bytes']+=len(frame)
-                    except BlockingIOError:counts['tx_queue_drop']+=1
         finally:
+            if native:native.close()
             engine.stop(time.monotonic())
             if worker is not None:
                 if worker.poll() is None:worker.kill()
@@ -422,7 +379,6 @@ def serve(intent):
                     except subprocess.TimeoutExpired:os.killpg(dhcp.pid,signal.SIGKILL);dhcp.wait()
             if inspector:inspector.close()
             if wire:wire.close()
-            if fd is not None:os.close(fd)
             if created:
                 with open('/run/ffn-network.lock','a') as lock:
                     fcntl.flock(lock,fcntl.LOCK_EX)
