@@ -83,4 +83,23 @@ class Backend(unittest.TestCase):
             execute('apply',request,stale,self.drain)
         self.assertNotIn(('cp','prepare'),self.calls)
 
+    def test_dp_only_restart_with_retained_cp_redirect(self):
+        old_boot='864f1d5e-40c0-469e-a2c7-b7f395d0252b'
+        def call(role,op,payload):
+            self.calls.append((role,op))
+            if (role,op)==('cp','status'):
+                return dict(revision=3,epoch='same',state=dict(epoch='same',enabled=True,dp_boot_id=old_boot))
+            if (role,op)==('dp','status'):
+                return dict(boot_id=BOOT,fabric_available=True,fabric_ready=True)
+            if op=='attachment-status':return dict(running=False)
+            if op=='recover':return dict(revision=4)
+            if (role,op)==('cp','start'):
+                self.assertEqual(payload,dict(revision=4,dp_boot_id=BOOT))
+                return dict(revision=5,ready={'1':True})
+            if (role,op)==('dp','start'):return dict(running=True)
+            return {}
+        self.assertTrue(execute('apply',self.payload|{'operation':'attach'},call,self.drain)['attachment']['running'])
+        self.assertEqual(self.calls,[('cp','status'),('dp','status'),('dp','attachment-status'),
+            ('mp','drain'),('cp','recover'),('cp','start'),('dp','start')])
+
 if __name__=='__main__':unittest.main()
