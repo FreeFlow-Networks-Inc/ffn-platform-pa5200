@@ -35,12 +35,17 @@ def inside():
         sock.setsockopt(263,23,1);sock.settimeout(1)
     frame=b'\xff'*6+b'\x02\0\0\0\0\1'+b'\x88\xb5'+bytes(range(46))
     try:
+        cpus=sorted(os.sched_getaffinity(0))
+        checked(lib.ffn_packet_start(ctx,cpus[0],cpus[-1]))
+        workers=(C.c_int*8)();checked(lib.ffn_packet_workers(ctx,workers,8))
+        assert workers[0]==2 and workers[5]==1, list(workers)
+        assert os.sched_getaffinity(workers[3])=={cpus[0]}
+        assert os.sched_getaffinity(workers[4])=={cpus[-1]}
+        checked(lib.ffn_packet_resume(ctx))
         wire.send(b'\0\x18\0\x1d'+frame)
         wire.send(b'\0\x18\0\x1c'+frame)
-        checked(lib.ffn_packet_poll(ctx,20))
         assert capture.recv(4096)==frame
         capture.send(frame)
-        checked(lib.ffn_packet_poll(ctx,20))
         expected=b'\1\0\x1c\0'+frame[:12]+bytes(8)+frame[12:]
         for _ in range(32):
             packet=wire.recv(4096)
@@ -49,15 +54,15 @@ def inside():
         counts=(C.c_uint64*16)();checked(lib.ffn_packet_counters(ctx,counts,16))
         assert counts[0]==1 and counts[1]>=1 and counts[2]==0, list(counts)
         command('ip','netns','exec','ffnlab','ip','link','set','lab0','down')
-        checked(lib.ffn_packet_poll(ctx,20))
+        checked(lib.ffn_packet_pause(ctx))
+        checked(lib.ffn_packet_resume(ctx))
         command('ip','netns','exec','ffnlab','ip','link','set','lab0','up')
         # The separate observer AF_PACKET socket retains the link-down error.
         # Clear that notification before checking newly delivered traffic.
         capture.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)
         wire.send(b'\0\x18\0\x1c'+frame)
-        checked(lib.ffn_packet_poll(ctx,20))
         assert capture.recv(4096)==frame
-        print('PASS native socket creation/filter, namespace restoration, TAP ioctl, bidirectional wire framing; '+os.uname().machine)
+        print('PASS pinned native RX/TX workers, socket filter, namespace restoration, TAP ioctl, bidirectional wire framing; '+os.uname().machine)
     finally:
         wire.close();capture.close();lib.ffn_packet_close(ctx)
 

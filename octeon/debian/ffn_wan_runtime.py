@@ -84,10 +84,15 @@ def serve():
             while True:
                 if time.monotonic()>=next_poll:
                     next_poll=time.monotonic()+1
+                    # Quiesce native readers before Inspector replaces/frees its
+                    # engine handle. Resume only after validated configuration.
+                    native.pause()
                     value['counters']=native.snapshot(inspector)
                     inspector.tick()
                     cfg=json.loads(Path('/etc/ffn/network.json').read_text())
                     native.configure(cfg['ports'].get('p'+str(PORT),{}).get('addresses',[]),inspector)
+                    native.resume()
+                    value['workers']=native.workers()
                     value['updated_at']=time.time()
                     value['updated_monotonic']=time.monotonic()
                     temp=STATE.with_suffix('.tmp');temp.write_text(json.dumps(value));temp.replace(STATE)

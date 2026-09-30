@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import socket
 import struct
+import time
 import sys
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'debian'))
@@ -99,5 +100,47 @@ class NativePacketTests(unittest.TestCase):
         forbidden={'recv','recvfrom','send','sendto','pump','allow','encode','decode','ioctl'}
         self.assertFalse([n.func.attr for n in ast.walk(tree) if isinstance(n,ast.Call)
                           and isinstance(n.func,ast.Attribute) and n.func.attr in forbidden])
+
+    def start_workers(self):
+        cpus=sorted(os.sched_getaffinity(0))
+        checked(self.lib.ffn_packet_start(self.ctx,cpus[0],cpus[-1]))
+        out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.ctx,out,8))
+        self.assertEqual(list(out)[:3],[2,cpus[0],cpus[-1]])
+        self.assertTrue(out[3]>0 and out[4]>0 and out[3]!=out[4])
+        self.assertEqual(out[5],1)
+        return out
+
+    def test_background_full_duplex_workers_preserve_order(self):
+        self.start_workers();checked(self.lib.ffn_packet_resume(self.ctx))
+        frames=[bytes(56)+i.to_bytes(4,'big') for i in range(100)]
+        for frame in frames:self.receive(frame);self.peer.send(frame)
+        self.peer.settimeout(2);self.collect.settimeout(2)
+        self.assertEqual([self.peer.recv(4096) for _ in frames],frames)
+        self.assertEqual([self.collect.recv(4096)[24:] for _ in frames],[f[12:] for f in frames])
+        checked(self.lib.ffn_packet_pause(self.ctx))
+        self.assertEqual(self.counts()['rx'],100);self.assertEqual(self.counts()['tx'],100)
+
+    def test_configuration_requires_worker_barrier(self):
+        self.start_workers();self.configure();checked(self.lib.ffn_packet_resume(self.ctx))
+        self.assertEqual(self.lib.ffn_packet_configure(self.ctx,b'',0,b'',0,None,None),-1)
+        checked(self.lib.ffn_packet_pause(self.ctx))
+        self.receive(bytes(59)+b'\2');time.sleep(.03);self.empty(self.peer)
+        self.configure(scan=False);checked(self.lib.ffn_packet_resume(self.ctx))
+        self.peer.settimeout(2);self.assertEqual(self.peer.recv(4096),bytes(59)+b'\2')
+        checked(self.lib.ffn_packet_pause(self.ctx))
+        self.assertEqual(self.counts()['bypassed'],1)
+
+    def test_control_lease_failure_stops_native_workers(self):
+        self.start_workers();checked(self.lib.ffn_packet_resume(self.ctx))
+        time.sleep(3.1)
+        with self.assertRaises(OSError):self.poll()
+        self.receive(bytes(60));time.sleep(.03);self.empty(self.peer)
+        out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.ctx,out,8))
+        self.assertTrue(out[6]);self.assertNotEqual(out[7],0)
+
+    def test_worker_cpu_validation_does_not_partially_start(self):
+        self.assertEqual(self.lib.ffn_packet_start(self.ctx,-1,0),-1)
+        out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.ctx,out,8))
+        self.assertEqual(out[0],0)
 
 if __name__=='__main__':unittest.main()

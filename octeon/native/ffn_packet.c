@@ -9,12 +9,15 @@
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -29,7 +32,14 @@ struct ffn_packet {
     uint8_t local4[FFN_PACKET_LOCAL_MAX][4], local6[FFN_PACKET_LOCAL_MAX][16];
     void *inspection;
     ffn_scan_fn scan;
-    uint64_t counters[FFN_PACKET_COUNTERS];
+    _Atomic uint64_t counters[FFN_PACKET_COUNTERS];
+    pthread_mutex_t control;
+    pthread_cond_t changed;
+    pthread_t threads[2];
+    struct { struct ffn_packet *owner; unsigned direction; } arguments[2];
+    unsigned started;
+    int pause_requested, stopped, paused[2], cpus[2], tids[2], fault;
+    int64_t lease_end;
 };
 
 unsigned ffn_packet_abi(void) { return FFN_PACKET_ABI; }
@@ -43,17 +53,28 @@ static int64_t milliseconds(void)
 void ffn_packet_close(struct ffn_packet *p)
 {
     if (!p) return;
+    pthread_mutex_lock(&p->control);
+    p->stopped = 1; pthread_cond_broadcast(&p->changed);
+    pthread_mutex_unlock(&p->control);
+    for (unsigned i = 0; i < p->started; i++) pthread_join(p->threads[i], NULL);
     if (p->rx >= 0) close(p->rx);
     if (p->tx >= 0) close(p->tx);
     if (p->tap >= 0) close(p->tap);
-    free(p);
+    pthread_cond_destroy(&p->changed); pthread_mutex_destroy(&p->control); free(p);
 }
 static struct ffn_packet *allocate(unsigned source)
 {
     struct ffn_packet *p;
     if (source > 65535) { errno = EINVAL; return NULL; }
     p = calloc(1, sizeof(*p));
-    if (p) { p->rx = p->tx = p->tap = -1; p->source = source; }
+    if (p) {
+        int rc;
+        p->rx = p->tx = p->tap = -1; p->source = source;
+        rc = pthread_mutex_init(&p->control, NULL);
+        if (rc) { free(p); errno = rc; return NULL; }
+        rc = pthread_cond_init(&p->changed, NULL);
+        if (rc) { pthread_mutex_destroy(&p->control); free(p); errno = rc; return NULL; }
+    }
     return p;
 }
 static int nonblock(int fd)
@@ -148,10 +169,14 @@ int ffn_packet_configure(struct ffn_packet *p, const uint8_t *v4, unsigned n4,
         (n4 && !v4) || (n6 && !v6) || (!!inspection != !!scan)) {
         errno = EINVAL; return -1;
     }
+    pthread_mutex_lock(&p->control);
+    if (p->started && (!p->pause_requested || !p->paused[0] || !p->paused[1])) {
+        pthread_mutex_unlock(&p->control); errno = EBUSY; return -1;
+    }
     if (n4) memcpy(p->local4, v4, n4 * 4);
     if (n6) memcpy(p->local6, v6, n6 * 16);
     p->n4 = n4; p->n6 = n6; p->inspection = inspection; p->scan = scan;
-    return 0;
+    pthread_mutex_unlock(&p->control); return 0;
 }
 static int allow(struct ffn_packet *p, const uint8_t *frame, size_t size)
 {
@@ -161,24 +186,24 @@ static int allow(struct ffn_packet *p, const uint8_t *frame, size_t size)
     } else if (size >= 54 && be16(frame + 12) == 0x86dd && frame[14] >> 4 == 6) {
         for (i = 0; i < p->n6; i++) if (!memcmp(frame + 38, p->local6[i], 16)) goto local;
     }
-    if (!p->scan) { p->counters[BYPASSED]++; return 1; }
+    if (!p->scan) { atomic_fetch_add_explicit(&p->counters[BYPASSED], 1, memory_order_relaxed); return 1; }
     verdict = p->scan(p->inspection, (const char *)frame, (unsigned)size);
     switch (verdict) {
-    case -2: p->counters[UNSUPPORTED]++; return 1;
-    case -1: p->counters[MALFORMED]++; return 1;
-    case 0: p->counters[NO_MATCH]++; return 1;
-    case 1: p->counters[ALERT]++; return 1;
-    case 2: p->counters[BLOCK]++; p->counters[INSPECTION_DROP]++; return 0;
-    default: p->counters[BAD_VERDICT]++; errno = EPROTO; return -1;
+    case -2: atomic_fetch_add_explicit(&p->counters[UNSUPPORTED], 1, memory_order_relaxed); return 1;
+    case -1: atomic_fetch_add_explicit(&p->counters[MALFORMED], 1, memory_order_relaxed); return 1;
+    case 0: atomic_fetch_add_explicit(&p->counters[NO_MATCH], 1, memory_order_relaxed); return 1;
+    case 1: atomic_fetch_add_explicit(&p->counters[ALERT], 1, memory_order_relaxed); return 1;
+    case 2: atomic_fetch_add_explicit(&p->counters[BLOCK], 1, memory_order_relaxed); atomic_fetch_add_explicit(&p->counters[INSPECTION_DROP], 1, memory_order_relaxed); return 0;
+    default: atomic_fetch_add_explicit(&p->counters[BAD_VERDICT], 1, memory_order_relaxed); errno = EPROTO; return -1;
     }
 local:
     /* Kernel INPUT profile, not transit inspection, owns local services. */
-    p->counters[LOCAL_INPUT]++; return 1;
+    atomic_fetch_add_explicit(&p->counters[LOCAL_INPUT], 1, memory_order_relaxed); return 1;
 }
 static int io_error(struct ffn_packet *p)
 {
-    if (errno == EAGAIN || errno == ENOBUFS) { p->counters[PRESSURE_DROP]++; return 0; }
-    if (errno == EIO || errno == ENETDOWN) { p->counters[ADMIN_DROP]++; return 0; }
+    if (errno == EAGAIN || errno == ENOBUFS) { atomic_fetch_add_explicit(&p->counters[PRESSURE_DROP], 1, memory_order_relaxed); return 0; }
+    if (errno == EIO || errno == ENETDOWN) { atomic_fetch_add_explicit(&p->counters[ADMIN_DROP], 1, memory_order_relaxed); return 0; }
     return -1;
 }
 static int receive_burst(struct ffn_packet *p)
@@ -190,10 +215,10 @@ static int receive_burst(struct ffn_packet *p)
         int accepted;
         if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
         if (addr.sll_family == AF_PACKET && addr.sll_pkttype == PACKET_OUTGOING) {
-            p->counters[OUTGOING]++; continue;
+            atomic_fetch_add_explicit(&p->counters[OUTGOING], 1, memory_order_relaxed); continue;
         }
         if (n < 18 || n > MAX_FRAME + 4 || be16(packet) != 24 || be16(packet + 2) != p->source) {
-            p->counters[ENVELOPE_DROP]++; continue;
+            atomic_fetch_add_explicit(&p->counters[ENVELOPE_DROP], 1, memory_order_relaxed); continue;
         }
         accepted = allow(p, packet + 4, (size_t)n - 4);
         if (accepted < 0) return -1;
@@ -202,7 +227,7 @@ static int receive_burst(struct ffn_packet *p)
         ssize_t written = write(p->tap, packet + 4, (size_t)n);
         if (written < 0) { if (io_error(p)) return -1; continue; }
         if (written != n) { errno = EIO; return -1; }
-        p->counters[RX]++;
+        atomic_fetch_add_explicit(&p->counters[RX], 1, memory_order_relaxed);
     }
     return 0;
 }
@@ -213,7 +238,7 @@ static int transmit_burst(struct ffn_packet *p)
         ssize_t n = read(p->tap, frame, sizeof(frame));
         if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
         if (!n) { errno = EPIPE; return -1; }
-        if (n < 14 || n > MAX_FRAME) { p->counters[LENGTH_DROP]++; continue; }
+        if (n < 14 || n > MAX_FRAME) { atomic_fetch_add_explicit(&p->counters[LENGTH_DROP], 1, memory_order_relaxed); continue; }
         if (n < 60) { memset(frame + n, 0, (size_t)(60 - n)); n = 60; }
         packet[0] = 1; packet[1] = (uint8_t)(p->source >> 8); packet[2] = (uint8_t)p->source; packet[3] = 0;
         memcpy(packet + 4, frame, 12); memset(packet + 16, 0, 8);
@@ -221,7 +246,7 @@ static int transmit_burst(struct ffn_packet *p)
         ssize_t sent = send(p->tx, packet, (size_t)n + 12, MSG_NOSIGNAL);
         if (sent < 0) { if (io_error(p)) return -1; continue; }
         if (sent != n + 12) { errno = EIO; return -1; }
-        p->counters[TX]++;
+        atomic_fetch_add_explicit(&p->counters[TX], 1, memory_order_relaxed);
     }
     return 0;
 }
@@ -229,6 +254,15 @@ int ffn_packet_poll(struct ffn_packet *p, unsigned budget_ms)
 {
     int64_t end, now;
     if (!p || !budget_ms || budget_ms > 250) { errno = EINVAL; return -1; }
+    /* Threaded callers wait for status/control cadence, never process packets. */
+    if (p->started) {
+        int fault;
+        (void)poll(NULL, 0, (int)budget_ms);
+        pthread_mutex_lock(&p->control); fault = p->fault;
+        pthread_mutex_unlock(&p->control);
+        if (fault) { errno = fault; return -1; }
+        return 0;
+    }
     now = milliseconds(); if (now < 0) return -1;
     end = now + budget_ms;
     do {
@@ -256,5 +290,109 @@ int ffn_packet_poll(struct ffn_packet *p, unsigned budget_ms)
 int ffn_packet_counters(struct ffn_packet *p, uint64_t *out, unsigned count)
 {
     if (!p || !out || count != FFN_PACKET_COUNTERS) { errno = EINVAL; return -1; }
-    memcpy(out, p->counters, sizeof(p->counters)); return 0;
+    for (unsigned i = 0; i < count; i++) out[i] = atomic_load_explicit(&p->counters[i], memory_order_relaxed);
+    return 0;
+}
+
+static void *packet_worker(void *argument)
+{
+    typeof(((struct ffn_packet *)0)->arguments[0]) *a = argument;
+    struct ffn_packet *p = a->owner;
+    unsigned direction = a->direction;
+    pthread_mutex_lock(&p->control);
+    p->tids[direction] = (int)syscall(SYS_gettid);
+    pthread_mutex_unlock(&p->control);
+    for (;;) {
+        pthread_mutex_lock(&p->control);
+        while (p->pause_requested && !p->stopped) {
+            p->paused[direction] = 1; pthread_cond_broadcast(&p->changed);
+            pthread_cond_wait(&p->changed, &p->control);
+        }
+        p->paused[direction] = 0;
+        if (!p->stopped && milliseconds() >= p->lease_end) {
+            p->fault = ETIMEDOUT; p->stopped = 1; pthread_cond_broadcast(&p->changed);
+        }
+        int stop = p->stopped;
+        pthread_mutex_unlock(&p->control);
+        if (stop) break;
+        struct pollfd fd = { direction ? p->tap : p->rx, POLLIN, 0 };
+        int result = poll(&fd, 1, 20), failure = 0;
+        if (result < 0 && errno != EINTR) failure = errno;
+        else if (fd.revents & (POLLHUP | POLLNVAL)) failure = EPIPE;
+        else if ((fd.revents & POLLERR) && !direction) failure = EIO;
+        else if (fd.revents & POLLIN) {
+            if (direction ? transmit_burst(p) : receive_burst(p)) failure = errno;
+        } else if (fd.revents & POLLERR) (void)poll(NULL, 0, 10);
+        if (failure) {
+            pthread_mutex_lock(&p->control);
+            if (!p->fault) p->fault = failure;
+            p->stopped = 1; pthread_cond_broadcast(&p->changed);
+            pthread_mutex_unlock(&p->control); break;
+        }
+    }
+    pthread_mutex_lock(&p->control);
+    p->paused[direction] = 1; pthread_cond_broadcast(&p->changed);
+    pthread_mutex_unlock(&p->control);
+    return NULL;
+}
+int ffn_packet_pause(struct ffn_packet *p)
+{
+    int fault;
+    if (!p) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&p->control);
+    p->pause_requested = 1;
+    while (p->started == 2 && (!p->paused[0] || !p->paused[1]) && !p->stopped)
+        pthread_cond_wait(&p->changed, &p->control);
+    fault = p->fault;
+    pthread_mutex_unlock(&p->control);
+    if (fault) { errno = fault; return -1; }
+    return 0;
+}
+int ffn_packet_resume(struct ffn_packet *p)
+{
+    if (!p) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&p->control);
+    if (p->started != 2 || p->stopped) {
+        int error = p->fault ? p->fault : EINVAL;
+        pthread_mutex_unlock(&p->control); errno = error; return -1;
+    }
+    p->lease_end = milliseconds() + 3000;
+    p->pause_requested = 0; pthread_cond_broadcast(&p->changed);
+    pthread_mutex_unlock(&p->control); return 0;
+}
+int ffn_packet_start(struct ffn_packet *p, int rx_cpu, int tx_cpu)
+{
+    cpu_set_t allowed, affinity;
+    pthread_attr_t attr;
+    int cpus[2] = {rx_cpu, tx_cpu}, rc;
+    if (!p || p->started || rx_cpu < 0 || tx_cpu < 0 || rx_cpu >= CPU_SETSIZE || tx_cpu >= CPU_SETSIZE) {
+        errno = EINVAL; return -1;
+    }
+    if (sched_getaffinity(0, sizeof(allowed), &allowed)) return -1;
+    if (!CPU_ISSET(rx_cpu, &allowed) || !CPU_ISSET(tx_cpu, &allowed)) { errno = EPERM; return -1; }
+    p->pause_requested = 1;
+    for (unsigned i = 0; i < 2; i++) {
+        rc = pthread_attr_init(&attr); if (rc) goto fail;
+        CPU_ZERO(&affinity); CPU_SET(cpus[i], &affinity);
+        rc = pthread_attr_setaffinity_np(&attr, sizeof(affinity), &affinity);
+        p->cpus[i] = cpus[i]; p->arguments[i].owner = p; p->arguments[i].direction = i;
+        if (!rc) rc = pthread_create(&p->threads[i], &attr, packet_worker, &p->arguments[i]);
+        pthread_attr_destroy(&attr);
+        if (rc) goto fail;
+        p->started++;
+    }
+    return ffn_packet_pause(p);
+fail:
+    pthread_mutex_lock(&p->control); p->fault = rc; p->stopped = 1;
+    pthread_cond_broadcast(&p->changed); pthread_mutex_unlock(&p->control);
+    errno = rc; return -1; /* close() joins any successfully created worker. */
+}
+int ffn_packet_workers(struct ffn_packet *p, int *out, unsigned count)
+{
+    if (!p || !out || count != 8) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&p->control);
+    out[0] = (int)p->started; out[1] = p->cpus[0]; out[2] = p->cpus[1];
+    out[3] = p->tids[0]; out[4] = p->tids[1]; out[5] = p->pause_requested;
+    out[6] = p->stopped; out[7] = p->fault;
+    pthread_mutex_unlock(&p->control); return 0;
 }

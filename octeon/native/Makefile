@@ -1,5 +1,5 @@
 CC ?= cc
-CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror
+CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror -pthread
 
 all: libffn-packet.so libffn-hwio.so libffn-inline.so
 

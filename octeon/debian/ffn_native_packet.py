@@ -14,7 +14,7 @@ COUNTERS=('rx','tx','envelope_rejected','length_drop','backpressure_drop',
 def library(path=LIBRARY):
     lib=C.CDLL(path,use_errno=True)
     lib.ffn_packet_abi.restype=C.c_uint
-    if lib.ffn_packet_abi()!=1:raise RuntimeError('Unsupported native packet ABI')
+    if lib.ffn_packet_abi()!=2:raise RuntimeError('Unsupported native packet ABI')
     lib.ffn_packet_open.argtypes=[C.c_char_p,C.c_char_p,C.c_char_p,C.c_uint]
     lib.ffn_packet_open.restype=C.c_void_p
     lib.ffn_packet_adopt.argtypes=[C.c_int,C.c_int,C.c_int,C.c_uint]
@@ -23,6 +23,12 @@ def library(path=LIBRARY):
     lib.ffn_packet_configure.restype=C.c_int
     lib.ffn_packet_poll.argtypes=[C.c_void_p,C.c_uint]
     lib.ffn_packet_poll.restype=C.c_int
+    lib.ffn_packet_start.argtypes=[C.c_void_p,C.c_int,C.c_int]
+    lib.ffn_packet_start.restype=C.c_int
+    for name in ('ffn_packet_pause','ffn_packet_resume'):
+        getattr(lib,name).argtypes=[C.c_void_p];getattr(lib,name).restype=C.c_int
+    lib.ffn_packet_workers.argtypes=[C.c_void_p,C.POINTER(C.c_int),C.c_uint]
+    lib.ffn_packet_workers.restype=C.c_int
     lib.ffn_packet_counters.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
     lib.ffn_packet_counters.restype=C.c_int
     lib.ffn_packet_close.argtypes=[C.c_void_p]
@@ -41,7 +47,7 @@ class PacketOwner:
     def __init__(self,port,source,lib=None):
         if type(port) is not int or not 1<=port<=24 or type(source) is not int or not 0<=source<=65535:
             raise ValueError('Invalid commissioned port mapping')
-        self.lib=lib or library();self.port=port
+        self.lib=lib or library();self.port=port;self.started=False
         self.handle=self.lib.ffn_packet_open(b'ffnpkt0',b'ffn-data',('p'+str(port)).encode(),source)
         if not self.handle:checked(-1)
 
@@ -56,6 +62,25 @@ class PacketOwner:
 
     def poll(self):
         checked(self.lib.ffn_packet_poll(self.handle,100))
+
+    def pause(self):
+        checked(self.lib.ffn_packet_pause(self.handle))
+
+    def resume(self):
+        if not self.started:
+            cpus=sorted(os.sched_getaffinity(0))
+            # Preserve the first allowed CPU for control/driver work where possible.
+            data=cpus[1:] or cpus
+            start=((self.port-1)*2)%len(data)
+            checked(self.lib.ffn_packet_start(self.handle,data[start],data[(start+1)%len(data)]))
+            self.started=True
+        checked(self.lib.ffn_packet_resume(self.handle))
+
+    def workers(self):
+        out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.handle,out,8))
+        return dict(count=out[0],rx_cpu=out[1],tx_cpu=out[2],rx_tid=out[3],tx_tid=out[4],
+                    paused=bool(out[5]),stopped=bool(out[6]),error=out[7],
+                    scheduling='ordered-rx-tx',flow_parallelism=False)
 
     def snapshot(self,inspector):
         values=(C.c_uint64*len(COUNTERS))()
