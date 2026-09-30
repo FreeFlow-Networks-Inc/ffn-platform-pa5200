@@ -58,10 +58,27 @@ def copper_apply(port,request):
         finally:bus.close()
 
 
+def sfp_inventory():
+    import ffn_sfp_control as sfp
+    return sfp.inventory()
+
+
+def sfp_apply(port,enabled):
+    import ffn_sfp_control as sfp
+    return sfp.set_enabled(port,enabled)
+
+
+def sfp_link_apply(port,speed):
+    import ffn_sfp_control as sfp
+    return sfp.configure_gigabit_fiber(port['port'],port['bcm_port'],speed)
+
+
 def observe():
     physical={p['port']:p for p in call({'op':'port.list'})['ports']}
     try: copper=copper_inventory()
     except (ImportError,OSError,ValueError,RuntimeError): copper=None
+    try: optics=sfp_inventory()
+    except (ImportError,OSError,ValueError,RuntimeError): optics={}
     ports=[]
     for front,chip in enumerate(PORTS,1):
         if front<=4:
@@ -95,7 +112,15 @@ def observe():
                  pair_map_register=phy.get('pair_map_register'),pair_map_recovery=ready and phy.get('pair_map_recovery',False),
                  datapath_link=bool(p['mac_link'] and phy.get('link')))
         if ready:p.pop('speed_error',None)
-    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled')) for p in ports]).encode()).hexdigest()[:12],16)
+    for p in ports[4:20]:
+        optic=optics.get(p['port'])
+        p.update(media='sfp',mac_enabled=p['enabled'],mac_link=p['link'],
+                 optics=optic,admin_configuration=bool(optic and optic.get('control_ready')),
+                 control_scope='sfp-transmitter-and-switch-mac')
+        p['enabled']=bool(p['mac_enabled'] and optic['tx_enabled']) if optic else None
+        p['link']=bool(p['mac_link'] and p['enabled'] and optic['present']) if optic else None
+        if not optic:p['admin_error']='SFP transmitter control unavailable'
+    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled'),p.get('optics')) for p in ports]).encode()).hexdigest()[:12],16)
     sync_path=Path('/run/ffn-copper-link.json')
     try: sync=json.loads(sync_path.read_text()) if sync_path.exists() else {'state':'not-active'}
     except (OSError,ValueError):sync={'state':'unavailable'}
@@ -118,6 +143,8 @@ def apply(request):
     if not port['available']: raise ValueError('port unavailable')
     if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
         raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
+    if port.get('media')=='sfp' and 'enabled' in request and not port.get('admin_configuration'):
+        raise ValueError('SFP transmitter control unavailable')
     if 'restart_autoneg' in request and (request['restart_autoneg'] is not True or set(request)!={'revision','port','restart_autoneg'}
             or not port.get('renegotiate_configuration') or not port.get('enabled')):
         raise ValueError('Renegotiation requires an enabled, ready copper port and a standalone request')
@@ -139,12 +166,22 @@ def apply(request):
         if request.get('enabled') is True:
             call({'op':'port.set','port':port['bcm_port'],'enable':True})
     else:
-        if 'speed' in request: call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
+        if 'speed' in request:
+            handled=port.get('media')=='sfp' and sfp_link_apply(port,request['speed'])
+            if not handled:call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
+        if port.get('media')=='sfp' and request.get('enabled') is False:
+            sfp_apply(request['port'],False)
         if 'enabled' in request: call({'op':'port.set','port':port['bcm_port'],'enable':request['enabled']})
+        if port.get('media')=='sfp' and request.get('enabled') is True:
+            sfp_apply(request['port'],True)
     after=observe()
     actual=after['ports'][request['port']-1]
     if port.get('media')=='copper' and 'enabled' in request and any(actual.get(k)!=request['enabled'] for k in ('mac_enabled','phy_enabled')):
         raise RuntimeError('Copper PHY/MAC administrative readback mismatch; operation pending')
+    if port.get('media')=='sfp' and 'enabled' in request and (actual.get('mac_enabled')!=request['enabled'] or
+            not actual.get('optics') or actual['optics'].get('tx_enabled')!=request['enabled'] or
+            actual['optics'].get('tx_disable')==request['enabled']):
+        raise RuntimeError('SFP transmitter/MAC administrative readback mismatch; operation pending')
     if ('enabled' in request and actual['enabled'] != request['enabled']) or ('speed' in request and actual['configured_speed'] != request['speed']):
         raise RuntimeError('administrative state readback did not match; operation pending')
     if 'enabled' in request: saved['ports'][str(request['port'])]=request['enabled']
@@ -180,6 +217,10 @@ def main():
                 raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
             if port.get('media')=='copper' and 'enabled' in pending and port.get('mac_enabled')!=port.get('phy_enabled'):
                 raise ValueError('PHY and MAC disagree; repair the pending operation before accepting state')
+            if port.get('media')=='sfp' and 'enabled' in pending and (not port.get('optics') or
+                    port.get('mac_enabled')!=port['optics'].get('tx_enabled') or
+                    port['optics'].get('tx_disable')==port.get('mac_enabled')):
+                raise ValueError('SFP transmitter and MAC disagree; repair before accepting state')
             if 'enabled' in pending: state['ports'][str(pending['port'])]=port['enabled']
             if 'speed' in pending:
                 if port['configured_speed'] is None: raise ValueError('link state unavailable')

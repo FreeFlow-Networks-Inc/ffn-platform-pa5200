@@ -23,7 +23,8 @@ from ffn_aggregate_datapath import Gates
 from ffn_lacp_engine import Engine
 from ffn_lacp_trunk import TrunkLACP
 import ffn_aggregate_vlan as vlan
-from ffn_dp_packet_transport import FRONT,validate_trunk,decode_otmh_ssp,encode
+from ffn_dp_packet_transport import FRONT,validate_trunk,OTMHDecoder,encode
+from ffn_packet_socket import configure_rx
 
 NS='ffn-data'
 
@@ -201,6 +202,8 @@ def lldp(system,group,port):
 
 def serve(intent):
     intent=validate(intent);name=intent['group'];members=intent['members'];network=intent['network']
+    classifier=vlan.Classifier(name,network)
+    decoder=OTMHDecoder({p:FRONT[p] for p in members})
     if 'octeon' not in Path('/proc/cpuinfo').read_text().lower():raise ValueError('OCTEON dataplane required')
     validate_trunk('ffnpkt0')
     run('systemctl','is-active','--quiet','ffn-aggregate-dp-watchdog.timer')
@@ -250,6 +253,7 @@ def serve(intent):
                 from ffn_inspection import Inspector
                 inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
             wire=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));wire.bind(('ffnpkt0',0));wire.setblocking(False)
+            configure_rx(wire,[FRONT[p] for p in members]+(list(offload.aliases) if offload else []))
             adapter=TrunkLACP(engine,wire)
             started=time.monotonic();next_status=0;next_lldp=0;last_input=started;sequence=-1;buffer=b''
             local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
@@ -265,6 +269,7 @@ def serve(intent):
                         ack=json.loads(output)
                         if worker.returncode or not ack.get('ok') or ack.get('revision')!=network_revision(worker_intent):raise RuntimeError(error.decode(errors='replace')[-512:] or 'Network update failed')
                         intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network']
+                        classifier=vlan.Classifier(name,network)
                         applied_revision=ack['revision'];network_error=None
                         unit_status=ack.get('subinterfaces',[])
                         local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
@@ -276,6 +281,7 @@ def serve(intent):
                     worker_intent=dict(intent,network=requested['network'],lldp=requested['lldp'])
                     if intent['control_only'] or worker_intent['network']==network and not retry_network:
                         intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network'];applied_revision=attempted_revision
+                        classifier=vlan.Classifier(name,network)
                         atomic(intent_path,dict(intent,network_generation=lease_generation))
                     else:
                         try:
@@ -365,11 +371,11 @@ def serve(intent):
                         if address[2]==socket.PACKET_OUTGOING:continue
                         if offload:raw=offload.ingress(raw)
                         if adapter.receive(raw,time.monotonic()):continue
-                        item=decode_otmh_ssp(raw,set(members))
+                        item=decoder(raw,members)
                         if item is None:continue
                         port,frame=item
                         if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
-                        attachment=vlan.classify(name,network,frame)
+                        attachment=classifier.classify(frame)
                         if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
                         unit_name,plain,unit_local=attachment
                         if fd is None:counts['control_only_drop']+=1;continue
@@ -386,7 +392,7 @@ def serve(intent):
                 if fd is not None and fd in ready:
                     frame=os.read(fd,network['mtu']+19)
                     if not network_current or applied_revision!=requested['revision']:counts['network_update_drop']+=1;continue
-                    attachment=vlan.classify(name,network,frame)
+                    attachment=classifier.classify(frame)
                     if attachment is None:counts['unconfigured_or_invalid_vlan_drop']+=1;continue
                     unit_name=attachment[0]
                     def send(port,payload):

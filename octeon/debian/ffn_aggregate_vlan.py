@@ -91,24 +91,40 @@ def cleanup(namespace,parent,token,ip):
             ip('link','delete',name)
 
 
+class Classifier:
+    """Immutable packet lookup compiled once per acknowledged configuration."""
+    def __init__(self,parent,network):
+        def entry(unit):
+            return (unit['name'],unit['mtu'],frozenset(ipaddress.ip_interface(a).ip.packed for a in unit['addresses']))
+        self.units={unit['tag']:entry(unit) for unit in network.get('units',[])}
+        self.parent=entry(dict(name=parent,mtu=network['mtu'],addresses=network['addresses'])) if network.get('enabled',True) else None
+
+    def classify(self,frame):
+        return _classify(self,frame)
+
+
 def classify(parent,network,frame):
-    """Return the configured attachment and normalized frame; never guess a VLAN."""
+    """Compatibility entry point; packet owners retain a compiled Classifier."""
+    return Classifier(parent,network).classify(frame)
+
+
+def _classify(compiled,frame):
+    """Return configured attachment and normalized frame; never guess a VLAN."""
     if len(frame)<14:return None
     kind=frame[12:14];unit=None;plain=frame;overhead=14
     if kind==b'\x81\x00':
         if len(frame)<18:return None
         tag=int.from_bytes(frame[14:16],'big')&4095
-        unit=next((u for u in network.get('units',[]) if u['tag']==tag),None)
+        unit=compiled.units.get(tag)
         if unit is None or frame[16:18] in (b'\x81\x00',b'\x88\xa8'):return None
         plain=frame[:12]+frame[16:];overhead=18
     elif kind==b'\x88\xa8':return None
-    elif network.get('enabled',True):unit=dict(name=parent,addresses=network['addresses'],mtu=network['mtu'])
-    if unit is None or len(frame)>unit['mtu']+overhead:return None
+    else:unit=compiled.parent
+    if unit is None or len(frame)>unit[1]+overhead:return None
     destination=None
     if plain[12:14]==b'\x08\x00' and len(plain)>=34:destination=plain[30:34]
     elif plain[12:14]==b'\x86\xdd' and len(plain)>=54:destination=plain[38:54]
-    local=destination in {ipaddress.ip_interface(a).ip.packed for a in unit['addresses']}
-    return unit['name'],plain,local
+    return unit[0],plain,destination in unit[2]
 
 
 def carrying(network):return network.get('enabled',True) or bool(network.get('units'))

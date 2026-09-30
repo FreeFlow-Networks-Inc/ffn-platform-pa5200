@@ -1,9 +1,43 @@
 import struct
+import socket
+import collections
 import unittest
-from ffn_dp_packet_transport import decode, decode_otmh_ssp, encode, FRONT
+from ffn_dp_packet_transport import decode, decode_otmh_ssp, encode, FRONT, OTMHDecoder, pump
 
 
 class PacketTransport(unittest.TestCase):
+    def test_decoder_snapshots_wiring_and_checks_current_ownership(self):
+        front={5:16};cached=OTMHDecoder(front);front[5]=17
+        frame=b'\0\x18\0\x10'+bytes(60)
+        self.assertEqual(cached(frame,{5}),(5,bytes(60)))
+        self.assertIsNone(cached(frame,{6}))
+        self.assertIsNone(cached(b'\0\x18\0\x11'+bytes(60),{5}))
+
+    def test_bursts_preserve_inspection_both_directions_and_no_empty_queue_drops(self):
+        sockets=[]
+        class Receiver:
+            def __init__(self,sock):self.sock=sock
+            def fileno(self):return self.sock.fileno()
+            def setblocking(self,value):self.sock.setblocking(value)
+            def recvfrom(self,n):return self.sock.recv(n),('fixture',0,0)
+        class Inspector:
+            def tick(self):pass
+            def allow(self,port,frame):return frame[-1]!=79
+        try:
+            for _ in range(3):sockets.extend(socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM))
+            rx,inject,tx,collect,tap,peer=sockets
+            for sock in sockets:sock.setblocking(False)
+            frames=[bytes(59)+bytes([i]) for i in range(80)]
+            for frame in frames:
+                inject.send(b'\0\x18\0\x10'+frame);peer.send(frame)
+            counts=collections.Counter()
+            pump(Receiver(rx),tx,{5:tap.fileno()},Inspector(),seconds=.03,counters=counts,decoder=OTMHDecoder({5:16}))
+            self.assertEqual([peer.recv(2048) for _ in range(79)],frames[:-1])
+            self.assertEqual([collect.recv(2048) for _ in range(80)],[encode(5,f) for f in frames])
+            self.assertEqual(counts,dict(rx_p5=79,tx_p5=80,inspection_drop=1))
+        finally:
+            for sock in sockets:sock.close()
+
     def test_short_ethernet_frame_is_padded_before_injected_headers(self):
         frame=bytes(range(42))
         wire=encode(1,frame,{1:28})

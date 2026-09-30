@@ -77,8 +77,10 @@ def serve():
                 link=json.loads(subprocess.check_output(['ip','-n','ffn-data','-j','link','show','dev',name],text=True))[0]
                 value['interfaces']={name:link['ifindex']}
                 STATE.write_text(json.dumps(value))
-            for _ in range(2):
-                sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3));sock.bind(('ffnpkt0',0));sockets.append(sock)
+            from ffn_packet_socket import configure_rx,tx_socket
+            sock=socket.socket(socket.AF_PACKET,socket.SOCK_RAW,socket.htons(3))
+            sockets.append(sock);sock.bind(('ffnpkt0',0));configure_rx(sock,FRONT.values())
+            sockets.append(tx_socket('ffnpkt0'))
             # Only the selected port is attached. Local service permissions are enforced by
             # the kernel INPUT hook; transit Security belongs in FORWARD.
             from ffn_inspection import Inspector
@@ -109,7 +111,7 @@ def serve():
             original_encode=transport.encode
             transport.encode=lambda port,frame:original_encode(port,frame,FRONT)
             transport.pump(*sockets,handles,Observation(),counters=counts,
-                           decoder=lambda frame,ports:decode_otmh_ssp(frame,ports,FRONT))
+                           decoder=transport.OTMHDecoder(FRONT))
         except KeyboardInterrupt:pass
         finally:
             if inspector:inspector.close()

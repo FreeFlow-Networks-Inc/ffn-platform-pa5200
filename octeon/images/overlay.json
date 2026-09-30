@@ -259,6 +259,11 @@
     ],
     [
       "platform",
+      "management/ffn_sfp_control.py",
+      "usr/local/sbin/ffn_sfp_control.py"
+    ],
+    [
+      "platform",
       "management/ffn_nif_control.py",
       "usr/local/sbin/ffn_nif_control.py"
     ],
@@ -778,6 +783,11 @@
       "platform",
       "octeon/debian/ffn_dp_packet_transport.py",
       "usr/local/sbin/ffn_dp_packet_transport.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_packet_socket.py",
+      "usr/local/sbin/ffn_packet_socket.py"
     ],
     [
       "platform",
