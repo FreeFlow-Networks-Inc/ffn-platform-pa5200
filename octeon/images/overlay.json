@@ -791,6 +791,11 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn_native_packet.py",
+      "usr/local/sbin/ffn_native_packet.py"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_fabric.py",
       "usr/local/sbin/ffn_fabric.py"
     ],

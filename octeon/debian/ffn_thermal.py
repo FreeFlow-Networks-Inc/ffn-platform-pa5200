@@ -5,7 +5,6 @@ Uses kernel-owned mux channels, ADT7470 ID checks, 12 board/core sensors,
 and eight tachometers. Unknown readings demand full PWM. No reset writes.
 """
 import argparse
-import ctypes
 import fcntl
 import json
 import math
@@ -17,7 +16,7 @@ import socket
 import struct
 import sys
 import time
-from ffn_i2cread import read_regs, Msg, Ioctl, I2C_RDWR
+from ffn_i2cread import read_regs, write_reg
 from ffn_chassis_led import access as chassis_access
 
 MUX = Path('/sys/bus/i2c/devices/1-0073')
@@ -83,16 +82,10 @@ def write_pwm(value):
     for channel, addr in BANKS:
         try:
             identify(channel, addr)
-            fd = os.open('/dev/i2c-%d' % bus(channel), os.O_RDWR)
-            try:
-                for reg in range(0x32, 0x36):
-                    data = (ctypes.c_uint8 * 2)(reg, value)
-                    msgs = (Msg * 1)(Msg(addr, 0, 2, data))
-                    fcntl.ioctl(fd, I2C_RDWR, Ioctl(msgs, 1))
-                    if rd(channel, addr, reg) != value:
-                        raise RuntimeError('PWM readback mismatch')
-            finally:
-                os.close(fd)
+            for reg in range(0x32, 0x36):
+                write_reg(bus(channel), addr, reg, value)
+                if rd(channel, addr, reg) != value:
+                    raise RuntimeError('PWM readback mismatch')
         except Exception as e:
             errors.append(str(e))
     if errors:

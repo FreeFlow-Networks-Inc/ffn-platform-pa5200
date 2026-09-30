@@ -5,15 +5,13 @@ Board wiring is derived from the PA-5200 version 11 port map. The active-high
 TX_DISABLE polarity is verified against live SFF-8472 diagnostics. No customer
 interface configuration belongs here. Only the selected cage bit is written.
 """
-import ctypes as C
 import fcntl
 import math
-import os
 from pathlib import Path
 import re
 import struct
 
-from ffn_i2cread import read_regs, Msg, Ioctl, I2C_RDWR
+from ffn_i2cread import read_regs, write_reg
 
 LOCK = Path('/run/ffn-sfp-control.lock')
 SYSFS = Path('/sys/bus/i2c/devices')
@@ -56,13 +54,7 @@ def _write_bit(register, mask, value):
     old = read_regs(BUS, 0x23, register, 1)[0]
     new = old | mask if value else old & ~mask
     if new != old:
-        fd = os.open('/dev/i2c-%d' % BUS, os.O_RDWR)
-        try:
-            data = (C.c_uint8 * 2)(register, new)
-            messages = (Msg * 1)(Msg(0x23, 0, 2, C.cast(data, C.POINTER(C.c_uint8))))
-            fcntl.ioctl(fd, I2C_RDWR, Ioctl(messages, 1))
-        finally:
-            os.close(fd)
+        write_reg(BUS, 0x23, register, new)
     if read_regs(BUS, 0x23, register, 1)[0] != new:
         raise RuntimeError('SFP control register readback mismatch')
 

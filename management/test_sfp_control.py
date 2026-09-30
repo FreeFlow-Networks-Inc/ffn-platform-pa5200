@@ -19,20 +19,11 @@ class SfpControlTests(unittest.TestCase):
         self.registers={0x22:bytearray([0xfe,0xff,0xff,0xff,0,0,0xff,0xff]),
                         0x23:bytearray([0xff,0xff,0xff,0xff,0,0,0xff,0xff])}
         self.writes=[]
-        real_open,real_close=sfp.os.open,sfp.os.close
-        def open_device(path,*args,**kwargs):
-            return 99999 if str(path)=='/dev/i2c-1' else real_open(path,*args,**kwargs)
-        def close_device(fd):
-            if fd!=99999:real_close(fd)
         def read(bus,address,offset,count):
             self.assertEqual(bus,1)
             return bytes(self.registers[address][(offset & ~1) | ((offset+i)&1)] for i in range(count))
-        def write(fd,operation,request):
-            self.assertEqual(request.nmsgs,1)
-            message=request.msgs[0]
-            self.assertEqual(message.addr,0x23)
-            self.assertEqual(message.len,2)
-            register,value=message.buf[0],message.buf[1]
+        def write(bus,address,register,value):
+            self.assertEqual((bus,address),(1,0x23))
             self.registers[0x23][register]=value
             self.writes.append((register,value))
             # Model driven pins and pulled-up undriven TX_DISABLE pins.
@@ -41,8 +32,7 @@ class SfpControlTests(unittest.TestCase):
                 self.registers[0x23][bank]=raw ^ self.registers[0x23][4+bank]
         for mock in (patch.object(sfp,'LOCK',Path(self.tmp.name)/'lock'),
                      patch.object(sfp,'read_regs',side_effect=read),
-                     patch.object(sfp.os,'open',side_effect=open_device),
-                     patch.object(sfp.os,'close',side_effect=close_device),patch.object(sfp.fcntl,'ioctl',side_effect=write)):
+                     patch.object(sfp,'write_reg',side_effect=write)):
             mock.start();self.addCleanup(mock.stop)
 
     def test_first_sfp_is_bit_zero_and_disable_preserves_other_cages(self):
@@ -71,7 +61,7 @@ class SfpControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):sfp.set_enabled(port,True)
 
     def test_input_readback_failure_is_not_acknowledged(self):
-        with patch.object(sfp.fcntl,'ioctl'):
+        with patch.object(sfp,'write_reg'):
             with self.assertRaisesRegex(RuntimeError,'readback'):sfp.set_enabled(5,True)
 
     def test_diagnostics_calibration_checksums_and_readiness(self):

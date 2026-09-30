@@ -273,9 +273,19 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(artifact)
         modules = image_policy.root_path(root, 'lib/modules')
         safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
+                          output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+    native = work / (role + '-native')
+    native = native / 'native'
+    ignore = shutil.ignore_patterns('*.so', '*.o', '__pycache__', 'test-hwio')
+    shutil.copytree(platform / 'octeon/native', native, ignore=ignore)
+    shutil.copytree(platform / 'octeon/dpfwd', native.parent / 'dpfwd', ignore=ignore)
+    run(['make', '-B', '-C', native, 'CC=' + userspace_cross + 'gcc', 'all'])
+    for name in ('packet', 'hwio', 'inline'):
+        artifact = native / ('libffn-' + name + '.so')
+        elf(artifact)
+        safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
     if role == 'cp':
-        image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
-                              output([userspace_cross + 'gcc', '--version']).splitlines()[0])
         adapters = work / 'fe100-adapters'
         run(['sh', platform / 'fe100/build-adapters.sh', adapters],
             env=dict(os.environ, CC=userspace_cross + 'gcc'))
