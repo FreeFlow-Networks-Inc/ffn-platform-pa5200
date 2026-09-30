@@ -21,6 +21,8 @@ int ffn_packet_pause(struct ffn_packet *);
 int ffn_packet_resume(struct ffn_packet *);
 int ffn_packet_workers(struct ffn_packet *, int *, unsigned);
 int ffn_packet_counters(struct ffn_packet *, uint64_t *, unsigned);
+/* Additive ABI: receive syscalls, frames returned, largest batch. */
+int ffn_packet_receive_stats(struct ffn_packet *, uint64_t *, unsigned);
 void ffn_packet_close(struct ffn_packet *);
 /* Aggregate ABI 1: immutable member mapping, paused configuration updates. */
 struct ffn_aggregate_member { uint32_t front, source, alias; };

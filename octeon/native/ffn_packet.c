@@ -29,6 +29,12 @@ enum { RX, TX, ENVELOPE_DROP, LENGTH_DROP, PRESSURE_DROP, ADMIN_DROP,
        NO_MATCH, ALERT, BLOCK, OUTGOING, BAD_VERDICT };
 struct ffn_packet {
     int rx, tx, tap, wake[2];
+    /* Stable heap-backed buffers: no per-packet allocation or large worker stack. */
+    struct mmsghdr messages[BURST];
+    struct iovec vectors[BURST];
+    struct sockaddr_ll addresses[BURST];
+    uint8_t frames[BURST][MAX_FRAME + 5];
+    _Atomic uint64_t receive_calls, receive_frames, receive_max_batch;
     struct ffn_aggregate *aggregate;
     unsigned source, n4, n6;
     uint8_t local4[FFN_PACKET_LOCAL_MAX][4], local6[FFN_PACKET_LOCAL_MAX][16];
@@ -78,6 +84,12 @@ static struct ffn_packet *allocate(unsigned source)
         if (rc) { free(p); errno = rc; return NULL; }
         rc = pthread_cond_init(&p->changed, NULL);
         if (rc) { pthread_mutex_destroy(&p->control); free(p); errno = rc; return NULL; }
+        for (unsigned i = 0; i < BURST; i++) {
+            p->vectors[i] = (struct iovec){p->frames[i], sizeof(p->frames[i])};
+            p->messages[i].msg_hdr.msg_iov = &p->vectors[i];
+            p->messages[i].msg_hdr.msg_iovlen = 1;
+            p->messages[i].msg_hdr.msg_name = &p->addresses[i];
+        }
     }
     return p;
 }
@@ -236,13 +248,24 @@ static int io_error(struct ffn_packet *p)
 #include "ffn_aggregate_packet.inc"
 static int receive_burst(struct ffn_packet *p)
 {
-    uint8_t packet[MAX_FRAME + 5]; unsigned i;
-    for (i = 0; i < BURST; i++) {
-        struct sockaddr_ll addr = {0}; socklen_t addrlen = sizeof(addr);
-        ssize_t n = recvfrom(p->rx, packet, sizeof(packet), MSG_TRUNC, (struct sockaddr *)&addr, &addrlen);
+    int count;
+    for (unsigned i = 0; i < BURST; i++) {
+        memset(&p->addresses[i], 0, sizeof(p->addresses[i]));
+        p->messages[i].msg_hdr.msg_namelen = sizeof(p->addresses[i]);
+        p->messages[i].msg_hdr.msg_flags = 0;
+    }
+    atomic_fetch_add_explicit(&p->receive_calls, 1, memory_order_relaxed);
+    count = recvmmsg(p->rx, p->messages, BURST, MSG_DONTWAIT | MSG_TRUNC, NULL);
+    if (count < 0) return errno == EAGAIN || errno == EINTR ? 0 : io_error(p);
+    atomic_fetch_add_explicit(&p->receive_frames, count, memory_order_relaxed);
+    /* RX has exactly one writer, including the synchronous test entry point. */
+    if ((uint64_t)count > atomic_load_explicit(&p->receive_max_batch, memory_order_relaxed))
+        atomic_store_explicit(&p->receive_max_batch, count, memory_order_relaxed);
+    for (int i = 0; i < count; i++) {
+        uint8_t *packet = p->frames[i];
+        ssize_t n = p->messages[i].msg_len;
         int accepted;
-        if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
-        if (addr.sll_family == AF_PACKET && addr.sll_pkttype == PACKET_OUTGOING) {
+        if (p->addresses[i].sll_family == AF_PACKET && p->addresses[i].sll_pkttype == PACKET_OUTGOING) {
             atomic_fetch_add_explicit(&p->counters[OUTGOING], 1, memory_order_relaxed); continue;
         }
         if (p->aggregate) {
@@ -327,6 +350,15 @@ int ffn_packet_counters(struct ffn_packet *p, uint64_t *out, unsigned count)
 {
     if (!p || !out || count != FFN_PACKET_COUNTERS) { errno = EINVAL; return -1; }
     for (unsigned i = 0; i < count; i++) out[i] = atomic_load_explicit(&p->counters[i], memory_order_relaxed);
+    return 0;
+}
+
+int ffn_packet_receive_stats(struct ffn_packet *p, uint64_t *out, unsigned count)
+{
+    if (!p || !out || count != 3) { errno = EINVAL; return -1; }
+    out[0] = atomic_load_explicit(&p->receive_calls, memory_order_relaxed);
+    out[1] = atomic_load_explicit(&p->receive_frames, memory_order_relaxed);
+    out[2] = atomic_load_explicit(&p->receive_max_batch, memory_order_relaxed);
     return 0;
 }
 

@@ -3,6 +3,7 @@
 import ctypes as C
 import ipaddress
 import os
+from ffn_packet_cpus import CpuReservations
 
 LIBRARY='/usr/local/lib/libffn-packet.so'
 COUNTERS=('rx','tx','envelope_rejected','length_drop','backpressure_drop',
@@ -31,6 +32,8 @@ def library(path=LIBRARY):
     lib.ffn_packet_workers.restype=C.c_int
     lib.ffn_packet_counters.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
     lib.ffn_packet_counters.restype=C.c_int
+    lib.ffn_packet_receive_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
+    lib.ffn_packet_receive_stats.restype=C.c_int
     lib.ffn_packet_close.argtypes=[C.c_void_p]
     lib.ffn_packet_close.restype=None
     return lib
@@ -68,19 +71,24 @@ class PacketOwner:
 
     def resume(self):
         if not self.started:
-            cpus=sorted(os.sched_getaffinity(0))
-            # Preserve the first allowed CPU for control/driver work where possible.
-            data=cpus[1:] or cpus
-            start=((self.port-1)*2)%len(data)
-            checked(self.lib.ffn_packet_start(self.handle,data[start],data[(start+1)%len(data)]))
+            self.cpu_reservations=CpuReservations()
+            self.cpu_token,cpus=self.cpu_reservations.reserve()
+            try:checked(self.lib.ffn_packet_start(self.handle,*cpus))
+            except BaseException:
+                # start may have created one worker; join it before releasing CPUs.
+                self.close()
+                raise
             self.started=True
         checked(self.lib.ffn_packet_resume(self.handle))
 
     def workers(self):
         out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.handle,out,8))
+        batches=(C.c_uint64*3)();checked(self.lib.ffn_packet_receive_stats(self.handle,batches,3))
         return dict(count=out[0],rx_cpu=out[1],tx_cpu=out[2],rx_tid=out[3],tx_tid=out[4],
                     paused=bool(out[5]),stopped=bool(out[6]),error=out[7],
-                    scheduling='ordered-rx-tx',flow_parallelism=False)
+                    scheduling='ordered-rx-tx',flow_parallelism=False,
+                    cpu_allocation='shared-reservations',receive_syscalls=batches[0],
+                    receive_frames=batches[1],receive_max_batch=batches[2])
 
     def snapshot(self,inspector):
         values=(C.c_uint64*len(COUNTERS))()
@@ -95,3 +103,5 @@ class PacketOwner:
 
     def close(self):
         if self.handle:self.lib.ffn_packet_close(self.handle);self.handle=None
+        if getattr(self,'cpu_token',None):
+            self.cpu_reservations.release(self.cpu_token);self.cpu_token=None

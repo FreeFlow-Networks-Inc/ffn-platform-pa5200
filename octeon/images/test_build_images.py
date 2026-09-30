@@ -71,7 +71,10 @@ class BuildInputTests(unittest.TestCase):
                        ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS', 'MODULES'))
         complete = base + ''.join('CONFIG_' + n + '=y\n' for n in b.DP_POLICY_BUILTINS)
         complete += ''.join('CONFIG_' + n + '=m\n' for n in b.DP_POLICY_MODULES)
+        complete += 'CONFIG_HIGH_RES_TIMERS=y\n'
         b.check_kernel_config(complete, 'dp')
+        with self.assertRaisesRegex(ValueError, 'DP timing'):
+            b.check_kernel_config(complete.replace('CONFIG_HIGH_RES_TIMERS=y\n', ''), 'dp')
         for name in b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'DP policy'):
                 b.check_kernel_config('\n'.join(line for line in complete.splitlines()
@@ -285,7 +288,7 @@ class BuildInputTests(unittest.TestCase):
         config = self.root / 'config'
         config.write_text(''.join('CONFIG_'+s+'=y\n' for s in
                                  ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS',
-                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
+                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM', 'HIGH_RES_TIMERS') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
         def pin(p):
             return dict(path=str(p), sha256=b.sha(p))
         inputs = dict(kernel_repository=str(platform), kernel_commit='c'*40,

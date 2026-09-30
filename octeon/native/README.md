@@ -44,6 +44,16 @@ Native event descriptors wake paused workers immediately instead of waiting
 for the packet poll timeout. Aggregate configuration transactions withdraw data
 delivery while the network worker applies changes; LACP control continues.
 
+RX drains up to 64 frames per nonblocking `recvmmsg` call into reusable native
+buffers. The bounded batch preserves ordering, per-frame admission, truncation
+checks and the control lease. Worker telemetry includes receive syscall count,
+frames returned and largest batch; batching does not imply RSS or multiple RX
+queues. `ffn_packet_cpus.py` allocates RX/TX cores under a shared reservation lock,
+within the process affinity mask. It reserves the first allowed core for control
+when at least three cores are available, balances oversubscription, and respects
+live legacy workers during rolling upgrades. Reservations expire on process
+death, PID reuse or reboot and are released only after native workers join.
+
 ## Validation
 
 ```sh
@@ -51,7 +61,7 @@ make all test
 sudo python3 test_kernel_packet.py
 ```
 
-Thirteen physical packet tests, ten aggregate tests, a C hardware-transaction
+Thirteen physical packet tests, ten aggregate tests, six CPU allocation tests, a C hardware-transaction
 test, and private network/mount
 namespace integration cover native framing, source admission, bounded lengths,
 inspection blocking, configuration replacement, IPv4/IPv6 local services,
@@ -88,6 +98,14 @@ The deployed CPU path currently uses one SSO receive group and a configured
 The driver now skips its fixed idle sleep when a complete 64-packet RX budget
 was consumed, while retaining scheduler yields, TX reaping and fault checks.
 This does not add receive queues or widen the hardware transport.
+
+DP kernels must enable `CONFIG_HIGH_RES_TIMERS`. On the measured low-resolution
+HZ=100 kernel, a requested 0.5ms sleep took approximately 10ms. Sleeping after
+every 64-frame receive batch can limit service to about 6,400 frames/s regardless
+of spare CPU capacity. The image builder rejects DP configurations without
+high-resolution timer support; the isolated kernel builder enables it. A booted
+image still needs timer-resolution and wire-throughput verification. Kernel or
+pinned DMA-driver replacement requires a DP restart.
 
 BCM/FE100 admission still requires verified bidirectional forwarding, exception
 handling and ordered policy/route/neighbor withdrawal. A forwarding-only lab

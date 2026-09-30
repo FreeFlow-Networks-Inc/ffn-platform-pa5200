@@ -23,5 +23,6 @@ test: libffn-packet.so libffn-inline.so test-scan.so test-hwio
 	./test-hwio
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	python3 test_aggregate.py
+	cd ../debian && python3 -m unittest test_packet_cpus
 
 .PHONY: all test

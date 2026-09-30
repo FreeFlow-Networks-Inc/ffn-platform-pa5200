@@ -239,6 +239,10 @@ def check_kernel_config(conf, role):
             value = values.get('CONFIG_' + symbol)
             if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
                 raise ValueError('Missing DP policy kernel requirement: ' + symbol)
+        # At HZ=100, low-resolution timers turn submillisecond packet polling
+        # sleeps into 10ms pauses, even when forwarding cores are otherwise idle.
+        if values.get('CONFIG_HIGH_RES_TIMERS') != 'y':
+            raise ValueError('Missing DP timing kernel requirement: HIGH_RES_TIMERS')
     if role == 'cp':
         for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
             value = values.get('CONFIG_' + symbol)
