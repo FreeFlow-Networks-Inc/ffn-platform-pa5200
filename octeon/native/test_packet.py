@@ -49,6 +49,26 @@ class NativePacketTests(unittest.TestCase):
         self.assertEqual(stats[1],80)
         self.assertEqual(stats[2],64)
         self.assertEqual(stats[0],2)
+        checked(self.lib.ffn_packet_transmit_stats(self.ctx,stats,3))
+        self.assertEqual(list(stats),[2,80,64])
+
+    def test_transmit_partial_queue_is_not_replayed(self):
+        # A real nonblocking datagram queue forces a partial sendmmsg prefix.
+        self.tx.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,4096)
+        frames=[bytes(12)+b'\x88\xb5'+i.to_bytes(4,'big')+bytes(1000) for i in range(64)]
+        for frame in frames:self.peer.send(frame)
+        self.poll()
+        received=[]
+        while True:
+            try:received.append(self.collect.recv(4096))
+            except BlockingIOError:break
+        self.assertGreater(len(received),0);self.assertLess(len(received),64)
+        expected=[b'\1\0\x1c\0'+f[:12]+bytes(8)+f[12:] for f in frames]
+        self.assertEqual(received,expected[:len(received)])
+        self.assertEqual(self.counts()['tx'],len(received))
+        self.assertEqual(self.counts()['backpressure_drop'],64-len(received))
+        self.peer.send(frames[-1]);self.poll()
+        self.assertEqual(self.collect.recv(4096),expected[-1]);self.empty(self.collect)
     def test_invalid_envelopes_lengths_and_source(self):
         for size in range(18):self.inject.send(bytes(size))
         self.inject.send(b'\0\x18\0\x1d'+bytes(60))

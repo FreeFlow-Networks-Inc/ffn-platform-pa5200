@@ -61,7 +61,7 @@ make all test
 sudo python3 test_kernel_packet.py
 ```
 
-Thirteen physical packet tests, ten aggregate tests, six CPU allocation tests, a C hardware-transaction
+Fourteen physical packet tests, ten aggregate tests, six CPU allocation tests, a C hardware-transaction
 test, and private network/mount
 namespace integration cover native framing, source admission, bounded lengths,
 inspection blocking, configuration replacement, IPv4/IPv6 local services,
@@ -72,6 +72,15 @@ The aggregate tests cover VLAN-only parents, stable member selection against the
 previous implementation, acknowledgement expiry, network transitions and
 control-wrapper updates without replacing the TAP or worker threads. Real
 AF_PACKET integration verifies separation of data and LACP receive queues.
+
+Physical-port transmit uses preallocated `sendmmsg` batches of up to 64 packets.
+The worker immediately flushes the packets already available; it never waits to
+fill a batch. Partial sends advance past the accepted prefix, and a full socket
+queue counts every dropped suffix packet without replay or unbounded retries.
+The additive `ffn_packet_transmit_stats` API reports socket calls, accepted frames
+and largest accepted batch. The 80-frame fixture verifies two calls, byte-exact
+framing and padding; a constrained real datagram queue verifies partial sends,
+order and exact drop accounting. Aggregate transmit retains its existing path.
 
 ## Migration still required
 

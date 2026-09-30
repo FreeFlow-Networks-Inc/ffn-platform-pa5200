@@ -34,6 +34,10 @@ def library(path=LIBRARY):
     lib.ffn_packet_counters.restype=C.c_int
     lib.ffn_packet_receive_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
     lib.ffn_packet_receive_stats.restype=C.c_int
+    # Keep control tools compatible with a previously loaded packet library.
+    if hasattr(lib,'ffn_packet_transmit_stats'):
+        lib.ffn_packet_transmit_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
+        lib.ffn_packet_transmit_stats.restype=C.c_int
     lib.ffn_packet_close.argtypes=[C.c_void_p]
     lib.ffn_packet_close.restype=None
     return lib
@@ -84,11 +88,15 @@ class PacketOwner:
     def workers(self):
         out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.handle,out,8))
         batches=(C.c_uint64*3)();checked(self.lib.ffn_packet_receive_stats(self.handle,batches,3))
+        tx={}
+        if hasattr(self.lib,'ffn_packet_transmit_stats'):
+            sent=(C.c_uint64*3)();checked(self.lib.ffn_packet_transmit_stats(self.handle,sent,3))
+            tx=dict(transmit_syscalls=sent[0],transmit_frames=sent[1],transmit_max_batch=sent[2])
         return dict(count=out[0],rx_cpu=out[1],tx_cpu=out[2],rx_tid=out[3],tx_tid=out[4],
                     paused=bool(out[5]),stopped=bool(out[6]),error=out[7],
                     scheduling='ordered-rx-tx',flow_parallelism=False,
                     cpu_allocation='shared-reservations',receive_syscalls=batches[0],
-                    receive_frames=batches[1],receive_max_batch=batches[2])
+                    receive_frames=batches[1],receive_max_batch=batches[2],**tx)
 
     def snapshot(self,inspector):
         values=(C.c_uint64*len(COUNTERS))()

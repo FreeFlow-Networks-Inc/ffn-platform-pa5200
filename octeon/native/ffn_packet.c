@@ -35,6 +35,10 @@ struct ffn_packet {
     struct sockaddr_ll addresses[BURST];
     uint8_t frames[BURST][MAX_FRAME + 5];
     _Atomic uint64_t receive_calls, receive_frames, receive_max_batch;
+    struct mmsghdr tx_messages[BURST];
+    struct iovec tx_vectors[BURST];
+    uint8_t tx_frames[BURST][MAX_FRAME + 12];
+    _Atomic uint64_t transmit_calls, transmit_frames, transmit_max_batch;
     struct ffn_aggregate *aggregate;
     unsigned source, n4, n6;
     uint8_t local4[FFN_PACKET_LOCAL_MAX][4], local6[FFN_PACKET_LOCAL_MAX][16];
@@ -89,6 +93,9 @@ static struct ffn_packet *allocate(unsigned source)
             p->messages[i].msg_hdr.msg_iov = &p->vectors[i];
             p->messages[i].msg_hdr.msg_iovlen = 1;
             p->messages[i].msg_hdr.msg_name = &p->addresses[i];
+            p->tx_vectors[i].iov_base = p->tx_frames[i];
+            p->tx_messages[i].msg_hdr.msg_iov = &p->tx_vectors[i];
+            p->tx_messages[i].msg_hdr.msg_iovlen = 1;
         }
     }
     return p;
@@ -286,12 +293,49 @@ static int receive_burst(struct ffn_packet *p)
     }
     return 0;
 }
+static int transmit_batch(struct ffn_packet *p, unsigned count)
+{
+    unsigned offset = 0;
+    while (offset < count) {
+        atomic_fetch_add_explicit(&p->transmit_calls, 1, memory_order_relaxed);
+        int sent = sendmmsg(p->tx, p->tx_messages + offset, count - offset,
+                           MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (sent < 0) {
+            /* Never replay the accepted prefix after a partial send. A busy
+             * nonblocking queue drops only the remaining suffix, with exact
+             * packet accounting; no unbounded retry can delay control fences. */
+            int error = errno;
+            if (error == EINTR) {
+                atomic_fetch_add_explicit(&p->counters[PRESSURE_DROP], count - offset, memory_order_relaxed);
+                return 0;
+            }
+            if (io_error(p)) return -1;
+            unsigned counter = error == EAGAIN || error == ENOBUFS ? PRESSURE_DROP : ADMIN_DROP;
+            atomic_fetch_add_explicit(&p->counters[counter], count - offset - 1, memory_order_relaxed);
+            return 0;
+        }
+        if (!sent) { errno = EIO; return -1; }
+        for (int i = 0; i < sent; i++)
+            if (p->tx_messages[offset + i].msg_len != p->tx_vectors[offset + i].iov_len) {
+                errno = EIO; return -1;
+            }
+        atomic_fetch_add_explicit(&p->counters[TX], sent, memory_order_relaxed);
+        atomic_fetch_add_explicit(&p->transmit_frames, sent, memory_order_relaxed);
+        if ((uint64_t)sent > atomic_load_explicit(&p->transmit_max_batch, memory_order_relaxed))
+            atomic_store_explicit(&p->transmit_max_batch, sent, memory_order_relaxed);
+        offset += (unsigned)sent;
+    }
+    return 0;
+}
 static int transmit_burst(struct ffn_packet *p)
 {
-    uint8_t frame[MAX_FRAME + 1], packet[MAX_FRAME + 12]; unsigned i;
+    uint8_t frame[MAX_FRAME + 1]; unsigned i, count = 0;
     for (i = 0; i < BURST; i++) {
         ssize_t n = read(p->tap, frame, sizeof(frame));
-        if (n < 0) return errno == EAGAIN ? 0 : io_error(p);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EINTR) break;
+            return io_error(p);
+        }
         if (!n) { errno = EPIPE; return -1; }
         if (p->aggregate) {
             if (aggregate_transmit(p, frame, n)) return -1;
@@ -299,15 +343,15 @@ static int transmit_burst(struct ffn_packet *p)
         }
         if (n < 14 || n > MAX_FRAME) { atomic_fetch_add_explicit(&p->counters[LENGTH_DROP], 1, memory_order_relaxed); continue; }
         if (n < 60) { memset(frame + n, 0, (size_t)(60 - n)); n = 60; }
+        uint8_t *packet = p->tx_frames[count];
         packet[0] = 1; packet[1] = (uint8_t)(p->source >> 8); packet[2] = (uint8_t)p->source; packet[3] = 0;
         memcpy(packet + 4, frame, 12); memset(packet + 16, 0, 8);
         memcpy(packet + 24, frame + 12, (size_t)n - 12);
-        ssize_t sent = send(p->tx, packet, (size_t)n + 12, MSG_NOSIGNAL);
-        if (sent < 0) { if (io_error(p)) return -1; continue; }
-        if (sent != n + 12) { errno = EIO; return -1; }
-        atomic_fetch_add_explicit(&p->counters[TX], 1, memory_order_relaxed);
+        p->tx_vectors[count].iov_len = (size_t)n + 12;
+        p->tx_messages[count].msg_len = 0;
+        count++;
     }
-    return 0;
+    return transmit_batch(p, count);
 }
 int ffn_packet_poll(struct ffn_packet *p, unsigned budget_ms)
 {
@@ -359,6 +403,15 @@ int ffn_packet_receive_stats(struct ffn_packet *p, uint64_t *out, unsigned count
     out[0] = atomic_load_explicit(&p->receive_calls, memory_order_relaxed);
     out[1] = atomic_load_explicit(&p->receive_frames, memory_order_relaxed);
     out[2] = atomic_load_explicit(&p->receive_max_batch, memory_order_relaxed);
+    return 0;
+}
+
+int ffn_packet_transmit_stats(struct ffn_packet *p, uint64_t *out, unsigned count)
+{
+    if (!p || !out || count != 3) { errno = EINVAL; return -1; }
+    out[0] = atomic_load_explicit(&p->transmit_calls, memory_order_relaxed);
+    out[1] = atomic_load_explicit(&p->transmit_frames, memory_order_relaxed);
+    out[2] = atomic_load_explicit(&p->transmit_max_batch, memory_order_relaxed);
     return 0;
 }
 
