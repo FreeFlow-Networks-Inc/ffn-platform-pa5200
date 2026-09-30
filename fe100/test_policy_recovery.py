@@ -15,6 +15,8 @@ class Recovery(unittest.TestCase):
             self.assertFalse(result['admission_enabled'])
             self.assertFalse(result['capabilities']['production_admission'])
             self.assertFalse(result['capabilities']['nat_packet_qualification'])
+            self.assertTrue(result['capabilities']['path_resources']['drain_before_reclaim'])
+            self.assertFalse(result['capabilities']['path_resources']['production_connected'])
             self.assertIn('snat-and-dnat',result['capabilities']['encoded_actions'])
             self.assertEqual(result['sessions'],0)
 

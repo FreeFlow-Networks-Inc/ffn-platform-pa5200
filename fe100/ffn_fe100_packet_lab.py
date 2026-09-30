@@ -74,7 +74,9 @@ def worker(request, fd):
     kind = request['kind']
     if kind=='readiness':
         from ffn_fe100_live_sessions import LiveSessions
-        return LiveSessions(False,lock_fd=fd,commissioning=True).status()
+        if 'readiness' not in WORKER_STATE:
+            WORKER_STATE['readiness']=LiveSessions(False,lock_fd=fd,commissioning=True)
+        return WORKER_STATE['readiness'].status()
     if kind == 'session':
         from ffn_fe100_live_sessions import LiveSessions
         if 'live' not in WORKER_STATE: WORKER_STATE['live'] = LiveSessions(True, lock_fd=fd,commissioning=True)

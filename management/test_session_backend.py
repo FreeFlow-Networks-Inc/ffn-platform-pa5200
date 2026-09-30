@@ -30,5 +30,13 @@ class SessionBackendTests(unittest.TestCase):
             return result
         with patch.object(backend,'call',side_effect=changed),self.assertRaises(ValueError):backend.execute('status',{})
 
+    def test_blocked_policy_keeps_continuous_transport_status_visible(self):
+        stream=dict(fresh=True,ready=False,cp_acknowledged=True,hardware_admission=False)
+        with patch.object(backend,'call',side_effect=ValueError('Policy acknowledgement required')) as call,patch.object(backend,'read_status',return_value=stream):
+            result=backend.execute('status',{})
+        self.assertFalse(result['available']);self.assertFalse(result['hardware_admission'])
+        self.assertEqual(result['continuous_stream'],stream)
+        self.assertIn('Policy acknowledgement',result['reason']);self.assertEqual(call.call_count,1)
+
 
 if __name__=='__main__':unittest.main()

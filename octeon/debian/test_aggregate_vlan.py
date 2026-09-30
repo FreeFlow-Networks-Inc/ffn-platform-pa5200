@@ -30,6 +30,21 @@ class VlanTests(unittest.TestCase):
         for change in (dict(name='ae2.69'),dict(tag=0),dict(tag=True),dict(mtu=9000),dict(addresses=['bad']),dict(addresses=['2001:db8::1/64'],mtu=1000)):
             with self.assertRaises(ValueError):vlan.validate('ae1',dict(self.network,units=[dict(self.unit,**change)]))
         with self.assertRaises(ValueError):vlan.validate('ae1',dict(self.network,units=[self.unit,self.unit]))
+    def test_compiled_snapshot_changes_only_after_rebuild(self):
+        compiled=vlan.Classifier('ae1',self.network)
+        self.unit['addresses']=['198.51.100.1/24']
+        self.unit['tag']=70
+        self.assertEqual(compiled.classify(self.tagged(69)),('ae1.69',self.plain,True))
+        self.assertIsNone(compiled.classify(self.tagged(70)))
+        refreshed=vlan.Classifier('ae1',self.network)
+        self.assertIsNone(refreshed.classify(self.tagged(69)))
+        self.assertFalse(refreshed.classify(self.tagged(70))[2])
+    def test_compiled_ipv6_and_untagged_mtu(self):
+        network=dict(enabled=True,mtu=1500,addresses=['2001:db8::1/64'],units=[])
+        compiled=vlan.Classifier('ae1',network)
+        frame=b'\0'*12+b'\x86\xdd'+b'\x60'+b'\0'*23+bytes.fromhex('20010db8000000000000000000000001')
+        self.assertEqual(compiled.classify(frame),('ae1',frame,True))
+        self.assertIsNone(compiled.classify(frame+b'\0'*1500))
     def test_foreign_child_is_rejected_before_mutation(self):
         events=[]
         def ip(*args):

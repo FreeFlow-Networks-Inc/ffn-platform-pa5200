@@ -275,10 +275,15 @@ def supervise(name):
         state.update(token=intent['token'],running_revision=selected['running_revision'])
         save()
         if hashlib.sha256(RUNNING.read_bytes()).hexdigest()!=selected['running_revision']:raise ValueError('Committed configuration changed before startup')
+        progress('Applying DP interface configuration')
         dp=subprocess.Popen(command('dp','serve'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None,start_new_session=True,bufsize=0)
         dp.stdin.write((json.dumps(intent)+'\n').encode());dp.stdin.flush()
-        ready,_,_=select.select([dp.stdout],[],[],12)
-        if not ready:raise RuntimeError('DP aggregate owner did not initialize')
+        # Creating VLANs and installing interface profiles can exceed the old
+        # 12-second deadline on OCTEON. Allow a bounded setup budget based on
+        # the configured work; the normal five-second heartbeat is unchanged.
+        startup_timeout=min(300,30+15*len(intent['network'].get('units',[])))
+        ready,_,_=select.select([dp.stdout],[],[],startup_timeout)
+        if not ready:raise RuntimeError('DP aggregate interface setup exceeded its startup deadline')
         first=dp.stdout.readline(65537)
         if len(first)>65536 or not first.endswith(b'\n'):raise RuntimeError('Invalid DP startup frame')
         row=json.loads(first)

@@ -119,6 +119,41 @@
       "core",
       "opt/ffn_controld_client.py",
       "usr/local/lib/ffn/ffn_controld_client.py"
+    ],
+    [
+      "platform",
+      "management/session_stream.py",
+      "usr/local/lib/ffn/session_stream.py"
+    ],
+    [
+      "core",
+      "opt/ffn_vrrp.py",
+      "usr/local/lib/ffn/ffn_vrrp.py"
+    ],
+    [
+      "core",
+      "opt/ffn_route_monitor.py",
+      "usr/local/lib/ffn/ffn_route_monitor.py"
+    ],
+    [
+      "core",
+      "opt/ffn_route_probe.py",
+      "usr/local/lib/ffn/ffn_route_probe.py"
+    ],
+    [
+      "core",
+      "opt/ffn_static_routes.py",
+      "usr/local/lib/ffn/ffn_static_routes.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-static-routes.service",
+      "etc/systemd/system/ffn-static-routes.service"
+    ],
+    [
+      "core",
+      "opt/ffn_interface_services.py",
+      "usr/local/lib/ffn/ffn_interface_services.py"
     ]
   ],
   "cp": [
@@ -221,6 +256,11 @@
       "platform",
       "management/ffn_faceplate.py",
       "usr/local/sbin/ffn_faceplate.py"
+    ],
+    [
+      "platform",
+      "management/ffn_sfp_control.py",
+      "usr/local/sbin/ffn_sfp_control.py"
     ],
     [
       "platform",
@@ -429,6 +469,26 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_path_owner.py",
+      "usr/local/sbin/ffn_fe100_path_owner.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_path_sessions.py",
+      "usr/local/sbin/ffn_fe100_path_sessions.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_resource_tables.py",
+      "usr/local/sbin/ffn_fe100_resource_tables.py"
+    ],
+    [
+      "platform",
+      "fe100/validate_path_resources.py",
+      "usr/local/sbin/validate_path_resources.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy_control.py",
       "usr/local/sbin/ffn_fe100_policy_control.py"
     ],
@@ -621,6 +681,46 @@
       "platform",
       "management/ffn_physical_forwarding.py",
       "usr/local/sbin/ffn_physical_forwarding.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_session_stream.py",
+      "usr/local/sbin/ffn_fe100_session_stream.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_port_led_enable.py",
+      "usr/local/sbin/ffn_port_led_enable.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-port-led-enable.service",
+      "etc/systemd/system/ffn-port-led-enable.service"
+    ],
+    [
+      "platform",
+      "management/ffn_bcm_reference.py",
+      "usr/local/sbin/ffn_bcm_reference.py"
+    ],
+    [
+      "platform",
+      "octeon/bcmagent/ffn_bcm_trunk.py",
+      "usr/local/ffn/ffn_bcm_trunk.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_front_traffic.py",
+      "usr/local/sbin/ffn_front_traffic.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_port_events.py",
+      "usr/local/sbin/ffn_port_events.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-port-events.service",
+      "etc/systemd/system/ffn-port-events.service"
     ]
   ],
   "dp": [
@@ -683,6 +783,26 @@
       "platform",
       "octeon/debian/ffn_dp_packet_transport.py",
       "usr/local/sbin/ffn_dp_packet_transport.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_packet_socket.py",
+      "usr/local/sbin/ffn_packet_socket.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_native_packet.py",
+      "usr/local/sbin/ffn_native_packet.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_packet_cpus.py",
+      "usr/local/sbin/ffn_packet_cpus.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_native_aggregate.py",
+      "usr/local/sbin/ffn_native_aggregate.py"
     ],
     [
       "platform",
@@ -808,6 +928,36 @@
       "platform",
       "octeon/debian/ffn-physical@.service",
       "etc/systemd/system/ffn-physical@.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_session_stream_dp.py",
+      "usr/local/sbin/ffn_session_stream_dp.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/validate_session_stream.py",
+      "usr/local/sbin/validate_session_stream.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-static-routes.conf",
+      "etc/systemd/system/ffn-static-routes.service.d/20-platform.conf"
+    ],
+    [
+      "core",
+      "systemd/ffn-interface-services.service",
+      "etc/systemd/system/ffn-interface-services.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_interface_profile_source.py",
+      "usr/local/lib/ffn/ffn_interface_profile_source.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-interface-services.conf",
+      "etc/systemd/system/ffn-interface-services.service.d/20-platform.conf"
     ]
   ]
 }

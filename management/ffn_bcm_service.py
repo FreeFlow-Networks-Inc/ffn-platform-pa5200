@@ -14,11 +14,18 @@ def status():
         service.get('ActiveState')=='active' and (pending['operation']=='start' or service.get('MainPID')!=pending['previous_pid']))
     complete=complete or service.get('ActiveState')=='failed'
     chip=None
+    reference=None
     if service.get('ActiveState')=='active':
         try: chip=call({'op':'status'})
         except (OSError,ValueError,RuntimeError): pass
+    if chip and chip.get('state')=='ready':
+        try:
+            from ffn_bcm_reference import status as reference_status
+            reference=reference_status()
+        except (ImportError,OSError,ValueError,RuntimeError) as error:
+            reference={'available':False,'error':str(error)}
     revision=int(hashlib.sha256(json.dumps([service,pending],sort_keys=True).encode()).hexdigest()[:12],16)
-    return {'revision':revision,'unit':UNIT,'service':service,'chip':chip,
+    return {'revision':revision,'unit':UNIT,'service':service,'chip':chip,'sdk_reference':reference,
             'request':pending,'operation_complete':complete,
             'forwarding_verified':False,'configuration_reapply_required':bool(pending and pending['operation']!='stop'),
             'warning':'Restart reinitializes the switch and interrupts all faceplate links. Service active does not prove forwarding or configuration restoration.'}

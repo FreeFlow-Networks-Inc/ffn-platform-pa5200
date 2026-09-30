@@ -177,10 +177,11 @@ def safe_install(source, root, destination):
 def enable_runtime_units(root, role, owners):
     # Only infrastructure starts automatically. Packet owners still require
     # MP intent and current CP/DP qualification before attaching interfaces.
-    units = {'cp': [('timers.target', 'ffn-copper-link.timer'),
+    units = {'cp': [('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
+                    ('multi-user.target', 'ffn-port-led-enable.service'),
                     ('timers.target', 'ffn-fe100-recovery.timer'),
                     ('timers.target', 'ffn-aggregate-watchdog.timer')],
-             'dp': [('multi-user.target', 'ffn-network.service'),
+             'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
@@ -238,6 +239,10 @@ def check_kernel_config(conf, role):
             value = values.get('CONFIG_' + symbol)
             if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
                 raise ValueError('Missing DP policy kernel requirement: ' + symbol)
+        # At HZ=100, low-resolution timers turn submillisecond packet polling
+        # sleeps into 10ms pauses, even when forwarding cores are otherwise idle.
+        if values.get('CONFIG_HIGH_RES_TIMERS') != 'y':
+            raise ValueError('Missing DP timing kernel requirement: HIGH_RES_TIMERS')
     if role == 'cp':
         for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
             value = values.get('CONFIG_' + symbol)
@@ -272,9 +277,19 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(artifact)
         modules = image_policy.root_path(root, 'lib/modules')
         safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
+                          output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+    native = work / (role + '-native')
+    native = native / 'native'
+    ignore = shutil.ignore_patterns('*.so', '*.o', '__pycache__', 'test-hwio')
+    shutil.copytree(platform / 'octeon/native', native, ignore=ignore)
+    shutil.copytree(platform / 'octeon/dpfwd', native.parent / 'dpfwd', ignore=ignore)
+    run(['make', '-B', '-C', native, 'CC=' + userspace_cross + 'gcc', 'all'])
+    for name in ('packet', 'hwio', 'inline'):
+        artifact = native / ('libffn-' + name + '.so')
+        elf(artifact)
+        safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
     if role == 'cp':
-        image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
-                              output([userspace_cross + 'gcc', '--version']).splitlines()[0])
         adapters = work / 'fe100-adapters'
         run(['sh', platform / 'fe100/build-adapters.sh', adapters],
             env=dict(os.environ, CC=userspace_cross + 'gcc'))

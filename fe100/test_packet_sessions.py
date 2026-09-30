@@ -1,10 +1,20 @@
 import struct
 import unittest
+from unittest.mock import patch
 from ffn_fe100_sessions import key4, forwarding_entry4, validate_entry4
 from ffn_fe100_session_adapter import encode_native, decode_native
 
 
 class PacketSessionTests(unittest.TestCase):
+    def test_repeated_readiness_uses_existing_mapping_and_fresh_status(self):
+        import ffn_fe100_packet_lab as lab
+        import ffn_fe100_live_sessions as live
+        with patch.dict(lab.WORKER_STATE,{},clear=True),patch.object(live,'LiveSessions') as factory:
+            factory.return_value.status.side_effect=[{'ready':True},{'ready':False}]
+            self.assertTrue(lab.worker({'kind':'readiness'},7)['ready'])
+            self.assertFalse(lab.worker({'kind':'readiness'},7)['ready'])
+            factory.assert_called_once_with(False,lock_fd=7,commissioning=True)
+
     def setUp(self):
         self.key=key4('198.18.0.1','198.18.0.2',49000,49001,17,4094)
 

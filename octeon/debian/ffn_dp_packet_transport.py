@@ -59,10 +59,22 @@ def decode_otmh_ssp(frame, ports, front=FRONT):
     Never infer a source
     port from the payload, or accept an untagged return with no source metadata.
     """
+    return _decode_otmh(frame,ports,{v:k for k,v in front.items()})
+
+
+class OTMHDecoder:
+    """Snapshot the commissioned wiring once for each packet owner."""
+    def __init__(self,front):
+        self.reverse={v:k for k,v in front.items()}
+
+    def __call__(self,frame,ports):
+        return _decode_otmh(frame,ports,self.reverse)
+
+
+def _decode_otmh(frame,ports,reverse):
     if not 18 <= len(frame) <= MAX_FRAME+4 or frame[:2]!=b'\0\x18':
         return None
     source=struct.unpack_from('!H',frame,2)[0]
-    reverse={v:k for k,v in front.items()}
     port=reverse.get(source)
     if port not in ports:
         return None
@@ -91,46 +103,51 @@ def pump(rx, tx, taps, inspector, seconds=0, counters=None, decoder=decode):
     while time.monotonic() < deadline:
         inspector.tick()
         ready, _, _ = select.select([rx, *byfd], [], [], .25)
-        # One bounded datagram per ready descriptor: no unbounded queue and
-        # no retry after an ambiguous transmit. Count pressure explicitly.
+        # Drain bounded bursts in each direction before checking control again.
+        # An empty nonblocking RX queue is not a dropped packet. A failed write
+        # is never retried after an ambiguous transmit.
         for source in ready:
-            try:
-                if source is rx:
-                    frame, addr = rx.recvfrom(65536)
-                    if addr[2] == socket.PACKET_OUTGOING:
-                        counts['outgoing_ignored'] += 1; continue
-                    item = decoder(frame, taps)
-                    if item is None:
-                        counts['envelope_rejected'] += 1; continue
-                    port, payload = item
-                    if not inspector.allow(port, payload):
-                        counts['inspection_drop'] += 1; continue
-                    if os.write(taps[port], payload) != len(payload):
-                        raise OSError('short TAP packet write')
-                    counts['rx_p%d' % port] += 1
-                else:
-                    payload = os.read(source, MAX_FRAME+1)
-                    if not payload:
-                        raise RuntimeError('TAP closed')
-                    port = byfd[source]
-                    if not 14 <= len(payload) <= MAX_FRAME:
-                        counts['length_drop'] += 1; continue
-                    packet = encode(port, payload)
-                    if tx.send(packet) != len(packet):
-                        raise OSError('short trunk packet write')
-                    counts['tx_p%d' % port] += 1
-            except BlockingIOError:
-                counts['backpressure_drop'] += 1
-            except OSError as error:
-                if error.errno in (errno.EIO, errno.ENETDOWN):
-                    # A committed address/MTU change briefly lowers the TAP.
-                    # Discard this packet; keep the exclusive owner attached.
-                    counts['admin_down_drop'] += 1
-                    time.sleep(.01)
-                elif error.errno == errno.ENOBUFS:
+            for _ in range(64):
+                try:
+                    if source is rx:
+                        try:frame, addr = rx.recvfrom(65536)
+                        except BlockingIOError:break
+                        if addr[2] == socket.PACKET_OUTGOING:
+                            counts['outgoing_ignored'] += 1; continue
+                        item = decoder(frame, taps)
+                        if item is None:
+                            counts['envelope_rejected'] += 1; continue
+                        port, payload = item
+                        if not inspector.allow(port, payload):
+                            counts['inspection_drop'] += 1; continue
+                        if os.write(taps[port], payload) != len(payload):
+                            raise OSError('short TAP packet write')
+                        counts['rx_p%d' % port] += 1
+                    else:
+                        try:payload = os.read(source, MAX_FRAME+1)
+                        except BlockingIOError:break
+                        if not payload:
+                            raise RuntimeError('TAP closed')
+                        port = byfd[source]
+                        if not 14 <= len(payload) <= MAX_FRAME:
+                            counts['length_drop'] += 1; continue
+                        packet = encode(port, payload)
+                        if tx.send(packet) != len(packet):
+                            raise OSError('short trunk packet write')
+                        counts['tx_p%d' % port] += 1
+                except BlockingIOError:
                     counts['backpressure_drop'] += 1
-                else:
-                    raise
+                except OSError as error:
+                    if error.errno in (errno.EIO, errno.ENETDOWN):
+                        # A committed address/MTU change briefly lowers the TAP.
+                        # Discard this packet; keep the exclusive owner attached.
+                        counts['admin_down_drop'] += 1
+                        time.sleep(.01)
+                        break
+                    elif error.errno == errno.ENOBUFS:
+                        counts['backpressure_drop'] += 1
+                    else:
+                        raise
     return dict(counts)
 
 

@@ -118,7 +118,9 @@ def prepare_fabric(current):
     from ffn_aggregate_hardware import FACEPLATE_LOCK, acquire
     from ffn_packet_fabric import ensure
     with FACEPLATE_LOCK.open('a') as face:
-        acquire(face)
+        # Inventory and copper reconciliation can hold this lock for more than
+        # a second. Wait before changing hardware; retain a bounded deadline.
+        acquire(face,seconds=10)
         rows={p['port']:p for p in call({'op':'port.list'})['ports']}
         enabled=rows.get(28,{}).get('enabled')
         if type(enabled) is not bool:raise RuntimeError('WAN administrative state unavailable')

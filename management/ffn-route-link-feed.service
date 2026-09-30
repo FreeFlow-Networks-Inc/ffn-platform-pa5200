@@ -1,0 +1,14 @@
+[Unit]
+Description=FFN MP hardware link observations for static routes
+Requires=ffn-controld.service
+After=ffn-controld.service
+PartOf=ffn-controld.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/ffn-platforms/pa5200-management/route_link_feed.py
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

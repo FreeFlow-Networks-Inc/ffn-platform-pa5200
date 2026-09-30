@@ -4,6 +4,8 @@
 import sys
 import json
 import re
+from pathlib import Path
+import time
 sys.path.insert(0, '/usr/local/lib/ffn')
 import ffn_linux_network as engine
 engine.MAX_PORTS = 24
@@ -17,6 +19,22 @@ def install_guards(target):
     original_interfaces = target.routing_interfaces
     original_attached = target.attached_interfaces
     original_backend = target.backend
+
+    def route_link(dev):
+        try:
+            value=json.loads(Path('/run/ffn-route-links.json').read_text())
+            if value['boot_id']!=Path('/proc/sys/kernel/random/boot_id').read_text().strip() or not 0<=time.monotonic()-value['observed']<=60:
+                return 'hardware-link-observation-stale'
+            if re.fullmatch(r'p[1-9][0-9]*',dev):
+                return None if value['links'].get(dev) is True else 'hardware-link-down'
+            parent=dev.split('.')[0]
+            if re.fullmatch(r'ae[1-9][0-9]*',parent):
+                owner=json.loads(Path('/run/ffn-aggregate-'+parent+'-status.json').read_text())
+                return None if any(value['links'].get('p'+str(p)) is True for p in owner.get('distributing',[])) else 'aggregate-no-live-member'
+            return 'hardware-link-unavailable'
+        except (OSError,ValueError,KeyError): return 'hardware-link-observation-unavailable'
+
+    target.route_link=route_link
 
     def backend():
         result=dict(original_backend())

@@ -7,9 +7,11 @@ FE100_VIEWS = ('status', 'driver', 'counters', 'policy', 'recovery', 'capabiliti
 
 
 def help_text():
-    return ('show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]\n'
+    return ('show platform routes VR\nrequest platform route VR ID|new JSON\n  Stage static route and optional path_monitor settings; Commit applies them.\n'
+            'show platform fe100 [status|driver|counters|policy|recovery|capabilities|sessions] [json]\n'
             '  Read FE100 observations through MP controld; stale data is labelled.\n'
             '  Bare fe100 or fe100 json preserves the complete JSON report.\n'
+            'show platform interface-services\n  Read applied profile listeners and MP provider availability.\n'
             'show platform control | agents | control-events | boot\n'
             '  Inspect plane connectivity and recent control events.\n'
             'show platform images\n'
@@ -27,14 +29,14 @@ def complete(prefix, text):
     if parts == ['show']: choices = ['platform']
     elif parts == ['show', 'platform']:
         choices = ['fe100', 'control', 'agents', 'control-events', 'boot', 'images', 'processors', 'aggregates', 'mp-interfaces',
-                   'wan-path', 'status', 'bcm', 'phy', 'faceplate', 'dataplane', 'network',
+                   'routes', 'interface-services', 'wan-path', 'status', 'bcm', 'phy', 'faceplate', 'dataplane', 'network',
                    'inspection', 'overlay', 'chassis', 'thermal', 'fabric']
     elif parts == ['show', 'platform', 'fe100']: choices = list(FE100_VIEWS)
     elif len(parts) == 4 and parts[:3] == ['show', 'platform', 'fe100']:
         choices = ['json'] if parts[3] in FE100_VIEWS[:-1] else []
     elif parts in (['help'], ['?']): choices = ['platform']
     elif parts in (['help', 'platform'], ['?', 'platform']): choices = ['fe100']
-    elif parts == ['request', 'platform']: choices = ['image', 'restart']
+    elif parts == ['request', 'platform']: choices = ['image', 'restart', 'route']
     elif parts == ['request', 'platform', 'restart']: choices = ['cp', 'dp']
     elif len(parts) == 4 and parts[:3] == ['request', 'platform', 'restart']: choices = ['acknowledge-outage']
     elif parts == ['request', 'platform', 'image']: choices = ['cp', 'dp']
@@ -125,6 +127,16 @@ def show_fe100(parts, api, token):
 
 def handle(line, api, token):
     parts=shlex.split(line)
+    if parts[:3]==['show','platform','routes'] and len(parts)==4:
+        from urllib.parse import quote
+        print(json.dumps(api('/api/network/virtual-routers/'+quote(parts[3],safe='')+'/routes',token=token),indent=2));return True
+    if parts[:3]==['request','platform','route'] and len(parts)==6:
+        from urllib.parse import quote
+        if parts[4]!='new' and not parts[4].isdigit():raise ValueError('Route ID must be an integer or new')
+        spec=json.loads(parts[5])
+        result=api('/api/network/virtual-routers/'+quote(parts[3],safe='')+'/routes'+('' if parts[4]=='new' else '/'+parts[4]),
+                   method='POST' if parts[4]=='new' else 'PUT',body=spec,token=token)
+        print(json.dumps(result,indent=2));return True
     if parts in (['help','platform'], ['?','platform'], ['help','platform','fe100'], ['?','platform','fe100']):
         print(help_text()); return True
     if len(parts)<2 or parts[:2] not in (['show','platform'],['request','platform']): return False
@@ -203,6 +215,10 @@ def handle(line, api, token):
         print(json.dumps(result,indent=2));return True
     if parts[:2]==['show','platform'] and len(parts) in (2,3):
         resource=parts[2] if len(parts)==3 else 'status'
+        if resource=='interface-services':
+            result=api('/api/system/runtime/network',token=token)
+            print(json.dumps(result.get('interface_services',{'fresh':False,'channel_ready':False}),indent=2))
+            return True
         if resource in ('control', 'agents', 'control-events'):
             result=api('/api/system/control' + ('/events' if resource=='control-events' else ''),token=token)
             print(json.dumps(result,indent=2))

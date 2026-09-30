@@ -70,7 +70,10 @@ def execute(action,payload,call=remote,drain=before_commit):
                 dp=fresh
             # A committed attachment needs queue/redirect and boot readback.
             # External traffic and DHCP probes remain explicit diagnostics.
-            if current['state'].get('pending') or current['state'].get('epoch')!=current.get('epoch'):
+            if (current['state'].get('pending') or current['state'].get('epoch')!=current.get('epoch') or
+                    current['state'].get('enabled') and current['state'].get('dp_boot_id')!=dp['boot_id']):
+                # A DP-only reboot retains the CP switch redirect. Withdraw
+                # that old attachment before commissioning the new DP lifetime.
                 current=call('cp','recover',{'revision':current['revision']})
             result=call('cp','start',{'revision':current['revision'],'dp_boot_id':dp['boot_id']})
             try:attachment=call('dp','start',{'boot_id':dp['boot_id']})
@@ -109,4 +112,6 @@ if __name__=='__main__':
     except (RuntimeError,KeyError,subprocess.TimeoutExpired) as error:
         # Transport/SDK errors may follow a hardware write. Preserve an unknown
         # journal outcome for explicit status inspection and reconciliation.
+        import syslog
+        syslog.syslog(syslog.LOG_ERR, 'ffn-wan-backend: '+str(error)[:1024])
         print(json.dumps({'error':str(error)[:1024]}));sys.exit(1)

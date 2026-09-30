@@ -1682,65 +1682,8 @@ def op_stp_set(chip, req):
     return out
 
 
-def op_trunk_create(chip, req):
-    """Create a LAG (BCM trunk) and set its members in one step.
-
-    NOT YET VALIDATED ON SILICON -- see the caveat in octeon/bcmagent/README
-    or the commit that added this. The call sequence is
-    bcm_trunk_create_id + bcm_trunk_set, which is the documented DPP path, but
-    it cannot be exercised until ports are in the Ethernet class (the same
-    config gate bcm_port_stp_set hits), so this returns the API status rather
-    than claiming success it has not seen.
-
-    This is the hardware backend that octeon/debian/ffn_lacp.py needs and does
-    not have: that module drives Linux 802.3ad bonding over front ports
-    p1..p24, which are BCM switch ports and NOT Linux netdevs, so Linux
-    bonding can never aggregate them.
-    """
-    tid = int(req["tid"])
-    ports = _ports_arg(req, "ports")
-    if len(ports) < 2:
-        raise ValueError("a trunk needs at least 2 member ports")
-    if len(ports) > 8:
-        raise ValueError("refusing more than 8 members")
-    members = " ".join(
-        "bcm_trunk_member_t_init(&mem[%d]); mem[%d].gport = %d;" % (i, i, p)
-        for i, p in enumerate(ports))
-    body = ("{ int rv; bcm_trunk_info_t ti; bcm_trunk_member_t mem[8]; "
-            "bcm_trunk_info_t_init(&ti); %s "
-            "rv = bcm_trunk_create_id(0, 0, %d); "
-            'printf("FFNTC %%d\\n", rv); '
-            "rv = bcm_trunk_set(0, %d, &ti, %d, mem); "
-            'printf("FFNRV %%d\\n", rv); }') % (members, tid, tid, len(ports))
-    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
-    cm = re.search(r"FFNTC (-?\d+)", text)
-    sm = re.search(r"FFNRV (-?\d+)", text)
-    create_rv = int(cm.group(1)) if cm else None
-    set_rv = int(sm.group(1)) if sm else None
-    # BCM_E_EXISTS on create is fine; the set is what decides.
-    if set_rv != 0:
-        raise RuntimeError("bcm_trunk_set(tid=%d) returned %s (%s); "
-                           "create_id returned %s (%s)"
-                           % (tid, set_rv, _bcm_err(set_rv) if set_rv is not None else "no status",
-                              create_rv, _bcm_err(create_rv) if create_rv is not None else "no status"))
-    return {"tid": tid, "members": ports,
-            "create_rv": create_rv, "set_rv": set_rv}
-
-
-def op_trunk_destroy(chip, req):
-    """bcm_trunk_destroy. NOT YET VALIDATED ON SILICON."""
-    tid = int(req["tid"])
-    body = ("{ int rv; rv = bcm_trunk_destroy(0, %d); "
-            'printf("FFNRV %%d\\n", rv); }') % tid
-    text = chip.run("cint" + CINT_NL + body + CINT_NL + "exit;")
-    m = re.search(r"FFNRV (-?\d+)", text)
-    rv = int(m.group(1)) if m else None
-    if rv == -7:
-        return {"tid": tid, "destroyed": False, "absent": True}
-    if rv != 0:
-        raise RuntimeError("bcm_trunk_destroy(%d) returned %s (%s)"
-                           % (tid, rv, _bcm_err(rv) if rv is not None else "no status"))
-    return {"tid": tid, "destroyed": True}
+# The old raw-port trunk path is superseded by the DPP system-port API.
+from ffn_bcm_trunk import create as op_trunk_create, destroy as op_trunk_destroy, read as op_trunk_get
 
 from ffn_bcm_link import status as op_link_status, apply as op_link_set
 
@@ -1771,6 +1714,7 @@ OPS = {
     "vlan.port.remove": op_vlan_port_remove,
     "vlan.list": op_vlan_list,
     "stp.set": op_stp_set,
+    "trunk.get": op_trunk_get,
     "trunk.create": op_trunk_create,
     "trunk.destroy": op_trunk_destroy,
     "raw": op_raw,

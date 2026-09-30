@@ -21,7 +21,7 @@ def main():
     inputs={name:sha(source/name) for name in ('.config','Module.symvers','include/generated/autoconf.h')}
     out.mkdir(parents=True);tree=out/'linux-dp'
     S.run(['cp','-a','--reflink=auto',str(source),str(tree)],check=True)
-    symbols=['NF_CONNTRACK_EVENTS','NF_CONNTRACK_LABELS','NF_CT_NETLINK','NF_CONNTRACK_MARK',
+    symbols=['HIGH_RES_TIMERS','NF_CONNTRACK_EVENTS','NF_CONNTRACK_LABELS','NF_CT_NETLINK','NF_CONNTRACK_MARK',
              'NFT_CT','NFT_LOG','NF_LOG_SYSLOG','NFT_LIMIT','NFT_REJECT','NFT_REJECT_INET']
     S.run([str(tree/'scripts/config'),'--file',str(tree/'.config'),
            *[word for symbol in symbols for word in ('--enable',symbol)],

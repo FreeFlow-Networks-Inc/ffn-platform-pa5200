@@ -52,6 +52,8 @@ def main():
                                    for a in ('status','validate','apply')}
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
+    worker['commands']['front-traffic']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'front-traffic','status']}
+    worker['commands']['route-links']={'refresh':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'route-links','refresh']}
     worker['commands']['plane-images']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_images.py'),a]
                                        for a in ('status','validate','apply')}
     worker['commands']['plane-lifecycle']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_lifecycle.py'),a]
@@ -70,15 +72,32 @@ def main():
     # definitions, so installing this template does not enable any front port.
     write('/etc/systemd/system/ffn-aggregate@.service',
           Path(__file__).with_name('ffn-aggregate@.service').read_text())
+    write('/etc/systemd/system/ffn-fe100-session-feed.service',
+          Path(__file__).with_name('ffn-fe100-session-feed.service').read_text())
+    write('/etc/systemd/system/ffn-fe100-session-feed.service.d/30-control-channel.conf',
+          '[Service]\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
+    wants=Path('/etc/systemd/system/multi-user.target.wants/ffn-fe100-session-feed.service')
+    wants.parent.mkdir(parents=True,exist_ok=True)
+    if not wants.exists() and not wants.is_symlink():wants.symlink_to('../ffn-fe100-session-feed.service')
     write('/etc/ffn/controld.json',json.dumps(configuration(),indent=2)+'\n',0o600)
+    write('/etc/systemd/system/ffn-interface-service-tunnel.service',
+          (extension/'ffn-interface-service-tunnel.service').read_text())
+    write('/etc/systemd/system/ffn-interface-service-tunnel.service.d/30-control-channel.conf',
+          '[Service]\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
+    wanted=Path('/etc/systemd/system/multi-user.target.wants/ffn-interface-service-tunnel.service')
+    if not wanted.exists(): wanted.symlink_to('../ffn-interface-service-tunnel.service')
     # systemd exposes only this credential to the service. ProtectHome remains
     # enabled and private SSH keys never enter the source or telemetry stream.
     write('/etc/systemd/system/ffn-controld.service.d/30-control-channel.conf',
           '[Service]\nSupplementaryGroups=ffn-mgmt\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
     write('/etc/systemd/system/ffn-manager-v2.service.d/30-control-channel.conf',
           '[Service]\nEnvironment=FFN_CONTROL_GATEWAY=controld\nEnvironment=FFN_PLANE_SOCKET=/run/ffn-plane-mp/control.sock\n')
+    write('/etc/systemd/system/ffn-route-link-feed.service',(extension/'ffn-route-link-feed.service').read_text())
+    wanted=Path('/etc/systemd/system/multi-user.target.wants/ffn-route-link-feed.service')
+    if not wanted.exists(): wanted.symlink_to('../ffn-route-link-feed.service')
     print(json.dumps({'configured':True,'backup':str(backup),'restart_required':
-                      ['ffn-plane@mp','ffn-controld','ffn-manager-v2'],'reboot_required':False}))
+                      ['ffn-plane@mp','ffn-controld','ffn-manager-v2','ffn-fe100-session-feed',
+                       'ffn-route-link-feed','ffn-interface-service-tunnel'],'reboot_required':False}))
 
 
 if __name__=='__main__':main()

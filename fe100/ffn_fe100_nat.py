@@ -14,9 +14,11 @@ def capabilities():
                 address_families=['ipv4'], protocols=['tcp','udp'],
                 encoded_actions=['forward','drop','ttl-decrement','snat','dnat','snat-and-dnat','port-translation'],
                 native_nat_layout='ports-then-addresses', wire_nat_layout='addresses-then-ports',
-                session_planning='on-demand acknowledged DP observation via MP controld to CP',
+                session_planning='acknowledged DP observations and continuous MP-to-CP shadow stream',
                 paired_session_lifecycle=dict(implemented=True,production_connected=False,
                     directional_zones=True,dependency_invalidation=True,producer_process_fencing=True),
+                path_resources=dict(implemented=True,production_connected=False,
+                    durable_intent=True,readback=True,drain_before_reclaim=True),
                 nat_packet_qualification=False, production_admission=False,
                 translation_types={
                     'ipv4':dict(codec=True,production_admission=False),
@@ -24,7 +26,7 @@ def capabilities():
                         reason='FE100 VER mode requires audited IPv6 keys, cross-family actions and bidirectional packet qualification'),
                     'nptv6':dict(codec=False,production_admission=False,
                         reason='IPv6 prefix mapping and checksum-neutral rewrite are not qualified on this FE100 adapter')},
-                pending=['production NAT qualification beyond the isolated TCP/UDP rewrite matrix','ordered session lifecycle and invalidation feed',
+                pending=['production NAT qualification beyond the isolated TCP/UDP rewrite matrix','trusted live attachment mapping and session admission from the ordered feed',
                          'aggregate/VLAN attachment qualification','hardware aging/counter handoff'])
 
 

@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: FreeFlow-Networks-Inc/FFN-NGFW
-          ref: 96b46d39ca22c62dab4d86d99353e1a442527132
+          ref: 2919b9b791e3d3b2442d8ec1dea0f7b71926377f
           path: .core-runtime
           submodules: false
           persist-credentials: false
@@ -131,7 +131,9 @@ jobs:
       - name: bcm agent -- dsc parsing
         run: cd octeon/bcmagent && python3 test_dscparse.py
       - name: bcm agent -- VLAN/STP/trunk ops
-        run: cd octeon/bcmagent && python3 test_l2_ops.py
+        run: cd octeon/bcmagent && python3 -m unittest test_l2_ops test_trunk_readback
+      - name: BCM SDK reference readback
+        run: cd management && python3 -m unittest test_bcm_reference
       - name: bcm agent -- ps parsing
         run: cd octeon/bcmagent && python3 test_psparse.py
       - name: bcm agent -- SOC property drift (declared vs the chip we ran)
@@ -163,13 +165,15 @@ jobs:
       - name: Physical interface attachment ownership
         run: cd management && python3 -m unittest test_physical_backend test_physical_forwarding test_configd_applier
       - name: CP and DP control telemetry
-        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent test_port_led_enable
       - name: live bring-up handshake and control handoff
         run: PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH" python3 -m unittest discover -s management -p test_bringup_handoff.py
       - name: FE100 NAT encoding, ownership and recovery (no hardware)
         run: cd fe100 && python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_nat test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions test_warm test_ddr_diagnostics test_bcm_lab test_nat_results
       - name: central hardware control and FE100 policy barrier
-        run: cd management && python3 -m unittest test_session_backend test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+        run: cd management && python3 -m unittest test_session_backend test_session_stream test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+      - name: FE100 durable next-hop ownership and session drain ordering
+        run: cd fe100 && PYTHONPATH="../management:$PYTHONPATH" python3 -m unittest test_path_owner test_path_sessions test_resource_tables
       - name: all four copper PHY and MAC control paths
         run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify test_copper_identify_backend
       - name: management UI controls

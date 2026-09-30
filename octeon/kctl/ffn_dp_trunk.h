@@ -360,7 +360,7 @@ corrupt:
 static int trunk_poll(void *unused)
 {
     while (!kthread_should_stop()) {
-        unsigned n, pending;
+        unsigned n = 0, pending;
         unsigned long flags;
         if (READ_ONCE(trunk_running) && !READ_ONCE(trunk_error))
             for (n = 0; n < 64 && trunk_receive() > 0; n++)
@@ -378,7 +378,13 @@ static int trunk_poll(void *unused)
             netif_carrier_off(trunk);
             netif_stop_queue(trunk);
         }
-        usleep_range(500, 1000);
+        /* A full receive budget means there may still be queued work. Yield
+         * to runnable tasks, then drain another bounded burst without the
+         * fixed idle delay. Reap TX and check stop/error on every pass. */
+        if (n == 64 && !READ_ONCE(trunk_error))
+            cond_resched();
+        else
+            usleep_range(500, 1000);
     }
     return 0;
 }

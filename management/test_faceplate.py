@@ -7,6 +7,15 @@ from unittest.mock import patch
 import ffn_faceplate as f
 
 class FaceplateTests(unittest.TestCase):
+    def setUp(self):
+        self.optics={p:dict(present=True,tx_enabled=True,tx_disable=False,control_ready=True) for p in range(5,21)}
+        inventory=patch.object(f,'sfp_inventory',side_effect=lambda:self.optics)
+        apply=patch.object(f,'sfp_apply',side_effect=lambda p,e:self.optics[p].update(tx_enabled=e,tx_disable=not e))
+        inventory.start();apply.start()
+        self.addCleanup(inventory.stop);self.addCleanup(apply.stop)
+        link=patch.object(f,'sfp_link_apply',return_value=False)
+        link.start();self.addCleanup(link.stop)
+
     def test_mapping_validation_and_readback(self):
         with tempfile.TemporaryDirectory() as tmp:
             state=Path(tmp)/'state.json'
