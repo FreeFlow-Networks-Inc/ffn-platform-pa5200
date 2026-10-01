@@ -19,6 +19,21 @@ keep table access isolated from the session engine's register scope. Timeouts an
 malformed responses require readback before another mutation of the affected slot.
 There is no flush, reset, initialization or default production allocation range.
 
+Source-MAC and next-hop operations now run through the C driver
+`octeon/native/ffn_fe100_resources.c`, installed on the CP as
+`/usr/local/lib/libffn-fe100-resources.so`. Python handles process supervision,
+framing, library hash verification and the ownership journal. The C driver
+owns mapping, register scope, typed vendor calls and the native watchdog. It
+checks the inherited lock's inode, restricts every operation to its supplied
+pool, uses aligned entry storage, and loads the exact open library descriptor
+that Python verified. A register-scope fault permanently fences that worker;
+an uncertain table operation requires readback before another write to its slot.
+The driver allows one table scope per process and offers no reset operation.
+
+The CP image build installs this driver automatically. An incremental deployment
+must install the shared object before updating `ffn_fe100_resource_tables.py`;
+there is no fallback to the previous Python vendor-ABI calls when it is missing.
+
 `PathSessions` connects those resources to `PolicyOwner` paired NAT sessions. It
 assigns path digests from verified readback, drains sessions before releasing their
 resources and recovers session intent before path intent after a restart. Invoke
@@ -56,3 +71,10 @@ applied Security/NAT acknowledgement, trusted live attachment/LIF/zone commissio
 connection of the authenticated session stream to the trusted evaluator, counter
 and logging handoff, exception handling and bidirectional packet qualification.
 Production admission remains disabled until those conditions are verified.
+
+The C adapter was deployed and verified on 2026-10-01 using the same 12 checks,
+with all resources removed afterward. See `NATIVE-RESOURCES-EVIDENCE.json` for
+the hardware report and installed-library hash. Host and emulated MIPS64 ABI
+tests also cover pool boundaries, lock mismatch, missing symbols, uncertain
+writes and permanent fencing after a register-scope fault. Host ASan/UBSan
+checks passed. This deployment did not restart the CP owner or packet workers.

@@ -98,17 +98,30 @@ def worker():
         any(type(i) is not int or not 0<=i<(1024 if kind=='smac' else 65536) for i in pool)):
         raise ValueError('Invalid worker scope')
     if sys.byteorder!='big' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('MIPS64 big-endian ABI required')
-    if hashlib.sha256(Path(LIB).read_bytes()).hexdigest()!=SHA:raise RuntimeError('Owner ABI changed')
     from ffn_fe100 import bar0_base_and_size,memory_decode_on,register_map_path
     base,size=bar0_base_and_size()
     if size!=0x100000 or not memory_decode_on():raise RuntimeError('FE100 BAR unavailable')
-    shim=C.CDLL('/usr/local/lib/ffn/libffn-fe100-flow-memory.so',mode=os.RTLD_GLOBAL|os.RTLD_NOW)
-    if shim.ffn_fe100_select_block(0x50000):raise RuntimeError('Resource scope selection failed')
-    shim.ffn_fe100_open.argtypes=[C.c_uint64,C.c_char_p,C.c_int]
+    native=C.CDLL('/usr/local/lib/libffn-fe100-resources.so',mode=os.RTLD_LOCAL|os.RTLD_NOW)
+    native.ffn_fe100_resources_abi.restype=C.c_uint
+    if native.ffn_fe100_resources_abi()!=1:raise RuntimeError('Resource driver ABI changed')
+    native.ffn_fe100_resources_open.argtypes=[C.c_int,C.c_int,C.c_uint64,C.c_uint,
+        C.POINTER(C.c_uint32),C.c_size_t,C.POINTER(C.c_uint32),C.c_size_t,C.c_char_p]
+    native.ffn_fe100_resources_open.restype=C.c_int
+    native.ffn_fe100_resources_call.argtypes=[C.c_uint,C.c_uint32,C.c_void_p,C.c_size_t]
+    native.ffn_fe100_resources_call.restype=C.c_int
+    registers=[r['addr'] for r in json.loads(Path(register_map_path()).read_text())]
+    if any(type(r) is not int or r<0 or r>=0x100000 or r%4 for r in registers):
+        raise ValueError('Invalid resource register map')
+    native_pool=(C.c_uint32*len(pool))(*pool)
+    native_registers=(C.c_uint32*len(registers))(*registers)
     trace=('/var/lib/ffn/fe100/resource-'+kind+'-'+str(time.time_ns())+'.txt').encode()
-    if shim.ffn_fe100_open(base,trace,1):raise RuntimeError('Resource mapping failed')
-    for r in json.loads(Path(register_map_path()).read_text()):shim.ffn_fe100_allow(r['addr'])
-    lib=C.CDLL(LIB,mode=os.RTLD_LOCAL|os.RTLD_LAZY)
+    # The native driver dlopens this exact hashed descriptor. A concurrent
+    # library replacement cannot substitute a different owner ABI by path.
+    with open(LIB,'rb') as owner:
+        if hashlib.sha256(owner.read()).hexdigest()!=SHA:raise RuntimeError('Owner ABI changed')
+        rc=native.ffn_fe100_resources_open(fd,owner.fileno(),base,
+            1 if kind=='smac' else 2,native_pool,len(pool),native_registers,len(registers),trace)
+    if rc:raise RuntimeError('Native resource initialization failed: '+str(rc))
     while True:
         try:request=lines.read(30)
         except (EOFError,TimeoutError):return
@@ -118,17 +131,8 @@ def worker():
         raw=bytes.fromhex(data) if op=='insert' else bytes(SPECS[kind])
         if len(raw)!=SPECS[kind] or op!='insert' and data is not None:raise ValueError('Invalid entry data')
         entry=(C.c_ubyte*SPECS[kind]).from_buffer_copy(raw)
-        fn=getattr(lib,'pan_fe100_'+op+'_'+kind+'_entry');fn.restype=C.c_int
-        if op=='delete':
-            fn.argtypes=[C.c_uint32]+[C.c_int]*(2 if kind=='nexthop' else 1)
-            args=(0,0,index) if kind=='nexthop' else (0,index)
-        else:
-            fn.argtypes=[C.c_uint32,C.c_void_p]+[C.c_int]*(2 if kind=='nexthop' else 1)
-            args=(0,entry,0,index) if kind=='nexthop' else (0,entry,index)
-        shim.ffn_flow_watchdog(10)
-        try:rc=fn(*args)
-        finally:shim.ffn_flow_watchdog(0)
-        if shim.ffn_fe100_faults():raise RuntimeError('Resource register scope violation')
+        rc=native.ffn_fe100_resources_call({'fetch':1,'insert':2,'delete':3}[op],index,entry,len(raw))
+        if rc<0:raise RuntimeError('Native resource operation failed: '+str(rc))
         send(1,dict(rc=rc,data=bytes(entry).hex()),10)
 
 

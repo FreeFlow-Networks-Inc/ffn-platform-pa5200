@@ -260,6 +260,9 @@ jobs:
         working-directory: octeon/native
         run: |
           make test
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror test_fe100_resources.c -ldl -o /tmp/ffn-fe100-resources-test
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-resources-test
+          make CC=mips64-linux-gnuabi64-gcc libffn-fe100-resources.so
           mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_punt.c test_fe100_punt.c -o /tmp/ffn-fe100-punt-mips
           qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-punt-mips
           mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror -pthread ffn_packet.c ffn_fe100_punt.c ffn_fe100_stats.c ffn_fe100_punt_probe.c -o /tmp/ffn-fe100-punt-probe

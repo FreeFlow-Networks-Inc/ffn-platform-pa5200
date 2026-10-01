@@ -1,7 +1,13 @@
 CC ?= cc
 CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror -pthread
 
-all: libffn-packet.so libffn-hwio.so libffn-inline.so
+all: libffn-packet.so libffn-hwio.so libffn-inline.so libffn-fe100-resources.so
+
+libffn-fe100-resources.so: ffn_fe100_resources.c ffn_fe100_resources.h
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_fe100_resources.c -ldl -o $@
+
+test-fe100-resources: ffn_fe100_resources.c ffn_fe100_resources.h test_fe100_resources.c
+	$(CC) $(CFLAGS) test_fe100_resources.c -ldl -o $@
 
 libffn-packet.so: ffn_packet.c ffn_packet.h ffn_aggregate_packet.inc ffn_fe100_packet.inc ffn_fe100_punt.c ffn_fe100_punt.h ffn_fe100_stats.c ffn_fe100_stats.h
 	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_packet.c ffn_fe100_punt.c ffn_fe100_stats.c -o $@
@@ -34,7 +40,8 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources
+	./test-fe100-resources
 	./test-hwio
 	./test-fe100-punt
 	./test-fe100-stats

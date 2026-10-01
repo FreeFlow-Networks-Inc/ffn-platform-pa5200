@@ -312,6 +312,9 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(native / name)
         safe_install(native / name, root, 'usr/local/sbin/' + name)
     if role == 'cp':
+        artifact = native / 'libffn-fe100-resources.so'
+        elf(artifact)
+        safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
         adapters = work / 'fe100-adapters'
         run(['sh', platform / 'fe100/build-adapters.sh', adapters],
             env=dict(os.environ, CC=userspace_cross + 'gcc'))
