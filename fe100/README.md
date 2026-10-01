@@ -1,10 +1,11 @@
 # FE100 — access, survey, and the route to bring-up
 
-**Status 2026-09-21:** register access, initialized lookup/session memory, and
-bounded physical forwarding/drop tests are implemented. Production policy
+**Status 2026-10-01:** register access, initialized lookup/session memory,
+bounded physical forwarding/NAT tests and independent owner withdrawal are implemented. Production policy
 admission remains blocked. See [physical session qualification](PHYSICAL-SESSION-OFFLOAD-20260915.md),
 [front-port forwarding limits](FRONT-EGRESS-POLICY-20260915.md), and
-[automatic session recovery](POLICY-RECOVERY.md). The initial survey below
+[automatic session recovery](POLICY-RECOVERY.md), and
+[supervised physical withdrawal](SUPERVISED-WITHDRAWAL.md). The initial survey below
 describes the September 5 starting point.
 
 The FE100 is a Palo Alto ASIC — PCI `feed:fe1c`, class `0x020000` (Ethernet

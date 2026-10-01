@@ -6,8 +6,8 @@ name: CI
 # round, because this is the half that talks to a switch ASIC and an OCTEON,
 # where a mistake costs a re-init or a power cycle rather than a retry.
 #
-# Everything here runs with no secrets, no privileges and no hardware, so it
-# works on pull requests from forks.
+# Tests require no secrets or appliance hardware. Explicit process and kernel
+# isolation tests use runner-local privileges and also work on fork PRs.
 #
 # DELIBERATELY NOT BUILT: the OpenBCM / OpenNSA trees. Their licence permits
 # binary but not source redistribution, so they are not in this repository and
@@ -126,6 +126,10 @@ jobs:
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
         run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream test_accounting
+      - name: FE100 independent owner withdrawal and recovery
+        run: cd fe100 && python3 -m unittest test_guard test_lab_guard test_guard_lab
+      - name: FE100 supervisor process failure and orphan recovery
+        run: cd fe100 && sudo env FFN_FE100_GUARD_PROCESS_TEST=yes python3 -m unittest test_guard_process
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing

@@ -454,6 +454,21 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_guard.py",
+      "usr/local/sbin/ffn_fe100_guard.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_lab_guard.py",
+      "usr/local/sbin/ffn_fe100_lab_guard.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_guard_lab.py",
+      "usr/local/sbin/ffn_fe100_guard_lab.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_lab_ports.py",
       "usr/local/sbin/ffn_fe100_lab_ports.py"
     ],

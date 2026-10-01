@@ -9,6 +9,29 @@ from ffn_fe100_session_adapter import encode_native, decode_native
 
 
 class PacketSessionTests(unittest.TestCase):
+    def test_recovery_refuses_changed_owner_profile_boot_and_generation(self):
+        import copy
+        import ffn_fe100_packet_lab as lab
+        record=dict(schema=2,owner_sha256=lab.SHA,cp_boot_id='boot',profile=lab.recovery_profile(),
+                    generation_sources={'flu-init-boot.json':'a'*64},changes=[])
+        lab.Lab.validate_recovery(record,'boot',record['generation_sources'])
+        for field,value in [('schema',1),('owner_sha256','other'),('cp_boot_id','other'),
+                            ('profile',{}),('generation_sources',{})]:
+            altered=copy.deepcopy(record);altered[field]=value
+            with self.assertRaises(RuntimeError):lab.Lab.validate_recovery(altered,'boot',record['generation_sources'])
+        with self.assertRaises(RuntimeError):lab.Lab.validate_recovery(record,'boot',{})
+
+    def test_failed_flow_drain_preserves_dependent_resources(self):
+        import ffn_fe100_packet_lab as lab
+        owner=object.__new__(lab.Lab);owner.prepared=True
+        owner.record=dict(session_touched=True,changes=[dict(kind='nexthop',index=31,restored=False)])
+        owner.save=lambda:None
+        def conflict(*a,**k):raise RuntimeError('flow ownership conflict')
+        owner.remove_session=conflict
+        owner.call=lambda *a,**k:self.fail('dependent resource touched before flow drain')
+        with self.assertRaisesRegex(RuntimeError,'ownership conflict'):owner.restore()
+        self.assertEqual(owner.record['stage'],'recovery_required')
+
     def test_paired_nat_lab_restores_both_directions_after_partial_install(self):
         import ffn_fe100_packet_lab as source
         settings=dict(FFN_FE100_LAB_PAIR='23,24',FFN_FE100_FRONT_RETURN='23',

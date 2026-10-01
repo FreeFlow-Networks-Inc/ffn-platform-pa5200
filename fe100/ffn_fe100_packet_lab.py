@@ -205,26 +205,74 @@ def worker(request, fd):
     return {'rc':rc,'data':bytes(entry).hex(),'trace':trace}
 
 
+def recovery_profile():
+    return {'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
+            'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,'routed_lab':ROUTED_LAB,
+            'session_key':KEY.hex(),'return_key':RETURN_KEY.hex(),'pair':PORT_PAIR,
+            'paired_nat':PAIRED_NAT_LAB,'ipv6_miss':IPV6_MISS_LAB,'smac_rewrite':SMAC_REWRITE,
+            'forward_entry':FORWARD.hex(),'reverse_entry':REVERSE_FORWARD.hex() if REVERSE_FORWARD else None}
+
+
+def generation_sources(root,boot):
+    prefixes=('fhm-','fdt-train-','fdt-recover-','flu-init-','flu-verified-','fcm-','sem-init-','warm-lab-')
+    return {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.glob('*'+boot+'.json'))
+            if p.name.startswith(prefixes)}
+
+
 class Lab:
-    def __init__(self):
+    def __init__(self,recovery=None):
         self.lock = open('/run/ffn-fe100-tables.lock','a')
-        fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        try:fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BaseException:self.lock.close();raise
+        self.workers = {}
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if recovery is not None:
+            try:
+                path=Path(recovery)
+                if path.is_symlink() or path.resolve().parent!=ROOT.resolve():raise ValueError('recovery journal outside lab root')
+                record=json.loads(path.read_text())
+                self.validate_recovery(record,boot,generation_sources(ROOT,boot))
+                self.path,self.record=path,record
+                self.prepared=bool(record.get('session_touched'))
+                return
+            except BaseException:self.lock.close();raise
         self.path = ROOT/('packet-session-'+str(time.time_ns())+'.json')
-        self.record = {'schema':1,'owner_sha256':SHA,
-                       'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
-                                  'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,'routed_lab':ROUTED_LAB,
-                                  'session_key':KEY.hex(),'return_key':RETURN_KEY.hex()},
-                       'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        self.record = {'schema':2,'owner_sha256':SHA,
+                       'profile':recovery_profile(),'generation_sources':generation_sources(ROOT,boot),
+                       'cp_boot_id':boot,
                        'changes':[], 'snapshots':{}, 'stage':'preflight', 'session_offload_verified':False}
         self.prepared = False
-        self.workers = {}
-        self.save()
+        try:self.save()
+        except BaseException:self.lock.close();raise
+
+    @staticmethod
+    def validate_recovery(record,boot,sources):
+        if (record.get('schema')!=2 or record.get('owner_sha256')!=SHA or record.get('cp_boot_id')!=boot or
+                record.get('profile')!=recovery_profile() or not sources or record.get('generation_sources')!=sources):
+            raise RuntimeError('lab recovery profile, boot or initialization generation changed')
+        if not isinstance(record.get('changes'),list):raise ValueError('invalid lab recovery journal')
+        for change in record['changes']:
+            if not isinstance(change,dict) or set(change)!={'kind','index','before','wanted','restored'}:
+                raise ValueError('invalid lab recovery intent')
+            if type(change['restored']) is not bool:raise ValueError('invalid recovery acknowledgement')
+
+    def close(self):
+        for process,err in self.workers.values():
+            try:process.stdin.close()
+            except BrokenPipeError:pass
+            try:process.wait(timeout=2)
+            except subprocess.TimeoutExpired:process.kill();process.wait()
+            process.stdout.close();err.close()
+        self.workers.clear();self.lock.close()
 
     def save(self):
         temp = self.path.with_suffix('.tmp')
         with temp.open('w') as f:
             json.dump(self.record,f); f.flush(); os.fsync(f.fileno())
         os.replace(temp,self.path)
+        fd=os.open(self.path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
 
     def call(self, kind, op='fetch', index=31, data=None):
         req = dict(kind=kind,op=op,index=index)
@@ -417,6 +465,11 @@ class Lab:
         if self.record.get('return_session_touched'):
             try:self.remove_session(return_flow=True)
             except Exception as e:errors.append(str(e))
+        if errors:
+            # Never restore a next hop/LIF while an owned flow could still
+            # reference it. Keep the exact durable intent for recovery.
+            self.record['cleanup_errors']=errors;self.record['stage']='recovery_required';self.save()
+            raise RuntimeError('; '.join(errors))
         for c in reversed(self.record['changes']):
             if c['restored']: continue
             try:
@@ -516,12 +569,7 @@ def main():
             lab.restore()
             print(json.dumps({'restored':True,'journal':str(lab.path)}),flush=True)
         finally:
-            for process,err in lab.workers.values():
-                try:process.stdin.close()
-                except BrokenPipeError:pass
-                try:process.wait(timeout=2)
-                except subprocess.TimeoutExpired:process.kill();process.wait()
-                err.close()
+            lab.close()
 
 
 if __name__=='__main__':main()
