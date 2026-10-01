@@ -9,6 +9,36 @@ from ffn_fe100_session_adapter import encode_native, decode_native
 
 
 class PacketSessionTests(unittest.TestCase):
+    def test_resource_tables_use_native_owner_without_legacy_workers(self):
+        from unittest.mock import Mock
+        import ffn_fe100_packet_lab as lab
+        owner=object.__new__(lab.Lab);owner.resources=None;owner.lock=Mock()
+        with patch('ffn_fe100_resource_tables.ResourceTables') as backend, patch.object(lab.subprocess,'Popen') as legacy:
+            io=backend.return_value;io.call.return_value=None
+            self.assertEqual(owner.call('qm',index=30),dict(rc=3,data='00'*84))
+            self.assertEqual(backend.call_args.args[0]['qmap4'],[30,31])
+            io.call.assert_called_with('qmap4','fetch',30,None)
+            raw=bytes(84);io.call.return_value=raw
+            self.assertEqual(owner.call('qm','insert',31,raw.hex())['rc'],0)
+            io.call.assert_called_with('qmap4','insert',31,raw)
+            # Absent-before snapshots are still passed by the durable journal
+            # when removing an entry. Never send those bytes to native delete.
+            owner.call('qm','delete',31,raw.hex())
+            io.call.assert_called_with('qmap4','delete',31,None)
+            for table,size in (('smac',8),('nexthop',16),('lif',36),('lef',10)):
+                io.call.return_value=bytes(size)
+                self.assertEqual(owner.call(table)['data'],'00'*size)
+            backend.assert_called_once();legacy.assert_not_called()
+
+    def test_resource_failure_is_not_acknowledged_or_retried_as_legacy_io(self):
+        from unittest.mock import Mock
+        import ffn_fe100_packet_lab as lab
+        owner=object.__new__(lab.Lab);owner.resources=Mock()
+        owner.resources.call.side_effect=TimeoutError('native write uncertain')
+        with patch.object(lab.subprocess,'Popen') as legacy:
+            with self.assertRaises(TimeoutError):owner.call('qm','insert',30,bytes(84))
+            legacy.assert_not_called()
+
     def test_split_path_has_distinct_zones_and_reverse_next_hop(self):
         import ffn_fe100_packet_lab as source
         from ffn_fe100_sessions import output_key4

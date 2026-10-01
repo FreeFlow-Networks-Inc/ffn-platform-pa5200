@@ -36,12 +36,13 @@ static size_t entry_size(unsigned kind)
     case FFN_RESOURCE_NEXTHOP:return 16;
     case FFN_RESOURCE_LIF:return 36;
     case FFN_RESOURCE_LEF:return 10;
+    case FFN_RESOURCE_QMAP4:return 84;
     default:return 0;
     }
 }
 static unsigned index_limit(unsigned kind)
 {
-    /* LIF/LEF restricted to the reference-verified commissioning window.
+    /* LIF/LEF/QMAP restricted to the reference-verified commissioning window.
      * This is deliberately not a claim about total chip table capacity. */
     return kind==FFN_RESOURCE_SMAC?1024:kind==FFN_RESOURCE_NEXTHOP?65536:32;
 }
@@ -118,8 +119,8 @@ int ffn_fe100_resources_open(int lock_fd, int owner_fd, uint64_t bar,
     SYMBOL(state.shim,allow,"ffn_fe100_allow");
     SYMBOL(state.shim,state.faults,"ffn_fe100_faults");
     SYMBOL(state.shim,state.watchdog,"ffn_flow_watchdog");
-    if(select_block(kind==FFN_RESOURCE_LIF?0x80000:kind==FFN_RESOURCE_LEF?0x58000:0x50000)) return -EIO;
-    if(kind==FFN_RESOURCE_LIF) {
+    if(select_block((kind==FFN_RESOURCE_LIF || kind==FFN_RESOURCE_QMAP4)?0x80000:kind==FFN_RESOURCE_LEF?0x58000:0x50000)) return -EIO;
+    if(kind==FFN_RESOURCE_LIF || kind==FFN_RESOURCE_QMAP4) {
         SYMBOL(state.shim,select_lif,"ffn_fe100_select_lif_table");
         if(select_lif(0))return -EIO;
     }
@@ -141,10 +142,14 @@ int ffn_fe100_resources_open(int lock_fd, int owner_fd, uint64_t bar,
         SYMBOL(state.owner,state.smac_get,"pan_fe100_fetch_lif_entry");
         SYMBOL(state.owner,state.smac_put,"pan_fe100_insert_lif_entry");
         SYMBOL(state.owner,state.smac_del,"pan_fe100_delete_lif_entry");
-    } else {
+    } else if(kind==FFN_RESOURCE_LEF) {
         SYMBOL(state.owner,state.smac_get,"pan_fe100_fetch_lef_entry");
         SYMBOL(state.owner,state.smac_put,"pan_fe100_insert_lef_entry");
         SYMBOL(state.owner,state.smac_del,"pan_fe100_delete_lef_entry");
+    } else {
+        SYMBOL(state.owner,state.smac_get,"pan_fe100_fetch_qm_entry");
+        SYMBOL(state.owner,state.smac_put,"pan_fe100_insert_qm_entry");
+        SYMBOL(state.owner,state.hop_del,"pan_fe100_delete_qm_entry");
     }
 #undef SYMBOL
     if(state.faults()) return -EIO;
@@ -155,22 +160,30 @@ int ffn_fe100_resources_open(int lock_fd, int owner_fd, uint64_t bar,
 int ffn_fe100_resources_call(unsigned operation,uint32_t index,uint8_t *data,size_t size)
 {
     /* Explicit alignment for the owner's packed entry access on MIPS64. */
-    union { uint64_t align[5]; uint8_t bytes[40]; } entry={{0}};
+    union { uint64_t align[11]; uint8_t bytes[88]; } entry={{0}};
     size_t slot;
     int rc;
     if(!state.ready || state.poisoned) return -EIO;
     if(!data || size!=entry_size(state.kind) ||
        operation<FFN_RESOURCE_FETCH || operation>FFN_RESOURCE_DELETE) return -EINVAL;
+    if(state.kind==FFN_RESOURCE_QMAP4 && operation==FFN_RESOURCE_INSERT) {
+        /* Only the verified IPv4 view. A fetched entry loses its pt selector;
+         * accept that readback for restoration, but never select another table. */
+        if((data[7]&3)>1)return -EINVAL;
+        for(size_t i=36;i<size;i++)if(data[i])return -EINVAL;
+    }
     for(slot=0;slot<state.count;slot++) if(state.pool[slot]==index) break;
     if(slot==state.count) return -EPERM;
     if(state.uncertain[slot] && operation!=FFN_RESOURCE_FETCH) return -EUCLEAN;
     if(state.faults()) { state.poisoned=1;return -EIO; }
     if(operation==FFN_RESOURCE_INSERT) memcpy(entry.bytes,data,size);
+    if(state.kind==FFN_RESOURCE_QMAP4)entry.bytes[7]=(entry.bytes[7]&0xfc)|1;
     state.uncertain[slot]=1;
     state.watchdog(10);
     if(state.kind!=FFN_RESOURCE_NEXTHOP) {
         if(operation==FFN_RESOURCE_FETCH) rc=state.smac_get(0,entry.bytes,(int)index);
         else if(operation==FFN_RESOURCE_INSERT) rc=state.smac_put(0,entry.bytes,(int)index);
+        else if(state.kind==FFN_RESOURCE_QMAP4)rc=state.hop_del(0,1,(int)index);
         else rc=state.smac_del(0,(int)index);
     } else {
         if(operation==FFN_RESOURCE_FETCH) rc=state.hop_get(0,entry.bytes,0,(int)index);

@@ -141,18 +141,13 @@ def worker(request, fd):
         finally:
             fe.close()
     specs = {'parser':(0x20000,32,'parser_entry_fetch','parser_entry_insert'),
-             'lif':(0x80000,36,'fetch_lif_entry','insert_lif_entry'),
              'acl':(0x80000,90,'fetch_acl_entry','insert_acl_entry'),
-             'qm':(0x80000,84,'fetch_qm_entry','insert_qm_entry'),
              'spm':(0x70000,2,'fetch_spm_entry','set_spm_entry'),
-             'lef':(0x58000,10,'fetch_lef_entry','insert_lef_entry'),
-             'smac':(0x50000,8,'fetch_smac_entry','insert_smac_entry'),
              'txport':(0x10000,3,'get_tx_portmap_entry','set_tx_portmap_entry'),
-             'rxport':(0x10000,1,'get_rx_portmap_entry','set_rx_portmap_entry'),
-             'nexthop':(0x50000,16,'fetch_nexthop_entry','insert_nexthop_entry')}
+             'rxport':(0x10000,1,'get_rx_portmap_entry','set_rx_portmap_entry')}
     base, size, getname, putname = specs[kind]
     index = request['index']
-    if index not in (range(55) if kind == 'parser' else PORT_PAIR if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (*PORT_PROFILE['lif'].values(),31) if kind == 'lif' else (30,31)):
+    if index not in (range(55) if kind == 'parser' else PORT_PAIR if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (30,31)):
         raise ValueError('outside reserved lab indices')
     if 'lib' not in WORKER_STATE and hashlib.sha256(Path(LIB).read_bytes()).hexdigest() != SHA:
         raise RuntimeError('owner ABI changed')
@@ -178,7 +173,6 @@ def worker(request, fd):
     if len(data) != size: raise ValueError('incorrect table entry length')
     if kind == 'acl' and 'data' not in request:
         data = data[:4]+b'\x40'+data[5:]
-    if kind=='qm' and 'data' not in request:data=data[:7]+b'\x01'+data[8:]
     entry = (C.c_ubyte*size).from_buffer_copy(data)
     op = request['op']
     if kind=='rxport':
@@ -191,15 +185,15 @@ def worker(request, fd):
         fn.argtypes=[C.c_uint32,C.c_void_p]+([] if op=='delete' else [C.POINTER(C.c_int) if op=='fetch' else C.c_int])
         args=(0,key) if op=='delete' else (0,key,C.byref(result) if op=='fetch' else result.value)
     elif op == 'delete':
-        if kind not in ('acl','qm','nexthop','lef','txport','lif','smac'): raise ValueError('delete not supported')
+        if kind not in ('acl','txport'): raise ValueError('delete not supported')
         fn = getattr(lib,'pan_fe100_delete_'+('tx_portmap' if kind=='txport' else kind)+'_entry')
-        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind in ('lef','txport','lif','smac') else 2)
-        args = (0,index) if kind in ('lef','txport','lif','smac') else (0,1 if kind in ('acl','qm') else 0,index)
+        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind=='txport' else 2)
+        args = (0,index) if kind=='txport' else (0,1,index)
     else:
         if op not in ('fetch','insert'): raise ValueError('invalid table operation')
         fn = getattr(lib,'pan_fe100_'+(getname if op == 'fetch' else putname))
-        fn.argtypes = [C.c_uint32,C.c_void_p]+([C.c_int]* (2 if kind == 'nexthop' else 0 if kind=='spm' else 1))
-        args = (0,entry,0,index) if kind == 'nexthop' else (0,entry) if kind=='spm' else (0,entry,index)
+        fn.argtypes = [C.c_uint32,C.c_void_p]+([] if kind=='spm' else [C.c_int])
+        args = (0,entry) if kind=='spm' else (0,entry,index)
     fn.restype = C.c_int
     shim.ffn_flow_watchdog(10)
     try: rc = fn(*args)
@@ -230,6 +224,7 @@ class Lab:
         try:fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BaseException:self.lock.close();raise
         self.workers = {}
+        self.resources = None
         boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         if recovery is not None:
             try:
@@ -262,6 +257,7 @@ class Lab:
             if type(change['restored']) is not bool:raise ValueError('invalid recovery acknowledgement')
 
     def close(self):
+        if self.resources is not None:self.resources.close();self.resources=None
         for process,err in self.workers.values():
             try:process.stdin.close()
             except BrokenPipeError:pass
@@ -280,6 +276,22 @@ class Lab:
         finally:os.close(fd)
 
     def call(self, kind, op='fetch', index=31, data=None):
+        # Resource hardware interaction belongs to the typed native driver.
+        # The lab retains its existing durable intent/readback journal and
+        # inherited global lock; native workers never allocate their own pool.
+        if kind in ('smac','nexthop','lif','lef','qm'):
+            from ffn_fe100_resource_tables import ResourceTables,SPECS
+            if self.resources is None:
+                self.resources=ResourceTables(dict(smac=[30,31],nexthop=[30,31],
+                    lif=sorted(set(PORT_PROFILE['lif'].values())|{31}),lef=[30,31],qmap4=[30,31]),
+                    lock_fd=self.lock.fileno())
+            table='qmap4' if kind=='qm' else kind
+            # Restore journals carry the old snapshot even for delete. The
+            # native delete ABI accepts only the owned index, not entry data.
+            raw=(bytes.fromhex(data) if isinstance(data,str) else data) if op=='insert' else None
+            result=self.resources.call(table,op,index,raw)
+            return dict(rc=3 if result is None else 0,
+                        data=(result if result is not None else bytes(SPECS[table])).hex())
         req = dict(kind=kind,op=op,index=index)
         if data is not None: req['data'] = data.hex() if isinstance(data,bytes) else data
         if kind in self.workers and self.workers[kind][0].poll() is not None:

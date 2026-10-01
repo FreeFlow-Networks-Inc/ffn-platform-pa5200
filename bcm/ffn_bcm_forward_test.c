@@ -572,11 +572,21 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
             }
         }
         if (rv==0) rv=bcm_port_force_forward_get(0,src,&dst,&an_value);
-        if (rv==0 && (!an_value || dst!=(cos ? 24 : 3))) rv=-8;
-        if (rv==0) rv=bcm_port_force_forward_set(0,src,cos ? 3 : 24,1);
+        if (rv==0 && cos && (!an_value || dst!=24)) rv=-8;
+        if (rv==0 && !cos && an_value && dst!=3 && dst!=24) rv=-8;
+        if (rv==0 && !cos && !an_value) {
+            /* A previous drain may have succeeded before a later table
+             * restore failed. The separate port owner can then restore the
+             * disabled baseline. Read it back; never re-enable its redirect. */
+            rv=bcm_port_enable_get(0,src,&an_link);
+            if (rv==0 && an_link) rv=-8;
+        }
+        if (rv==0 && (cos || (an_value && dst==3)))
+            rv=bcm_port_force_forward_set(0,src,cos ? 3 : 24,1);
         if (rv==0) rv=bcm_port_force_forward_get(0,src,&dst,&an_value);
         printf("FFN_SESSION_ROUTE port=%d destination=%d enabled=%d rv=%d\n",src,dst,an_value,rv);
-        if (rv==0 && (!an_value || dst!=(cos ? 3 : 24))) rv=-1;
+        if (rv==0 && ((cos && (!an_value || dst!=3)) ||
+                     (!cos && an_value && dst!=24))) rv=-1;
     }
     if (fe100_test == 36) {
         /* Read-only inventory before DP transport commissioning. */

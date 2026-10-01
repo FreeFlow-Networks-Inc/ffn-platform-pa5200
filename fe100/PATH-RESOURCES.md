@@ -37,6 +37,22 @@ The CP image build installs this driver automatically. An incremental deployment
 must install the shared object before updating `ffn_fe100_resource_tables.py`;
 there is no fallback to the previous Python vendor-ABI calls when it is missing.
 
+IPv4 queue maps now use the same C driver (`qmap4`, 84-byte native union with a
+36-byte IPv4 view). Pools are explicit and restricted to the reference-verified
+first 32 slots; this is not the hardware capacity. Fetch and insert use the
+three-argument owner ABI; delete explicitly selects IPv4 table 1. The driver
+restores the selector omitted by hardware readback and rejects IPv6 selectors
+or nonzero data outside the IPv4 view before making a hardware call.
+
+The physical commissioning harness uses this driver for SMAC, next-hop, LIF,
+LEF and QMAP operations. Its durable journal and independent recovery guardian
+still withdraw ingress and remove both session directions before restoring
+dependent tables. Queue IDs come from BCM readback and queue matches use the
+post-NAT addresses. These mappings are broader than a five-tuple: a production
+queue owner must arbitrate overlapping selectors and tie their lifetime to BCM
+queue allocation, policy, attachment and routing generations before admission.
+Production queue ownership and steering are not enabled by this change.
+
 `PathSessions` connects those resources to `PolicyOwner` paired NAT sessions. It
 assigns path digests from verified readback, drains sessions before releasing their
 resources and recovers session intent before path intent after a restart. Invoke
@@ -81,3 +97,18 @@ the hardware report and installed-library hash. Host and emulated MIPS64 ABI
 tests also cover pool boundaries, lock mismatch, missing symbols, uncertain
 writes and permanent fencing after a register-scope fault. Host ASan/UBSan
 checks passed. This deployment did not restart the CP owner or packet workers.
+
+The native QMAP extension subsequently passed the same 19 resource/attachment
+checks and an isolated paired UDP port-NAT physical loop on ports 23/24. All 64
+frames matched the expected MAC/IP/port rewrite. After an injected owner exit,
+the independent guardian drained the sessions and restored the dependent
+tables; all 64 subsequent frames followed the original path with no stale NAT
+rewrite. Capture drops were zero. Repeated BCM ingress drain also passed after
+the separate port owner restored its disabled baseline. This was not a rate test.
+
+The first crash test exposed a journal-adapter bug: deletion incorrectly carried
+snapshot bytes into an index-only native call. That attempt was recovered with
+readback, and the adapter now strips delete payloads while the resource boundary
+rejects malformed requests before starting a worker. The complete physical test
+was repeated successfully. `NATIVE-QMAP-EVIDENCE.json` records both attempts,
+installed hashes, regression checks and production limitations.

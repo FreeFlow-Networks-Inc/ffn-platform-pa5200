@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 enum { FFN_RESOURCE_SMAC=1, FFN_RESOURCE_NEXTHOP=2,
-       FFN_RESOURCE_LIF=3, FFN_RESOURCE_LEF=4 };
+       FFN_RESOURCE_LIF=3, FFN_RESOURCE_LEF=4, FFN_RESOURCE_QMAP4=5 };
 enum { FFN_RESOURCE_FETCH=1, FFN_RESOURCE_INSERT=2, FFN_RESOURCE_DELETE=3 };
 /* One serialized table worker per process. The controller hash-verifies the
  * owner library through owner_fd before passing that same open descriptor.

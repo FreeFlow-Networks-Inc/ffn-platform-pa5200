@@ -34,7 +34,7 @@ static void *fake_dlsym(void *,const char *);
 static int calls, armed, watchdog_on, watchdog_off, wrong_lock, busy_lock;
 static int native_rc, fault_on_call, loads, maps, no_symbol;
 static unsigned faults;
-static uint8_t contents[2][36], present[2];
+static uint8_t contents[2][84], present[2];
 static int fake_lstat(const char *path,struct stat *s)
 {
     assert(!strcmp(path,"/run/ffn-fe100-tables.lock"));
@@ -61,8 +61,8 @@ static void *fake_dlopen(const char *path,int mode)
     assert(mode==(RTLD_LOCAL|RTLD_LAZY));return (void *)2;
 }
 static int select_block(uint32_t block)
-{assert(block==(state.kind==3?0x80000U:state.kind==4?0x58000U:0x50000U));return 0;}
-static int select_lif(unsigned table) {assert(state.kind==3 && table==0);return 0;}
+{assert(block==((state.kind==3 || state.kind==5)?0x80000U:state.kind==4?0x58000U:0x50000U));return 0;}
+static int select_lif(unsigned table) {assert((state.kind==3 || state.kind==5) && table==0);return 0;}
 static int map(uint64_t bar,const char *trace,int writes)
 {assert(bar==0x100000 && trace && writes==1);maps++;return 0;}
 static int allow(uint32_t address) {assert(address==0x50000);return 0;}
@@ -97,6 +97,17 @@ static int lif_del(uint32_t d,int i) {return access_entry(3,d,NULL,i,36);}
 static int lef_get(uint32_t d,void *v,int i) {return access_entry(1,d,v,i,10);}
 static int lef_put(uint32_t d,void *v,int i) {return access_entry(2,d,v,i,10);}
 static int lef_del(uint32_t d,int i) {return access_entry(3,d,NULL,i,10);}
+static int qm_get(uint32_t d,void *v,int i)
+{
+    assert((((uint8_t *)v)[7]&3)==1);
+    int rc=access_entry(1,d,v,i,84);
+    ((uint8_t *)v)[7]&=0xfc; /* Hardware readback omits pt. */
+    return rc;
+}
+static int qm_put(uint32_t d,void *v,int i)
+{assert((((uint8_t *)v)[7]&3)==1);return access_entry(2,d,v,i,84);}
+static int qm_del(uint32_t d,int t,int i)
+{assert(t==1);return access_entry(3,d,NULL,i,84);}
 static void *fake_dlsym(void *handle,const char *name)
 {
     if(no_symbol)return NULL;
@@ -119,6 +130,9 @@ static void *fake_dlsym(void *handle,const char *name)
     SYM(2,"pan_fe100_fetch_lef_entry",lef_get)
     SYM(2,"pan_fe100_insert_lef_entry",lef_put)
     SYM(2,"pan_fe100_delete_lef_entry",lef_del)
+    SYM(2,"pan_fe100_fetch_qm_entry",qm_get)
+    SYM(2,"pan_fe100_insert_qm_entry",qm_put)
+    SYM(2,"pan_fe100_delete_qm_entry",qm_del)
 #undef SYM
     assert(!"unexpected ABI symbol");return NULL;
 }
@@ -136,15 +150,27 @@ static int start(unsigned kind)
 int main(void)
 {
     assert(ffn_fe100_resources_abi()==1);
-    for(unsigned kind=1;kind<=4;kind++) {
+    for(unsigned kind=1;kind<=5;kind++) {
         size_t size=entry_size(kind);
-        uint8_t data[36];reset();assert(start(kind)==0);
+        uint8_t data[84],expected[84];reset();assert(start(kind)==0);
         assert(loads==2 && maps==1 && start(kind)==-EALREADY);
         assert(ffn_fe100_resources_call(1,30,data,size)==3);
         for(size_t i=0;i<size;i++)assert(data[i]==0);
-        memset(data,0xa5,size);assert(ffn_fe100_resources_call(2,30,data,size)==0);
+        memset(data,0,size);memset(data,0xa5,kind==5?36:size);
+        memcpy(expected,data,size);if(kind==5)expected[7]&=0xfc;
+        assert(ffn_fe100_resources_call(2,30,data,size)==0);
         memset(data,0,size);assert(ffn_fe100_resources_call(1,30,data,size)==0);
-        for(size_t i=0;i<size;i++)assert(data[i]==0xa5);
+        assert(!memcmp(data,expected,size));
+        if(kind==5) {
+            /* Restoring a hardware readback must restore pt=1 for insertion. */
+            assert(ffn_fe100_resources_call(2,30,data,size)==0);
+            int before=calls;
+            data[7]=(data[7]&0xfc)|2;
+            assert(ffn_fe100_resources_call(2,30,data,size)==-EINVAL);
+            data[7]&=0xfc;data[83]=1;
+            assert(ffn_fe100_resources_call(2,30,data,size)==-EINVAL);
+            data[83]=0;assert(before==calls);
+        }
         int previous=calls;
         assert(ffn_fe100_resources_call(1,29,data,size)==-EPERM);
         assert(ffn_fe100_resources_call(1,30,data,size-1)==-EINVAL);

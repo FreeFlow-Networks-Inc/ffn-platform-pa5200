@@ -1,6 +1,6 @@
 """Bounded native FE100 resource table access under one inherited owner lock.
 
-Source-MAC, DIRECT next-hop, LIF and LEF APIs are exposed. Commissioned pools must
+Source-MAC, DIRECT next-hop, LIF, LEF and IPv4 QMAP APIs are exposed. Commissioned pools must
 be supplied by the hardware owner; there is no default allocation range.
 """
 import ctypes as C
@@ -18,9 +18,9 @@ from session_stream import Lines,send
 from ffn_fe100_nexthop import LIB,SHA
 
 LOCK='/run/ffn-fe100-tables.lock'
-SPECS={'smac':8,'nexthop':16,'lif':36,'lef':10}
-LIMITS={'smac':1024,'nexthop':65536,'lif':32,'lef':32}
-KINDS={'smac':1,'nexthop':2,'lif':3,'lef':4}
+SPECS={'smac':8,'nexthop':16,'lif':36,'lef':10,'qmap4':84}
+LIMITS={'smac':1024,'nexthop':65536,'lif':32,'lef':32,'qmap4':32}
+KINDS={'smac':1,'nexthop':2,'lif':3,'lef':4,'qmap4':5}
 
 
 class ResourceTables:
@@ -43,6 +43,7 @@ class ResourceTables:
         if kind not in self.pools or type(index) is not int or index not in self.pools[kind]:raise ValueError('Outside commissioned pool')
         if operation not in ('fetch','insert','delete'):raise ValueError('Invalid resource operation')
         if operation=='insert' and (not isinstance(data,bytes) or len(data)!=SPECS[kind]):raise ValueError('Invalid resource entry')
+        if operation!='insert' and data is not None:raise ValueError('Only insert accepts resource entry data')
         if (kind,index) in self.uncertain and operation!='fetch':raise RuntimeError('Ambiguous resource operation requires readback')
         if kind in self.workers and self.workers[kind][0].poll() is not None:
             self.stop(kind)
@@ -71,9 +72,18 @@ class ResourceTables:
             if len(raw)!=SPECS[kind]:raise RuntimeError('Invalid resource readback length')
             if operation=='fetch':self.uncertain.discard((kind,index))
             return None if result['rc']==3 else raw
-        except BaseException:
+        except BaseException as error:
             self.uncertain.add((kind,index))
-            self.stop(kind);raise
+            detail=''
+            if isinstance(error,EOFError):
+                try:
+                    err.seek(0,os.SEEK_END);end=err.tell();err.seek(max(0,end-4096))
+                    detail=err.read()
+                except (OSError,UnicodeError):detail='stderr unavailable'
+            self.stop(kind)
+            if isinstance(error,EOFError):
+                raise RuntimeError('Native resource worker closed (exit '+str(p.returncode)+'): '+detail) from error
+            raise
 
     def fetch(self,kind,index):return self.call(kind,'fetch',index)
     def insert(self,kind,index,data):self.call(kind,'insert',index,data)
