@@ -20,9 +20,12 @@ from ffn_session_events import subscribe,snapshot,receive,EventGap
 from session_stream import CAPACITY,Lines,canonical_uuid,send
 
 
-def policy_context(state,collector):
-    return dict(revision=state['revision'],digest=state['digest'],nat_digest=state['nat']['digest'],
+def policy_context(state,collector,topology=None):
+    result=dict(revision=state['revision'],digest=state['digest'],nat_digest=state['nat']['digest'],
                 bindings=state['bindings'],collector=collector)
+    if topology is not None:
+        result['l3']=dict(snapshot_digest=feed.l3.fingerprint(topology),hardware_admission=False)
+    return result
 
 
 def replay(rows,changes):
@@ -60,6 +63,9 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     sequence=0;known=set()
     def event(operation,payload):
         nonlocal sequence
+        # Do not publish a row/heartbeat computed across a queued topology
+        # change, including changes arriving during a conntrack burst.
+        check_routes(routes)
         sequence+=1
         emit(dict(schema=1,nonce=nonce,producer=producer,sequence=sequence,operation=operation,
                   emitted_monotonic=clock(),payload=payload))
@@ -69,14 +75,22 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     # Subscribe before dumping, then replay interleaved changes. Never label a
     # truncated dump or a lost receive queue as a synchronized snapshot.
     with route_watch() as routes,subscribe() as source:
+        deadline=clock()+8
+        topology=feed.l3.snapshot(deadline)
         rows,changes=snapshot(source,timeout=3,capacity=CAPACITY)
         rows=replay(rows,changes);check_context();check_routes(routes)
-        event('begin',policy_context(state,collector))
+        def assess(row):
+            value=feed.assess(row,rules,producer['boot_id'])
+            value['l3']=feed.l3.plan(value,state['bindings'],topology)
+            return value
+        event('begin',policy_context(state,collector,topology))
         chunk=[]
         for row in rows:
-            assessed=feed.assess(row,rules,producer['boot_id']);known.add(assessed['identity']);chunk.append(assessed)
+            if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
+            assessed=assess(row);known.add(assessed['identity']);chunk.append(assessed)
             if len(chunk)==32:event('snapshot',chunk);chunk=[]
         if chunk:event('snapshot',chunk)
+        if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
         check_context();check_routes(routes);event('synchronized',{})
         heartbeat=clock()
         while not stop():
@@ -93,10 +107,13 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                 except BlockingIOError:break
                 count+=len(batch)
                 for row in batch:
+                    # Closed/unowned sessions need only their identity; do
+                    # not resolve next hops on the withdrawal path.
                     assessed=feed.assess(row,rules,producer['boot_id']);ident=assessed['identity']
                     if row['event']=='end' or row['token'] is None:
                         if ident in known:event('close',{'identity':ident});known.remove(ident)
                     else:
+                        assessed['l3']=feed.l3.plan(assessed,state['bindings'],topology)
                         known.add(ident)
                         if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
                         event('upsert',assessed)

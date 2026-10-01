@@ -8,7 +8,7 @@ import subprocess
 import time
 import uuid
 
-from session_stream import Lines,Receiver,send,local_identity
+from session_stream import Lines,Receiver,send,local_identity,acknowledgement
 
 REPORT=Path('/run/ffn-fe100-session-relay.json')
 KEY='/run/credentials/ffn-fe100-session-feed.service/plane-agent-key'
@@ -40,8 +40,7 @@ def relay(nonce,read_dp,write_cp,read_cp,save=publish):
         while True:
             message=read_dp();state=receiver.accept(message)
             started=time.monotonic();write_cp(message);ack=read_cp();receiver.tick()
-            expected=dict(schema=1,nonce=nonce,producer=state['producer'],sequence=state['sequence'],
-                          ready=state['ready'],sessions=state['sessions'],hardware_admission=False)
+            expected=acknowledgement(nonce,state)
             if ack!=expected or time.monotonic()-started>=8:raise ValueError('CP session acknowledgement is stale or mismatched')
             save(dict(state,cp_acknowledged=True))
     finally:

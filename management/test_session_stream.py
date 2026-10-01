@@ -158,6 +158,7 @@ class DPTests(unittest.TestCase):
              patch.object(dp.feed,'acknowledgement',return_value=self.collector), \
              patch.object(dp,'route_watch',return_value=contextlib.nullcontext(object())), \
              patch.object(dp,'check_routes'),patch.object(dp,'subscribe',return_value=contextlib.nullcontext(object())), \
+             patch.object(dp.feed.l3,'snapshot',return_value=dict(links=[],addresses=[],routes=[],rules=[],neighbors=[])), \
              patch.object(dp,'snapshot',return_value=([self.row],[])):
             dp.stream(NONCE,out.append,stop=lambda:True)
         self.assertEqual([m['operation'] for m in out],['begin','snapshot','synchronized'])
@@ -166,6 +167,9 @@ class DPTests(unittest.TestCase):
         receiver=protocol.Receiver(NONCE)
         for value in out:receiver.accept(value)
         self.assertTrue(receiver.ready);self.assertFalse(receiver.status()['hardware_admission'])
+        self.assertTrue(receiver.status()['l3_observed'])
+        self.assertEqual(receiver.status()['l3_candidates'],0)
+        self.assertEqual(row['l3']['snapshot_digest'],out[0]['payload']['l3']['snapshot_digest'])
 
     def test_route_notification_invalidates_instead_of_being_ignored(self):
         source=object()

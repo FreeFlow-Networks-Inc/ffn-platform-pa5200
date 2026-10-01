@@ -51,6 +51,8 @@ def inside():
         thread=threading.Thread(target=observe,daemon=True);thread.start()
         try:
             if not ready.wait(6):raise RuntimeError('Initial kernel snapshot failed: '+repr(failure))
+            if not receiver.status()['l3_observed']:
+                raise RuntimeError('Topology generation was not synchronized')
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as client, socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as server:
                 client.bind(('127.0.0.1',0));server.bind(('127.0.0.1',0));client.settimeout(2);server.settimeout(2)
                 client.sendto(b'ffn-stream-test',server.getsockname());body,peer=server.recvfrom(128)
@@ -59,6 +61,9 @@ def inside():
                     with dp.subscribe() as source:current,_=dp.snapshot(source)
                     raise RuntimeError('Owned UDP update absent: '+repr(failure)+' kernel='+repr(current))
                 rows=[f['payload'] for f in frames if f['operation']=='upsert']
+                digest=receiver.policy['l3']['snapshot_digest']
+                if not rows or any(r.get('l3',{}).get('snapshot_digest')!=digest for r in rows):
+                    raise RuntimeError('Session updates lost their topology generation')
                 if not any(r['original'].get('source_port')==client.getsockname()[1] and
                            r['reply'].get('source_port')==server.getsockname()[1] for r in rows):
                     raise RuntimeError('Exported kernel original/reply ports do not match the test sockets')
@@ -70,6 +75,7 @@ def inside():
             stop.set();thread.join(2)
     return dict(schema=1,policy_source='isolated test fixture',kernel_snapshot=True,
                 kernel_session_update=True,route_invalidation=True,ordered_receiver=True,
+                l3_generation_verified=True,
                 messages=len(frames),packets_sent=2,hardware_admission=False)
 
 

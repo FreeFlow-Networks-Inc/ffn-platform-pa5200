@@ -22,12 +22,23 @@ Snapshots before and after planning must agree. Collection shares the existing
 eight-second session-observation budget. Missing or changed route evidence
 does not withdraw the software policy; it marks hardware planning unavailable.
 
-This is **next-hop planning, not hardware activation**. A snapshot is not a
-route/neighbor invalidation subscription. CP validates the directional binding
-and keeps hardware admission disabled. Production activation still requires:
+The continuous session stream now includes the same directional next-hop plans.
+DP subscribes to route, neighbor, address, rule and link notifications before
+collecting topology. Every session plan carries the generation's topology
+fingerprint. Notifications, netlink loss, policy changes and producer restarts
+invalidate the entire generation; MP and CP discard its session observations.
+An event queued while a plan is calculated prevents publishing that plan.
+Both receivers validate interface ownership, directional destinations, unicast
+MACs, VLAN, MTU and required exceptions. CP acknowledgements include the topology
+fingerprint and L3 candidate count; mismatches fence the relay. Legacy peers
+remain observation-only and cannot report `l3_observed`.
 
-- An ordered route/neighbor and session lifecycle feed, with generation fences
-  and withdrawal before replacing an attachment or next hop.
+This is **next-hop planning, not hardware activation**. The feed uses conservative
+whole-generation invalidation, not an atomic transaction with hardware table
+withdrawal. CP keeps hardware admission disabled. Production activation still requires:
+
+- Connecting generation invalidation to acknowledged hardware withdrawal before
+  replacing an attachment or next hop, including admission lease expiry.
 - Owned FE100 LIF/LEF/next-hop allocations and BCM steering for the actual
   aggregate/VLAN path, including membership changes.
 - Simultaneous bidirectional physical forwarding, TTL-expired, MTU/fragment,

@@ -8,7 +8,7 @@ import sys
 import time
 
 sys.path.insert(0,'/usr/local/lib/ffn')
-from session_stream import Lines,Receiver,send,local_identity
+from session_stream import Lines,Receiver,send,local_identity,acknowledgement
 
 REPORT=Path('/var/lib/ffn/fe100/session-stream.json')
 
@@ -28,8 +28,7 @@ def serve(nonce,read,write,save=publish):
         save(receiver)
         while True:
             message=read();state=receiver.accept(message);save(receiver)
-            write(dict(schema=1,nonce=nonce,producer=state['producer'],sequence=state['sequence'],
-                       ready=state['ready'],sessions=state['sessions'],hardware_admission=False))
+            write(acknowledgement(nonce,state))
     finally:
         receiver.fence('MP relay disconnected; a new snapshot is required');save(receiver)
 
