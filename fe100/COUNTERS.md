@@ -45,6 +45,10 @@ It checks the kernel's resetting drop counter during polling and before
 publishing a delta; loss or malformed input ends the stream immediately.
 Drop totals remain cumulative across those kernel reads. Output transport
 supervision and timely owner withdrawal remain the coordinator's responsibility.
+With `--health`, the native observer emits a sequenced heartbeat at least every
+300 ms of idle polling and uses a nonblocking control pipe. A closed or blocked
+reader ends the process; it cannot hang indefinitely holding a healthy-looking
+receiver. Packet counts in its final summary exclude heartbeats.
 
 `NativeCounterStream` accepts decoded control events from one trusted native
 receiver. It accumulates deltas only for explicitly registered entries, rejects
@@ -52,6 +56,12 @@ gaps/replays and foreign hardware epochs, bounds ID storage, and never reuses a
 retired flow ID in the same table generation. Unknown IDs cannot create state.
 A stopped or failed receiver makes activity unavailable. Receiver health and
 an unchanged snapshot are not evidence that an unobserved flow is idle.
+Accounting requires a supervised `NativeCounterStream` with a heartbeat timeout
+and an initial native health event. Its owner timer must call `sync()` during
+idle periods. Missing health, elapsed receiver-clock drift, or queued stale
+events fence the stream; a late heartbeat cannot resurrect it. The receiver
+timeout cannot exceed five seconds. This is the accounting process's own
+check, and does not replace the independent CP withdrawal watchdog.
 
 `ffn_fe100_accounting.AccountedSession` coordinates these counters with the core
 `dataplanes/ctlease` native kernel endpoint. It verifies both original/reply

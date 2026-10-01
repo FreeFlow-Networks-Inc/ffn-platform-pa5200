@@ -6,11 +6,13 @@
 #include "ffn_fe100_stats.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,7 +38,13 @@ static int capture_health(int fd,uint64_t *drops) {
     return *drops?-1:0;
 }
 int main(int argc,char **argv) {
-    if(argc!=5){fprintf(stderr,"usage: stats-probe INTERFACE TRUNK RETURN MILLISECONDS\n");return 2;}
+    int supervised=argc==6 && !strcmp(argv[5],"--health");
+    if(argc!=5 && !supervised){fprintf(stderr,"usage: stats-probe INTERFACE TRUNK RETURN MILLISECONDS [--health]\n");return 2;}
+    if(supervised) {
+        int flags=fcntl(STDOUT_FILENO,F_GETFL);
+        if(flags<0 || fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK)<0)return 1;
+        signal(SIGPIPE,SIG_IGN);
+    }
     unsigned trunk=number(argv[2],1,255),port=number(argv[3],1,255);
     unsigned duration=number(argv[4],100,180000),index=if_nametoindex(argv[1]);
     if(trunk==port || !index)return 2;
@@ -57,15 +65,25 @@ int main(int argc,char **argv) {
        setsockopt(fd,SOL_PACKET,PACKET_ADD_MEMBERSHIP,&member,sizeof(member))) {
         perror("capture setup");close(fd);return 1;
     }
-    uint64_t start=ms(),deadline=start+duration,sequence=0,total_records=0;
+    uint64_t start=ms(),deadline=start+duration,sequence=0,total_records=0,messages=0,heartbeat=start;
     unsigned malformed=0;int failed=0;uint64_t capture_drops=0;
-    puts("{\"ready\":true}");fflush(stdout);
-    while(ms()<deadline) {
+    puts("{\"ready\":true}");if(fflush(stdout))failed=1;
+    if(supervised && !failed) {
+        printf("{\"sequence\":%llu,\"elapsed_ms\":0,\"health\":true}\n",(unsigned long long)++sequence);
+        if(fflush(stdout))failed=1;
+    }
+    while(!failed && ms()<deadline) {
         struct pollfd p={.fd=fd,.events=POLLIN};
         int ready=poll(&p,1,100);
         if(ready<0){if(errno==EINTR)continue;failed=1;break;}
         if(p.revents&(POLLERR|POLLHUP|POLLNVAL)){failed=1;break;}
         if(capture_health(fd,&capture_drops)){failed=1;break;}
+        if(supervised && ms()-heartbeat>=250) {
+            heartbeat=ms();
+            printf("{\"sequence\":%llu,\"elapsed_ms\":%llu,\"health\":true}\n",
+                (unsigned long long)++sequence,(unsigned long long)(heartbeat-start));
+            if(fflush(stdout)){failed=1;break;}
+        }
         if(!(p.revents&POLLIN))continue;
         uint8_t wire[32+FFN_FE100_STATS_MAX*8];struct sockaddr_ll from;socklen_t from_size=sizeof(from);
         ssize_t n=recvfrom(fd,wire,sizeof(wire),MSG_TRUNC,(void*)&from,&from_size);
@@ -91,12 +109,12 @@ int main(int argc,char **argv) {
             printf("%s{\"flow_id\":%u,\"packets\":%u,\"octets\":%u,\"reason\":%u}",
                 i?",":"",c->flow_id,c->packets,c->octets,c->reason);
         }
-        total_records+=counters.count;puts("]}");fflush(stdout);
+        messages++;total_records+=counters.count;puts("]}");if(fflush(stdout)){failed=1;break;}
     }
     if(capture_health(fd,&capture_drops))failed=1;
     close(fd);
     printf("{\"messages\":%llu,\"records\":%llu,\"malformed\":%u,\"capture_drops\":%llu,\"failed\":%s}\n",
-        (unsigned long long)sequence,(unsigned long long)total_records,malformed,
+        (unsigned long long)messages,(unsigned long long)total_records,malformed,
         (unsigned long long)capture_drops,failed?"true":"false");
     return failed || malformed || capture_drops ? 1 : 0;
 }

@@ -99,13 +99,16 @@ class NativeCounterStream:
     The coordinator must withdraw hardware flows when available becomes false.
     This class never treats receiver heartbeats as flow activity.
     """
-    def __init__(self, epoch, *, clock=time.monotonic, freshness=5, max_ids=65536):
+    def __init__(self, epoch, *, clock=time.monotonic, freshness=5, max_ids=65536,
+                 receiver_timeout=None):
         if not isinstance(epoch, str) or not epoch or len(epoch)>256:
             raise ValueError('explicit hardware owner epoch required')
         if type(freshness) not in (int,float) or not 0<freshness<=60:
             raise ValueError('invalid activity freshness')
         if type(max_ids) is not int or not 1<=max_ids<=1048576:
             raise ValueError('invalid flow ID budget')
+        if receiver_timeout is not None and (type(receiver_timeout) not in (int,float) or
+                not .5<=receiver_timeout<=5):raise ValueError('invalid receiver heartbeat timeout')
         self.epoch,self.clock,self.freshness,self.max_ids=epoch,clock,freshness,max_ids
         self.sequence=0
         self.elapsed_ms=0
@@ -115,6 +118,18 @@ class NativeCounterStream:
         self.flows={}
         self.retired=set()
         self.ignored=0
+        self.receiver_timeout=receiver_timeout
+        self.receiver_at=None
+        self.receiver_origin=None
+
+    def check_receiver(self):
+        """Called by the owner's timer, including while traffic is idle."""
+        if not self.available:raise RuntimeError('counter stream unavailable')
+        if self.receiver_timeout is None or self.receiver_at is None:
+            raise RuntimeError('supervised native counter receiver required')
+        if self.now()-self.receiver_at>=self.receiver_timeout:
+            self.invalidate('native counter receiver heartbeat expired')
+            raise RuntimeError(self.failure)
 
     def invalidate(self, reason):
         self.available=False
@@ -161,14 +176,18 @@ class NativeCounterStream:
         try:
             if epoch!=self.epoch:
                 raise ValueError('hardware owner epoch changed')
-            if not isinstance(event,dict) or set(event)!={'sequence','elapsed_ms','records'}:
+            if not isinstance(event,dict) or set(event) not in (
+                    {'sequence','elapsed_ms','records'},{'sequence','elapsed_ms','health'}):
                 raise ValueError('invalid native counter event')
-            seq=event['sequence'];records=event['records']
+            healthy='health' in event
+            if healthy and (event['health'] is not True or self.receiver_timeout is None):
+                raise ValueError('unexpected receiver heartbeat')
+            seq=event['sequence'];records=[] if healthy else event['records']
             if not self._uint(seq,(1<<64)-1) or seq!=self.sequence+1:
                 raise ValueError('counter stream sequence gap or replay')
             if not self._uint(event['elapsed_ms'],(1<<64)-1) or event['elapsed_ms']<self.elapsed_ms:
                 raise ValueError('invalid receiver time')
-            if not isinstance(records,list) or not 1<=len(records)<=125:
+            if not healthy and (not isinstance(records,list) or not 1<=len(records)<=125):
                 raise ValueError('invalid counter record count')
             # Validate the whole message before changing any accumulated value.
             for record in records:
@@ -178,6 +197,18 @@ class NativeCounterStream:
                     if not self._uint(record[key],limit):
                         raise ValueError('invalid '+key)
             now=self.now()
+            if self.receiver_timeout is not None:
+                if self.receiver_at is None:
+                    if not healthy:raise ValueError('receiver heartbeat must precede counters')
+                    self.receiver_origin=now-event['elapsed_ms']/1000
+                else:
+                    self.check_receiver()
+                    # Buffered control events cannot renew a live lease merely
+                    # because they are read now. Compare relative clocks only.
+                    lag=now-(self.receiver_origin+event['elapsed_ms']/1000)
+                    if abs(lag)>=self.receiver_timeout:
+                        raise ValueError('native counter transport delayed or clock changed')
+                self.receiver_at=now
             for record in records:
                 flow=self.flows.get(record['flow_id'])
                 if flow is None:
@@ -194,7 +225,7 @@ class NativeCounterStream:
                     flow['at']=now
             self.sequence=seq
             self.elapsed_ms=event['elapsed_ms']
-        except (ValueError,TypeError) as exc:
+        except (ValueError,TypeError,RuntimeError) as exc:
             self.invalidate(exc)
             raise
 

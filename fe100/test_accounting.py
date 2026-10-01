@@ -20,7 +20,8 @@ class Lease:
 class AccountingTests(unittest.TestCase):
     def setUp(self):
         self.time=10
-        self.stream=NativeCounterStream('owner/table',clock=lambda:self.time)
+        self.stream=NativeCounterStream('owner/table',clock=lambda:self.time,receiver_timeout=2)
+        self.heartbeat()
         self.entries=[nat_entry4(key4(*value,17,4094),ident,31,dict(zip(
             ('source','destination','source_port','destination_port'),out))) for value,out,ident in
             [(Lease.original,('203.0.113.30','198.51.100.20',52001,443),1001),
@@ -35,8 +36,12 @@ class AccountingTests(unittest.TestCase):
         return self.ack
 
     def report(self,reason=1):
-        self.stream.consume('owner/table',{'sequence':self.stream.sequence+1,'elapsed_ms':100,
+        self.stream.consume('owner/table',{'sequence':self.stream.sequence+1,'elapsed_ms':int((self.time-10)*1000),
             'records':[{'flow_id':i,'packets':32,'octets':4512,'reason':reason} for i in (1001,1003)]})
+
+    def heartbeat(self):
+        self.stream.consume('owner/table',{'sequence':self.stream.sequence+1,
+            'elapsed_ms':int((self.time-10)*1000),'health':True})
 
     def test_equal_reports_each_count_once(self):
         for i in (1,2):
@@ -77,7 +82,9 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(self.lease.updates,[])
 
     def test_new_reason_two_does_not_make_old_activity_fresh(self):
-        self.report();self.time+=6;self.report(2)
+        self.report()
+        for _ in range(6):self.time+=1;self.heartbeat()
+        self.report(2)
         with self.assertRaises(RuntimeError):self.owner.sync()
         self.assertEqual(self.lease.updates,[])
 
@@ -102,9 +109,19 @@ class AccountingTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.stream.register(self.entries[0])
 
     def test_idle_sync_does_not_refresh(self):
-        self.time+=500
+        self.time+=1;self.heartbeat()
         self.assertFalse(self.owner.sync())
         self.assertEqual(self.lease.updates,[])
+
+    def test_idle_receiver_death_withdraws(self):
+        self.time+=2
+        with self.assertRaises(RuntimeError):self.owner.sync()
+        self.assertTrue(self.lease.closed)
+        self.assertEqual(self.withdrawals,1)
+
+    def test_unsupervised_receiver_cannot_bind_accounting(self):
+        self.stream.receiver_timeout=None
+        with self.assertRaises(RuntimeError):AccountedSession(self.stream,self.entries,self.lease,self.withdraw)
 
     def test_idle_deleted_session_withdraws_without_refresh(self):
         self.lease.fail=True

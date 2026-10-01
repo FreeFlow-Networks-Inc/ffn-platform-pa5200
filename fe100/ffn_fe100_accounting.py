@@ -29,6 +29,7 @@ class AccountedSession:
                 tuple(flow_tuple(output_key4(e)) for e in self.entries)!=(reverse(lease.reply),reverse(lease.original))):
             raise ValueError('hardware NAT directions do not match the bound conntrack object')
         if not callable(withdraw):raise ValueError('acknowledged withdrawal callback required')
+        stream.check_receiver()
         snapshots=[stream.accounting(e) for e in self.entries]
         if any(s['report_at'] is not None for s in snapshots):raise ValueError('bind before hardware reports')
         self.stream,self.epoch,self.lease,self.withdraw=stream,stream.epoch,lease,withdraw
@@ -50,6 +51,7 @@ class AccountedSession:
         if self.failure is not None or self.closed:raise RuntimeError('accounting session fenced')
         try:
             if self.stream.epoch!=self.epoch:raise RuntimeError('hardware epoch changed')
+            self.stream.check_receiver()
             snapshots=[self.stream.accounting(e) for e in self.entries]
             now=self.stream.now()
             packets=[];octets=[];active=0

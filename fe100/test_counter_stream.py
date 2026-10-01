@@ -98,4 +98,47 @@ class CounterStream(unittest.TestCase):
                 with self.assertRaises(ValueError):stream.consume('epoch',event)
                 self.assertFalse(stream.available)
 
+    def supervised(self):
+        self.stream=NativeCounterStream('epoch',clock=lambda:self.now,receiver_timeout=2)
+        self.stream.register(self.entry)
+        self.health(1,0)
+
+    def health(self,sequence,elapsed):
+        self.stream.consume('epoch',dict(sequence=sequence,elapsed_ms=elapsed,health=True))
+
+    def test_heartbeat_proves_receiver_not_flow_activity(self):
+        self.supervised();self.now+=1;self.health(2,1000)
+        self.stream.check_receiver()
+        self.assertIsNone(self.stream(self.entry))
+        self.assertEqual(self.stream.totals(self.entry),dict(packets=0,octets=0))
+
+    def test_silent_receiver_invalidates_on_timer(self):
+        self.supervised();self.now+=2
+        with self.assertRaises(RuntimeError):self.stream.check_receiver()
+        self.assertFalse(self.stream.available)
+
+    def test_late_heartbeat_cannot_resurrect_receiver(self):
+        self.supervised();self.now+=2
+        with self.assertRaises(RuntimeError):self.health(2,2000)
+        self.assertFalse(self.stream.available)
+
+    def test_buffered_heartbeat_cannot_extend_receiver(self):
+        self.supervised();self.now+=1;self.health(2,100)
+        self.now+=1.2
+        with self.assertRaises(ValueError):self.health(3,101)
+        self.assertFalse(self.stream.available)
+
+    def test_receiver_clock_jump_rejected(self):
+        self.supervised()
+        with self.assertRaises(ValueError):self.health(2,3000)
+
+    def test_counters_cannot_precede_health_handshake(self):
+        self.stream=NativeCounterStream('epoch',clock=lambda:self.now,receiver_timeout=2)
+        with self.assertRaises(ValueError):self.stream.consume('epoch',self.event(1))
+
+    def test_heartbeat_uses_same_sequence_as_counters(self):
+        self.supervised();self.stream.consume('epoch',self.event(2))
+        self.health(3,200)
+        self.assertEqual(self.stream.totals(self.entry)['packets'],64)
+
 if __name__=='__main__':unittest.main()
