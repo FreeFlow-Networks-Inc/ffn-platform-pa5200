@@ -17,9 +17,10 @@ INVENTORY_BYTES=32*1024*1024
 
 
 class Observations:
-    def __init__(self,withdraw,clock=time.monotonic):
+    def __init__(self,withdraw,clock=time.monotonic,configuration_digest=None):
         self.withdraw,self.clock=withdraw,clock
         self.receiver=None;self.pending=None;self.sizes={};self.reason='awaiting MP relay'
+        self.configuration=None;self.configuration_digest=configuration_digest
 
     def fence(self,reason):
         self.pending=None;self.sizes.clear();self.reason=str(reason)[:256]
@@ -31,6 +32,7 @@ class Observations:
         if self.receiver is not None and nonce==self.receiver.nonce:
             raise ValueError('observation relay nonce cannot be replayed')
         self.fence('new relay requires complete snapshot')
+        self.configuration=None
         self.receiver=Receiver(nonce,clock=self.clock)
         return self.status()
 
@@ -80,6 +82,17 @@ class Observations:
             if hashlib.sha256(raw).hexdigest()!=p['digest']:raise ValueError('observation frame digest mismatch')
             message=json.loads(raw)
             if not isinstance(message,dict):raise ValueError('observation frame must be an object')
+            if 'configuration' in message:
+                from fe100_attachment_config import validate,checksum
+                if (set(message)!={'schema','nonce','configuration'} or type(message['schema']) is not int or
+                        message['schema']!=1 or message['nonce']!=self.receiver.nonce or
+                        self.receiver.producer is not None or self.configuration is not None):
+                    raise ValueError('Interface intent requires a new relay before the DP snapshot')
+                config=validate(message['configuration'])
+                if self.configuration_digest is None or config['config_digest']!=self.configuration_digest():
+                    raise ValueError('Interface intent does not match the committed policy barrier')
+                self.configuration=config
+                return dict(result,complete=True,ack=dict(config_digest=config['config_digest'],intent_digest=checksum(config)))
             # Invalidation is ordered ahead of accepting a new applied context.
             if message.get('operation')=='begin' or 'unavailable' in message:
                 self.fence('DP policy, topology or producer changed')
@@ -105,6 +118,7 @@ class Observations:
                     policy_digest=(state.get('policy') or {}).get('digest'),
                     nat_digest=(state.get('policy') or {}).get('nat_digest'),
                     topology_digest=((state.get('policy') or {}).get('l3') or {}).get('snapshot_digest'),
+                    configuration_digest=self.configuration['config_digest'] if self.receiver is not None and self.configuration is not None else None,
                     pending_bytes=len(self.pending['data']) if self.pending else 0,reason=self.reason)
 
 

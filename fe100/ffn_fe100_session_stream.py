@@ -24,7 +24,7 @@ def publish(receiver,path=REPORT):
     temporary.replace(path)
 
 
-def serve(nonce,read,write,save=publish,bridge_factory=None):
+def serve(nonce,read,write,save=publish,bridge_factory=None,configuration=None):
     if bridge_factory is None:
         from ffn_fe100_observations import ObservationClient
         bridge_factory=ObservationClient
@@ -32,6 +32,13 @@ def serve(nonce,read,write,save=publish,bridge_factory=None):
     bridge=bridge_factory(nonce)
     receiver.control_owner=getattr(bridge,'owner',None);receiver.owner_acknowledged=False
     try:
+        if configuration is not None:
+            from fe100_attachment_config import validate,checksum
+            validate(configuration)
+            ack=bridge.send(dict(schema=1,nonce=nonce,configuration=configuration))
+            if ack!=dict(config_digest=configuration['config_digest'],intent_digest=checksum(configuration)):
+                raise ValueError('Supervised interface intent acknowledgement disagrees')
+            write(ack)
         save(receiver)
         while True:
             message=read();state=receiver.accept(message)
@@ -51,7 +58,7 @@ if __name__=='__main__':
         with open('/run/ffn-fe100-session-stream.lock','a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             lines=Lines(0);request=lines.read()
-            if set(request)!={'nonce'}:raise ValueError('Stream start accepts only a nonce')
-            serve(request['nonce'],lambda:lines.read(10),lambda value:send(1,value))
+            if set(request) not in ({'nonce'},{'nonce','configuration'}):raise ValueError('Invalid stream start')
+            serve(request['nonce'],lambda:lines.read(10),lambda value:send(1,value),configuration=request.get('configuration'))
     except (Exception,KeyboardInterrupt) as error:
         print(str(error)[:512],file=sys.stderr);raise SystemExit(2)

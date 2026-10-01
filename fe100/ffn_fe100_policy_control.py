@@ -43,7 +43,7 @@ class PolicyController:
             def withdraw():
                 self.owner.activated=False
                 self.owner.reconcile()
-            self.observations=Observations(withdraw)
+            self.observations=Observations(withdraw,configuration_digest=lambda:self.owner.state['digest'])
         except BaseException:
             journal.close();raise
 
@@ -73,7 +73,11 @@ class PolicyController:
         result=dict(result,observations=self.observations.status())
         if operation!='status':return result
         from ffn_fe100_nat import capabilities
-        return dict(result,capabilities=capabilities())
+        from ffn_fe100_attachment_runtime import resolve
+        try:attachments=resolve(self.observations.configuration,self.observations.receiver,self.owner.state['digest'])
+        except Exception as error:
+            attachments=dict(available=False,hardware_admission=False,interfaces=[],reason=str(error)[:256])
+        return dict(result,capabilities=capabilities(),attachments=attachments)
 
     def close(self):self.journal.close()
 

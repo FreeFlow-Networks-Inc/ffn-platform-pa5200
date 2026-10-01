@@ -106,6 +106,8 @@ class BuildInputTests(unittest.TestCase):
                        'usr/local/sbin/ffn_fe100_path_sessions.py',
                        'usr/local/sbin/ffn_fe100_resource_tables.py',
                        'usr/local/sbin/ffn_fe100_attachments.py',
+                       'usr/local/sbin/ffn_fe100_attachment_runtime.py',
+                       'usr/local/lib/ffn/fe100_attachment_config.py',
                        'usr/local/sbin/validate_attachments.py',
                        'usr/local/sbin/validate_path_resources.py',
                      'etc/systemd/system/ffn-fe100-recovery.service',

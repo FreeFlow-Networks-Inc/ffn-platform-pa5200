@@ -7,11 +7,18 @@ from pathlib import Path
 import subprocess
 import time
 import uuid
+import hashlib
 
 from session_stream import Lines,Receiver,send,local_identity,acknowledgement
 
 REPORT=Path('/run/ffn-fe100-session-relay.json')
 KEY='/run/credentials/ffn-fe100-session-feed.service/plane-agent-key'
+CONFIG=Path('/var/lib/ffn-ngfw/config/running-config.xml')
+
+
+def verify_configuration(path,digest):
+    if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
+        raise RuntimeError('Committed configuration changed; resynchronization required')
 
 
 def commands():
@@ -53,12 +60,22 @@ def main():
     with open('/run/ffn-fe100-session-relay.lock','a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         try:
+            from fe100_attachment_config import compile_config,checksum
+            raw=CONFIG.read_bytes();configuration=compile_config(raw)
             for command in commands():
                 processes.append(subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,bufsize=0))
             dp,cp=processes
-            for process in (dp,cp):send(process.stdin.fileno(),{'nonce':nonce})
             dp_lines=Lines(dp.stdout.fileno());cp_lines=Lines(cp.stdout.fileno())
-            relay(nonce,lambda:dp_lines.read(8),lambda value:send(cp.stdin.fileno(),value,8),lambda:cp_lines.read(8))
+            send(cp.stdin.fileno(),dict(nonce=nonce,configuration=configuration))
+            if cp_lines.read(8)!=dict(config_digest=configuration['config_digest'],intent_digest=checksum(configuration)):
+                raise ValueError('CP did not acknowledge committed interface intent')
+            send(dp.stdin.fileno(),{'nonce':nonce})
+            def current():
+                verify_configuration(CONFIG,configuration['config_digest'])
+            def read():
+                current();message=dp_lines.read(8);current();return message
+            def save(state):publish(dict(state,configuration_digest=configuration['config_digest']))
+            relay(nonce,read,lambda value:send(cp.stdin.fileno(),value,8),lambda:cp_lines.read(8),save)
         finally:
             for process in processes:
                 process.stdin.close();process.terminate()

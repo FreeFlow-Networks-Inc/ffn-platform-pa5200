@@ -514,6 +514,16 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_attachment_runtime.py",
+      "usr/local/sbin/ffn_fe100_attachment_runtime.py"
+    ],
+    [
+      "platform",
+      "management/fe100_attachment_config.py",
+      "usr/local/lib/ffn/fe100_attachment_config.py"
+    ],
+    [
+      "platform",
       "fe100/validate_attachments.py",
       "usr/local/sbin/validate_attachments.py"
     ],

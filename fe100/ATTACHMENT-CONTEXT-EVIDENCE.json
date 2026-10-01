@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "scope": "live-committed-attachment-context",
+  "hardware_admission": false,
+  "hardware_sessions_tested": 0,
+  "configured_interfaces_resolved": 3,
+  "physical_ownership_matches": 2,
+  "aggregate_blocker": "Aggregate hardware egress selection is not commissioned",
+  "recovery_test": "Supervised CP control worker terminated with SIGKILL; MP resent committed intent and obtained a fresh DP snapshot",
+  "recovery_seconds": 18.414,
+  "new_control_owner_verified": true,
+  "new_dp_observation_producer_verified": true,
+  "mp_and_cp_configuration_digests_match": true,
+  "configuration_unchanged": true,
+  "policy_revision_unchanged": true,
+  "runtime_report": "/var/log/ffn-fe100-intent-recovery-1790891634915969178.json"
+}

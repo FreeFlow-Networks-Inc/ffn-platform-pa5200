@@ -31,8 +31,36 @@ LIF/LEF allocation is currently restricted to the reference-verified first 32
 indices, subject to the caller's explicitly commissioned subset. This is not
 the advertised table capacity. Table 0, parser state, RX/TX port maps, queues,
 BCM steering, exception routing and selected-member eligibility require separate
-commissioning. This owner is not yet connected to production configuration apply
-or the supervised session admission pipeline. No public activation API is added.
+commissioning. The table owner is not yet invoked by production configuration
+apply or the supervised session admission pipeline. No public activation API is added.
+
+## Committed configuration and live ownership
+
+The MP relay now compiles committed Layer 3 interface, VLAN, virtual-system and
+zone intent with `management/fe100_attachment_config.py`. It sends only these
+fields, the configured aggregate members and the complete configuration digest;
+addresses and authentication data are excluded. The CP accepts this context only
+before a new DP snapshot and only when the digest matches its policy barrier.
+The MP checks for a changed running configuration before and after each DP read,
+forcing a new relay/snapshot when it changes. The existing pre-commit hardware
+drain remains the ordering barrier before applying configuration changes.
+
+`ffn_fe100_attachment_runtime.py` resolves this intent against the fresh DP
+bindings and CP physical/aggregate ownership journals. It checks boot identity,
+aggregate owner token, members, pending operations and aggregate lease freshness.
+It does not require physical carrier for configuration mapping. Heartbeat refresh
+alone does not change the binding digest. Aggregate software selection is reported
+as an explicit hardware-egress blocker. Physical subinterface packet attachments
+remain uncommissioned; names alone cannot establish their hardware identity.
+
+The supervised CP `status` response includes `attachments`, with resolved intent,
+ownership blockers and remaining commissioning steps. Its diagnostic projection
+is bounded to 24 KiB for the local RPC; `total` and `truncated` identify omitted
+rows. These observations do not allocate table slots or assert fresh SDK readback.
+The table owner and production flow admission still require the separately
+commissioned FE100 zone/miss path, QMAP, BCM steering and counter/exception path.
+When the CP worker restarts, the MP automatically resends committed intent before
+replaying DP observations. `ATTACHMENT-CONTEXT-EVIDENCE.json` records the live test.
 
 ## Verification
 
