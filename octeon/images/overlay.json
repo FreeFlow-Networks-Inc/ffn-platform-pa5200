@@ -514,6 +514,21 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_control_socket.py",
+      "usr/local/sbin/ffn_fe100_control_socket.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_controld.py",
+      "usr/local/sbin/ffn_fe100_controld.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-control.service",
+      "etc/systemd/system/ffn-fe100-control.service"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn-fe100-recovery.service",
       "etc/systemd/system/ffn-fe100-recovery.service"
     ],

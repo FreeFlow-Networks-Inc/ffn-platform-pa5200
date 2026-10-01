@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 import time
-from ffn_fe100_policy_control import control
+from ffn_fe100_policy_control import dispatch as control
 
 REPORT = Path('/var/lib/ffn/fe100/policy-recovery.json')
 

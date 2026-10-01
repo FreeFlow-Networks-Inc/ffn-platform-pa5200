@@ -1,0 +1,19 @@
+[Unit]
+Description=Supervised FFN FE100 control owner
+After=local-fs.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0
+Environment=LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_fe100_controld.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=40
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

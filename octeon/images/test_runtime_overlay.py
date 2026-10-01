@@ -60,10 +60,11 @@ class RuntimeOverlayTests(unittest.TestCase):
     def test_cp_boot_enables_front_led_service(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); directory = root / 'etc/systemd/system'; directory.mkdir(parents=True)
-            for name in ('ffn-copper-link.timer', 'ffn-fe100-recovery.timer', 'ffn-aggregate-watchdog.timer', 'ffn-port-led-enable.service', 'ffn-port-events.service'):
+            for name in ('ffn-copper-link.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-aggregate-watchdog.timer', 'ffn-port-led-enable.service', 'ffn-port-events.service'):
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'cp', {})
             self.assertTrue((directory / 'multi-user.target.wants/ffn-port-led-enable.service').is_file())
+            self.assertTrue((directory / 'multi-user.target.wants/ffn-fe100-control.service').is_file())
 
 
 if __name__ == '__main__':

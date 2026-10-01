@@ -95,7 +95,9 @@ python3 -m unittest test_guard test_lab_guard test_guard_lab test_packet_session
 sudo env FFN_FE100_GUARD_PROCESS_TEST=yes python3 -m unittest test_guard_process
 ```
 
-Production admission still needs a production supervisor/service integration,
-dynamic policy/route/neighbor attachment and invalidation, durable counter
+The [CP control service](CONTROL-SERVICE.md) now connects the supervisor to
+the deployed policy commit barrier. Production admission still needs live
+session admission through that service, dynamic policy/route/neighbor attachment
+and invalidation, durable counter
 transport and safe hardware flow-ID reuse. Kernel accounting leases currently
 qualify UDP only; TCP state synchronization is a separate remaining requirement.

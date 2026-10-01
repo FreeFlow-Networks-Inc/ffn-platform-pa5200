@@ -11,8 +11,10 @@ from daemon_backend import execute as execute_resource
 class Control(unittest.IsolatedAsyncioTestCase):
     def test_web_commit_barrier_uses_gateway_and_exact_digest(self):
         from control import before_policy_commit
-        client=Mock();client.plane_request.side_effect=[{'ok':True,'result':{'revision':7}},
-            {'ok':True,'result':{'revision':8,'phase':'blocked','sessions':0,'recovery_required':False}}]
+        client=Mock();client.plane_request.side_effect=[{'ok':True,'result':{'revision':7,'control_owner':'owner-a'}},
+            {'ok':True,'result':{'revision':8,'phase':'blocked','sessions':0,'recovery_required':False,
+                                'admission_enabled':False,'control_owner':'owner-a',
+                                'digest':hashlib.sha256(b'<config/>').hexdigest()}}]
         with patch.dict(os.environ,{'FFN_CONTROL_GATEWAY':'controld'}), \
                 patch.dict('sys.modules',{'ffn_controld_client':SimpleNamespace(ControldClient=Mock(return_value=client))}):
             result=before_policy_commit(b'<config/>')
@@ -21,6 +23,16 @@ class Control(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first['resource'],'fe100-policy');self.assertEqual(first['action'],'status')
         self.assertEqual(second['payload'],{'revision':7,'digest':hashlib.sha256(b'<config/>').hexdigest()})
         self.assertNotEqual(first['id'],second['id'])
+
+    def test_gateway_commit_rejects_owner_restart_between_status_and_drain(self):
+        from control import before_policy_commit
+        client=Mock();client.plane_request.side_effect=[{'ok':True,'result':{'revision':7,'control_owner':'old'}},
+            {'ok':True,'result':{'revision':8,'phase':'blocked','sessions':0,'recovery_required':False,
+                                'admission_enabled':False,'control_owner':'new',
+                                'digest':hashlib.sha256(b'<config/>').hexdigest()}}]
+        with patch.dict(os.environ,{'FFN_CONTROL_GATEWAY':'controld'}), \
+                patch.dict('sys.modules',{'ffn_controld_client':SimpleNamespace(ControldClient=Mock(return_value=client))}):
+            with self.assertRaisesRegex(RuntimeError,'did not drain'):before_policy_commit(b'<config/>')
 
     async def test_validate_checks_boot_without_preparing(self):
         boot=str(uuid.uuid4());harness=AsyncMock()

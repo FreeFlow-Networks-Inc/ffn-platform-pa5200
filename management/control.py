@@ -70,6 +70,10 @@ def aggregate_status():
 
 
 def before_policy_commit(candidate_bytes):
+    import importlib.util
+    from pathlib import Path
+    spec=importlib.util.spec_from_file_location('pa5200_policy_guard',Path(__file__).with_name('policy_guard.py'))
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     if os.environ.get('FFN_CONTROL_GATEWAY') == 'controld':
         import hashlib
         from ffn_controld_client import ControldClient
@@ -82,15 +86,10 @@ def before_policy_commit(candidate_bytes):
                 raise RuntimeError('FE100 policy barrier failed; request ID ' + msg['id'])
             return response['result']
         state = request('status', {})
-        result = request('apply', {'revision':state['revision'], 'digest':hashlib.sha256(candidate_bytes).hexdigest()})
-        if result.get('phase')!='blocked' or result.get('sessions')!=0 or result.get('recovery_required') is not False:
-            raise RuntimeError('Hardware sessions did not drain')
-        return {'revision':result['revision'],'drained':True,'admission_enabled':False}
+        digest=hashlib.sha256(candidate_bytes).hexdigest()
+        result = request('apply', {'revision':state['revision'], 'digest':digest})
+        return module.verify_drain(state,result,digest)
     # Imported only by an explicitly selected extension at commit time.
-    import importlib.util
-    from pathlib import Path
-    spec=importlib.util.spec_from_file_location('pa5200_policy_guard',Path(__file__).with_name('policy_guard.py'))
-    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     return module.before_commit(candidate_bytes)
 
 
