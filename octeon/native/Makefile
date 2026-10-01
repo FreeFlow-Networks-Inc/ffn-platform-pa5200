@@ -3,8 +3,14 @@ CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror -pthread
 
 all: libffn-packet.so libffn-hwio.so libffn-inline.so
 
-libffn-packet.so: ffn_packet.c ffn_packet.h ffn_aggregate_packet.inc
-	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_packet.c -o $@
+libffn-packet.so: ffn_packet.c ffn_packet.h ffn_aggregate_packet.inc ffn_fe100_packet.inc ffn_fe100_punt.c ffn_fe100_punt.h
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_packet.c ffn_fe100_punt.c -o $@
+
+test-fe100-punt: ffn_fe100_punt.c ffn_fe100_punt.h test_fe100_punt.c
+	$(CC) $(CFLAGS) ffn_fe100_punt.c test_fe100_punt.c -o $@
+
+ffn-fe100-punt-probe: ffn_fe100_punt_probe.c libffn-packet.so
+	$(CC) $(CFLAGS) ffn_fe100_punt_probe.c -L. -lffn-packet -o $@
 
 libffn-hwio.so: ffn_hwio.c
 	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_hwio.c -o $@
@@ -19,9 +25,11 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt
 	./test-hwio
+	./test-fe100-punt
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
+	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py
 	cd ../debian && python3 -m unittest test_packet_cpus
 

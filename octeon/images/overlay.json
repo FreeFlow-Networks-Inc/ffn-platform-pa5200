@@ -454,6 +454,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_lab_ports.py",
+      "usr/local/sbin/ffn_fe100_lab_ports.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_parser_apply.py",
       "usr/local/sbin/ffn_fe100_parser_apply.py"
     ],

@@ -33,7 +33,11 @@ struct ffn_packet {
     struct mmsghdr messages[BURST];
     struct iovec vectors[BURST];
     struct sockaddr_ll addresses[BURST];
-    uint8_t frames[BURST][MAX_FRAME + 5];
+    uint8_t frames[BURST][MAX_FRAME + 57];
+    struct ffn_packet_fe100_binding fe100[8];
+    unsigned fe100_count;
+    uint64_t fe100_deadline;
+    _Atomic uint64_t fe100_stats[3]; /* decoded, rejected, expired */
     _Atomic uint64_t receive_calls, receive_frames, receive_max_batch;
     struct mmsghdr tx_messages[BURST];
     struct iovec tx_vectors[BURST];
@@ -125,19 +129,20 @@ static int valid_name(const char *s)
     return strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n
            && strcmp(s, ".") && strcmp(s, "..");
 }
-static int packet_socket_many(const char *name, const uint32_t *sources, unsigned count, int mode)
+static int packet_filter(int fd, const uint32_t *sources, unsigned count, int mode,
+                         const uint32_t *returns, unsigned return_count)
 {
-    unsigned index = if_nametoindex(name);
-    struct sockaddr_ll addr = { .sll_family = AF_PACKET, .sll_ifindex = (int)index };
-    int fd, yes = 1, buffer = 4 * 1024 * 1024, error;
-    struct sock_filter instructions[32];
+    struct sock_filter instructions[64];
     struct sock_fprog program = { .filter = instructions };
-    unsigned used = 0, drop;
-    if (count > 16 || (mode && (!sources || !count))) { errno = EINVAL; return -1; }
+    unsigned used = 0, drop, accept;
+    if (count > 16 || !sources || !count || return_count > 8 ||
+        (return_count && !returns)) { errno = EINVAL; return -1; }
 #define INS(code, jt, jf, k) instructions[used++] = (struct sock_filter){code, jt, jf, k}
     INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 0);
     INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 24);
     INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 2);
+    for (unsigned i = 0; i < return_count; i++)
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, returns[i]);
     for (unsigned i = 0; i < count; i++) {
         if (sources[i] > 65535) { errno = EINVAL; return -1; }
         INS(BPF_JMP | BPF_JEQ | BPF_K, count - i, 0, sources[i]);
@@ -154,14 +159,23 @@ static int packet_socket_many(const char *name, const uint32_t *sources, unsigne
         INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0x88cc);
         INS(BPF_RET | BPF_K, 0, 0, 0);
     }
-    INS(BPF_RET | BPF_K, 0, 0, 65535);
+    accept = used; INS(BPF_RET | BPF_K, 0, 0, 65535);
+    for (unsigned i = 0; i < return_count; i++)
+        instructions[3+i].jt = (uint8_t)(accept - (3+i) - 1);
     program.len = (unsigned short)used;
 #undef INS
+    return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program));
+}
+static int packet_socket_many(const char *name, const uint32_t *sources, unsigned count, int mode)
+{
+    unsigned index = if_nametoindex(name);
+    struct sockaddr_ll addr = { .sll_family = AF_PACKET, .sll_ifindex = (int)index };
+    int fd, yes = 1, buffer = 4 * 1024 * 1024, error;
     if (!index) { errno = ENODEV; return -1; }
     fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, mode ? htons(3) : 0);
     if (fd < 0) return -1;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr))) goto fail;
-    if (mode && (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) ||
+    if (mode && (packet_filter(fd, sources, count, mode, NULL, 0) ||
         setsockopt(fd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &yes, sizeof(yes)) ||
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof(buffer)))) goto fail;
     return fd;
@@ -253,6 +267,7 @@ static int io_error(struct ffn_packet *p)
     return -1;
 }
 #include "ffn_aggregate_packet.inc"
+#include "ffn_fe100_packet.inc"
 static int receive_burst(struct ffn_packet *p)
 {
     int count;
@@ -275,6 +290,10 @@ static int receive_burst(struct ffn_packet *p)
         if (p->addresses[i].sll_family == AF_PACKET && p->addresses[i].sll_pkttype == PACKET_OUTGOING) {
             atomic_fetch_add_explicit(&p->counters[OUTGOING], 1, memory_order_relaxed); continue;
         }
+        if ((p->messages[i].msg_hdr.msg_flags & MSG_TRUNC) || (size_t)n > sizeof(p->frames[i])) {
+            atomic_fetch_add_explicit(&p->counters[ENVELOPE_DROP], 1, memory_order_relaxed); continue;
+        }
+        if (fe100_receive(p, packet, &n)) continue;
         if (p->aggregate) {
             if (aggregate_receive(p, packet, n)) return -1;
             continue;

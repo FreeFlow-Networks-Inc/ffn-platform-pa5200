@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Serialize isolated FE100 lab recipes with the CP's production BCM owners.
 
-Only the physically isolated front 5/13 lab is supported. Queue preparation is
-limited to that loop and its internal FE100/capture destinations. No link
-configuration, BCM restart or production member changes are permitted.
+Queue preparation and legacy cross-port recipes retain the isolated 5/13
+profile. Explicit front_ports parameterizes DSA egress, queue observation and
+session redirects for other supervisor-owned isolated pairs. The supervisor
+must verify that these ports are absent from running/candidate configuration.
+No link configuration, BCM restart or production member changes occur here.
 """
 import fcntl
 import json
@@ -42,7 +44,7 @@ def locked(path):
         yield
 
 
-def render(mode,ids):
+def render(mode,ids,front_ports=None):
     if mode not in MODES or set(ids)-set(IDS):raise ValueError('Unsupported lab recipe')
     if any(type(v)!=int or not -1<=v<2**31 for v in ids.values()):raise ValueError('Invalid hardware ID')
     required={'offload-rule-delete':('group','entry'),
@@ -51,6 +53,14 @@ def render(mode,ids):
     source,n=re.subn(r'int fe100_test = [0-9]+;',f'int fe100_test = {MODES[mode]};',TEMPLATE.read_text())
     if n!=1:raise ValueError('Invalid lab template')
     for k in IDS:source=source.replace(f'int hw_{k} = -1;',f'int hw_{k} = {ids.get(k,-1)};')
+    if front_ports is not None:
+        from ffn_fe100_lab_ports import profile
+        selected=profile(front_ports)
+        for label,front in zip(('a','b'),selected['front']):
+            source,n=re.subn(r'int lab_port_'+label+r' = [0-9]+;',
+                'int lab_port_'+label+' = '+str(selected['physical'][front])+';',source)
+            if n!=1:raise ValueError('Missing parameterized lab port')
+        if mode.startswith('cross'):raise ValueError('Legacy RAW ingress recipes are not parameterized')
     return source
 
 
@@ -136,7 +146,10 @@ def prepare_queues(call,epoch):
     return dict(completed=True,markers=['FFN_DONE'],queues={str(p):query(p) for p in observed})
 
 
-def queue_ids(call):
+def queue_ids(call,front_ports=None):
+    from ffn_fe100_lab_ports import profile
+    selected=profile(front_ports)
+    ports=set(selected['physical'].values())|{3,8,24}
     source='''
 int ffn_lab_queues(int unit,int port,int numq,uint32 flags,int gport,void *data) {
  int rv;int qid;
@@ -151,6 +164,8 @@ int ffn_lab_queues(int unit,int port,int numq,uint32 flags,int gport,void *data)
 }
 {int rv=bcm_cosq_gport_traverse(0,ffn_lab_queues,NULL);if(rv==0)printf("FFN_DONE\\n");}
 '''
+    source=source.replace('port==3 || port==7 || port==8 || port==16 || port==24',
+                          ' || '.join('port=='+str(p) for p in sorted(ports)))
     result=execute(source,call);queues={}
     for line in result['markers']:
         m=re.fullmatch(r'FFN_LAB_QUEUE port=(\d+) qid=(\d+) count=8',line)
@@ -158,7 +173,7 @@ int ffn_lab_queues(int unit,int port,int numq,uint32 flags,int gport,void *data)
         port,qid=map(int,m.groups())
         if port in queues or not 0<=qid<=65535:raise RuntimeError('Ambiguous or unsupported lab queue')
         queues[port]=qid
-    if set(queues)!={3,7,8,16,24}:raise RuntimeError('Missing lab queues')
+    if set(queues)!=ports:raise RuntimeError('Missing lab queues')
     return dict(completed=True,markers=['FFN_DONE'],queue_ids=queues)
 
 
@@ -198,8 +213,8 @@ def run(request):
     with locked(Path('/run/ffn-fe100-bcm-lab.lock')):
         if mode in ('baseline-begin','baseline-end'):return baseline(mode,call,epoch(),request.get('ports',(16,7)))
         if mode=='queues-prepare':return prepare_queues(call,epoch())
-        if mode=='queue-status':return queue_ids(call)
-        return execute(render(mode,request.get('ids',{})),call)
+        if mode=='queue-status':return queue_ids(call,request.get('front_ports'))
+        return execute(render(mode,request.get('ids',{}),request.get('front_ports')),call)
 
 
 if __name__=='__main__':

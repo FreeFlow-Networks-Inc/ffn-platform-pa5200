@@ -8,7 +8,8 @@ records intent before writes; a failed restore is never marked successful.
 BCM routing and packet injection are controlled separately by the MP tester.
 
 Reference: VM 5220-sysroot1-full libpandp_cp.so DWARF, usr/share/pdt/fe100.py,
-opt/dpfs/etc/fe-parser.json. IPv4 UDP test key, LIF1, ACL31 and NH31 only.
+opt/dpfs/etc/fe-parser.json. Reserved benchmark keys, profile-selected lab LIFs,
+ACL31 and NH31 only. Environment port selection requires an isolated supervisor.
 """
 from ffn_fe100 import register_map_path
 import ctypes as C
@@ -26,28 +27,32 @@ from ffn_fe100_sessions import key4, entry4, forwarding_entry4, nat_entry4, outp
 from ffn_fe100_session_adapter import encode_native, decode_native
 from ffn_fe100_nexthop import LIB, SHA, encode as next_hop
 
-FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN','13'))
-if FRONT_RETURN not in (5,13):raise ValueError('unsupported front return')
-EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
+from ffn_fe100_lab_ports import profile
+PORT_PROFILE=profile()
+PORT_PAIR=PORT_PROFILE['front']
+FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN',str(PORT_PAIR[1])))
+if FRONT_RETURN not in PORT_PAIR:raise ValueError('unsupported front return')
+EGRESS=next(p for p in PORT_PAIR if p!=FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
 if os.environ.get('FFN_FE100_MAC_SINGLE')=='1':EGRESS=FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
+ROUTED_LAB=os.environ.get('FFN_FE100_ROUTED_LAB')=='1'
 MAC_LOOPBACK=os.environ.get('FFN_FE100_MAC_LOOPBACK')=='1'
 SMAC_REWRITE=os.environ.get('FFN_FE100_SMAC_LAB')=='1'
 RETURN_PORT=EGRESS if MAC_LOOPBACK else FRONT_RETURN
 NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
 PROTOCOL={'udp':17,'tcp':6}[os.environ.get('FFN_FE100_LAB_PROTOCOL','udp')]
-LAB_LIF=2 if FRONT_RETURN==5 else 1
+LAB_LIF=PORT_PROFILE['lif'][FRONT_RETURN]
 KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,PROTOCOL,4094) if FRONT_RETURN==5 else
        key4('198.18.0.1', '198.18.0.2', 49000, 49001, PROTOCOL, 4094))
 if NAT_MODE:
-    if not VLAN_RETURN or (EGRESS==FRONT_RETURN and not MAC_LOOPBACK):
+    if not (ROUTED_LAB and PORT_PAIR!=[5,13]) and (not VLAN_RETURN or (EGRESS==FRONT_RETURN and not MAC_LOOPBACK)):
         raise ValueError('NAT lab requires isolated cross-port or internal MAC VLAN return')
     from ffn_fe100_nat_lab import tuples
     ORIGINAL,TRANSLATED=tuples(NAT_MODE,(FRONT_RETURN==5)!=(os.environ.get('FFN_FE100_NAT_REVERSE')=='1'))
     KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],PROTOCOL,4094)
 IDENTITY = entry4(KEY, 1001)
 FORWARD = (nat_entry4(KEY,1001,31,TRANSLATED) if NAT_MODE else
-           forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN))
+           forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN or ROUTED_LAB))
 RETURN_KEY=output_key4(FORWARD)
 RETURN_KEY=RETURN_KEY[:2]+(4093).to_bytes(2,'big')+RETURN_KEY[4:]
 RETURN_IDENTITY=entry4(RETURN_KEY,1002)
@@ -115,7 +120,7 @@ def worker(request, fd):
              'nexthop':(0x50000,16,'fetch_nexthop_entry','insert_nexthop_entry')}
     base, size, getname, putname = specs[kind]
     index = request['index']
-    if index not in (range(55) if kind == 'parser' else (5,13) if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (1,2,31) if kind == 'lif' else (30,31)):
+    if index not in (range(55) if kind == 'parser' else PORT_PAIR if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (*PORT_PROFILE['lif'].values(),31) if kind == 'lif' else (30,31)):
         raise ValueError('outside reserved lab indices')
     if 'lib' not in WORKER_STATE and hashlib.sha256(Path(LIB).read_bytes()).hexdigest() != SHA:
         raise RuntimeError('owner ABI changed')
@@ -147,7 +152,7 @@ def worker(request, fd):
     if kind=='rxport':
         # Reference owner ABI: key is swdev/device/BCM port; fetch's third
         # argument is int*, set's is int, delete takes only the key pointer.
-        key=(C.c_ubyte*3)(0,0,7 if index==13 else 16)
+        key=(C.c_ubyte*3)(0,0,PORT_PROFILE['physical'][index])
         result=C.c_int(data[0])
         if op not in ('fetch','insert','delete'):raise ValueError('invalid RX map operation')
         fn=getattr(lib,'pan_fe100_'+({'fetch':getname,'insert':putname,'delete':'delete_rx_portmap_entry'}[op]))
@@ -179,7 +184,7 @@ class Lab:
         self.path = ROOT/('packet-session-'+str(time.time_ns())+'.json')
         self.record = {'schema':1,'owner_sha256':SHA,
                        'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
-                                  'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,
+                                  'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,'routed_lab':ROUTED_LAB,
                                   'session_key':KEY.hex(),'return_key':RETURN_KEY.hex()},
                        'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                        'changes':[], 'snapshots':{}, 'stage':'preflight', 'session_offload_verified':False}
@@ -262,7 +267,7 @@ class Lab:
         expected = bytearray(36)
         struct.pack_into('>III',expected,4,0x80050000,8,FRONT_RETURN<<16)
         expected[16:26]=(63<<32).to_bytes(10,'big');expected[26:36]=(FRONT_RETURN<<32).to_bytes(10,'big')
-        if not (MAC_LOOPBACK and lif['rc']==3) and (lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]):
+        if not ((MAC_LOOPBACK or PORT_PAIR!=[5,13]) and lif['rc']==3) and (lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]):
             raise RuntimeError('ingress LIF differs from front-port baseline')
         from ffn_fe100_parser_apply import SOURCE, encode
         source = SOURCE.read_bytes()
@@ -287,7 +292,7 @@ class Lab:
             from ffn_fe100_nexthop import encode_front
             if self.call('lef')['rc']!=3:raise RuntimeError('LEF31 occupied')
             if self.call('qm')['rc']!=3:raise RuntimeError('QMAP31 occupied')
-            physical=7 if EGRESS==13 else 16
+            physical=PORT_PROFILE['physical'][EGRESS]
             mapping=bytes((0,0,physical))
             tx=self.call('txport',index=EGRESS)
             if tx['rc']!=3 and tx['data']!=mapping.hex():raise RuntimeError('TX port mapping conflict')
@@ -295,7 +300,7 @@ class Lab:
             # XF removes the CPU message header and emits a DSA-tagged frame
             # through NIF. The scoped BCM rule selects RAW_DSA front egress.
             from ffn_fe100_bcm_lab import run
-            queues=run({'mode':'queue-status'})['queue_ids']
+            queues=run({'mode':'queue-status','front_ports':PORT_PAIR})['queue_ids']
             self.record['bcm_queue_ids']=queues;self.save()
             self.write('qm',31,front_qmap(FORWARD,FRONT_RETURN,queues[physical]))
             self.write('lef',31,struct.pack('>IIH',0x80000000|(EGRESS<<16),0,0))
@@ -322,7 +327,11 @@ class Lab:
             zero = '8000000080000000000000000000000000000000000000000000000000000001'
             if before['data'] not in (zero,wanted.hex()): raise RuntimeError('unexpected parser table')
             if before['data'] != wanted.hex(): self.write('parser',index,wanted)
-        self.prepared=True;self.record['stage']='prepared';self.save()
+        # A miss can allocate a plain identity before install is requested.
+        # Journal ownership of this preflight-empty exact key so EOF after
+        # miss-only commissioning also removes its hardware-learned identity.
+        self.prepared=True;self.record['session_touched']=True
+        self.record['stage']='prepared';self.save()
 
     def remove_session(self,return_flow=False):
         key=RETURN_KEY if return_flow else KEY

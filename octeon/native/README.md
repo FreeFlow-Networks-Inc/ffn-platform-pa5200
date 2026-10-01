@@ -84,6 +84,35 @@ order and exact drop accounting. Aggregate transmit retains its existing path.
 
 ## Migration still required
 
+### FE100 original-packet return
+
+The additive `ffn_packet_fe100` API attaches up to eight explicit return bindings
+to a paused physical or aggregate owner. Each binding includes the BCM return
+port, front port, ingress LIF, zone and existing software source mapping. Socket
+filters admit that return only after configuration. A maximum three-second
+monotonic lease must be renewed by the trusted attachment controller. Expiry
+drops returned envelopes; it does not authorize or withdraw hardware flows.
+
+The C decoder accepts physically verified IPv4 TCP/UDP FLOWUNKNOWN, TTL-one,
+MTU and first-fragment exceptions. It validates envelope lengths, message type,
+ingress identity and available tuple metadata. Unsupported formats are rejected.
+The original Ethernet packet goes through the existing member collection,
+VLAN/network, inspection and kernel policy path. It is never delivered through
+Python. Separate counters report decoded, rejected and expired returns.
+
+`ffn-fe100-punt-probe` is a bounded, receive-only commissioning consumer using
+the same native owner and real AF_PACKET filter. Its TAP/TX endpoints are local
+socket pairs, so it cannot transmit or forward captured traffic. It requires a
+per-run nonce and explicit binding. `test_fe100_punt.c` retains real isolated
+wire fixtures; `test_fe100_packet.py` exercises delivery, inspection, aggregate
+member withdrawal, malformed envelopes, lease expiry and control validation.
+
+Production packet owners do not automatically enable these bindings. Their
+attachment controller must commission the BCM/FE100 path, verify the live DP
+acknowledgement and withdraw ingress before a failed/expired receiver can
+blackhole packets. See `fe100/PHYSICAL-RETURN.md` for measured scope and remaining
+activation requirements.
+
 * Legacy commissioning forwarding paths in `ffn_fabric.py`,
   `ffn_dp_packet_transport.py` and other lab/relay tools. The physical production
   owner no longer calls their packet loops.

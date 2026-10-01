@@ -1,0 +1,63 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#include "ffn_fe100_punt.h"
+#include <string.h>
+static uint16_t be16(const uint8_t *p) {return (uint16_t)p[0]<<8|p[1];}
+static uint32_t be32(const uint8_t *p) {return (uint32_t)be16(p)<<16|be16(p+2);}
+
+int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
+    const struct ffn_fe100_punt_scope *scope,struct ffn_fe100_punt *out)
+{
+    const uint8_t *cmh,*key=NULL,*info,*frame,*ip,*transport;
+    size_t length,l3=14,l4,ip_length,overhead;
+    uint16_t port,zone,lif,ether_type;
+    if(out)memset(out,0,sizeof(*out));
+    if(!wire || !scope || !out || scope->front<1 || scope->front>63 ||
+       scope->trunk==scope->return_port || size<40+34 || size>56+9216)return 0;
+    /* Outer OTMH source is the internal FE100 return, not a front port.
+     * RAW return retains the four-byte ITMH before the common message header.
+     */
+    if(be16(wire)!=scope->trunk || be16(wire+2)!=scope->return_port ||
+       wire[4]!=1 || (wire[5]&0xe0) || wire[7])return 0;
+    cmh=wire+8;
+    /* FLOWUNKNOWN includes the IPv4 key. Qualified exception messages omit
+     * that key and retain the original Ethernet packet (before NAT/TTL edits).
+     * Never interpret control/status or rewritten forwarding messages as data.
+     */
+    if(cmh[0]!=0x10 || cmh[1] || cmh[22])return 0;
+    if(cmh[3]==8 && !cmh[23]) {key=cmh+24;overhead=56;}
+    else if((cmh[3]==5 && (cmh[23]==2 || cmh[23]==13)) || (cmh[3]==4 && cmh[23]==30)) overhead=40;
+    else return 0;
+    if(size<overhead+34)return 0;
+    info=wire+overhead-8;frame=wire+overhead;
+    port=(be16(info)>>6)&63;lif=be16(info+4);zone=key ? be16(key+2) : scope->zone;
+    length=be16(info+2)&0x3fff;
+    if(be16(info)>>12 || (be16(info+2)>>14)!=1 || port!=scope->front ||
+       lif!=scope->in_lif || zone!=scope->zone || length<34 ||
+       length>9216 || size!=overhead+length || info[6]&0x80)return 0;
+    ether_type=be16(frame+12);
+    if(ether_type==0x8100) {
+        if(length<38 || (be16(frame+14)&0xfff)==0xfff)return 0;
+        l3=18;ether_type=be16(frame+16);
+    }
+    if(ether_type!=0x0800 || (info[7]&0x7f)!=l3)return 0;
+    ip=frame+l3;
+    if(ip[0]!=0x45 || (ip[9]!=6 && ip[9]!=17))return 0;
+    ip_length=be16(ip+2);l4=l3+20;
+    if(ip_length<24 || ip_length>length-l3 ||
+       (ip_length!=length-l3 && length!=60) || ((be16(info+6)>>7)&0xff)!=20)return 0;
+    if(cmh[3]==4) {
+        /* Only the physically verified first-fragment format is admitted.
+         * Reassembly and policy remain the software dataplane's responsibility. */
+        if((be16(ip+6)&0x3fff)!=0x2000)return 0;
+    } else if(be16(ip+6)&0x3fff)return 0;
+    if(cmh[3]==5 && cmh[23]==2 && ip[8]!=1)return 0;
+    transport=frame+l4;
+    if(key && (key[0]!=0x40 || key[1]!=ip[9] || memcmp(key+8,ip+12,8) ||
+               memcmp(key+4,transport,4)))return 0;
+    if(cmh[3]!=4 && ip[9]==6) {
+        if(ip_length<40 || transport[12]>>4<5 || (size_t)(transport[12]>>4)*4>ip_length-20)return 0;
+    } else if(cmh[3]!=4 && (ip_length<28 || be16(transport+4)!=ip_length-20))return 0;
+    *out=(struct ffn_fe100_punt){.frame=frame,.length=length,.flow_id=be32(cmh+16),
+        .front=port,.in_lif=lif,.zone=zone,.message=cmh[3],.code=cmh[23]};
+    return 1;
+}

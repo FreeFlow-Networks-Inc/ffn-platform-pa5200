@@ -12,6 +12,14 @@ COUNTERS=('rx','tx','envelope_rejected','length_drop','backpressure_drop',
           'outgoing_ignored','invalid_verdict')
 
 
+class Fe100Scope(C.Structure):
+    _fields_=[(name,C.c_uint16) for name in ('trunk','return_port','front','in_lif','zone')]
+
+
+class Fe100Binding(C.Structure):
+    _fields_=[('scope',Fe100Scope),('source',C.c_uint16)]
+
+
 def library(path=LIBRARY):
     lib=C.CDLL(path,use_errno=True)
     lib.ffn_packet_abi.restype=C.c_uint
@@ -38,6 +46,11 @@ def library(path=LIBRARY):
     if hasattr(lib,'ffn_packet_transmit_stats'):
         lib.ffn_packet_transmit_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
         lib.ffn_packet_transmit_stats.restype=C.c_int
+    if hasattr(lib,'ffn_packet_fe100'):
+        lib.ffn_packet_fe100.argtypes=[C.c_void_p,C.POINTER(Fe100Binding),C.c_uint,C.c_uint64]
+        lib.ffn_packet_fe100.restype=C.c_int
+        lib.ffn_packet_fe100_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
+        lib.ffn_packet_fe100_stats.restype=C.c_int
     lib.ffn_packet_close.argtypes=[C.c_void_p]
     lib.ffn_packet_close.restype=None
     return lib
@@ -70,6 +83,28 @@ class PacketOwner:
     def poll(self):
         checked(self.lib.ffn_packet_poll(self.handle,100))
 
+    def fe100(self,bindings,deadline_ms):
+        """Paused, trusted attachment-owner call; does not authorize offload.
+
+        The controller must verify its hardware/DP generation and renew a
+        bounded monotonic lease. No packet-derived or persisted auto-learning.
+        Empty bindings revoke reception while leaving the ordinary path intact.
+        """
+        if not hasattr(self.lib,'ffn_packet_fe100'):
+            raise RuntimeError('Native FE100 return attachment is unavailable')
+        if (not isinstance(bindings,list) or len(bindings)>8 or type(deadline_ms) is not int or
+                not 0<=deadline_ms<2**64):raise ValueError('Invalid FE100 attachment lease')
+        fields={'trunk','return_port','front','in_lif','zone','source'}
+        members=getattr(self,'members',[self.port])
+        rows=(Fe100Binding*len(bindings))()
+        for row,value in zip(rows,bindings):
+            if (not isinstance(value,dict) or set(value)!=fields or
+                    any(type(v) is not int or not 0<=v<=65535 for v in value.values()) or
+                    value['front'] not in members):raise ValueError('Invalid FE100 return binding')
+            row.scope=Fe100Scope(*(value[name] for name,_ in Fe100Scope._fields_))
+            row.source=value['source']
+        checked(self.lib.ffn_packet_fe100(self.handle,rows,len(rows),deadline_ms))
+
     def pause(self):
         checked(self.lib.ffn_packet_pause(self.handle))
 
@@ -92,6 +127,9 @@ class PacketOwner:
         if hasattr(self.lib,'ffn_packet_transmit_stats'):
             sent=(C.c_uint64*3)();checked(self.lib.ffn_packet_transmit_stats(self.handle,sent,3))
             tx=dict(transmit_syscalls=sent[0],transmit_frames=sent[1],transmit_max_batch=sent[2])
+        if hasattr(self.lib,'ffn_packet_fe100_stats'):
+            punts=(C.c_uint64*3)();checked(self.lib.ffn_packet_fe100_stats(self.handle,punts,3))
+            tx['fe100_return']=dict(zip(('decoded','rejected','lease_expired'),punts))
         return dict(count=out[0],rx_cpu=out[1],tx_cpu=out[2],rx_tid=out[3],tx_tid=out[4],
                     paused=bool(out[5]),stopped=bool(out[6]),error=out[7],
                     scheduling='ordered-rx-tx',flow_parallelism=False,

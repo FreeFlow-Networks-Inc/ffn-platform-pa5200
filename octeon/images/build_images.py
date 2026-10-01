@@ -289,6 +289,14 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         artifact = native / ('libffn-' + name + '.so')
         elf(artifact)
         safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
+    probe = work / ('ffn-fe100-packet-probe-' + role)
+    run([userspace_cross + 'gcc', '-O2', '-Wall', '-Wextra', '-Werror',
+         platform / 'fe100/ffn_fe100_packet_probe.c', '-o', probe])
+    elf(probe)
+    safe_install(probe, root, 'usr/local/sbin/ffn-fe100-packet-probe')
+    run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-fe100-punt-probe'])
+    elf(native / 'ffn-fe100-punt-probe')
+    safe_install(native / 'ffn-fe100-punt-probe', root, 'usr/local/sbin/ffn-fe100-punt-probe')
     if role == 'cp':
         adapters = work / 'fe100-adapters'
         run(['sh', platform / 'fe100/build-adapters.sh', adapters],
