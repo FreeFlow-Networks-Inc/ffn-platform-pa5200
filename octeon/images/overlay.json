@@ -514,6 +514,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_observations.py",
+      "usr/local/sbin/ffn_fe100_observations.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy_control.py",
       "usr/local/sbin/ffn_fe100_policy_control.py"
     ],

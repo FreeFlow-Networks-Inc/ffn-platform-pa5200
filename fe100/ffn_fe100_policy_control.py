@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """CP policy barrier and recovery: no public flow-admission API."""
 import json
+import os
 from pathlib import Path
 import sys
+sys.path.insert(0,'/usr/local/lib/ffn')
 from ffn_fe100_journal import Journal
 from ffn_fe100_policy import PolicyOwner
 from ffn_fe100_sessions import SessionManager
@@ -37,18 +39,41 @@ class PolicyController:
                 def delete(self,key):return self.endpoint().delete(key)
                 def readiness(self):return ['general production admission is not qualified']
             self.owner=PolicyOwner(SessionManager(Backend(),journal),load,save,lambda:{},lambda:False)
+            from ffn_fe100_observations import Observations
+            def withdraw():
+                self.owner.activated=False
+                self.owner.reconcile()
+            self.observations=Observations(withdraw)
         except BaseException:
             journal.close();raise
 
     def execute(self,operation,payload):
+        if isinstance(operation,str) and operation.startswith('observe-'):
+            if not isinstance(payload,dict):raise ValueError('observation payload must be an object')
+            if operation=='observe-start':
+                if set(payload)!={'nonce'}:raise ValueError('invalid observation start')
+                return self.observations.start(payload['nonce'])
+            if payload.get('control_owner')!=os.environ.get('FFN_FE100_GUARD_NONCE') or not payload.get('control_owner'):
+                raise ValueError('observation control owner changed')
+            body={k:v for k,v in payload.items() if k!='control_owner'}
+            if operation=='observe-chunk':return self.observations.chunk(body)
+            if operation=='observe-close' and set(body)=={'nonce'}:return self.observations.close(body['nonce'])
+            raise ValueError('unsupported observation operation')
         if operation not in ('status','replace','reconcile'):raise ValueError('unsupported policy operation')
         if not isinstance(payload,dict):raise ValueError('policy payload must be an object')
         if (operation in ('status','reconcile') and payload) or (operation=='replace' and
                 set(payload)!={'revision','digest'}):raise ValueError('invalid policy barrier fields')
-        if operation=='replace':return self.owner.replace(payload['revision'],payload['digest'])
-        if operation=='reconcile':return self.owner.reconcile()
+        self.observations.tick()
+        if operation=='replace':
+            result=self.owner.replace(payload['revision'],payload['digest'])
+            self.observations.fence('configuration replacement requires fresh DP snapshot')
+            self.observations.receiver=None
+        elif operation=='reconcile':result=self.owner.reconcile()
+        else:result=self.owner.status()
+        result=dict(result,observations=self.observations.status())
+        if operation!='status':return result
         from ffn_fe100_nat import capabilities
-        return dict(self.owner.status(),capabilities=capabilities())
+        return dict(result,capabilities=capabilities())
 
     def close(self):self.journal.close()
 

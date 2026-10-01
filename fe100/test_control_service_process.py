@@ -60,6 +60,33 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(state['revision'],1);self.assertNotEqual(state['control_owner'],previous)
         self.assertFalse(state['admission_enabled'])
 
+    def test_supervised_observation_restarts_and_commit_invalidate_feed(self):
+        from ffn_fe100_observations import ObservationClient
+        from test_observations import NONCE,ROW,POLICY,message
+        client=ObservationClient(NONCE,lambda op,payload:request(op,payload,self.path))
+        for m in (message(1,'begin',POLICY),message(2,'snapshot',[ROW|{'padding':'x'*100000}]),message(3,'synchronized',{})):
+            client.send(m)
+        state=request('status',{},self.path)
+        self.assertTrue(state['observations']['ready']);self.assertEqual(state['observations']['sessions'],1)
+        self.assertFalse(state['admission_enabled'])
+        state=request('replace',dict(revision=0,digest='a'*64),self.path)
+        self.assertFalse(state['observations']['ready'])
+        with self.assertRaises(RuntimeError):client.send(message(4,'heartbeat',{}))
+        self.stop();self.start()
+        self.assertFalse(request('status',{},self.path)['observations']['ready'])
+        with self.assertRaisesRegex(RuntimeError,'owner changed'):client.close()
+
+    def test_owner_timer_fences_silent_feed_without_client_request(self):
+        from ffn_fe100_observations import ObservationClient
+        from test_observations import NONCE,POLICY,message
+        client=ObservationClient(NONCE,lambda op,payload:request(op,payload,self.path))
+        client.send(message(1,'begin',POLICY));client.send(message(2,'synchronized',{}))
+        time.sleep(11)
+        state=request('status',{},self.path)
+        self.assertFalse(state['observations']['ready'])
+        self.assertIn('expired',state['observations']['reason'])
+        self.assertFalse(state['admission_enabled'])
+
     def test_malformed_oversized_and_silent_clients_leave_owner_usable(self):
         for raw in (b'{',b'x'*70000):
             with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as sock:

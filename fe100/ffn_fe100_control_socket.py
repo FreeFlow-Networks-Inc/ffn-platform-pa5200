@@ -30,7 +30,7 @@ def send(sock,value):
 
 
 def request(operation,payload,path=SOCKET,timeout=28):
-    if operation not in ('status','replace','reconcile') or not isinstance(payload,dict):
+    if operation not in ('status','replace','reconcile','observe-start','observe-chunk','observe-close') or not isinstance(payload,dict):
         raise ValueError('unsupported control operation')
     info=Path(path).lstat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid!=0 or info.st_mode & 0o077:

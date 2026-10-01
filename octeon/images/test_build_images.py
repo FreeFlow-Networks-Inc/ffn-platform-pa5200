@@ -101,6 +101,7 @@ class BuildInputTests(unittest.TestCase):
                      'etc/systemd/system/ffn-mdio.service',
                        'usr/local/sbin/ffn_fe100_recovery.py',
                        'usr/local/sbin/ffn_fe100_flow_ids.py',
+                       'usr/local/sbin/ffn_fe100_observations.py',
                        'usr/local/sbin/ffn_fe100_path_owner.py',
                        'usr/local/sbin/ffn_fe100_path_sessions.py',
                        'usr/local/sbin/ffn_fe100_resource_tables.py',

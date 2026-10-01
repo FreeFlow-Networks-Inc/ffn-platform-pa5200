@@ -132,7 +132,11 @@ class RelayTests(unittest.TestCase):
 
     def test_cp_reports_disconnected_and_never_imports_hardware(self):
         frames=iter(self.frames());reports=[];acks=[]
-        with self.assertRaises(StopIteration):serve(NONCE,lambda:next(frames),acks.append,lambda r:reports.append(r.status()))
+        class Bridge:
+            def __init__(self,nonce):self.receiver=protocol.Receiver(nonce)
+            def send(self,message):return protocol.acknowledgement(NONCE,self.receiver.accept(message))
+            def close(self):self.receiver.fence('closed')
+        with self.assertRaises(StopIteration):serve(NONCE,lambda:next(frames),acks.append,lambda r:reports.append(r.status()),Bridge)
         self.assertEqual([a['sequence'] for a in acks],[1,2,3,4])
         self.assertFalse(reports[-1]['ready']);self.assertEqual(reports[-1]['sessions'],0)
         self.assertTrue(all(r['hardware_admission'] is False for r in reports))

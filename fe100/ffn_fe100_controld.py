@@ -3,7 +3,7 @@
 
 The worker owns the policy journal for its whole lifetime. The independent
 parent fences dead/stalled workers and recovers exact durable session intent.
-This version exposes status/replacement/drain only, never flow installation.
+This version exposes policy barriers and observation intake, never installation.
 """
 import json
 import os

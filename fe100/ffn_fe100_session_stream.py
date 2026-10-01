@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CP shadow receiver for authenticated MP relay input. No hardware API access."""
+"""Authenticated MP relay adapter for the supervised CP observation owner."""
 import fcntl
 import json
 import os
@@ -15,22 +15,35 @@ REPORT=Path('/var/lib/ffn/fe100/session-stream.json')
 
 def publish(receiver,path=REPORT):
     path.parent.mkdir(parents=True,exist_ok=True)
-    value=dict(receiver.status(),writer=local_identity(),monotonic_time=time.monotonic())
+    value=dict(receiver.status(),writer=local_identity(),monotonic_time=time.monotonic(),
+               control_owner=getattr(receiver,'control_owner',None),
+               owner_acknowledged=getattr(receiver,'owner_acknowledged',False))
     temporary=path.with_suffix('.new')
     with temporary.open('w') as out:
         os.chmod(temporary,0o600);json.dump(value,out);out.flush()
     temporary.replace(path)
 
 
-def serve(nonce,read,write,save=publish):
+def serve(nonce,read,write,save=publish,bridge_factory=None):
+    if bridge_factory is None:
+        from ffn_fe100_observations import ObservationClient
+        bridge_factory=ObservationClient
     receiver=Receiver(nonce)
+    bridge=bridge_factory(nonce)
+    receiver.control_owner=getattr(bridge,'owner',None);receiver.owner_acknowledged=False
     try:
         save(receiver)
         while True:
-            message=read();state=receiver.accept(message);save(receiver)
-            write(acknowledgement(nonce,state))
+            message=read();state=receiver.accept(message)
+            ack=bridge.send(message);receiver.tick()
+            if ack!=acknowledgement(nonce,state):raise ValueError('supervised CP owner acknowledgement disagrees')
+            receiver.owner_acknowledged=True
+            save(receiver);write(ack)
     finally:
-        receiver.fence('MP relay disconnected; a new snapshot is required');save(receiver)
+        try:bridge.close()
+        finally:
+            receiver.owner_acknowledged=False
+            receiver.fence('MP relay disconnected; a new snapshot is required');save(receiver)
 
 
 if __name__=='__main__':
