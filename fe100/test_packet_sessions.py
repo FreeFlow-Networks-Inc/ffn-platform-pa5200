@@ -1,11 +1,45 @@
 import struct
 import unittest
+import importlib.util
+import os
+from pathlib import Path
 from unittest.mock import patch
 from ffn_fe100_sessions import key4, forwarding_entry4, validate_entry4
 from ffn_fe100_session_adapter import encode_native, decode_native
 
 
 class PacketSessionTests(unittest.TestCase):
+    def test_paired_nat_lab_restores_both_directions_after_partial_install(self):
+        import ffn_fe100_packet_lab as source
+        settings=dict(FFN_FE100_LAB_PAIR='23,24',FFN_FE100_FRONT_RETURN='23',
+                      FFN_FE100_NAT_LAB='port',FFN_FE100_ROUTED_LAB='1',FFN_FE100_PAIRED_NAT_LAB='1')
+        with patch.dict(os.environ,settings):
+            spec=importlib.util.spec_from_file_location('paired_lab_fixture',source.__file__)
+            lab=importlib.util.module_from_spec(spec);spec.loader.exec_module(lab)
+        from ffn_fe100_sessions import output_key4
+        def reverse(key):return key[:4]+key[6:8]+key[4:6]+key[12:16]+key[8:12]
+        self.assertEqual(lab.REVERSE_IDENTITY[:16],reverse(output_key4(lab.FORWARD)))
+        self.assertEqual(output_key4(lab.REVERSE_FORWARD),reverse(lab.KEY))
+        owner=object.__new__(lab.Lab);owner.prepared=True;owner.path=Path('fixture')
+        owner.record=dict(session_touched=True,reverse_session_touched=True,changes=[],snapshots={})
+        owner.save=lambda:None
+        entries={};fail=[True]
+        def call(kind,op='fetch',index=31,data=None):
+            if kind=='snapshot':return {}
+            raw=bytes.fromhex(data) if isinstance(data,str) else data or lab.IDENTITY
+            key=raw[:16]
+            if op=='insert':entries[key]=raw
+            if op=='update' and key==lab.REVERSE_IDENTITY[:16] and fail[0]:
+                raise RuntimeError('injected second direction update failure')
+            if op=='delete':entries.pop(key,None)
+            return dict(rc=0 if key in entries else 3,data=entries.get(key,raw).hex())
+        owner.call=call
+        with self.assertRaisesRegex(RuntimeError,'second direction'):owner.command('install')
+        owner.restore();self.assertFalse(entries)
+        fail[0]=False;owner.command('install');self.assertEqual(len(entries),2)
+        owner.command('drop');self.assertEqual(set(entries.values()),{lab.DROP,lab.REVERSE_DROP})
+        owner.command('remove');self.assertFalse(entries)
+
     def test_repeated_readiness_uses_existing_mapping_and_fresh_status(self):
         import ffn_fe100_packet_lab as lab
         import ffn_fe100_live_sessions as live

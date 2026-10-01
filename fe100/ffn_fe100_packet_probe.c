@@ -23,6 +23,7 @@
 #define MAX_CAPTURE 256
 struct packet { size_t length; unsigned char bytes[MAX_FRAME+12]; };
 static struct packet packets[MAX_TX];
+static struct packet controls[MAX_TX];
 static unsigned be16(const unsigned char *p) { return ((unsigned)p[0]<<8)|p[1]; }
 static long long milliseconds(void) {
     struct timespec t;
@@ -49,7 +50,8 @@ static int selftest(void) {
 }
 int main(int argc,char **argv) {
     if(argc==2 && !strcmp(argv[1],"--selftest"))return selftest();
-    if(argc!=5) { fprintf(stderr,"usage: probe INTERFACE MANIFEST NONCE_HEX MILLISECONDS\n");return 2; }
+    int control_capture=argc==6 && !strcmp(argv[5],"--return-control");
+    if(argc!=5 && !control_capture) { fprintf(stderr,"usage: probe INTERFACE MANIFEST NONCE_HEX MILLISECONDS [--return-control]\n");return 2; }
     unsigned char token[16];
     if(strlen(argv[3])!=32)return 2;
     for(unsigned i=0;i<16;i++) {
@@ -85,7 +87,7 @@ int main(int argc,char **argv) {
         perror("capture membership");close(fd);return 1;
     }
     puts("{\"ready\":true}");fflush(stdout);
-    unsigned sent=0,captured=0;int failed=0;
+    unsigned sent=0,captured=0,control_count=0;int failed=0;
     long long deadline=milliseconds()+duration,next_send=milliseconds();
     printf("{\"packets\":[");
     while(milliseconds()<deadline) {
@@ -102,7 +104,17 @@ int main(int argc,char **argv) {
             unsigned char raw[65536];struct sockaddr_ll sender;socklen_t size=sizeof(sender);
             ssize_t length=recvfrom(fd,raw,sizeof(raw),0,(void*)&sender,&size);
             if(length<0) {if(errno==EAGAIN || errno==EWOULDBLOCK)break;perror("receive");failed=1;break;}
-            if(sender.sll_pkttype==PACKET_OUTGOING || !memmem(raw,(size_t)length,token,sizeof(token)))continue;
+            if(sender.sll_pkttype==PACKET_OUTGOING)continue;
+            if(!memmem(raw,(size_t)length,token,sizeof(token))) {
+                /* Optional isolated-test evidence, never fed to a data TAP.
+                 * Do not infer a control format from these raw captures. */
+                if(control_capture && length>=40 && be16(raw)==24 && be16(raw+2)==20) {
+                    if(control_count==MAX_TX || (size_t)length>sizeof(controls[0].bytes)){failed=1;break;}
+                    controls[control_count].length=(size_t)length;
+                    memcpy(controls[control_count].bytes,raw,(size_t)length);control_count++;
+                }
+                continue;
+            }
             if(captured==MAX_CAPTURE){failed=1;break;}
             if(captured)putchar(',');
             putchar('"');
@@ -113,6 +125,13 @@ int main(int argc,char **argv) {
     }
     struct tpacket_stats stats={0};socklen_t size=sizeof(stats);
     if(getsockopt(fd,SOL_PACKET,PACKET_STATISTICS,&stats,&size))failed=1;
+    printf("],\"control_packets\":[");
+    for(unsigned i=0;i<control_count;i++) {
+        if(i)putchar(',');
+        putchar('"');
+        for(size_t j=0;j<controls[i].length;j++)printf("%02x",controls[i].bytes[j]);
+        putchar('"');
+    }
     printf("],\"sent\":%u,\"captured\":%u,\"capture_drops\":%u,\"failed\":%s}\n",
            sent,captured,stats.tp_drops,failed?"true":"false");
     close(fd);return failed || sent!=count || stats.tp_drops ? 1:0;

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #define _GNU_SOURCE
 #include "ffn_packet.h"
+#include "ffn_fe100_stats.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/filter.h>
@@ -33,7 +34,7 @@ struct ffn_packet {
     struct mmsghdr messages[BURST];
     struct iovec vectors[BURST];
     struct sockaddr_ll addresses[BURST];
-    uint8_t frames[BURST][MAX_FRAME + 57];
+    uint8_t frames[BURST][MAX_FRAME + 81];
     struct ffn_packet_fe100_binding fe100[8];
     unsigned fe100_count;
     uint64_t fe100_deadline;

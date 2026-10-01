@@ -1,80 +1,27 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 FreeFlow Networks, Inc.
-"""Per-flow activity from the FE100's own statistics messages.
+"""FE100 activity sources for the control-plane session owner.
 
-This is the activity source ffn_fe100_aging needs, and it is a PUSH, not a
-poll. Two other answers look reasonable until you check them:
+PA-5220 live capture and the sysroot condor_fcr_t layout establish that native
+FLOWSTATS (19) uses eight-byte records containing a flow ID, a two-bit reason,
+eight-bit packet DELTA and 22-bit octet DELTA. The C decoder in
+../octeon/native/ffn_fe100_stats.c owns this packet format. NativeCounterStream
+consumes only its decoded control events, tied to an explicit owner epoch and
+registered hardware flow IDs. Equal consecutive deltas are separate activity.
 
-  * `backend.fetch()` cannot work. The wire entry is byte-stable; install()
-    asserts the readback equals what was written, so hardware demonstrably
-    writes nothing into that view. The vendor's own `flowEntry` layout agrees:
-    60 bytes of key, action, rewrite and flow ID, with no counter field.
-  * SEM's register block cannot work either. 0x78000-0x78818 is 269 registers
-    of aggregate status -- free-list levels, error logs, block throughput --
-    with no "read counter N". The counters live in FCM's external DDR, and
-    FCM's own block is a memory controller: BIST, request FIFOs, latency. The
-    vendor's only counter read, `pan_fe100_get_flow_ctrs`, is likewise
-    table-wide (`pan_fe100_flow_stats_t`), not per flow.
+The older CONTROL/STATS_COUNTER, 16-byte sessionCount codec below is retained
+as a diagnostic reference format. It was NOT the format emitted by this device
+and must not be used as the live activity source. The PCS diagnostic demux is
+not evidence that FLOWSTATS is unused.
 
-The FE100 pushes them instead, in a CPU message:
-
-    fe100ToOcteonHdr.type == MSG_TYPE_CONTROL (0x80)
-    fe100ToOcteonHdr.code == CTRL_CODE_STATS_COUNTER (5)
-
-BOTH have to match. `MSG_TYPE_FLOWSTATS = 19` is a decoy: it is defined in the
-vendor's message-type enum, it is the obvious thing to key on, and nothing in
-the vendor tree ever uses it. Their own decoder demuxes sessionCount on
-(CONTROL, STATS_COUNTER), so that is what the hardware emits.
-
-The header is a FIXED 32 bytes -- 21 fields summing to exactly 256 bits, no
-optional sections and no length field -- so the record area starts at byte 32
-and header_length() is a constant rather than a parse.
-
-    byte  3   type
-    byte 16   flow_id      (the header's own; records carry their own index)
-    byte 23   code
-    byte 32   records start
-
-Each record is a 16-byte `sessionCount`, bit-packed but splitting exactly on
-the eight-byte boundary, which is what makes decoding it two shifts rather
-than a bit-walker:
-
-    word0   flow_idx : 32 | pad : 2 | packets : 30
-    word1   pad : 22      | octets : 42
-
-`flow_idx` is the flow ID -- byte 36 of the vendor's `flowEntry`, which is
-where entry4() already writes it. So nothing new has to be recorded at install
-time to correlate a message with a session.
-
-The vendor's decoder attaches exactly ONE record per message (sessionCount
-never chains a next layer). decode_records() accepts several because a device
-that batched them would otherwise be silently truncated, and one record is the
-single-record case of the same loop.
-
-WHY AN UNSEEN FLOW IS NOT ZERO
-
-The probe returns None for a flow it has never received statistics for, never
-0. Zero is a perfectly good activity token: returning it would start the idle
-clock on a session whose first statistics message simply has not arrived yet,
-and the session would be torn down on schedule while carrying traffic. None
-means "cannot read", which ffn_fe100_aging treats as a reason to keep the
-session. The distinction is the whole safety property.
-
-Counters are compared, never differenced, so the 30-bit packet field wrapping
-is activity like any other change.
-
-NOT YET QUALIFIED ON HARDWARE. The layout is taken from the vendor's field
-definitions rather than guessed, and is unit tested -- but no message has been
-captured from this appliance. Before aging is enabled in production, confirm
-the FE100 is configured to emit these at all and at what interval: an emission
-period longer than the shortest idle timeout would expire live sessions.
-
-Worth knowing when that is investigated: the same control family carries
-CTRL_CODE_SESS_AGEOUT (4), so the FE100 may be able to age flows itself. If it
-does, this module becomes a cross-check rather than the mechanism.
+Neither decoder alone enables production offload. A complete receiver must
+report loss and feed the current single session owner; software conntrack/NAT
+refresh and hardware withdrawal on receiver loss still require commissioning.
 """
 import struct
+import time
+import math
 
 MSG_TYPE_CONTROL = 0x80          # fe100ToOcteonHdr.type
 CTRL_CODE_STATS_COUNTER = 5      # fe100ToOcteonHdr.code
@@ -139,6 +86,139 @@ def is_stats_message(message):
 def flow_id_of(entry):
     """The flow ID SessionManager wrote into a flow entry."""
     return int.from_bytes(bytes(entry)[FLOW_ID_SLICE], 'big')
+
+
+class NativeCounterStream:
+    """Single-owner accounting of decoded native deltas, with no packet I/O.
+
+    The control transport supplies the epoch; a packet cannot choose it. The
+    epoch must identify the hardware/table generation, not just a receiver PID.
+    Retired IDs cannot be reused in that generation: a late report has no tuple
+    or generation field with which to distinguish a newly allocated session.
+    Any sequence gap, malformed event or capture failure latches unavailable.
+    The coordinator must withdraw hardware flows when available becomes false.
+    This class never treats receiver heartbeats as flow activity.
+    """
+    def __init__(self, epoch, *, clock=time.monotonic, freshness=5, max_ids=65536):
+        if not isinstance(epoch, str) or not epoch or len(epoch)>256:
+            raise ValueError('explicit hardware owner epoch required')
+        if type(freshness) not in (int,float) or not 0<freshness<=60:
+            raise ValueError('invalid activity freshness')
+        if type(max_ids) is not int or not 1<=max_ids<=1048576:
+            raise ValueError('invalid flow ID budget')
+        self.epoch,self.clock,self.freshness,self.max_ids=epoch,clock,freshness,max_ids
+        self.sequence=0
+        self.elapsed_ms=0
+        self.last_clock=None
+        self.available=True
+        self.failure=None
+        self.flows={}
+        self.retired=set()
+        self.ignored=0
+
+    def invalidate(self, reason):
+        self.available=False
+        self.failure=str(reason)
+
+    def now(self):
+        value=self.clock()
+        if (type(value) not in (int,float) or not math.isfinite(value) or value<0 or
+                self.last_clock is not None and value<self.last_clock):
+            self.invalidate('invalid or regressed counter clock')
+            raise ValueError(self.failure)
+        self.last_clock=value
+        return value
+
+    def register(self, entry):
+        from ffn_fe100_sessions import validate_entry4
+        wire=validate_entry4(entry)
+        ident=flow_id_of(wire)
+        if not self.available:
+            raise RuntimeError('counter stream unavailable')
+        if not ident or ident in self.retired:
+            raise ValueError('flow ID cannot be reused in this hardware epoch')
+        if ident in self.flows:
+            if self.flows[ident]['entry']!=wire:
+                raise ValueError('flow ID already belongs to another entry')
+            return
+        if len(self.flows)+len(self.retired)>=self.max_ids:
+            raise RuntimeError('flow ID generation budget exhausted')
+        self.flows[ident]={'entry':wire,'packets':0,'octets':0,
+                           'activity':0,'observed':False,'at':None}
+
+    def forget(self, flow_id):
+        if flow_id in self.flows:
+            del self.flows[flow_id]
+            self.retired.add(flow_id)
+
+    @staticmethod
+    def _uint(value, maximum):
+        return type(value) is int and 0<=value<=maximum
+
+    def consume(self, epoch, event):
+        if not self.available:
+            raise RuntimeError('counter stream unavailable: '+str(self.failure))
+        try:
+            if epoch!=self.epoch:
+                raise ValueError('hardware owner epoch changed')
+            if not isinstance(event,dict) or set(event)!={'sequence','elapsed_ms','records'}:
+                raise ValueError('invalid native counter event')
+            seq=event['sequence'];records=event['records']
+            if not self._uint(seq,(1<<64)-1) or seq!=self.sequence+1:
+                raise ValueError('counter stream sequence gap or replay')
+            if not self._uint(event['elapsed_ms'],(1<<64)-1) or event['elapsed_ms']<self.elapsed_ms:
+                raise ValueError('invalid receiver time')
+            if not isinstance(records,list) or not 1<=len(records)<=125:
+                raise ValueError('invalid counter record count')
+            # Validate the whole message before changing any accumulated value.
+            for record in records:
+                if not isinstance(record,dict) or set(record)!={'flow_id','packets','octets','reason'}:
+                    raise ValueError('invalid native counter record')
+                for key,limit in (('flow_id',0xffffffff),('packets',255),('octets',0x3fffff),('reason',3)):
+                    if not self._uint(record[key],limit):
+                        raise ValueError('invalid '+key)
+            now=self.now()
+            for record in records:
+                flow=self.flows.get(record['flow_id'])
+                if flow is None:
+                    self.ignored+=1
+                    continue
+                flow['packets']+=record['packets']
+                flow['octets']+=record['octets']
+                # The reference receive path accounts reason=2 counters but
+                # skips its activity refresh. Do not extend a NAT lease on it.
+                if record['packets'] and record['reason']!=2:
+                    flow['activity']+=1
+                    flow['observed']=True
+                    flow['at']=now
+            self.sequence=seq
+            self.elapsed_ms=event['elapsed_ms']
+        except (ValueError,TypeError) as exc:
+            self.invalidate(exc)
+            raise
+
+    def receiver_finished(self, summary):
+        # Even a clean bounded receiver exit ends the active accounting lease.
+        if not isinstance(summary,dict) or any(summary.get(k) for k in ('failed','malformed','capture_drops')):
+            self.invalidate('native counter receiver failed or lost messages')
+        else:
+            self.invalidate('native counter receiver stopped')
+
+    def totals(self, entry):
+        flow=self.flows.get(flow_id_of(entry))
+        if flow is None or flow['entry']!=bytes(entry):
+            return None
+        return {'packets':flow['packets'],'octets':flow['octets']}
+
+    def __call__(self, entry):
+        flow=self.flows.get(flow_id_of(entry))
+        if not self.available or flow is None or flow['entry']!=bytes(entry) or not flow['observed']:
+            return None
+        try:age=self.now()-flow['at']
+        except ValueError:return None
+        if age<0 or age>self.freshness:
+            return None
+        return flow['activity']
 
 
 class FlowStatsProbe:

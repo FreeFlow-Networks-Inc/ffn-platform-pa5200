@@ -149,3 +149,10 @@ BCM/FE100 admission still requires verified bidirectional forwarding, exception
 handling and ordered policy/route/neighbor withdrawal. A forwarding-only lab
 benchmark must be explicitly isolated; disabling inspection never disables
 configured security or NAT. No 100–200G result has been qualified yet.
+
+FE100 compact FLOWSTATS messages now have a native C decoder and bounded
+`ffn-fe100-stats-probe` receiver. Isolated NAT tests matched every packet/byte
+delta, including paired TCP records. The packet owner consumes valid statistics
+without delivering them to a data TAP or counting them as malformed original
+packets; a single separate accounting owner must consume each delta once.
+See `fe100/COUNTERS.md` for the format and production lifecycle gaps.

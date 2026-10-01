@@ -125,7 +125,7 @@ jobs:
       - name: FE100 profile and native configuration
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
-        run: cd fe100 && python3 -m unittest test_aging test_flowstats
+        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing
@@ -256,7 +256,10 @@ jobs:
           make test
           mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_punt.c test_fe100_punt.c -o /tmp/ffn-fe100-punt-mips
           qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-punt-mips
-          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror -pthread ffn_packet.c ffn_fe100_punt.c ffn_fe100_punt_probe.c -o /tmp/ffn-fe100-punt-probe
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror -pthread ffn_packet.c ffn_fe100_punt.c ffn_fe100_stats.c ffn_fe100_punt_probe.c -o /tmp/ffn-fe100-punt-probe
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_stats.c test_fe100_stats.c -o /tmp/ffn-fe100-stats-mips
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-stats-mips
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_stats.c ffn_fe100_stats_probe.c -o /tmp/ffn-fe100-stats-probe
 
       # qemu-user-static installs the binary as qemu-mips64-static; the
       # Makefile calls qemu-mips64. Linked rather than the Makefile edited, so

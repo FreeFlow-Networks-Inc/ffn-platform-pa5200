@@ -3,11 +3,17 @@ CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror -pthread
 
 all: libffn-packet.so libffn-hwio.so libffn-inline.so
 
-libffn-packet.so: ffn_packet.c ffn_packet.h ffn_aggregate_packet.inc ffn_fe100_packet.inc ffn_fe100_punt.c ffn_fe100_punt.h
-	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_packet.c ffn_fe100_punt.c -o $@
+libffn-packet.so: ffn_packet.c ffn_packet.h ffn_aggregate_packet.inc ffn_fe100_packet.inc ffn_fe100_punt.c ffn_fe100_punt.h ffn_fe100_stats.c ffn_fe100_stats.h
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_packet.c ffn_fe100_punt.c ffn_fe100_stats.c -o $@
 
 test-fe100-punt: ffn_fe100_punt.c ffn_fe100_punt.h test_fe100_punt.c
 	$(CC) $(CFLAGS) ffn_fe100_punt.c test_fe100_punt.c -o $@
+
+test-fe100-stats: ffn_fe100_stats.c ffn_fe100_stats.h test_fe100_stats.c
+	$(CC) $(CFLAGS) ffn_fe100_stats.c test_fe100_stats.c -o $@
+
+ffn-fe100-stats-probe: ffn_fe100_stats.c ffn_fe100_stats.h ffn_fe100_stats_probe.c
+	$(CC) $(CFLAGS) ffn_fe100_stats.c ffn_fe100_stats_probe.c -o $@
 
 ffn-fe100-punt-probe: ffn_fe100_punt_probe.c libffn-packet.so
 	$(CC) $(CFLAGS) ffn_fe100_punt_probe.c -L. -lffn-packet -o $@
@@ -25,9 +31,10 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats
 	./test-hwio
 	./test-fe100-punt
+	./test-fe100-stats
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py

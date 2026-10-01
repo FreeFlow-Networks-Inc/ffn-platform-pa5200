@@ -1,23 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2026 FreeFlow Networks, Inc.
-"""Statistics decoding, and the probe contract ffn_fe100_aging depends on.
+"""Legacy diagnostic codec contract; these fixtures are not live PA-5220 data.
 
-The decode tests pin the bit layout against the vendor's own field widths --
-flow_idx 32, packets 30, octets 42 -- because a silently wrong shift produces
-plausible small numbers rather than an error, and the symptom would be sessions
-expiring while they carry traffic.
-
-The demux tests pin BOTH halves of the message identity. Keying on the type
-byte alone is the mistake this module was written with: MSG_TYPE_FLOWSTATS (19)
-is defined in the vendor's enum and used nowhere, while sessionCount actually
-arrives as CONTROL/STATS_COUNTER. Type 19 must be ignored and CONTROL with some
-other code -- session ageout, say -- must be ignored too, or the decoder would
-read a session-teardown payload as counters.
-
-The probe tests are mostly about one distinction: an unknown flow returns None,
-not 0. Getting that wrong means a session whose first statistics message has not
-arrived yet starts its idle clock immediately.
+Native compact FLOWSTATS and stream lifecycle have separate tests. The old
+CONTROL/STATS_COUNTER decoder intentionally handles only its reference format.
 """
 import os
 import struct
@@ -31,7 +18,7 @@ from ffn_fe100_aging import SessionAging  # noqa: E402
 from ffn_fe100_sessions import key4, forwarding_entry4  # noqa: E402
 
 CTRL_CODE_SESS_AGEOUT = 4        # the neighbouring code in the same family
-MSG_TYPE_FLOWSTATS = 19          # the decoy; defined by the vendor, never used
+MSG_TYPE_FLOWSTATS = 19          # native compact format, handled by C
 
 
 def record(flow_id, packets, octets):
@@ -107,11 +94,7 @@ class Demux(unittest.TestCase):
         self.assertTrue(FS.is_stats_message(header()))
 
     def test_the_flowstats_message_type_is_not_it(self):
-        """MSG_TYPE_FLOWSTATS is the decoy. Keying on it reads nothing.
-
-        The vendor defines type 19 and never emits or parses it; their own
-        decoder demuxes sessionCount on (CONTROL, STATS_COUNTER).
-        """
+        """Native compact records must not enter the legacy 16-byte decoder."""
         self.assertFalse(FS.is_stats_message(
             header(msg_type=MSG_TYPE_FLOWSTATS)))
         self.assertFalse(FS.is_stats_message(

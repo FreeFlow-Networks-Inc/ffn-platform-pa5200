@@ -68,6 +68,13 @@ static int fe100_receive(struct ffn_packet *p, uint8_t *wire, ssize_t *size)
     if (now < 0 || (uint64_t)now >= p->fe100_deadline) {
         atomic_fetch_add_explicit(&p->fe100_stats[2], 1, memory_order_relaxed); return 1;
     }
+    if (*size >= 12 && wire[11] == 19) {
+        struct ffn_fe100_counters counters;
+        /* The single accounting receiver owns these deltas. Data owners can
+         * share the return link, but must neither forward nor double-count
+         * valid statistics as malformed software-fallback packets. */
+        if (ffn_fe100_counters_decode(wire,(size_t)*size,24,be16(wire+2),&counters)==1)return 1;
+    }
     for (unsigned i = 0; i < p->fe100_count; i++) {
         const struct ffn_packet_fe100_binding *b = &p->fe100[i];
         struct ffn_fe100_punt decoded;

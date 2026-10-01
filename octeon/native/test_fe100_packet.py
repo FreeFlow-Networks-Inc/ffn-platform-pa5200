@@ -38,10 +38,28 @@ class PuntTests(NativePacketTests):
         self.assertEqual(self.attach(),0)
         for name,offset in [('sample',56),('ttl_sample',40),('fragment_sample',40),
                             ('udp_miss_sample',56),('udp_ttl_expired_sample',40),
-                            ('udp_fragment_sample',40),('udp_mtu_exceeded_sample',40)]:
+                            ('udp_fragment_sample',40),('udp_mtu_exceeded_sample',40),
+                            ('misc_arp_sample',40),('misc_icmp_sample',40),
+                            ('misc_ipv6_sample',80),('misc_fragment_nonfirst_sample',40)]:
             wire=sample(name);self.inject.send(wire);self.poll()
             self.assertEqual(self.peer.recv(4096),wire[offset:]);self.empty(self.peer)
-        self.assertEqual(self.stats(),[7,0,0])
+        self.assertEqual(self.stats(),[11,0,0])
+
+    def test_ipv6_tuple_and_protocol_mismatches_are_rejected(self):
+        self.assertEqual(self.attach(),0)
+        for offset in (32,33,36,40,56,72,74,76,78,79,92,94,98,100):
+            raw=bytearray(sample('misc_ipv6_sample'));raw[offset]^=0x80
+            self.inject.send(raw);self.poll();self.empty(self.peer)
+
+    def test_stats_are_not_data_or_malformed_originals(self):
+        self.assertEqual(self.attach(),0)
+        source=Path(__file__).with_name('test_fe100_stats.c').read_text()
+        body=re.search(r'static const char sample\[\]\s*=\s*(.*?);',source,re.S).group(1)
+        wire=bytes.fromhex(''.join(re.findall(r'"([a-f0-9]+)"',body)))
+        self.inject.send(wire);self.poll();self.empty(self.peer)
+        self.assertEqual(self.stats(),[0,0,0])
+        self.inject.send(wire[:35]);self.poll();self.empty(self.peer)
+        self.assertEqual(self.stats(),[0,1,0])
 
     def test_short_ethernet_padding_and_malformed_lengths(self):
         self.assertEqual(self.attach(),0)
