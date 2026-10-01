@@ -44,6 +44,14 @@ withdrawal. CP keeps hardware admission disabled. Production activation still re
 - Simultaneous bidirectional physical forwarding, TTL-expired, MTU/fragment,
   policy withdrawal, aging/accounting and restart recovery qualification.
 
+The internal resource-backed lease controller now joins
+`SessionLifecycle` with `PathSessions`: it drains exact flow entries before
+freeing next hops and source MACs, and checks a trusted generation token before
+and after table calls. Its bounded leases and durable recovery are exercised
+by the native table lab. The live observation relay still does not invoke this
+admission controller; commissioned attachment mappings and the commit
+withdrawal barrier remain required before production integration.
+
 Existing isolated FE100 tests establish packet rewriting under their documented
 conditions. They do not authorize diverting production traffic into hardware.
 The interface/VLAN configuration must already agree with the upstream network;

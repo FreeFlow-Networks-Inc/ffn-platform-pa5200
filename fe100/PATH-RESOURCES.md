@@ -43,6 +43,13 @@ The native MIPS64 FE100 run on 2026-09-29 passed:
   session and resource removal on a neighbor change.
 
 All test resources were removed and hardware flow tables were empty afterward.
+On 2026-10-01 the extended native run also passed resource-backed lease close,
+idle expiry, heartbeat expiry, topology replacement, neighbor replacement and
+producer restart. All 12 checks passed, including readback that both session
+directions were gone before each resource deletion. The CP evidence is
+`/var/lib/ffn/fe100/resource-validation-1790867085610052785.json`;
+`cleanup_verified` and `after_flows_empty` are both true. No packets were sent.
+
 This verifies table programming and lifecycle ordering, not production packet
 forwarding. No production endpoint activates this owner yet. Still required are
 applied Security/NAT acknowledgement, trusted live attachment/LIF/zone commissioning,

@@ -19,6 +19,36 @@ state. Monotonic leases are never adopted across process restarts.
 Clock regression, nonfinite timestamps, malformed sequence numbers, duplicate
 opens and incomplete producer identities also fence and drain existing leases.
 
+## Resource-backed leases and generation barriers
+
+Pass `paths=PathSessions(owner, resource_owner)` and a trusted `generation()`
+reader to manage allocated next hops and source MACs with the same lease timer.
+The reader returns the SHA256 identity of the current applied policy/topology;
+missing evidence must raise or return an unavailable value. It must reflect
+route, neighbor, attachment, NAT and security changes, not just a boot ID.
+This continuity token does not grant hardware qualification or an allow verdict.
+
+The controller resolves each path from the local commissioned resource owner.
+Events cannot choose table indices or assign `path_digest`. Close, expiry,
+producer loss and generation changes drain both flow directions with readback
+before reclaiming next hops, then source MACs. Resource deletion failures also
+disable the policy owner and retain its durable recovery records. Restart
+recovery drains session journals before resource journals; leases are never
+restored. Status includes the observed generation and resource recovery state.
+
+Generation and heartbeat checks run before and after native calls, including
+activation. A change during an install drains the new entries and prevents a
+successful event acknowledgement. These checks complement periodic `tick`;
+they do not make asynchronous route changes atomic with hardware forwarding.
+The embedding commit coordinator must call `fence` and require successful
+withdrawal before replacing any referenced attachment or next-hop table.
+
+`validate_path_resources.py --run` now exercises the resource-backed lifecycle
+using native FE100 tables: explicit close, idle and heartbeat expiry, topology
+and neighbor replacement, and producer restart. Each resource deletion checks
+that both hardware flow entries have already disappeared. This is an isolated
+table test, not a production packet-forwarding qualification.
+
 ## Paired NAT decisions
 
 `PolicyOwner.admit` accepts the original legacy non-NAT decision or a paired

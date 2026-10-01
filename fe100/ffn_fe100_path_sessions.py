@@ -59,15 +59,27 @@ class PathSessions:
 
     def revoke(self,session_id):
         request=self.policy.dependencies.get(session_id)
-        self.policy.revoke(session_id)
-        if request is not None:self.resources.release(self.key(request))
+        try:
+            self.policy.revoke(session_id)
+            if request is not None:self.resources.release(self.key(request))
+        except BaseException:
+            self.policy.activated=False
+            raise
 
     def reconcile(self):
-        self.policy.reconcile()
-        self.resources.reconcile()
-        live={self.key(r) for r in self.policy.dependencies.values()}
-        for key in list(self.resources.paths):
-            if key not in live:self.resources.release(key)
+        try:
+            if self.resources.recovery_required:self.policy.activated=False
+            self.policy.reconcile()
+            self.resources.reconcile()
+            live={self.key(r) for r in self.policy.dependencies.values()}
+            for key in list(self.resources.paths):
+                if key not in live:self.resources.release(key)
+        except BaseException:
+            self.policy.activated=False
+            raise
+        return self.status()
+
+    def status(self):
         return dict(policy=self.policy.status(),paths=len(self.resources.paths),
                     path_recovery_required=self.resources.recovery_required)
 

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import uuid
 from ffn_fe100_journal import Journal
 from ffn_fe100_path_owner import PathOwner
 from ffn_fe100_policy import digest
@@ -86,6 +87,7 @@ def run():
         from ffn_fe100_nat import session_pair4
         from ffn_fe100_policy import PolicyOwner
         from ffn_fe100_path_sessions import PathSessions
+        from ffn_fe100_lifecycle import SessionLifecycle
         from validate_nat_lifecycle import LabBackend,fixture as session_fixture
         request,_=session_fixture();request.pop('path_digest')
         request['nat_digest']=plan['nat_digest']
@@ -107,6 +109,40 @@ def run():
         if owner.paths or manager.sessions or any(flow_backend.fetch(e[:16]) is not None for e in entries):
             raise RuntimeError('Resource-backed NAT drain not acknowledged')
         report['tests'].append('paired-NAT-flow-and-next-hop-ordered-drain');save()
+        # Fixed lab keys only; the live observation feed never admits flows.
+        generation=[digest('lab applied topology')];now=[time.monotonic()]
+        producer=dict(boot_id=health['cp_boot_id'],pid=os.getpid(),
+            process_start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19],
+            stream_id=str(uuid.uuid4()))
+        delete=backend.delete
+        def ordered_delete(kind,index):
+            if manager.sessions or any(flow_backend.fetch(e[:16]) is not None for e in entries):
+                raise RuntimeError('Resource deletion preceded paired flow acknowledgement')
+            delete(kind,index)
+        backend.delete=ordered_delete
+        for trigger in ('close','idle-expiry','heartbeat-expiry','topology-generation',
+                        'neighbor-generation','producer-restart'):
+            life=SessionLifecycle(policy,paths=bridge,generation=lambda:generation[0],
+                clock=lambda:now[0],idle_timeout=4,heartbeat_timeout=10)
+            life.start(producer,1,request['policy_digest'])
+            life.event(producer,1,'open',request)
+            if len(owner.paths)!=1 or any(flow_backend.fetch(e[:16])!=e for e in entries):
+                raise RuntimeError('Leased resource-backed NAT readback mismatch')
+            if trigger=='close':life.event(producer,2,'close',{'session_id':request['session_id']})
+            elif trigger in ('idle-expiry','heartbeat-expiry'):
+                now[0]+=4 if trigger=='idle-expiry' else 10;life.tick()
+            elif trigger=='topology-generation':generation[0]=digest('changed lab topology');life.tick()
+            elif trigger=='neighbor-generation':
+                plan['directions'][0]['neighbor_revision']=digest('leased neighbor replacement');life.tick()
+            else:
+                try:life.event(producer|{'stream_id':str(uuid.uuid4())},2,'heartbeat',{})
+                except RuntimeError:
+                    if life.status()['synchronized']:raise
+                else:raise RuntimeError('Restarted lease producer accepted')
+            if (owner.paths or manager.sessions or any(flow_backend.fetch(e[:16]) is not None for e in entries)
+                    or any(backend.fetch(k,i) is not None for k,ids in POOLS.items() for i in ids)):
+                raise RuntimeError('Leased flow/resource withdrawal not acknowledged')
+            report['tests'].append('leased-ordered-withdrawal-'+trigger);save()
         report['stage']='completed'
     except BaseException as error:report.update(stage='failed',error=str(error));raise
     finally:
