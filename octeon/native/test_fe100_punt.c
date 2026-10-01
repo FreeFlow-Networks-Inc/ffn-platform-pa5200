@@ -58,6 +58,31 @@ static const char misc_fragment_nonfirst_sample[]=
 "0001080045000073000000014011ee51c6120001c6120002bf68bf69005fe06346464e2d46453130302d53455353494f4e3a"
 "0d98397e6ece4044837c0c7e672505c400000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
 "2122232425262728292a2b2c2d2e2f30313233";
+static const char vlan_miss_sample[]=
+"001800140100040010000008812c00387d5c1ef400000000000000240000000040110ffebf68bf69c6120001c6120002"
+"05c0408500178a1202ff0000000202ff0000000181000fa1080045000073000040004011ae52c6120001c6120002bf68bf69"
+"005f84f046464e2d46453130302d53455353494f4e3a63743f066a504e4cbd04687273f15a000000010203040506070809"
+"0a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char control_icmp6_sample[]=
+"001800140100090010000004811c00b80000000000000000000000000000002005c080790017140e02ff0000000202ff0000"
+"000186dd6000000000433aff20010db800000000000000000000000120010db80000000000000000000000028000a6330064"
+"000046464e2d46453130302d1b5f3a331ff149ee9a461fd82c479a9600000102030405060708090a0b0c0d0e0f1011121314"
+"15161718191a1b1c1d1e1f";
+static const char control_ndp_sample[]=
+"0018001401000f0010000004811c00b80000000000000000000000000000002005c080960017140e3333ff00000202ff0000"
+"000186dd6000000000603aff20010db8000000000000000000000001ff0200000000000000000001ff000002870007380000"
+"000020010db8000000000000000000000002010102ff00000001fd0846464e2d46453130302dccd642606aca4e52a47ec8de"
+"7e58259600000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000";
+static const char control_lacp_sample[]=
+"001800140100090010000001811c003800000000000000000000000000000ffe05c000b70017000e0180c200000202ff0000"
+"0001880901010114800002ff000000010001800000013f0000000214800002ff000000020001800000023f00000003100000"
+"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+"000000000000000000000000000046464e2d46453130302d3935416c3a384229a63f0bd04470dd2200000102030405060708"
+"090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+static const char control_lldp_sample[]=
+"0018001401000f0010000004811c00b80000000000000000000000000000002005c000610017000e0180c200000e02ff0000"
+"000188cc02070402ff000000010405076c6f6f70060200780a3b46464e2d46453130302d6f7cf22b0cc94cd583b493f21db2"
+"df2d00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000";
 int main(void) {
     uint8_t wire[256]={0},copy[256];size_t n=strlen(sample)/2;
     struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
@@ -103,6 +128,12 @@ int main(void) {
         assert(result.length==129);
         for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
     }
+    n=strlen(vlan_miss_sample)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(vlan_miss_sample+i*2,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
+    assert(result.length==133 && result.frame==wire+56);
+    wire[54]^=128;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));wire[54]^=128;
+    wire[71]=0xff;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
     const char *misc_samples[]={misc_arp_sample,misc_icmp_sample,misc_ipv6_sample,misc_fragment_nonfirst_sample};
     for(unsigned k=0;k<4;k++) {
         n=strlen(misc_samples[k])/2;
@@ -110,6 +141,16 @@ int main(void) {
         assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
         assert(result.frame==wire+(k==2?80:40));
         for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    }
+    const char *control_samples[]={control_icmp6_sample,control_ndp_sample,control_lacp_sample,control_lldp_sample};
+    for(unsigned k=0;k<4;k++) {
+        n=strlen(control_samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(control_samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==(k<2?1:2));
+        assert(result.frame==wire+40 && result.length==n-40 && result.zone==4094);
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+        if(k==2) {wire[30]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
+        if(k==3) {wire[45]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
     }
     puts("FE100 native punt decoder: real wire fixture, truncation, scope and type rejection passed");
     return 0;

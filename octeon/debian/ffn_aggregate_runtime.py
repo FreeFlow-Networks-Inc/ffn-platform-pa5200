@@ -238,7 +238,9 @@ def serve(intent):
                 from ffn_inspection import Inspector
                 inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
                 if inspector.error:raise RuntimeError('Initial inspection configuration failed: '+inspector.error)
-            wire=control_socket([FRONT[p] for p in members]+(list(offload.aliases) if offload else []))
+            control_aliases={p:alias for alias,source in (offload.aliases.items() if offload else []) for p in members if FRONT[p]==source}
+            wire=control_socket([FRONT[p] for p in members]+(list(offload.aliases) if offload else []),
+                                mapping={p:FRONT[p] for p in members},aliases=control_aliases)
             adapter=TrunkLACP(engine,wire)
             started=time.monotonic();next_status=0;next_lldp=0;last_input=started;sequence=-1;buffer=b''
             local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
@@ -358,9 +360,12 @@ def serve(intent):
                             requested=config
                 if wire in ready:
                     for _ in range(128):
-                        try:raw,address=wire.recvfrom(16384)
+                        try:
+                            if hasattr(wire,'receive'):raw=wire.receive()
+                            else:
+                                raw,address=wire.recvfrom(16384)
+                                if address[2]==socket.PACKET_OUTGOING:continue
                         except BlockingIOError:break
-                        if address[2]==socket.PACKET_OUTGOING:continue
                         if offload:raw=offload.ingress(raw)
                         if adapter.receive(raw,time.monotonic()):continue
         finally:

@@ -40,10 +40,43 @@ class PuntTests(NativePacketTests):
                             ('udp_miss_sample',56),('udp_ttl_expired_sample',40),
                             ('udp_fragment_sample',40),('udp_mtu_exceeded_sample',40),
                             ('misc_arp_sample',40),('misc_icmp_sample',40),
-                            ('misc_ipv6_sample',80),('misc_fragment_nonfirst_sample',40)]:
+                            ('misc_ipv6_sample',80),('misc_fragment_nonfirst_sample',40),
+                            ('vlan_miss_sample',56),('control_icmp6_sample',40),('control_ndp_sample',40)]:
             wire=sample(name);self.inject.send(wire);self.poll()
             self.assertEqual(self.peer.recv(4096),wire[offset:]);self.empty(self.peer)
-        self.assertEqual(self.stats(),[11,0,0])
+        self.assertEqual(self.stats(),[14,0,0])
+
+    def test_link_control_never_enters_data_tap(self):
+        self.assertEqual(self.attach(),0)
+        for name in ('control_lacp_sample','control_lldp_sample'):
+            self.inject.send(sample(name));self.poll();self.empty(self.peer)
+        self.assertEqual(self.stats(),[0,0,0])
+
+    def test_native_control_normalizes_only_owned_control(self):
+        from ffn_native_aggregate import Member
+        members=(Member*2)(Member(23,34,0x8001),Member(24,35,0x8101))
+        self.lib.ffn_aggregate_control_fe100.argtypes=[C.c_int,C.POINTER(Member),C.c_uint,C.POINTER(Binding),C.c_uint,C.c_uint64]
+        self.lib.ffn_aggregate_control_receive.argtypes=[C.c_int,C.POINTER(Member),C.c_uint,C.POINTER(Binding),C.c_uint,C.c_uint64,C.c_void_p,C.c_size_t]
+        binding=Binding(Scope(24,20,23,23,4094),34)
+        rx,tx=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
+        buffer=C.create_string_buffer(4096)
+        deadline=int(time.monotonic()*1000)+2000
+        receive=lambda end=deadline:self.lib.ffn_aggregate_control_receive(rx.fileno(),members,2,C.byref(binding),1,end,buffer,len(buffer))
+        try:
+            self.assertEqual(self.lib.ffn_aggregate_control_fe100(rx.fileno(),members,2,C.byref(binding),1,deadline),0)
+            for name in ('control_lacp_sample','control_lldp_sample'):
+                raw=sample(name);tx.send(raw);size=receive()
+                self.assertEqual(buffer.raw[:size],b'\0\x18\0\x22'+raw[40:])
+            for raw in (sample(),sample('control_ndp_sample'),sample('control_lacp_sample')[:100]):
+                tx.send(raw);self.assertEqual(receive(),-1);self.assertEqual(C.get_errno(),errno.EAGAIN)
+            tx.send(sample('control_lacp_sample'));self.assertEqual(receive(1),-1)
+            normal=b'\0\x18\x80\x01'+sample('control_lacp_sample')[40:]
+            tx.send(normal);size=receive(1)
+            self.assertEqual(buffer.raw[:size],b'\0\x18\0\x22'+normal[4:])
+            binding.source=35
+            self.assertEqual(self.lib.ffn_aggregate_control_fe100(rx.fileno(),members,2,C.byref(binding),1,deadline),-1)
+            self.assertEqual(C.get_errno(),errno.EINVAL)
+        finally:rx.close();tx.close()
 
     def test_ipv6_tuple_and_protocol_mismatches_are_rejected(self):
         self.assertEqual(self.attach(),0)

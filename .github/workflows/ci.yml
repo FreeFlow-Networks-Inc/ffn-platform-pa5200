@@ -125,7 +125,7 @@ jobs:
       - name: FE100 profile and native configuration
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
-        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream
+        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream test_accounting
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing

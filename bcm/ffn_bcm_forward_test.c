@@ -559,10 +559,18 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
     if (fe100_test == 44 || fe100_test == 45 || fe100_test==51 || fe100_test==52) {
         /* Isolated 5->DAC->13->FE100->MP capture. Leave all other routes
          * intact. Refuse to adopt an unexpected forwarding configuration. */
-        rv=bcm_port_force_forward_get(0,20,&dst,&an_value);
-        if (rv==0 && an_value) rv=-8;
         src=fe100_test>=51 ? lab_port_a : lab_port_b;
         cos=fe100_test==44 || fe100_test==51;
+        rv=bcm_port_force_forward_get(0,20,&dst,&an_value);
+        if (rv==0 && an_value) {
+            /* Drain ingress before dismantling the commissioned exception
+             * return. Activation still requires an unowned return port. */
+            if (cos || dst!=24) rv=-8;
+            else {
+                rv=bcm_switch_control_port_get(0,20,bcmSwitchPortHeaderType,&dp_header);
+                if (rv==0 && dp_header!=BCM_SWITCH_PORT_HEADER_TYPE_RAW) rv=-8;
+            }
+        }
         if (rv==0) rv=bcm_port_force_forward_get(0,src,&dst,&an_value);
         if (rv==0 && (!an_value || dst!=(cos ? 24 : 3))) rv=-8;
         if (rv==0) rv=bcm_port_force_forward_set(0,src,cos ? 3 : 24,1);

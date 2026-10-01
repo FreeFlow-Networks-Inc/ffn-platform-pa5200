@@ -222,7 +222,7 @@ def check_host():
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
 
 
-DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS',
+DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS', 'NF_CONNTRACK_MARK',
                       'NF_CT_NETLINK', 'NF_NAT', 'NF_TABLES', 'NFT_CT')
 DP_POLICY_MODULES = ('NFT_FIB_IPV4', 'NFT_FIB_IPV6', 'NFT_FIB_INET', 'NFT_NUMGEN', 'NFT_HASH')
 
@@ -260,15 +260,18 @@ def check_mdio_source(tree):
         raise ValueError('CP requires the Cavium Clause 45 device-address fix')
 
 
-def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work):
+def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work, *, core):
     """Build hardware adapters against this image, never import loose old modules."""
     module = work / (role + '-hardware')
     module.mkdir()
     names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl', 'ffn_fe100') if role == 'cp' else (
-        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe')
+        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe', 'ffn_ctlease')
     for p in (platform / 'octeon/kctl').iterdir():
         if p.suffix in ('.c', '.h'):
             shutil.copyfile(p, module / p.name)
+    if role == 'dp':
+        for name in ('ffn_ctlease.c', 'ffn_ctlease.h'):
+            shutil.copyfile(core / 'dataplanes/ctlease' / name, module / name)
     (module / 'Makefile').write_text('obj-m += ' + ' '.join(n + '.o' for n in names) + '\n')
     run(['make', '-C', tree, 'M=' + str(module), 'ARCH=mips',
          'CROSS_COMPILE=' + cross, 'LOCALVERSION=', 'KCFLAGS=-Werror', 'modules'])
@@ -277,6 +280,15 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(artifact)
         modules = image_policy.root_path(root, 'lib/modules')
         safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    if role == 'dp':
+        # Ship the qualified native endpoint without loading it or granting
+        # production hardware admission. It must match this exact kernel.
+        artifact = work / 'libffn-ctlease.so'
+        run([userspace_cross + 'gcc', '-D_GNU_SOURCE', '-std=c11', '-O2', '-Wall',
+             '-Wextra', '-Werror', '-fPIC', '-shared',
+             core / 'dataplanes/ctlease/ffn_ctlease_client.c', '-o', artifact])
+        elf(artifact)
+        safe_install(artifact, root, 'usr/lib/ffn/libffn-ctlease.so')
     image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
                           output([userspace_cross + 'gcc', '--version']).splitlines()[0])
     native = work / (role + '-native')
@@ -396,7 +408,7 @@ def build(config, platform, core, out):
             elf(bundle / 'vmlinux')
             release = (tree / 'include/config/kernel.release').read_text().strip()
             build_hardware(platform, tree, root, role, cross,
-                           cfg.get('userspace_cross_compile', cross), release, work)
+                           cfg.get('userspace_cross_compile', cross), release, work, core=core)
             run(['depmod', '-b', root, release])
             shutil.copyfile(tree / '.config', bundle / 'kernel.config')
             shutil.copyfile(initramfs, out / (role + '-initramfs.cpio'))

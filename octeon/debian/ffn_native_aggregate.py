@@ -3,7 +3,7 @@
 import ctypes as C
 import ipaddress
 import socket
-from ffn_native_packet import PacketOwner, library, checked, COUNTERS
+from ffn_native_packet import PacketOwner, library, checked, COUNTERS, Fe100Binding, Fe100Scope
 
 
 class Member(C.Structure):
@@ -26,6 +26,12 @@ def aggregate_library(path=None):
     lib.ffn_aggregate_adopt.restype=C.c_void_p
     lib.ffn_aggregate_control_open.argtypes=[C.c_char_p,C.POINTER(C.c_uint32),C.c_uint]
     lib.ffn_aggregate_control_open.restype=C.c_int
+    if hasattr(lib,'ffn_aggregate_control_receive'):
+        binding_args=[C.c_int,C.POINTER(Member),C.c_uint,C.POINTER(Fe100Binding),C.c_uint,C.c_uint64]
+        lib.ffn_aggregate_control_fe100.argtypes=binding_args
+        lib.ffn_aggregate_control_fe100.restype=C.c_int
+        lib.ffn_aggregate_control_receive.argtypes=binding_args+[C.c_void_p,C.c_size_t]
+        lib.ffn_aggregate_control_receive.restype=C.c_int
     lib.ffn_aggregate_network.argtypes=[C.c_void_p,C.POINTER(Unit),C.c_uint]
     lib.ffn_aggregate_network.restype=C.c_int
     lib.ffn_aggregate_gates.argtypes=[C.c_void_p,C.c_uint,C.c_uint,C.c_uint,C.c_uint64,C.c_uint64,C.c_uint,C.c_void_p,C.c_void_p]
@@ -38,11 +44,50 @@ def aggregate_library(path=None):
     return lib
 
 
-def control_socket(sources,lib=None):
+class ControlSocket:
+    """Single-threaded control owner; native receive/normalization, leased FE100."""
+    def __init__(self,sock,lib,mapping,aliases):
+        self.sock,self.lib=sock,lib
+        self.mapping=dict(mapping)
+        self.members=(Member*len(mapping))(*(Member(p,mapping[p],aliases.get(p,0)) for p in sorted(mapping)))
+        self.bindings=(Fe100Binding*0)();self.deadline=0
+        self.buffer=C.create_string_buffer(16384)
+        checked(lib.ffn_aggregate_control_fe100(sock.fileno(),self.members,len(self.members),None,0,0))
+
+    def fileno(self):return self.sock.fileno()
+    def close(self):self.sock.close()
+    def send(self,data):return self.sock.send(data)
+
+    def receive(self):
+        count=self.lib.ffn_aggregate_control_receive(self.fileno(),self.members,len(self.members),
+            self.bindings,len(self.bindings),self.deadline,self.buffer,len(self.buffer))
+        checked(count)
+        return self.buffer.raw[:count]
+
+    def fe100(self,bindings,deadline_ms):
+        if (not isinstance(bindings,list) or len(bindings)>8 or type(deadline_ms) is not int or
+                not 0<=deadline_ms<2**64):raise ValueError('Invalid FE100 control lease')
+        fields={'trunk','return_port','front','in_lif','zone','source'}
+        rows=(Fe100Binding*len(bindings))()
+        for row,value in zip(rows,bindings):
+            if (not isinstance(value,dict) or set(value)!=fields or
+                any(type(v) is not int or not 0<=v<=65535 for v in value.values()) or
+                self.mapping.get(value['front'])!=value['source']):raise ValueError('Invalid FE100 control binding')
+            row.scope=Fe100Scope(*(value[name] for name,_ in Fe100Scope._fields_));row.source=value['source']
+        checked(self.lib.ffn_aggregate_control_fe100(self.fileno(),self.members,len(self.members),rows,len(rows),deadline_ms))
+        self.bindings,self.deadline=rows,deadline_ms
+
+
+def control_socket(sources,lib=None,*,mapping=None,aliases=None):
     lib=lib or aggregate_library()
     values=(C.c_uint32*len(sources))(*sources)
     fd=lib.ffn_aggregate_control_open(b'ffnpkt0',values,len(values));checked(fd)
-    sock=socket.socket(fileno=fd);sock.setblocking(False);return sock
+    sock=socket.socket(fileno=fd);sock.setblocking(False)
+    try:
+        if mapping is not None and hasattr(lib,'ffn_aggregate_control_receive'):
+            return ControlSocket(sock,lib,mapping,aliases or {})
+        return sock
+    except BaseException:sock.close();raise
 
 
 def units(parent,network,local):

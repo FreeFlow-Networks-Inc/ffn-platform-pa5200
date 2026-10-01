@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <linux/if_packet.h>
 #include <net/if.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,9 +25,39 @@ static unsigned number(const char *s,unsigned max) {
     if(errno || !*s || *end || n>max)exit(2);
     return (unsigned)n;
 }
+static int control_probe(const char *wire,const struct ffn_packet_fe100_binding *b,
+    const uint8_t *token,unsigned duration)
+{
+    struct ffn_aggregate_member member={b->scope.front,b->source,0};
+    uint32_t source=b->source;
+    int fd=ffn_aggregate_control_open(wire,&source,1),failed=0;
+    uint64_t deadline=now()+duration;
+    if(fd<0 || ffn_aggregate_control_fe100(fd,&member,1,b,1,deadline)) {perror("control attach");return 1;}
+    puts("{\"ready\":true}");fflush(stdout);
+    printf("{\"packets\":[");unsigned count=0;
+    while(now()<deadline) {
+        struct pollfd p={.fd=fd,.events=POLLIN};
+        if(poll(&p,1,5)<0){if(errno==EINTR)continue;failed=1;break;}
+        for(unsigned burst=0;burst<64;burst++) {
+            uint8_t frame[2048];
+            int n=ffn_aggregate_control_receive(fd,&member,1,b,1,deadline,frame,sizeof(frame));
+            if(n<0){if(errno==EAGAIN || errno==EWOULDBLOCK)break;failed=1;break;}
+            if(!memmem(frame,(size_t)n,token,16))continue;
+            if(count==256){failed=1;break;}
+            if(count)putchar(',');
+            putchar('"');for(int i=4;i<n;i++)printf("%02x",frame[i]);putchar('"');count++;
+        }
+        if(failed)break;
+    }
+    struct tpacket_stats stats={0};socklen_t length=sizeof(stats);
+    if(getsockopt(fd,SOL_PACKET,PACKET_STATISTICS,&stats,&length))failed=1;
+    printf("],\"captured\":%u,\"capture_drops\":%u,\"failed\":%s}\n",count,stats.tp_drops,failed?"true":"false");
+    close(fd);return failed || stats.tp_drops;
+}
 int main(int argc,char **argv) {
-    if(argc!=10) {
-        fprintf(stderr,"usage: punt-probe INTERFACE TRUNK RETURN FRONT LIF ZONE SOURCE NONCE_HEX MILLISECONDS\n");return 2;
+    int control=argc==11 && !strcmp(argv[10],"--control");
+    if(argc!=10 && !control) {
+        fprintf(stderr,"usage: punt-probe INTERFACE TRUNK RETURN FRONT LIF ZONE SOURCE NONCE_HEX MILLISECONDS [--control]\n");return 2;
     }
     struct ffn_packet_fe100_binding b={
         .scope={number(argv[2],65535),number(argv[3],65535),number(argv[4],24),
@@ -40,6 +71,7 @@ int main(int argc,char **argv) {
     }
     unsigned duration=number(argv[9],2800);
     if(duration<100)return 2;
+    if(control)return control_probe(argv[1],&b,token,duration);
     unsigned index=if_nametoindex(argv[1]);if(!index)return 1;
     int fd=socket(AF_PACKET,SOCK_RAW|SOCK_NONBLOCK|SOCK_CLOEXEC,htons(3)),tx[2],tap[2];
     struct sockaddr_ll addr={.sll_family=AF_PACKET,.sll_ifindex=(int)index,.sll_protocol=htons(3)};

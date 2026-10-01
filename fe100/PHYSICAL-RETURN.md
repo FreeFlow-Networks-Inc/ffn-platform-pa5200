@@ -27,6 +27,16 @@ Verified on hardware:
   now journals and removes only the exact, previously absent IPv6 lab key.
 - Zero capture drops; exact table/rule/header restoration and unchanged saved
   configuration were checked. Existing production packet owners stayed running.
+- Tagged ingress with a different requested egress VLAN: all NAT rewrites and
+  VLAN replacement matched; tagged misses and deleted flows reached the native
+  software endpoint unchanged. Metadata VLAN-present must match the actual
+  Ethernet tag; it is not an unsupported-header indicator.
+- ICMPv6 echo and neighbor solicitation returned unchanged to the native data
+  receiver. LACP and LLDP returned unchanged to the separate native control
+  receiver, with no data delivery. Each case passed four live packets; neither
+  receiver reported loss. The real AF_PACKET filter also excludes IPv6/data
+  exceptions from the control queue and preserves ordinary control reception
+  after the FE100 binding is withdrawn.
 
 BCM20 is the FE100 internal return. Its normal TM header processing does not
 apply force-forward to these retained ITMH packets. Temporarily selecting RAW
@@ -41,6 +51,15 @@ the key; type5/code2 (TTL), type5/code13 (MTU) and type4/code30 (first fragment)
 omit it. Exception messages lack a zone field, so the attachment's current
 front/LIF binding supplies the zone. A packet cannot select another binding.
 Type4/code32 carries the qualified ARP/ICMP original-packet exceptions.
+It also carries ICMPv6 and LLDP. LACP uses NOTFLOW/type1, whose message-info
+field contains a zone rather than an exception code. The decoder verifies
+that zone against the leased front/LIF binding and returns a separate control
+classification. Link-local destination and protocol fields must match.
+
+Ingress withdrawal now permits the exact commissioned RAW BCM20-to-DP return
+to remain active while ingress is restored. This lets cleanup drain ingress
+before deleting session resources and dismantling the return path. The live
+control-packet run verified all restoration readbacks in that order.
 
 Miss-only tests may cause FE100 to allocate an identity entry. Preparation now
 journals the exact preflight-empty key, so cleanup removes learned identities

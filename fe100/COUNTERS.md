@@ -41,6 +41,10 @@ accepts the commissioned compact format only. Other FCR formats need separate
 qualification. The native `ffn-fe100-stats-probe` is a bounded receive-only
 observer with socket-drop and malformed-message reporting. It performs no
 register writes, flow installs, packet forwarding or conntrack updates.
+It checks the kernel's resetting drop counter during polling and before
+publishing a delta; loss or malformed input ends the stream immediately.
+Drop totals remain cumulative across those kernel reads. Output transport
+supervision and timely owner withdrawal remain the coordinator's responsibility.
 
 `NativeCounterStream` accepts decoded control events from one trusted native
 receiver. It accumulates deltas only for explicitly registered entries, rejects
@@ -49,7 +53,29 @@ retired flow ID in the same table generation. Unknown IDs cannot create state.
 A stopped or failed receiver makes activity unavailable. Receiver health and
 an unchanged snapshot are not evidence that an unobserved flow is idle.
 
+`ffn_fe100_accounting.AccountedSession` coordinates these counters with the core
+`dataplanes/ctlease` native kernel endpoint. It verifies both original/reply
+tuples and their NAT outputs against the already-bound UDP connection. It
+counts equal consecutive deltas separately, never refreshes merely because a
+snapshot was read, and requires acknowledged hardware withdrawal before closing
+the kernel lease. Delayed activity, a changed hardware epoch, missing counter
+ownership, receiver failure or a kernel rejection fences the session. A failed
+withdrawal retains the lease and requires recovery.
+Idle synchronization validates the bound kernel object without adding counters
+or refreshing its timeout, so deletion or expiry does not require another
+hardware report to trigger withdrawal.
+
+On the MIPS64 dataplane, an isolated conntrack namespace received live reports
+from 256 paired UDP PNAT packets on the optical loop. Each direction reached
+128 packets / 16,512 Ethernet bytes and the kernel reached exactly 128 packets /
+14,720 L3 bytes, with activity refreshing the configured lease. The independent
+wire oracle verified all 256 translations. These connection objects were test
+fixtures; production conntrack state was not altered. The kernel tests also
+prove that late reports cannot refresh a deleted/recreated tuple, duplicate
+ownership is rejected, and reason-without-activity does not refresh the timeout.
+
 Production still requires one durable owner for the receiver and flow-ID
-generation, conntrack/NAT refresh on qualified activity, and acknowledged
-withdrawal of hardware ingress/flows before a receiver or ownership lease ends.
+generation, deployed attachment mappings, and an independent watchdog with
+acknowledged withdrawal of hardware ingress/flows before a receiver or ownership
+lease ends. TCP state synchronization is not supplied by UDP accounting.
 The bounded probe and this evidence do not enable production admission.

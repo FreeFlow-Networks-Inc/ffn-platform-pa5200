@@ -14,7 +14,8 @@ struct ffn_fe100_punt {
     uint8_t message, code;
 };
 /* Only physically qualified, original-packet formats are accepted. Return 1
- * for a software-path packet, 0 for an unsupported/malformed envelope.
+ * for a software data packet, 2 for a dedicated control packet (LACP/LLDP),
+ * 0 for an unsupported/malformed envelope. Never send return 2 to a data TAP.
  * Scope must come from the attachment owner, never packet-derived learning.
  */
 int ffn_fe100_punt_decode(const uint8_t *,size_t,

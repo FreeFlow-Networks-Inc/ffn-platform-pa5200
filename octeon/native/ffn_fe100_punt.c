@@ -24,7 +24,7 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
      * that key and retain the original Ethernet packet (before NAT/TTL edits).
      * Never interpret control/status or rewritten forwarding messages as data.
      */
-    if(cmh[0]!=0x10 || cmh[1] || cmh[22])return 0;
+    if(cmh[0]!=0x10 || cmh[1] || (cmh[3]!=1 && cmh[22]))return 0;
     if(cmh[3]==8 && !cmh[23]) {
         key=cmh+24;
         if(key[0]!=0x40 && key[0]!=0x80)return 0;
@@ -32,21 +32,41 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     }
     else if((cmh[3]==5 && (cmh[23]==2 || cmh[23]==13)) ||
             (cmh[3]==4 && (cmh[23]==30 || cmh[23]==32))) overhead=40;
+    /* NOTFLOW's eight-byte message info ends in a zone, not an exception
+     * code. Confirmed against condor_notflow_msg_t and physical LACP returns. */
+    else if(cmh[3]==1 && !be32(cmh+16) && !be16(cmh+20))overhead=40;
     else return 0;
     if(size<overhead+34)return 0;
     info=wire+overhead-8;frame=wire+overhead;
-    port=(be16(info)>>6)&63;lif=be16(info+4);zone=key ? be16(key+2) : scope->zone;
+    port=(be16(info)>>6)&63;lif=be16(info+4);
+    zone=key ? be16(key+2) : cmh[3]==1 ? be16(cmh+22) : scope->zone;
     length=be16(info+2)&0x3fff;
     packet_type=be16(info+2)>>14;
     if(be16(info)>>12 || port!=scope->front ||
        lif!=scope->in_lif || zone!=scope->zone || length<34 ||
-       length>9216 || size!=overhead+length || info[6]&0x80)return 0;
+       length>9216 || size!=overhead+length)return 0;
     ether_type=be16(frame+12);
+    /* The commissioned VLAN-present metadata bit describes the original
+     * Ethernet tag; it is not an unsupported extra-header flag. Both views
+     * must agree, so a malformed return cannot select a different TAP unit. */
+    if((ether_type==0x8100)!=!!(info[6]&0x80))return 0;
     if(ether_type==0x8100) {
         if(length<38 || (be16(frame+14)&0xfff)==0xfff)return 0;
         l3=18;ether_type=be16(frame+16);
     }
     if((info[7]&0x7f)!=l3)return 0;
+    if(ether_type==0x8809 || ether_type==0x88cc) {
+        static const uint8_t slow[6]={1,0x80,0xc2,0,0,2};
+        static const uint8_t lldp[6]={1,0x80,0xc2,0,0,0x0e};
+        if(packet_type || key || l3!=14 || ((be16(info+6)>>7)&0xff))return 0;
+        if(ether_type==0x8809) {
+            if(cmh[3]!=1 || memcmp(frame,slow,6) || length<124 || frame[14]!=1 || frame[15]!=1)return 0;
+        } else if(cmh[3]!=4 || cmh[23]!=32 || memcmp(frame,lldp,6))return 0;
+        *out=(struct ffn_fe100_punt){.frame=frame,.length=length,
+            .front=port,.in_lif=lif,.zone=zone,.message=cmh[3],.code=cmh[3]==1?0:cmh[23]};
+        return 2; /* Dedicated control receiver only; never a data TAP. */
+    }
+    if(cmh[3]==1)return 0;
     if(ether_type==0x0806) {
         if(packet_type || key || cmh[3]!=4 || cmh[23]!=32 || length<l3+28 ||
            ((be16(info+6)>>7)&0xff) || be16(frame+l3)!=1 || be16(frame+l3+2)!=0x0800 ||
@@ -54,10 +74,15 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
         goto accepted;
     }
     if(ether_type==0x86dd) {
-        if(packet_type!=2 || !key || key[0]!=0x80 || length<l3+48)return 0;
+        if(packet_type!=2 || length<l3+48)return 0;
         ip=frame+l3;protocol=ip[6];ip_length=40+be16(ip+4);l4=l3+40;
-        if(ip[0]>>4!=6 || (protocol!=6 && protocol!=17) || ip_length!=length-l3 ||
-           ((be16(info+6)>>7)&0xff)!=40 || key[1]!=protocol || memcmp(key+8,ip+8,32))return 0;
+        if(ip[0]>>4!=6 || ip_length!=length-l3 || ((be16(info+6)>>7)&0xff)!=40)return 0;
+        if(protocol==58) {
+            if(key || cmh[3]!=4 || cmh[23]!=32)return 0;
+            goto accepted;
+        }
+        if(!key || key[0]!=0x80 || (protocol!=6 && protocol!=17) ||
+           key[1]!=protocol || memcmp(key+8,ip+8,32))return 0;
         transport=frame+l4;
         if(memcmp(key+4,transport,4))return 0;
         if(protocol==6) {

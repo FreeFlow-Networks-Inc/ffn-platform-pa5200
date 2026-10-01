@@ -49,6 +49,12 @@ struct ffn_packet *ffn_aggregate_open(const char *, const char *, const char *,
 struct ffn_packet *ffn_aggregate_adopt(int, int, int,
     const struct ffn_aggregate_member *, unsigned, unsigned);
 int ffn_aggregate_control_open(const char *, const uint32_t *, unsigned);
+/* Additive control receiver. Same immutable member mapping as the data owner.
+ * FE100 bindings are opt-in and expire independently; ordinary LACP survives. */
+int ffn_aggregate_control_fe100(int, const struct ffn_aggregate_member *, unsigned,
+    const struct ffn_packet_fe100_binding *, unsigned, uint64_t);
+int ffn_aggregate_control_receive(int, const struct ffn_aggregate_member *, unsigned,
+    const struct ffn_packet_fe100_binding *, unsigned, uint64_t, uint8_t *, size_t);
 int ffn_aggregate_network(struct ffn_packet *, const struct ffn_aggregate_unit *, unsigned);
 int ffn_aggregate_gates(struct ffn_packet *, unsigned, unsigned, unsigned,
     uint64_t, uint64_t, unsigned, void *, ffn_scan_fn);

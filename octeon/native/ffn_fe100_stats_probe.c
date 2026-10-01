@@ -27,6 +27,14 @@ static unsigned number(const char *s,unsigned low,unsigned high) {
     if(errno || !*s || *end || n<low || n>high)exit(2);
     return (unsigned)n;
 }
+static int capture_health(int fd,uint64_t *drops) {
+    struct tpacket_stats stats={0};socklen_t size=sizeof(stats);
+    /* PACKET_STATISTICS resets on read. Accumulate every observation and
+     * stop before publishing another delta if any packet was lost. */
+    if(getsockopt(fd,SOL_PACKET,PACKET_STATISTICS,&stats,&size) || size!=sizeof(stats))return -1;
+    *drops+=stats.tp_drops;
+    return *drops?-1:0;
+}
 int main(int argc,char **argv) {
     if(argc!=5){fprintf(stderr,"usage: stats-probe INTERFACE TRUNK RETURN MILLISECONDS\n");return 2;}
     unsigned trunk=number(argv[2],1,255),port=number(argv[3],1,255);
@@ -50,13 +58,14 @@ int main(int argc,char **argv) {
         perror("capture setup");close(fd);return 1;
     }
     uint64_t start=ms(),deadline=start+duration,sequence=0,total_records=0;
-    unsigned malformed=0;int failed=0;
+    unsigned malformed=0;int failed=0;uint64_t capture_drops=0;
     puts("{\"ready\":true}");fflush(stdout);
     while(ms()<deadline) {
         struct pollfd p={.fd=fd,.events=POLLIN};
         int ready=poll(&p,1,100);
         if(ready<0){if(errno==EINTR)continue;failed=1;break;}
         if(p.revents&(POLLERR|POLLHUP|POLLNVAL)){failed=1;break;}
+        if(capture_health(fd,&capture_drops)){failed=1;break;}
         if(!(p.revents&POLLIN))continue;
         uint8_t wire[32+FFN_FE100_STATS_MAX*8];struct sockaddr_ll from;socklen_t from_size=sizeof(from);
         ssize_t n=recvfrom(fd,wire,sizeof(wire),MSG_TRUNC,(void*)&from,&from_size);
@@ -64,8 +73,17 @@ int main(int argc,char **argv) {
         if(from.sll_pkttype==PACKET_OUTGOING)continue;
         struct ffn_fe100_counters counters;
         if((size_t)n>sizeof(wire) || ffn_fe100_counters_decode(wire,(size_t)n,trunk,port,&counters)!=1) {
-            malformed++;continue;
+            /* A bad record ends the observer; never keep a supposedly healthy
+             * accounting stream running after discarding a hardware delta. */
+            malformed++;failed=1;
+            fprintf(stderr,"malformed FE100 counter message length=%zd prefix=",n);
+            size_t shown=(size_t)n<sizeof(wire)?(size_t)n:sizeof(wire);
+            if(shown>96)shown=96;
+            for(size_t i=0;i<shown;i++)fprintf(stderr,"%02x",wire[i]);
+            fputc('\n',stderr);
+            break;
         }
+        if(capture_health(fd,&capture_drops)){failed=1;break;}
         printf("{\"sequence\":%llu,\"elapsed_ms\":%llu,\"records\":[",
             (unsigned long long)++sequence,(unsigned long long)(ms()-start));
         for(unsigned i=0;i<counters.count;i++) {
@@ -75,10 +93,10 @@ int main(int argc,char **argv) {
         }
         total_records+=counters.count;puts("]}");fflush(stdout);
     }
-    struct tpacket_stats stats={0};socklen_t stats_size=sizeof(stats);
-    if(getsockopt(fd,SOL_PACKET,PACKET_STATISTICS,&stats,&stats_size))failed=1;
+    if(capture_health(fd,&capture_drops))failed=1;
     close(fd);
-    printf("{\"messages\":%llu,\"records\":%llu,\"malformed\":%u,\"capture_drops\":%u,\"failed\":%s}\n",
-        (unsigned long long)sequence,(unsigned long long)total_records,malformed,stats.tp_drops,failed?"true":"false");
-    return failed || malformed || stats.tp_drops ? 1 : 0;
+    printf("{\"messages\":%llu,\"records\":%llu,\"malformed\":%u,\"capture_drops\":%llu,\"failed\":%s}\n",
+        (unsigned long long)sequence,(unsigned long long)total_records,malformed,
+        (unsigned long long)capture_drops,failed?"true":"false");
+    return failed || malformed || capture_drops ? 1 : 0;
 }

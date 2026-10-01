@@ -144,7 +144,7 @@ class NativeCounterStream:
         if len(self.flows)+len(self.retired)>=self.max_ids:
             raise RuntimeError('flow ID generation budget exhausted')
         self.flows[ident]={'entry':wire,'packets':0,'octets':0,
-                           'activity':0,'observed':False,'at':None}
+                           'activity':0,'observed':False,'at':None,'report_at':None}
 
     def forget(self, flow_id):
         if flow_id in self.flows:
@@ -185,6 +185,7 @@ class NativeCounterStream:
                     continue
                 flow['packets']+=record['packets']
                 flow['octets']+=record['octets']
+                flow['report_at']=now
                 # The reference receive path accounts reason=2 counters but
                 # skips its activity refresh. Do not extend a NAT lease on it.
                 if record['packets'] and record['reason']!=2:
@@ -209,6 +210,13 @@ class NativeCounterStream:
         if flow is None or flow['entry']!=bytes(entry):
             return None
         return {'packets':flow['packets'],'octets':flow['octets']}
+
+    def accounting(self, entry):
+        """Control snapshot for an already-bound native conntrack lease."""
+        if not self.available:raise RuntimeError('counter stream unavailable')
+        flow=self.flows.get(flow_id_of(entry))
+        if flow is None or flow['entry']!=bytes(entry):raise ValueError('counter entry no longer owned')
+        return {k:flow[k] for k in ('packets','octets','activity','report_at')}
 
     def __call__(self, entry):
         flow=self.flows.get(flow_id_of(entry))

@@ -940,6 +940,26 @@
       "usr/local/sbin/ffn_session_stream_dp.py"
     ],
     [
+      "core",
+      "dataplanes/ctlease/ffn_ctlease.py",
+      "usr/local/lib/ffn/ffn_ctlease.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_accounting.py",
+      "usr/local/lib/ffn/ffn_fe100_accounting.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_flowstats.py",
+      "usr/local/lib/ffn/ffn_fe100_flowstats.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_sessions.py",
+      "usr/local/lib/ffn/ffn_fe100_sessions.py"
+    ],
+    [
       "platform",
       "octeon/debian/validate_session_stream.py",
       "usr/local/sbin/validate_session_stream.py"

@@ -2,6 +2,7 @@
 """Real AF_PACKET/TUN verification inside private mount/network namespaces."""
 import ctypes as C
 import os
+import select
 from pathlib import Path
 import socket
 import subprocess
@@ -110,6 +111,29 @@ def inside():
         counts=(C.c_uint64*16)();checked(lib.ffn_packet_counters(ctx,counts,16))
         assert counts[0]==1 and counts[1]>=1,list(counts)
         print('PASS aggregate real socket separation, member aliases, native TAP workers; '+os.uname().machine)
+        from ffn_native_aggregate import ControlSocket
+        from test_fe100_packet import sample
+        receiver=ControlSocket(control,lib,{11:28,19:29},{11:0x8001,19:0x8101})
+        receiver.fe100([dict(trunk=24,return_port=20,front=11,in_lif=23,zone=4094,source=28)],int(time.monotonic()*1000)+2000)
+        def scoped(name):
+            raw=bytearray(sample(name));raw[32:34]=(11<<6).to_bytes(2,'big');return bytes(raw)
+        # BPF excludes data exceptions before they enter the control queue.
+        wire.send(scoped('control_ndp_sample'))
+        time.sleep(.01)
+        try:control.recv(4096);raise AssertionError('FE100 data entered control queue')
+        except BlockingIOError:pass
+        for name in ('control_lacp_sample','control_lldp_sample'):
+            raw=scoped(name);wire.send(raw)
+            assert select.select([receiver],[],[],1)[0]
+            assert receiver.receive()==b'\0\x18\0\x1c'+raw[40:]
+        receiver.fe100([],0)
+        wire.send(scoped('control_lacp_sample'));time.sleep(.01)
+        try:receiver.receive();raise AssertionError('Revoked FE100 control binding accepted')
+        except BlockingIOError:pass
+        wire.send(b'\0\x18\x80\x01'+lacp)
+        assert select.select([receiver],[],[],1)[0]
+        assert receiver.receive()==b'\0\x18\0\x1c'+lacp
+        print('PASS native FE100 control filter, member normalization, data exclusion and revocation')
     finally:
         lib.ffn_packet_close(ctx);wire.close();capture.close();control.close()
 

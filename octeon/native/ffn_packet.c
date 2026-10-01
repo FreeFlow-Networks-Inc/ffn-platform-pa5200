@@ -152,7 +152,8 @@ static int packet_filter(int fd, const uint32_t *sources, unsigned count, int mo
     instructions[1].jf = (uint8_t)(drop - 2);
     if (mode == 2) { /* Slow protocol control frames only. */
         INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 16);
-        INS(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 0x8809);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 2, 0, 0x8809);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 0x88cc);
         INS(BPF_RET | BPF_K, 0, 0, 0);
     } else if (mode == 3) { /* No LACP/LLDP copies in the data queue. */
         INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 16);
@@ -161,6 +162,16 @@ static int packet_filter(int fd, const uint32_t *sources, unsigned count, int mo
         INS(BPF_RET | BPF_K, 0, 0, 0);
     }
     accept = used; INS(BPF_RET | BPF_K, 0, 0, 65535);
+    if(mode==2 && return_count) {
+        /* Qualified NOTFLOW/ACL control envelopes carry Ethernet at +40.
+         * Do not copy high-volume FE100 data misses into the LACP queue. */
+        accept=used;
+        INS(BPF_LD | BPF_H | BPF_ABS,0,0,52);
+        INS(BPF_JMP | BPF_JEQ | BPF_K,1,0,0x8809);
+        INS(BPF_JMP | BPF_JEQ | BPF_K,0,1,0x88cc);
+        INS(BPF_RET | BPF_K,0,0,65535);
+        INS(BPF_RET | BPF_K,0,0,0);
+    }
     for (unsigned i = 0; i < return_count; i++)
         instructions[3+i].jt = (uint8_t)(accept - (3+i) - 1);
     program.len = (unsigned short)used;
