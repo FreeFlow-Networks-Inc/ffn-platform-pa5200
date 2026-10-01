@@ -37,8 +37,13 @@ class Recovery:
             return result
         try:
             if record.get('redirect_touched'):
-                result=route('front5-session-restore')
-                record['ingress_withdrawal']=result;save()
+                modes=record.get('redirects',['front5-session-restore'])
+                if (not isinstance(modes,list) or not 1<=len(modes)<=2 or len(set(modes))!=len(modes) or
+                        any(mode not in ('front5-session-restore','session-path-restore') for mode in modes)):
+                    raise ValueError('invalid ingress withdrawal intents')
+                for mode in reversed(modes):
+                    result=route(mode)
+                    record.setdefault('ingress_withdrawal',{})[mode]=result;save()
             # Native lookups verify absence of both directions before any
             # next-hop, QMAP or LIF resource is restored.
             lab.restore()

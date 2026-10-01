@@ -20,7 +20,7 @@ from ffn_fe100_lab_guard import Recovery
 
 
 def serve(path, fault_injection=False):
-    from ffn_fe100_packet_lab import Lab, PORT_PAIR, FRONT_RETURN
+    from ffn_fe100_packet_lab import Lab, PORT_PAIR, FRONT_RETURN, SPLIT_PATH_LAB
     from ffn_copper_forwarding import epoch
     import ffn_fe100_bcm_lab as bcm
     lease=Lease()
@@ -57,15 +57,18 @@ def serve(path, fault_injection=False):
                 if record.get('rule_pending') or record['rules']:
                     raise RuntimeError('physical path already prepared or uncertain')
                 lab.command('prepare')
-                record['rule_pending']=True;save()
-                result=route('dsa-front5-create')
-                ids={k:int(v) for k,v in re.findall(
-                    r'\b(group|entry|stat|dq1|dq2|presel|trap)=(-?\d+)', '\n'.join(result['markers']))}
-                if not {'group','entry','dq1','dq2'}<=ids.keys():
-                    raise RuntimeError('BCM allocation identity missing')
-                record['rules'].append(ids);record['rule_pending']=False;save()
-                record['redirect_touched']=True;save()
-                route('front5-session-enable')
+                for mode in (('dsa-front5-create','dsa-front13-create') if SPLIT_PATH_LAB else ('dsa-front5-create',)):
+                    record['rule_pending']=True;save()
+                    result=route(mode)
+                    ids={k:int(v) for k,v in re.findall(
+                        r'\b(group|entry|stat|dq1|dq2|presel|trap)=(-?\d+)', '\n'.join(result['markers']))}
+                    if not {'group','entry','dq1','dq2'}<=ids.keys():
+                        raise RuntimeError('BCM allocation identity missing')
+                    record['rules'].append(ids);record['rule_pending']=False;save()
+                for mode in (('front5-session','session-path') if SPLIT_PATH_LAB else ('front5-session',)):
+                    record['redirect_touched']=True
+                    record.setdefault('redirects',[]).append(mode+'-restore');save()
+                    route(mode+'-enable')
                 result=lab.command('snapshot')
             elif op in ('install','drop','remove','snapshot'):result=lab.command(op)
             else:raise ValueError('unsupported supervised lab operation')

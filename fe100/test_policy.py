@@ -1,3 +1,4 @@
+from test_flow_ids import FixtureIds
 import unittest
 from ffn_fe100_policy import PolicyOwner
 from ffn_fe100_sessions import SessionManager
@@ -11,7 +12,7 @@ class Policy(unittest.TestCase):
                                    '13':{'next_hop':31,'enabled':True,'link':True}}
         self.ready=True
         self.owner=PolicyOwner(self.manager,lambda:None,lambda s:self.saved.append(dict(s)),
-                               lambda:self.binding,lambda:self.ready)
+                               lambda:self.binding,lambda:self.ready,flow_ids=FixtureIds())
         self.owner.replace(0,'a'*64);self.owner.activate(1,'a'*64)
         self.request=dict(session_id=7,revision=1,policy_digest='a'*64,rule_id='rule-1',verdict='allow',
             protocol=17,src='198.18.0.1',dst='198.18.0.2',sport=40000,dport=40001,zone=4094,
@@ -25,6 +26,24 @@ class Policy(unittest.TestCase):
         self.assertEqual(self.owner.state['phase'],'blocked')
         self.assertTrue(any(s['phase']=='draining' for s in self.saved))
         with self.assertRaises(RuntimeError):self.owner.admit(self.request)
+
+    def test_reopened_logical_session_uses_new_hardware_ids(self):
+        self.owner.admit(self.request)
+        before={e[36:40] for e in self.backend.rows.values()}
+        self.owner.revoke(self.request['session_id']);self.owner.admit(self.request)
+        after={e[36:40] for e in self.backend.rows.values()}
+        self.assertFalse(before & after)
+
+    def test_uncommissioned_allocator_cannot_activate(self):
+        self.owner.replace(1,'b'*64);self.owner.flow_ids=None
+        with self.assertRaisesRegex(RuntimeError,'allocator'):self.owner.activate(2,'b'*64)
+        self.assertFalse(self.owner.status()['admission_enabled'])
+
+    def test_allocator_failure_writes_no_hardware(self):
+        def fail():raise OSError('reservation write failed')
+        self.owner.flow_ids.reserve_pair=fail
+        with self.assertRaises(OSError):self.owner.admit(self.request)
+        self.assertEqual(self.backend.writes,0)
 
     def test_unsupported_or_stale_decisions_never_write(self):
         for key,value in (('revision',0),('policy_digest','b'*64),('verdict','deny'),
@@ -63,7 +82,7 @@ class Policy(unittest.TestCase):
         with self.assertRaises(RuntimeError):self.owner.admit(self.request)
 
     def test_uninitialized_owner_cannot_activate(self):
-        owner=PolicyOwner(self.manager,lambda:None,lambda s:None,lambda:self.binding,lambda:True)
+        owner=PolicyOwner(self.manager,lambda:None,lambda s:None,lambda:self.binding,lambda:True,flow_ids=FixtureIds())
         with self.assertRaises(ValueError):owner.activate(0,None)
         self.assertFalse(owner.status()['admission_enabled'])
 
@@ -81,7 +100,7 @@ class Policy(unittest.TestCase):
     def test_restart_never_adopts_persisted_activation(self):
         self.owner.admit(self.request)
         restarted = PolicyOwner(self.manager, lambda: dict(self.owner.state),
-            lambda s: self.saved.append(s), lambda: self.binding, lambda: True)
+            lambda s: self.saved.append(s), lambda: self.binding, lambda: True,flow_ids=FixtureIds())
         self.assertFalse(restarted.status()['admission_enabled'])
         with self.assertRaises(RuntimeError): restarted.admit(self.request | {'session_id': 8})
         self.assertEqual(restarted.reconcile()['phase'], 'blocked')

@@ -1,3 +1,4 @@
+from test_flow_ids import FixtureIds
 import copy
 import sqlite3
 import unittest
@@ -16,7 +17,7 @@ class CoupledPaths(unittest.TestCase):
         self.plan=plan()
         self.resources=PathOwner(self.db,self.tables,POOLS,'boot',lambda k:copy.deepcopy(self.plan),lambda k:False)
         self.policy=PolicyOwner(self.manager,lambda:None,lambda s:None,
-            lambda:{'5':dict(enabled=True,link=True),'13':dict(enabled=True,link=True)},lambda:True,nat_qualified=lambda:True)
+            lambda:{'5':dict(enabled=True,link=True),'13':dict(enabled=True,link=True)},lambda:True,nat_qualified=lambda:True,flow_ids=FixtureIds())
         self.bridge=PathSessions(self.policy,self.resources)
         self.policy.replace(0,'a'*64);self.policy.activate(1,'a'*64)
         self.request=dict(session_id=42,revision=1,policy_digest='a'*64,nat_digest=self.plan['nat_digest'],

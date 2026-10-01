@@ -26,7 +26,7 @@ class ControllerTests(unittest.TestCase):
 
     def route(self,request):
         record=json.loads(self.path.read_text())
-        if request['mode']=='dsa-front5-create':
+        if request['mode'] in ('dsa-front5-create','dsa-front13-create'):
             self.assertTrue(record['rule_pending'])
         else:
             self.assertTrue(record['redirect_touched'])
@@ -55,6 +55,15 @@ class ControllerTests(unittest.TestCase):
     def test_duplicate_prepare_never_allocates_twice(self):
         with self.assertRaisesRegex(RuntimeError,'already prepared'):self.run_commands(['prepare','prepare'])
         self.assertEqual(self.events.count('dsa-front5-create'),1)
+
+    def test_split_path_records_both_ingresses_before_activation(self):
+        with patch.object(packet,'SPLIT_PATH_LAB',True):
+            self.run_commands(['prepare','install','finish'])
+        self.assertEqual(self.events,['prepare','dsa-front5-create','dsa-front13-create',
+                                     'front5-session-enable','session-path-enable','snapshot','install','closed'])
+        record=json.loads(self.path.read_text())
+        self.assertEqual(record['redirects'],['front5-session-restore','session-path-restore'])
+        self.assertEqual(len(record['rules']),2)
 
     def test_fault_injection_is_opt_in(self):
         for op in ('guard-crash','guard-stall'):

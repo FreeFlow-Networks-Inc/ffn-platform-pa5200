@@ -43,6 +43,12 @@ class LabBackend:
 
     def readiness(self):return self.io.status()['commissioning_blockers']
 
+    def reserve_pair(self):
+        # These table-only validators send no packets and use an empty ASIC.
+        # Keep their fixed, scoped identities; never use this backend as the
+        # production counter namespace allocator.
+        return tuple(int.from_bytes(e[36:40],'big') for e in self.entries.values())
+
     def call(self,operation,wire):
         expected=self.entries.get(wire[:16])
         if expected is None or wire not in owned_variants(expected):
@@ -90,7 +96,8 @@ def validate(io,root):
             raise RuntimeError('paired lab requires healthy, empty FE100 session tables')
         owner=PolicyOwner(manager,lambda:None,lambda state:None,
             lambda:{'5':dict(enabled=True,link=True),'13':dict(enabled=True,link=True)},
-            lambda:not backend.readiness(),paths=lambda r:copy.deepcopy(snapshot),nat_qualified=lambda:True)
+            lambda:not backend.readiness(),paths=lambda r:copy.deepcopy(snapshot),nat_qualified=lambda:True,
+            flow_ids=backend)
         # These fixture paths authorize this table-only lab, never packet
         # forwarding. A production path owner must commission real resources.
         owner.replace(0,request['policy_digest'])

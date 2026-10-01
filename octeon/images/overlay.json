@@ -484,6 +484,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_flow_ids.py",
+      "usr/local/sbin/ffn_fe100_flow_ids.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy.py",
       "usr/local/sbin/ffn_fe100_policy.py"
     ],

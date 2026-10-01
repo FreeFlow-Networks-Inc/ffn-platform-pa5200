@@ -1,3 +1,4 @@
+from test_flow_ids import FixtureIds
 import copy
 import tempfile
 import unittest
@@ -28,7 +29,7 @@ class PairedPolicy(unittest.TestCase):
                  route_revision='f'*64,neighbor_revision='1'*64,attachment_revision='2'*64)])
         self.nat_ready=True
         self.owner=PolicyOwner(self.manager,lambda:None,lambda s:None,lambda:self.bindings,lambda:True,
-            paths=lambda r:copy.deepcopy(self.snapshot),nat_qualified=lambda:self.nat_ready)
+            paths=lambda r:copy.deepcopy(self.snapshot),nat_qualified=lambda:self.nat_ready,flow_ids=FixtureIds())
         self.owner.replace(0,'a'*64);self.owner.activate(1,'a'*64)
         self.request=dict(session_id=42,revision=1,policy_digest='a'*64,nat_digest='b'*64,
             path_digest=digest(self.snapshot),rule_id='allow-internet',verdict='allow',
@@ -133,7 +134,7 @@ class PairedPolicy(unittest.TestCase):
             journal=Journal(path)
             try:
                 restarted=PolicyOwner(SessionManager(self.backend,journal),lambda:state,lambda s:None,
-                                      lambda:self.bindings,lambda:True)
+                                      lambda:self.bindings,lambda:True,flow_ids=FixtureIds())
                 self.assertFalse(restarted.status()['admission_enabled'])
                 restarted.reconcile()
                 self.assertFalse(self.backend.rows);self.assertFalse(journal.load())

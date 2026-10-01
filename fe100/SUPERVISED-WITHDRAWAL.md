@@ -85,7 +85,18 @@ the BCM rule was deleted and its group read back absent, the front ports were
 restored, and running configuration was unchanged. Production services were
 not restarted. This is functional recovery evidence, not a throughput result.
 The packaged controller repeated the 64-frame frozen-owner test successfully.
+It also passed a 64-frame owner-crash test after adding support for two ingress
+withdrawal intents. The same-port physical NAT and cleanup checks all passed.
 See [the compact physical results](SUPERVISED-WITHDRAWAL-EVIDENCE.json).
+
+The commissioning controller additionally supports two distinct routed NAT
+legs with separate ingress zones, next hops, LIFs and queue mappings. Both
+ingress redirects must acknowledge withdrawal before shared resources are
+removed. Unit tests cover this ordering and partial withdrawal failures.
+Four-port physical qualification is still incomplete: the isolated 10G pair
+reported no SerDes receive signal even with both modules present and their
+transmitters enabled. The test stopped before FE100 programming and restored
+all port controls. The separate 100G loop established carrier normally.
 
 Tests are named explicitly in CI:
 
@@ -98,6 +109,6 @@ sudo env FFN_FE100_GUARD_PROCESS_TEST=yes python3 -m unittest test_guard_process
 The [CP control service](CONTROL-SERVICE.md) now connects the supervisor to
 the deployed policy commit barrier. Production admission still needs live
 session admission through that service, dynamic policy/route/neighbor attachment
-and invalidation, durable counter
-transport and safe hardware flow-ID reuse. Kernel accounting leases currently
+and invalidation, durable counter transport and commissioning of the
+[never-reused flow-ID namespace](FLOW-ID-OWNERSHIP.md). Kernel accounting leases currently
 qualify UDP only; TCP state synchronization is a separate remaining requirement.

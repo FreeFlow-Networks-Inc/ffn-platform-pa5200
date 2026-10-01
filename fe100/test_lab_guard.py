@@ -40,6 +40,24 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'not acknowledged'):self.recover('owner exited')
         self.assertEqual(self.events,['generation-check','closed'])
 
+    def test_both_ingresses_withdraw_before_shared_resources(self):
+        self.record['redirects']=['front5-session-restore','session-path-restore']
+        publish(self.path,self.record)
+        self.assertTrue(self.recover('owner exited'))
+        self.assertEqual(self.events[:4],['generation-check','session-path-restore',
+                                         'front5-session-restore','flows-and-resources'])
+
+    def test_partial_ingress_withdrawal_preserves_shared_resources(self):
+        self.record['redirects']=['front5-session-restore','session-path-restore']
+        publish(self.path,self.record)
+        def route(mode,ids=None):
+            self.events.append(mode)
+            return dict(completed=mode!='front5-session-restore')
+        self.recover.route=route
+        with self.assertRaisesRegex(RuntimeError,'not acknowledged'):self.recover('owner exited')
+        self.assertEqual(self.events,['generation-check','session-path-restore','front5-session-restore','closed'])
+        self.assertNotIn('flows-and-resources',self.events)
+
     def test_epoch_change_stops_all_hardware_access(self):
         self.record['bcm_epoch']='old';publish(self.path,self.record)
         with self.assertRaisesRegex(RuntimeError,'lifetime'):self.recover('owner exited')

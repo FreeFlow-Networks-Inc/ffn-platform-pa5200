@@ -39,6 +39,7 @@ ROUTED_LAB=os.environ.get('FFN_FE100_ROUTED_LAB')=='1'
 MAC_LOOPBACK=os.environ.get('FFN_FE100_MAC_LOOPBACK')=='1'
 SMAC_REWRITE=os.environ.get('FFN_FE100_SMAC_LAB')=='1'
 PAIRED_NAT_LAB=os.environ.get('FFN_FE100_PAIRED_NAT_LAB')=='1'
+SPLIT_PATH_LAB=os.environ.get('FFN_FE100_SPLIT_PATH_LAB')=='1'
 IPV6_MISS_LAB=os.environ.get('FFN_FE100_IPV6_MISS_LAB')=='1'
 IPV6_LAB_KEY=bytes.fromhex('80110ffebf68bf6920010db800000000000000000000000120010db8000000000000000000000002')
 RETURN_PORT=EGRESS if MAC_LOOPBACK else FRONT_RETURN
@@ -62,13 +63,16 @@ RETURN_IDENTITY=entry4(RETURN_KEY,1002)
 DROP = forwarding_entry4(KEY, 1001, drop=True)
 REVERSE_IDENTITY=REVERSE_FORWARD=REVERSE_DROP=None
 if PAIRED_NAT_LAB:
-    if not NAT_MODE or PORT_PAIR==[5,13] or VLAN_RETURN or EGRESS!=FRONT_RETURN:
+    if not NAT_MODE or PORT_PAIR==[5,13] or VLAN_RETURN or (EGRESS!=FRONT_RETURN and not SPLIT_PATH_LAB):
         raise ValueError('Paired NAT lab requires an isolated same-port optical return')
     reverse_original,reverse_translated=tuples(NAT_MODE,not ((FRONT_RETURN==5)!=(os.environ.get('FFN_FE100_NAT_REVERSE')=='1')))
-    reverse_key=key4(reverse_original['source'],reverse_original['destination'],reverse_original['source_port'],reverse_original['destination_port'],PROTOCOL,4094)
+    reverse_key=key4(reverse_original['source'],reverse_original['destination'],reverse_original['source_port'],reverse_original['destination_port'],PROTOCOL,4093 if SPLIT_PATH_LAB else 4094)
     REVERSE_IDENTITY=entry4(reverse_key,1003)
-    REVERSE_FORWARD=nat_entry4(reverse_key,1003,31,reverse_translated)
+    REVERSE_FORWARD=nat_entry4(reverse_key,1003,30 if SPLIT_PATH_LAB else 31,reverse_translated)
     REVERSE_DROP=forwarding_entry4(reverse_key,1003,drop=True)
+if SPLIT_PATH_LAB and (not PAIRED_NAT_LAB or not ROUTED_LAB or EGRESS==FRONT_RETURN or
+                       VLAN_RETURN or MAC_LOOPBACK):
+    raise ValueError('split-path commissioning requires distinct routed paired NAT legs')
 ROOT = Path('/var/lib/ffn/fe100')
 WORKER_STATE = {}
 
@@ -210,6 +214,7 @@ def recovery_profile():
             'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,'routed_lab':ROUTED_LAB,
             'session_key':KEY.hex(),'return_key':RETURN_KEY.hex(),'pair':PORT_PAIR,
             'paired_nat':PAIRED_NAT_LAB,'ipv6_miss':IPV6_MISS_LAB,'smac_rewrite':SMAC_REWRITE,
+            'split_path':SPLIT_PATH_LAB,
             'forward_entry':FORWARD.hex(),'reverse_entry':REVERSE_FORWARD.hex() if REVERSE_FORWARD else None}
 
 
@@ -339,6 +344,9 @@ class Lab:
             raise RuntimeError('IPv6 lab miss identity already exists')
         for index in (30,31):
             if self.call('nexthop',index=index)['rc'] != 3: raise RuntimeError('lab next-hop occupied')
+        if SPLIT_PATH_LAB:
+            for kind,index in (('nexthop',29),('lef',30),('lif',PORT_PROFILE['lif'][EGRESS])):
+                if self.call(kind,index=index)['rc']!=3:raise RuntimeError('split-path resource occupied: '+kind)
         if self.call('acl')['rc'] != 3: raise RuntimeError('lab ACL occupied')
         if SMAC_REWRITE and self.call('smac')['rc']!=3:raise RuntimeError('lab source-MAC slot occupied')
         if VLAN_RETURN:
@@ -371,7 +379,7 @@ class Lab:
             self.write('acl',30,bytes(acl))
         front_return='FFN_FE100_FRONT_RETURN' in os.environ
         if front_return:
-            for port in sorted({FRONT_RETURN,RETURN_PORT}):
+            for port in sorted({FRONT_RETURN,RETURN_PORT}|({EGRESS} if SPLIT_PATH_LAB else set())):
                 mapping=bytes((port,));rx=self.call('rxport',index=port)
                 if rx['rc'] not in (0,3) or (rx['rc']==0 and rx['data']!=mapping.hex()):
                     raise RuntimeError('RX port mapping conflict')
@@ -391,16 +399,31 @@ class Lab:
             self.record['bcm_queue_ids']=queues;self.save()
             self.write('qm',31,front_qmap(FORWARD,FRONT_RETURN,queues[physical]))
             if PAIRED_NAT_LAB:
-                self.write('qm',30,front_qmap(REVERSE_FORWARD,FRONT_RETURN,queues[physical]))
+                reverse_ingress=EGRESS if SPLIT_PATH_LAB else FRONT_RETURN
+                reverse_physical=PORT_PROFILE['physical'][FRONT_RETURN] if SPLIT_PATH_LAB else physical
+                self.write('qm',30,front_qmap(REVERSE_FORWARD,reverse_ingress,queues[reverse_physical]))
             self.write('lef',31,struct.pack('>IIH',0x80000000|(EGRESS<<16),0,0))
             if SMAC_REWRITE:
                 from ffn_fe100_nexthop import encode_smac
                 self.write('smac',31,encode_smac('02:52:20:ab:cd:ef'))
             wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None,
                                 smac_index=31 if SMAC_REWRITE else None)
+            if SPLIT_PATH_LAB:
+                mapping=bytes((0,0,PORT_PROFILE['physical'][FRONT_RETURN]))
+                tx=self.call('txport',index=FRONT_RETURN)
+                if tx['rc']!=3 and tx['data']!=mapping.hex():raise RuntimeError('reverse TX mapping conflict')
+                if tx['rc']==3:self.write('txport',FRONT_RETURN,mapping)
+                self.write('lef',30,struct.pack('>IIH',0x80000000|(FRONT_RETURN<<16),0,0))
+                self.write('nexthop',30,encode_front(30,dmac='02:52:20:ab:cd:ee',
+                                                   smac_index=31 if SMAC_REWRITE else None))
         else:wanted=next_hop(destination=8,dmac='02:52:20:ab:cd:ee')
         self.write('nexthop',31,wanted)
-        struct.pack_into('>II',expected,4,0x80040000,(4094<<16)|30)
+        struct.pack_into('>II',expected,4,0x80040000,(4094<<16)|(29 if SPLIT_PATH_LAB else 30))
+        if SPLIT_PATH_LAB:
+            reverse_lif=bytearray(expected)
+            struct.pack_into('>II',reverse_lif,8,(4093<<16)|29,EGRESS<<16)
+            reverse_lif[26:36]=(EGRESS<<32).to_bytes(10,'big')
+            self.write('lif',PORT_PROFILE['lif'][EGRESS],bytes(reverse_lif))
         if VLAN_RETURN:
             # Packed owner DWARF: VID at key bits49:38; pport at37:32.
             expected[16:26]=((4095<<38)|(63<<32)).to_bytes(10,'big')

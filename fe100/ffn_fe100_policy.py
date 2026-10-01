@@ -11,6 +11,7 @@ import json
 from copy import deepcopy
 from ffn_fe100_nat import session_pair4
 from ffn_fe100_sessions import key4, forwarding_entry4, uint
+from ffn_fe100_flow_ids import assign_pair
 
 
 def digest(value):
@@ -19,11 +20,12 @@ def digest(value):
 
 class PolicyOwner:
     def __init__(self, sessions, load, save, bindings, qualified, *,
-                 paths=None, nat_qualified=lambda: False):
+                 paths=None, nat_qualified=lambda: False, flow_ids=None):
         self.sessions,self.save,self.bindings,self.qualified=sessions,save,bindings,qualified
         # paths is a trusted, serialized next-hop owner readback, not a DP
         # observation or caller-supplied collection of hardware table indexes.
         self.paths,self.nat_qualified=paths,nat_qualified
+        self.flow_ids=flow_ids
         self.dependencies={}
         self.state=load() or {'revision':0,'phase':'blocked','digest':None,'attachment':None}
         if (set(self.state)!={'revision','phase','digest','attachment'} or
@@ -99,6 +101,7 @@ class PolicyOwner:
         if self.state['phase']!='blocked' or self.sessions.recovery_required:
             raise RuntimeError('session recovery incomplete')
         if self.qualified() is not True:raise RuntimeError('front-port offload is not qualified')
+        if self.flow_ids is None:raise RuntimeError('durable hardware flow-ID allocator is not commissioned')
         self.persist(phase='active',attachment=digest(self.bindings()))
         self.activated = True
 
@@ -137,6 +140,7 @@ class PolicyOwner:
         reverse=key4(request['dst'],request['src'],request['dport'],request['sport'],request['protocol'],request['zone'])
         entries=[forwarding_entry4(key,sid*2+i,hop,decrement_ttl=True)
                  for i,(key,hop) in enumerate(zip((k,reverse),hops))]
+        entries=assign_pair(entries,self.flow_ids)
         self.sessions.install(sid,entries,self.state['revision'])
         self.reconcile()
         if not self.status()['admission_enabled']:
@@ -216,6 +220,7 @@ class PolicyOwner:
                               [p['zone'] for p in paths],[p['next_hop'] for p in paths])
         translated=any(int.from_bytes(e[16:20],'big') & (3<<29) for e in entries)
         if translated!=request['nat_required']:raise ValueError('NAT decision does not match conntrack translation')
+        entries=assign_pair(entries,self.flow_ids)
         self.sessions.install(sid,entries,self.state['revision'],lookup_zones=[p['zone'] for p in paths])
         self.dependencies[sid]=request
         # Hardware calls may take time. Withhold admission acknowledgement if

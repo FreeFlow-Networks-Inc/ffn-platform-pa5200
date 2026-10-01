@@ -1,3 +1,4 @@
+from test_flow_ids import FixtureIds
 import copy
 from pathlib import Path
 import tempfile
@@ -117,7 +118,7 @@ class PathLifecycle(unittest.TestCase):
             def save(state):saved[0]=copy.deepcopy(state)
             self.policy=PolicyOwner(self.manager,lambda:None,save,
                 lambda:{'5':dict(enabled=True,link=True),'13':dict(enabled=True,link=True)},
-                lambda:True,nat_qualified=lambda:True)
+                lambda:True,nat_qualified=lambda:True,flow_ids=FixtureIds())
             self.bridge=PathSessions(self.policy,self.resources)
             self.policy.replace(0,'a'*64);self.life=self.make_life()
             self.life.start(BOOT,1,'a'*64);self.open();journal.close()
@@ -126,7 +127,7 @@ class PathLifecycle(unittest.TestCase):
                 self.manager=SessionManager(self.flows,journal)
                 self.resources=PathOwner(journal.db,self.tables,POOLS,'boot',lambda k:copy.deepcopy(self.plan),lambda k:False)
                 self.policy=PolicyOwner(self.manager,lambda:saved[0],save,
-                    lambda:{},lambda:True,nat_qualified=lambda:True)
+                    lambda:{},lambda:True,nat_qualified=lambda:True,flow_ids=FixtureIds())
                 self.bridge=PathSessions(self.policy,self.resources);self.life=self.make_life()
                 self.assertFalse(self.life.status()['synchronized'])
                 self.life.tick();self.empty()

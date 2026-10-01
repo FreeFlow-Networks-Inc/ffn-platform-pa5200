@@ -99,7 +99,7 @@ def run():
         flow_backend=LabBackend(io,entries);manager=SessionManager(flow_backend,flow_journal);manager.recover()
         policy=PolicyOwner(manager,lambda:None,lambda s:None,
             lambda:{'5':dict(enabled=True,link=True),'13':dict(enabled=True,link=True)},
-            lambda:not flow_backend.readiness(),nat_qualified=lambda:True)
+            lambda:not flow_backend.readiness(),nat_qualified=lambda:True,flow_ids=flow_backend)
         bridge=PathSessions(policy,owner)
         policy.replace(0,request['policy_digest']);policy.activate(1,request['policy_digest'])
         bridge.admit(request,plan)

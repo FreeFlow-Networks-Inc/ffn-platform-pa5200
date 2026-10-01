@@ -1,3 +1,4 @@
+from test_flow_ids import FixtureIds
 import unittest
 from ffn_fe100_lifecycle import SessionLifecycle
 from ffn_fe100_policy import PolicyOwner, digest
@@ -14,7 +15,7 @@ class Lifecycle(unittest.TestCase):
         self.bindings={'5':dict(next_hop=30,enabled=True,link=True),
                        '13':dict(next_hop=31,enabled=True,link=True)}
         self.owner=PolicyOwner(SessionManager(self.backend),lambda:None,lambda s:None,
-                               lambda:self.bindings,lambda:True)
+                               lambda:self.bindings,lambda:True,flow_ids=FixtureIds())
         self.owner.replace(0,'a'*64)
         self.life=SessionLifecycle(self.owner,heartbeat_timeout=10,idle_timeout=4,
                                   maximum_lifetime=8,clock=lambda:self.now)

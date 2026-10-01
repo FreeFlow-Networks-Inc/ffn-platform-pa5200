@@ -9,6 +9,23 @@ from ffn_fe100_session_adapter import encode_native, decode_native
 
 
 class PacketSessionTests(unittest.TestCase):
+    def test_split_path_has_distinct_zones_and_reverse_next_hop(self):
+        import ffn_fe100_packet_lab as source
+        from ffn_fe100_sessions import output_key4
+        settings=dict(FFN_FE100_LAB_PAIR='11,23',FFN_FE100_FRONT_RETURN='11',
+                      FFN_FE100_CROSS='1',FFN_FE100_NAT_LAB='port',FFN_FE100_ROUTED_LAB='1',
+                      FFN_FE100_PAIRED_NAT_LAB='1',FFN_FE100_SPLIT_PATH_LAB='1')
+        with patch.dict(os.environ,settings):
+            spec=importlib.util.spec_from_file_location('split_lab_fixture',source.__file__)
+            lab=importlib.util.module_from_spec(spec);spec.loader.exec_module(lab)
+        self.assertEqual(lab.KEY[2:4],(4094).to_bytes(2,'big'))
+        self.assertEqual(lab.REVERSE_IDENTITY[2:4],(4093).to_bytes(2,'big'))
+        self.assertEqual(int.from_bytes(lab.FORWARD[20:24],'big'),31)
+        self.assertEqual(int.from_bytes(lab.REVERSE_FORWARD[20:24],'big'),30)
+        def reverse(key):return key[6:8]+key[4:6]+key[12:16]+key[8:12]
+        self.assertEqual(lab.REVERSE_IDENTITY[4:16],reverse(output_key4(lab.FORWARD)))
+        self.assertEqual(output_key4(lab.REVERSE_FORWARD)[4:16],reverse(lab.KEY))
+
     def test_recovery_refuses_changed_owner_profile_boot_and_generation(self):
         import copy
         import ffn_fe100_packet_lab as lab

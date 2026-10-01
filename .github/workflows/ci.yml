@@ -125,7 +125,7 @@ jobs:
       - name: FE100 profile and native configuration
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
-        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream test_accounting
+        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream test_accounting test_flow_ids
       - name: FE100 independent owner withdrawal and recovery
         run: cd fe100 && python3 -m unittest test_guard test_lab_guard test_guard_lab test_control_service
       - name: FE100 supervisor process failure and orphan recovery

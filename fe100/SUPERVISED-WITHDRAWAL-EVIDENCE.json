@@ -149,6 +149,55 @@
       "cleanup_errors": [],
       "ports_restored": true,
       "config_unchanged": true
+    },
+    {
+      "report_id": "1790885982732181193",
+      "packaged_controller": true,
+      "phases": {
+        "baseline": {
+          "sent": 64,
+          "captured": 64,
+          "baseline": 64,
+          "rewritten": 0,
+          "capture_drops": 0
+        },
+        "miss": {
+          "sent": 64,
+          "captured": 0,
+          "baseline": 0,
+          "rewritten": 0,
+          "capture_drops": 0
+        },
+        "hit": {
+          "sent": 64,
+          "captured": 64,
+          "baseline": 0,
+          "rewritten": 64,
+          "capture_drops": 0
+        }
+      },
+      "after_withdrawal": {
+        "sent": 64,
+        "captured": 64,
+        "baseline": 64,
+        "rewritten": 0,
+        "capture_drops": 0
+      },
+      "guard": {
+        "phase": "drained",
+        "reason": "owner heartbeat closed or malformed",
+        "owner_exit_code": 99,
+        "withdrawal_acknowledged": true,
+        "admission_enabled": false
+      },
+      "fe100_stage": "restored",
+      "resources_total": 10,
+      "resources_restored": 10,
+      "bcm_rules_total": 1,
+      "bcm_rules_removed": 1,
+      "cleanup_errors": [],
+      "ports_restored": true,
+      "config_unchanged": true
     }
   ]
 }
