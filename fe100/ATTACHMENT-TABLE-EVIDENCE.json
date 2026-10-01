@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "scope": "isolated-attachment-tables",
+  "production_admission": false,
+  "packets_sent": 0,
+  "native_library_sha256": "768be96d3062e4ba440c6a26a05b7128e4c2655acc7ca1d4bb8f541c1ddd5311",
+  "controller_sha256": "caf40f8dc49cfa3d4b7556e16cdf9d2306f54b74b9ce060eb2a10d06e18a35ad",
+  "hardware_report": "/var/lib/ffn/fe100/attachment-validation-1790889166670089489.json",
+  "paired_nat_regression_report": "/var/lib/ffn/fe100/resource-validation-1790889119143460190.json",
+  "checks": [
+    "tagged-member-LIF-LEF-readback-removal",
+    "exact-untagged-member-readback-removal",
+    "binding-generation-withdrawal",
+    "dependent-flow-drain-required",
+    "durable-restart-withdrawal",
+    "ambiguous-LIF-write-recovery",
+    "withdraw-before-drain-order"
+  ],
+  "paired_nat_regression_checks_passed": 12,
+  "cleanup_verified": true,
+  "after_flows_empty": true,
+  "ports_still_disabled": true,
+  "service_owner_unchanged": true
+}

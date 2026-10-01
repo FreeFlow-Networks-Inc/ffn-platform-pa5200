@@ -509,6 +509,16 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_attachments.py",
+      "usr/local/sbin/ffn_fe100_attachments.py"
+    ],
+    [
+      "platform",
+      "fe100/validate_attachments.py",
+      "usr/local/sbin/validate_attachments.py"
+    ],
+    [
+      "platform",
       "fe100/validate_path_resources.py",
       "usr/local/sbin/validate_path_resources.py"
     ],

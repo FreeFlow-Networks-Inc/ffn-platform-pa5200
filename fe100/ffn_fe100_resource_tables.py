@@ -1,6 +1,6 @@
 """Bounded native FE100 resource table access under one inherited owner lock.
 
-Only source-MAC and DIRECT next-hop APIs are exposed. Commissioned pools must
+Source-MAC, DIRECT next-hop, LIF and LEF APIs are exposed. Commissioned pools must
 be supplied by the hardware owner; there is no default allocation range.
 """
 import ctypes as C
@@ -18,16 +18,18 @@ from session_stream import Lines,send
 from ffn_fe100_nexthop import LIB,SHA
 
 LOCK='/run/ffn-fe100-tables.lock'
-SPECS={'smac':8,'nexthop':16}
+SPECS={'smac':8,'nexthop':16,'lif':36,'lef':10}
+LIMITS={'smac':1024,'nexthop':65536,'lif':32,'lef':32}
+KINDS={'smac':1,'nexthop':2,'lif':3,'lef':4}
 
 
 class ResourceTables:
     def __init__(self,pools,lock_fd=None):
-        if set(pools)!=set(SPECS):raise ValueError('Explicit resource pools required')
+        if not pools or not set(pools)<=set(SPECS):raise ValueError('Explicit resource pools required')
         self.pools={k:list(v) for k,v in pools.items()}
         for k,values in self.pools.items():
             if (not 1<=len(values)<=4096 or len(set(values))!=len(values) or
-                any(type(i) is not int or not 0<=i<(1024 if k=='smac' else 65536) for i in values)):
+                any(type(i) is not int or not 0<=i<LIMITS[k] for i in values)):
                 raise ValueError('Invalid resource pool')
         if lock_fd is not None:
             if os.readlink('/proc/self/fd/'+str(lock_fd))!=LOCK:raise ValueError('Invalid table owner lock')
@@ -95,7 +97,7 @@ def worker():
     lines=Lines(0);config=lines.read();kind=config['kind'];pool=config['pool']
     if (set(config)!={'kind','pool'} or kind not in SPECS or not isinstance(pool,list) or
         not 1<=len(pool)<=4096 or len(set(pool))!=len(pool) or
-        any(type(i) is not int or not 0<=i<(1024 if kind=='smac' else 65536) for i in pool)):
+        any(type(i) is not int or not 0<=i<LIMITS[kind] for i in pool)):
         raise ValueError('Invalid worker scope')
     if sys.byteorder!='big' or C.sizeof(C.c_void_p)!=8:raise RuntimeError('MIPS64 big-endian ABI required')
     from ffn_fe100 import bar0_base_and_size,memory_decode_on,register_map_path
@@ -120,7 +122,7 @@ def worker():
     with open(LIB,'rb') as owner:
         if hashlib.sha256(owner.read()).hexdigest()!=SHA:raise RuntimeError('Owner ABI changed')
         rc=native.ffn_fe100_resources_open(fd,owner.fileno(),base,
-            1 if kind=='smac' else 2,native_pool,len(pool),native_registers,len(registers),trace)
+            KINDS[kind],native_pool,len(pool),native_registers,len(registers),trace)
     if rc:raise RuntimeError('Native resource initialization failed: '+str(rc))
     while True:
         try:request=lines.read(30)

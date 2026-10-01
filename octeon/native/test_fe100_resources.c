@@ -34,7 +34,7 @@ static void *fake_dlsym(void *,const char *);
 static int calls, armed, watchdog_on, watchdog_off, wrong_lock, busy_lock;
 static int native_rc, fault_on_call, loads, maps, no_symbol;
 static unsigned faults;
-static uint8_t contents[2][16], present[2];
+static uint8_t contents[2][36], present[2];
 static int fake_lstat(const char *path,struct stat *s)
 {
     assert(!strcmp(path,"/run/ffn-fe100-tables.lock"));
@@ -60,7 +60,9 @@ static void *fake_dlopen(const char *path,int mode)
     assert(!strcmp(path,"/proc/self/fd/8"));
     assert(mode==(RTLD_LOCAL|RTLD_LAZY));return (void *)2;
 }
-static int select_block(uint32_t block) {assert(block==0x50000);return 0;}
+static int select_block(uint32_t block)
+{assert(block==(state.kind==3?0x80000U:state.kind==4?0x58000U:0x50000U));return 0;}
+static int select_lif(unsigned table) {assert(state.kind==3 && table==0);return 0;}
 static int map(uint64_t bar,const char *trace,int writes)
 {assert(bar==0x100000 && trace && writes==1);maps++;return 0;}
 static int allow(uint32_t address) {assert(address==0x50000);return 0;}
@@ -89,11 +91,18 @@ static int smac_del(uint32_t d,int i) {return access_entry(3,d,NULL,i,8);}
 static int hop_get(uint32_t d,void *v,int t,int i) {assert(t==0);return access_entry(1,d,v,i,16);}
 static int hop_put(uint32_t d,void *v,int t,int i) {assert(t==0);return access_entry(2,d,v,i,16);}
 static int hop_del(uint32_t d,int t,int i) {assert(t==0);return access_entry(3,d,NULL,i,16);}
+static int lif_get(uint32_t d,void *v,int i) {return access_entry(1,d,v,i,36);}
+static int lif_put(uint32_t d,void *v,int i) {return access_entry(2,d,v,i,36);}
+static int lif_del(uint32_t d,int i) {return access_entry(3,d,NULL,i,36);}
+static int lef_get(uint32_t d,void *v,int i) {return access_entry(1,d,v,i,10);}
+static int lef_put(uint32_t d,void *v,int i) {return access_entry(2,d,v,i,10);}
+static int lef_del(uint32_t d,int i) {return access_entry(3,d,NULL,i,10);}
 static void *fake_dlsym(void *handle,const char *name)
 {
     if(no_symbol)return NULL;
 #define SYM(h,n,f) if(!strcmp(name,n)) {assert(handle==(void *)(h));return (void *)(f);}
     SYM(1,"ffn_fe100_select_block",select_block)
+    SYM(1,"ffn_fe100_select_lif_table",select_lif)
     SYM(1,"ffn_fe100_open",map)
     SYM(1,"ffn_fe100_allow",allow)
     SYM(1,"ffn_fe100_faults",get_faults)
@@ -104,6 +113,12 @@ static void *fake_dlsym(void *handle,const char *name)
     SYM(2,"pan_fe100_fetch_nexthop_entry",hop_get)
     SYM(2,"pan_fe100_insert_nexthop_entry",hop_put)
     SYM(2,"pan_fe100_delete_nexthop_entry",hop_del)
+    SYM(2,"pan_fe100_fetch_lif_entry",lif_get)
+    SYM(2,"pan_fe100_insert_lif_entry",lif_put)
+    SYM(2,"pan_fe100_delete_lif_entry",lif_del)
+    SYM(2,"pan_fe100_fetch_lef_entry",lef_get)
+    SYM(2,"pan_fe100_insert_lef_entry",lef_put)
+    SYM(2,"pan_fe100_delete_lef_entry",lef_del)
 #undef SYM
     assert(!"unexpected ABI symbol");return NULL;
 }
@@ -121,9 +136,9 @@ static int start(unsigned kind)
 int main(void)
 {
     assert(ffn_fe100_resources_abi()==1);
-    for(unsigned kind=1;kind<=2;kind++) {
-        size_t size=kind==1?8:16;
-        uint8_t data[16];reset();assert(start(kind)==0);
+    for(unsigned kind=1;kind<=4;kind++) {
+        size_t size=entry_size(kind);
+        uint8_t data[36];reset();assert(start(kind)==0);
         assert(loads==2 && maps==1 && start(kind)==-EALREADY);
         assert(ffn_fe100_resources_call(1,30,data,size)==3);
         for(size_t i=0;i<size;i++)assert(data[i]==0);
@@ -163,6 +178,22 @@ int main(void)
     pool[1]=31;regs[0]++;
     assert(ffn_fe100_resources_open(7,8,0x100000,1,pool,2,regs,1,"/var/lib/ffn/fe100/resource-test.txt")==-EINVAL);
     assert(!loads && !maps);
+    uint8_t lif[36],lef[10];
+    assert(ffn_fe100_lif_encode(13,4000,4093,29,lif,sizeof(lif))==0);
+    const uint8_t fixture[]={0,0,0,0,0x80,4,0,0,0x0f,0xfd,0,29,0,13,0,0,
+        0,0,0,3,0xff,0xff,0,0,0,0,0,0,0,3,0xe8,13,0,0,0,0};
+    assert(!memcmp(lif,fixture,sizeof(fixture)));
+    assert(ffn_fe100_lif_encode(13,0,4093,29,lif,sizeof(lif))==0);
+    assert(lif[28]==0 && lif[29]==0 && lif[30]==0 && lif[31]==13);
+    assert(ffn_fe100_lif_encode(64,0,1,29,lif,sizeof(lif))==-EINVAL);
+    assert(ffn_fe100_lif_encode(1,4095,1,29,lif,sizeof(lif))==-EINVAL);
+    assert(ffn_fe100_lif_encode(1,0,65536,29,lif,sizeof(lif))==-EINVAL);
+    assert(ffn_fe100_lif_encode(1,0,1,65536,lif,sizeof(lif))==-EINVAL);
+    assert(ffn_fe100_lef_encode(23,lef,sizeof(lef))==0);
+    const uint8_t egress[]={0x80,23,0,0,0,0,0,0,0,0};
+    assert(!memcmp(lef,egress,sizeof(egress)));
+    assert(ffn_fe100_lef_encode(0,lef,sizeof(lef))==-EINVAL);
+    assert(ffn_fe100_lef_encode(1,lef,9)==-EINVAL);
     puts("FE100 resource driver: bounded ABI, ownership, uncertainty and watchdog tests passed");
     return 0;
 }

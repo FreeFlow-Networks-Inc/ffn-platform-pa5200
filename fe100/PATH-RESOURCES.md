@@ -29,6 +29,9 @@ pool, uses aligned entry storage, and loads the exact open library descriptor
 that Python verified. A register-scope fault permanently fences that worker;
 an uncertain table operation requires readback before another write to its slot.
 The driver allows one table scope per process and offers no reset operation.
+The same driver now supports explicitly reserved LIF/LEF entries through
+`AttachmentOwner`; see `ATTACHMENTS.md` for its separate ownership contract
+and the remaining production wiring requirements.
 
 The CP image build installs this driver automatically. An incremental deployment
 must install the shared object before updating `ffn_fe100_resource_tables.py`;
