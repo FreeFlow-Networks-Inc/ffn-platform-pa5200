@@ -21,12 +21,24 @@ class BindingTests(unittest.TestCase):
         (self.device/'config').write_bytes(bytes(4)+b'\x02\x00')
         with (self.device/'resource0').open('wb') as f:
             f.truncate(0x100000)
+        # prom_chip_rev_num as the pinned September kernel's window presented
+        # it: reversed. Every register test below assumes this presentation.
+        self.present_probe('little')
         self.override = patch.object(fe, 'SYSFS', str(self.device))
         self.override.start()
         self.addCleanup(self.override.stop)
 
+    def present_probe(self, order):
+        """Write prom_chip_rev_num (0xffffc, hardwired 0x000a0001) into the fake
+        BAR as the window would present it: 'big' is CPU order, 'little' is the
+        reversed presentation."""
+        with (self.device/'resource0').open('r+b') as f:
+            f.seek(fe.PROBE_OFFSET)
+            f.write(fe.PROBE_VALUE.to_bytes(4, order))
+
     def test_bar_relative_mapping_and_little_endian_registers(self):
         io = fe.Fe100()
+        self.assertTrue(io.swap)
         try:
             io.write32(0x48018, 0x12345678)
             self.assertEqual(io.read32(0x48018), 0x12345678)
@@ -35,6 +47,24 @@ class BindingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):io.read32(offset)
                 with self.assertRaises(ValueError):io.write32(offset, 0)
         finally:io.close()
+
+    def test_cpu_order_window_is_not_swapped(self):
+        """The pinned MDIO kernel presents the window in CPU order; a swap
+        there reads every register as a different number."""
+        self.present_probe('big')
+        io = fe.Fe100()
+        try:
+            self.assertFalse(io.swap)
+            io.write32(0x48018, 0x12345678)
+            self.assertEqual(io.read32(0x48018), 0x12345678)
+            self.assertEqual(io.map[0x48018:0x4801c], b'4Vx')
+            self.assertEqual(io.read32(fe.PROBE_OFFSET), fe.PROBE_VALUE)
+        finally:io.close()
+
+    def test_unrecognised_probe_is_refused_not_guessed(self):
+        with (self.device/'resource0').open('r+b') as f:
+            f.seek(fe.PROBE_OFFSET); f.write(bytes(4))
+        with self.assertRaisesRegex(RuntimeError, 'byte order'):fe.Fe100()
 
     def test_unbound_device_fails_without_raw_memory_fallback(self):
         (self.device/'driver').unlink()

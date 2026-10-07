@@ -84,6 +84,25 @@ def memory_decode_on():
     return bool(cmd & 0x2)
 
 
+PROBE_OFFSET = 0xFFFFC          # prom_chip_rev_num: hardwired, read-only
+PROBE_VALUE = 0x000A0001
+
+
+def byte_order_swaps(raw4):
+    """True if the BAR presents registers byte-reversed, False if in CPU
+    order, from the 4 raw bytes at PROBE_OFFSET. Refuses anything else:
+    the two kernels this CP has booted present the window differently,
+    and a wrong guess reads every register as a different number and
+    lands every write reversed."""
+    if raw4 == PROBE_VALUE.to_bytes(4, "big"):
+        return False
+    if raw4 == PROBE_VALUE.to_bytes(4, "little"):
+        return True
+    raise RuntimeError("FE100 BAR byte order unrecognised: prom_chip_rev_num "
+                       "reads %s, expected %08x in either order"
+                       % (raw4.hex(), PROBE_VALUE))
+
+
 def bswap32(v):
     return ((v & 0x000000FF) << 24 | (v & 0x0000FF00) << 8 |
             (v & 0x00FF0000) >> 8 | (v & 0xFF000000) >> 24)
@@ -99,17 +118,23 @@ class Fe100:
         except BaseException:
             os.close(self.fd)
             raise
+        try:
+            self.swap = byte_order_swaps(bytes(self.map[PROBE_OFFSET:PROBE_OFFSET + 4]))
+        except BaseException:
+            self.close()
+            raise
 
     def read32(self, off):
         if off < 0 or off % 4 or off + 4 > self.size:
             raise ValueError("offset 0x%x past the 0x%x BAR" % (off, self.size))
         raw = int.from_bytes(self.map[off:off + 4], "big")
-        return bswap32(raw)
+        return bswap32(raw) if self.swap else raw
 
     def write32(self, off, val):
         if off < 0 or off % 4 or off + 4 > self.size:
             raise ValueError("offset 0x%x past the 0x%x BAR" % (off, self.size))
-        self.map[off:off + 4] = bswap32(val & 0xFFFFFFFF).to_bytes(4, "big")
+        val &= 0xFFFFFFFF
+        self.map[off:off + 4] = (bswap32(val) if self.swap else val).to_bytes(4, "big")
 
     def close(self):
         self.map.close()
