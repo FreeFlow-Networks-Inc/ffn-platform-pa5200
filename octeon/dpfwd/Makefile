@@ -5,6 +5,8 @@
 #   make mips64     cross-build for OCTEON (big-endian MIPS64)
 #   make oct3-cvmx  compile the CVMX backends against a real OCTEON SDK
 #   make qemu-test  run the SAME test under qemu-mips64 (validates big-endian)
+#   make aho-test   content-matching suite (aho-qemu for big-endian)
+#   make ctd-test   content-inspection engine (ctd-qemu for big-endian)
 #
 # The forwarder has no chip headers, so the native and MIPS builds compile the
 # identical sources; only the packet-I/O backend differs on real hardware.
@@ -56,6 +58,33 @@ VSYS_HDRS = ffn_dp_vsys.h
 VSYS_OBJ  = $(VSYS_SRC:.c=.o)
 
 $(VSYS_OBJ): %.o: %.c $(VSYS_HDRS) ffn_dp_oct.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# --- content matching ---
+# Aho-Corasick lives in its own module with NO dependency on the forwarder,
+# the FIB or any chip header: it is a pure function over a byte range, so it
+# builds and tests standalone and the engines can call it without the engine
+# tests growing a packet-I/O backend. The PA-5220's hardware matcher (CA1)
+# sits behind an Interlaken link that never came up on our unit, so this is
+# the path that actually runs -- it is not a fallback.
+AHO_SRC  = ffn_dp_aho.c
+AHO_HDRS = ffn_dp_aho.h
+AHO_OBJ  = $(AHO_SRC:.c=.o)
+
+$(AHO_OBJ): %.o: %.c $(AHO_HDRS)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# --- content inspection engine ---
+# Many signatures, ONE pass over the packet, via the matcher above.
+# ffn_dp_dlp.c's own comment asks for this: "If keyword counts ever reach
+# the dozens, replace this with Aho-Corasick -- not with a regex." It does
+# not replace the DLP engine; DLP's credit-card/SSN/Luhn rules are structural
+# and a literal automaton cannot express them, so the two run side by side.
+CTD_SRC  = ffn_dp_ctd.c
+CTD_HDRS = ffn_dp_ctd.h ffn_dp_aho.h ffn_dp_engine.h
+CTD_OBJ  = $(CTD_SRC:.c=.o)
+
+$(CTD_OBJ): %.o: %.c $(CTD_HDRS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # should be testable as such.
@@ -197,7 +226,7 @@ oct3-cvmx:
 	@echo "octeon backends compile clean against $(MODEL)"
 
 # everything that can run without Octeon hardware
-check: test l3-test v6-test arp-test engine-test vsys-test oct-test oct3-test
+check: test l3-test v6-test arp-test engine-test vsys-test aho-test ctd-test oct-test oct3-test
 	@echo "--- big-endian ---"
 	@$(MAKE) -s qemu-test
 	@$(MAKE) -s oct-qemu
@@ -207,6 +236,8 @@ check: test l3-test v6-test arp-test engine-test vsys-test oct-test oct3-test
 	@$(MAKE) -s arp-qemu
 	@$(MAKE) -s engine-qemu
 	@$(MAKE) -s vsys-qemu
+	@$(MAKE) -s aho-qemu
+	@$(MAKE) -s ctd-qemu
 
 # --- cross build for the real target ---
 mips64: $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(TEST_SRC) $(HDRS) $(L3_HDRS)
@@ -232,11 +263,13 @@ clean:
 	      ffn_dp_l3_test ffn_dp_l3_test.mips64 \
 	      ffn_dp_arp_test ffn_dp_arp_test.mips64 \
 	      ffn_dp_engine_test ffn_dp_engine_test.mips \
-      ffn_dp_vsys_test ffn_dp_vsys_test.mips
+      ffn_dp_vsys_test ffn_dp_vsys_test.mips \
+      ffn_dp_aho_test ffn_dp_aho_test.mips $(AHO_OBJ) \
+      ffn_dp_ctd_test ffn_dp_ctd_test.mips $(CTD_OBJ)
 	
 	$(RM) -r cvmx-obj
 
-.PHONY: all test l3-test arp-test engine-test engine-qemu vsys-test vsys-qemu mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
+.PHONY: all test l3-test arp-test engine-test engine-qemu vsys-test vsys-qemu aho-test aho-qemu ctd-test ctd-qemu mips64 qemu-test veth-test oct-test oct-qemu oct3-test \
         oct3-qemu oct3-cvmx l3-qemu v6-test v6-qemu arp-qemu interop check clean
 
 # interop harness: runs the real DP command loop over an mmap'd file so the
@@ -319,3 +352,41 @@ arp-qemu: $(L3_SRC) ffn_dp_arp_test.c $(L3_HDRS)
 	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
 	$(MIPS_CC) $(MIPS_CFLAGS) $(L3_SRC) ffn_dp_arp_test.c -o ffn_dp_arp_test.mips64
 	qemu-mips64 ./ffn_dp_arp_test.mips64
+
+# --- content matching suite ---
+# Byte-oriented code with a 256-way transition table indexed by raw input
+# bytes: it SHOULD be byte-order-agnostic, and running it big-endian is how a
+# byte-order assumption that does not belong gets caught. The scale case also
+# prints the state count and memory, because 1 KiB per state is a budget
+# someone has to see rather than discover in production.
+ffn_dp_aho_test: $(AHO_OBJ) ffn_dp_aho_test.c $(AHO_HDRS)
+	$(CC) $(CFLAGS) $(AHO_OBJ) ffn_dp_aho_test.c -o $@
+
+aho-test: ffn_dp_aho_test
+	./ffn_dp_aho_test
+
+ffn_dp_aho_test.mips: $(AHO_SRC) ffn_dp_aho_test.c $(AHO_HDRS)
+	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
+	$(MIPS_CC) $(MIPS_CFLAGS) $(AHO_SRC) ffn_dp_aho_test.c -o $@
+
+aho-qemu: ffn_dp_aho_test.mips
+	@command -v qemu-mips64 >/dev/null 2>&1 || { echo "MISSING qemu-mips64"; exit 1; }
+	qemu-mips64 ./ffn_dp_aho_test.mips
+
+# --- content inspection suite ---
+# Standalone: ctd + aho only, no forwarder and no packet-I/O backend, which
+# is the independence claim the module makes about itself. If this ever needs
+# ffn_dp_oct.o to link, that claim has quietly stopped being true.
+ffn_dp_ctd_test: $(CTD_OBJ) $(AHO_OBJ) ffn_dp_ctd_test.c $(CTD_HDRS)
+	$(CC) $(CFLAGS) $(CTD_OBJ) $(AHO_OBJ) ffn_dp_ctd_test.c -o $@
+
+ctd-test: ffn_dp_ctd_test
+	./ffn_dp_ctd_test
+
+ffn_dp_ctd_test.mips: $(CTD_SRC) $(AHO_SRC) ffn_dp_ctd_test.c $(CTD_HDRS)
+	@command -v $(MIPS_CC) >/dev/null 2>&1 || { echo "MISSING $(MIPS_CC)"; exit 1; }
+	$(MIPS_CC) $(MIPS_CFLAGS) $(CTD_SRC) $(AHO_SRC) ffn_dp_ctd_test.c -o $@
+
+ctd-qemu: ffn_dp_ctd_test.mips
+	@command -v qemu-mips64 >/dev/null 2>&1 || { echo "MISSING qemu-mips64"; exit 1; }
+	qemu-mips64 ./ffn_dp_ctd_test.mips

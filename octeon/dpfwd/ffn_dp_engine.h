@@ -81,6 +81,28 @@ struct dp_engine_ctx {
 	uint8_t        l4_proto;    /* IPPROTO_TCP / UDP                      */
 	uint16_t       dport;       /* host order, for protocol hints         */
 
+	/* Set when dp_engine_scan() clipped payload_len to DP_ENGINE_SCAN_MAX.
+	 * The clip happens in one place so no engine can run away, but it is then
+	 * invisible to the engine -- a clipped 9000-byte frame and a genuine
+	 * 2048-byte one look identical. A stateful engine MUST be able to tell
+	 * them apart: the bytes past the clip are never scanned, so whatever
+	 * arrives in the next packet is NOT contiguous with what was, and carrying
+	 * stream state across that gap invents matches that are not in the
+	 * traffic. */
+	uint8_t        truncated;
+	uint8_t        eng_pad[3];
+
+	/* Per-flow scanner progress, owned by the FLOW and not by the engine, so
+	 * one compiled automaton can be shared read-only by every core while each
+	 * flow keeps its own position. NULL when the caller has nowhere to keep it
+	 * (no flow entry), which a stateful engine must read as "scan this packet
+	 * standalone" rather than as an error.
+	 *
+	 * One slot, because exactly one stateful engine exists. A second would need
+	 * this to become an array indexed by engine -- do not quietly share it; two
+	 * automata stepping the same counter is nonsense. */
+	uint16_t      *scan_state;
+
 	/* Filled in by the engine that fired, for logging. Never used to make a
 	 * forwarding decision -- the verdict alone does that. */
 	const char    *hit_engine;
