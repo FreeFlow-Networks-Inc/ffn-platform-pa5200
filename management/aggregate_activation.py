@@ -223,7 +223,15 @@ def execute(action,payload,call=remote):
             subprocess.run(['systemctl','disable','--now','ffn-aggregate@'+name],check=True,timeout=60)
             current=call('cp','status',{})
             state=current['groups'].get(name)
-            if state and state['phase']!='stopped':call('cp','stop',dict(group=name,token=state['token'],epoch=state['epoch']))
+            if state and state['phase']!='stopped':
+                if state['epoch']==current['epoch']:
+                    call('cp','stop',dict(group=name,token=state['token'],epoch=state['epoch']))
+                else:
+                    # The group outlived the BCM lifetime it was prepared in. The CP
+                    # refuses a stop carrying that epoch (stale cleanup); only a
+                    # recover naming it as the previous epoch withdraws the group,
+                    # exactly as resume_selection does after a CP restart.
+                    call('cp','recover',dict(group=name,token=state['token'],epoch=current['epoch'],previous_epoch=state['epoch']))
             saved=DIRECTORY/(name+'-intent.json')
             if saved.exists():
                 intent=json.loads(saved.read_text())['intent']
