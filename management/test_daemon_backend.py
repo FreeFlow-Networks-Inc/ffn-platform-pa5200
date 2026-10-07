@@ -19,6 +19,19 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(ValueError,'None/disabled'):
                 await execute('faceplate','apply',{'revision':7,'port':2,'enabled':True},backend)
         backend.run.assert_awaited_once_with('faceplate','status')
+    def test_error_response_reports_only_fixed_texts(self):
+        """A revision conflict must be visible to configd so it can retry it, and a
+        controller timeout must be told apart from a hardware refusal; a stray
+        exception with diagnostics in it stays generic."""
+        from daemon_backend import error_response, HTTPException
+        self.assertEqual(error_response(ValueError('revision conflict; refresh state')),'revision conflict; refresh state')
+        self.assertEqual(error_response(HTTPException(409,'Configuration changed; reload before applying')),'Configuration changed; reload before applying')
+        self.assertEqual(error_response(HTTPException(504,'Controller timed out; outcome may be unknown. Refresh status before retrying.')),
+                         'Controller timed out; outcome may be unknown. Refresh status before retrying.')
+        self.assertEqual(error_response(RuntimeError('ssh: connect to host ffn-cp port 22: Connection refused')),
+                         'MP hardware adapter rejected or could not complete the operation')
+        self.assertEqual(error_response(ValueError('')),'invalid request')
+
     async def test_network_validation_checks_physical_attachment_before_apply(self):
         backend=AsyncMock()
         backend.run.side_effect=[{'config':{'revision':7}},ValueError('physical port unattached')]

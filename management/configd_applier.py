@@ -88,6 +88,24 @@ class PlatformApplier:
                 or '.network.profiles.interface-management-profile.' in xpath
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
 
+    def faceplate_apply(self, faceplate, port, change, attempts=3):
+        """Apply one faceplate change and return the daemon's refreshed view.
+
+        The faceplate revision hashes every port's admin, enable, speed,
+        copper-PHY and optics state, so another owner preparing its own ports
+        (the aggregate's members after a processor restart, the WAN or
+        physical owners enabling a MAC) moves it under an in-flight apply.
+        That conflict, and only that, is retried against a re-read faceplate;
+        every other rejection is raised unchanged.
+        """
+        for attempt in range(attempts):
+            try:
+                return rpc('faceplate','apply',dict(change,revision=faceplate['revision'],port=port))['data']
+            except ValueError as error:
+                text=str(error)
+                if attempt==attempts-1 or not ('revision conflict' in text or 'Configuration changed' in text):raise
+                time.sleep(1);faceplate=rpc('faceplate')
+
     def reconcile(self, status):
         from ffn_interface_addresses import resolved_config
         root=resolved_config(ET.parse(self.config).getroot())
@@ -162,12 +180,10 @@ class PlatformApplier:
                 if not observed.get('speed_configuration') or speed not in ['auto']+[str(v) for v in observed.get('supported_speeds',[])]:
                     status.fail(name+'/link-speed','pa5200','Requested speed is unavailable');continue
                 if observed.get('configured_speed')!=speed:
-                    answer=rpc('faceplate','apply',{'revision':faceplate['revision'],'port':port,'speed':speed})
-                    faceplate=answer['data']
+                    faceplate=self.faceplate_apply(faceplate,port,{'speed':speed})
                 status.ok(name+'/link-speed',None,speed,'pa5200','SDK link setting read back through MP daemon')
             if observed['enabled']!=enabled:
-                answer=rpc('faceplate','apply',{'revision':faceplate['revision'],'port':port,'enabled':enabled})
-                faceplate=answer['data']
+                faceplate=self.faceplate_apply(faceplate,port,{'enabled':enabled})
             status.ok(name+'/link-state',None,state if l3 is not None else 'down','pa5200','Physical administrative state verified through MP daemon')
             if key not in network['config']['ports']:
                 if l3 is None:

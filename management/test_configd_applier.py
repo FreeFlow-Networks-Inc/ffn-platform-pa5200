@@ -97,6 +97,49 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual({p['port'] for r,a,p in calls if (r,a)==('faceplate','apply')},{2,3,24})
         self.assertTrue(face['ports'][0]['enabled'])
 
+    def test_faceplate_apply_retries_only_a_revision_conflict_against_a_refreshed_view(self):
+        """Another owner moves the faceplate revision between the applier's read and
+        its apply (an aggregate preparing its members after a processor restart):
+        the conflict is retried once the faceplate is re-read; any other rejection
+        is not."""
+        xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>
+        <entry name="ethernet1/1"><layer3><ip><entry name="192.0.2.1/24"/></ip></layer3></entry>
+        </ethernet></interface></network></entry></devices></config>'''
+        for reason in ('revision conflict; refresh state','Configuration changed; reload before applying','Copper control unavailable or pending'):
+            with self.subTest(reason=reason):
+                face={'revision':1,'ports':[{'port':1,'enabled':False,'available':True}]}
+                net={'config':{'revision':1,'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/24']}}},'backend':{'ports':[1]}}
+                calls=[];reads=[]
+                def rpc(resource,action='status',payload=None):
+                    calls.append((resource,action,payload))
+                    if action=='status' and resource=='faceplate':
+                        view=copy.deepcopy(face);reads.append(view['revision'])
+                        if len(reads)==1:face['revision']=2   # moved by another owner right after the first read
+                        return view
+                    if action=='status':return copy.deepcopy(net)
+                    if resource=='faceplate':
+                        if payload['revision']!=face['revision'] or 'conflict' not in reason and 'changed' not in reason:
+                            raise ValueError('MP faceplate/apply request x: rejected ('+reason+')')
+                        face['ports'][0]['enabled']=payload['enabled'];face['revision']+=1
+                        return {'data':copy.deepcopy(face)}
+                    net['config']['ports'].update(payload['ports']);net['config']['revision']+=1
+                    return {}
+                with tempfile.TemporaryDirectory() as temp:
+                    path=Path(temp)/'running.xml';path.write_text(xml)
+                    status=Status()
+                    with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.time.sleep') as sleep:
+                        if 'conflict' in reason or 'changed' in reason:
+                            PlatformApplier(path).reconcile(status)
+                            self.assertEqual(status.errors,[])
+                            self.assertTrue(face['ports'][0]['enabled'])
+                            self.assertEqual(reads,[1,2])
+                            self.assertEqual([p['revision'] for r,a,p in calls if (r,a)==('faceplate','apply')],[1,2])
+                            sleep.assert_called_once()
+                        else:
+                            with self.assertRaisesRegex(ValueError,'Copper control'):PlatformApplier(path).reconcile(status)
+                            self.assertEqual(len([1 for r,a,p in calls if (r,a)==('faceplate','apply')]),1)
+                            sleep.assert_not_called()
+
     def test_routes_are_read_from_xml_and_deletions_do_not_use_legacy_sql(self):
         from xml.etree import ElementTree as ET
         dev=ET.fromstring('''<entry><network><virtual-router><ffn-candidate-managed>yes</ffn-candidate-managed>
