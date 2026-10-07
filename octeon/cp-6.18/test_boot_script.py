@@ -62,6 +62,29 @@ def fpga_block(inner):
                  inner.index('CE40 FPGA programming SKIPPED')]
 
 
+def helper():
+    """The shared FPGA step both boot scripts call."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "..", "tools", "ffn-fpga-step.sh"),
+              encoding="utf-8") as f:
+        return f.read()
+
+
+def programmer():
+    """The self-contained programmer the helper runs."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "..", "tools", "ffn_fpga_program.py"),
+              encoding="utf-8") as f:
+        return f.read()
+
+
+def command_line():
+    """The literal the programmer sends, rendered with a representative size."""
+    m = re.search(r'return "([^"]*fpga_program[^"]*)"', programmer())
+    assert m, "command() must build the fpga_program line from one literal"
+    return m.group(1) % (0x400000, 0x2e04280)
+
+
 def code_only(text):
     """Drop comment lines.
 
@@ -199,25 +222,25 @@ class FpgaStep(unittest.TestCase):
                              'the FPGA step must fall through to the kernel')
 
     def test_it_is_bounded_in_time(self):
-        """The whole plane boot has a 1200 s budget; this cannot hang it."""
-        self.assertRegex(code_only(self.block),
-                         r'timeout \d+ python3 tools/ffn_octctl\.py fpga')
+        """The whole plane boot has a 1200 s budget; this cannot hang it.
+        The block delegates to the shared helper, where the timeout lives."""
+        self.assertIn("bash tools/ffn-fpga-step.sh", code_only(self.block))
+        self.assertRegex(code_only(helper()),
+                         r"timeout \d+ python3 tools/ffn_fpga_program\.py")
 
-    def test_it_does_not_force_a_reprogram(self):
-        """u-boot skips an already-programmed FPGA, and that is what we want.
-
-        Only a cold boot clears DONE. Forcing on every boot would reprogram a
-        working FPGA for no reason and widen the window where it is unusable.
-        """
-        self.assertNotIn('--reprogram', code_only(self.block))
+    def test_it_forces_a_reprogram_every_boot(self):
+        """Any Octeon reset leaves the socket holding the a101 image with DONE
+        SET, so skipping an 'already programmed' FPGA keeps the wrong
+        personality (measured 2026-10-06). The command forces it every boot,
+        and carries the ce40= selector without which u-boot hangs."""
+        self.assertRegex(command_line(), r"\bforce\b")
+        self.assertIn("ce40=", command_line())
 
     def test_the_outcome_is_read_from_the_console(self):
-        """The tool returns when the mailbox ACCEPTED the command, not when the
-        bootloader finished. Only the console says what actually happened, and
-        waiting for it also stops kernel staging racing a load in flight."""
-        code = code_only(self.block)
-        self.assertIn('Full fpga programming', code)
-        self.assertIn('/var/log/ffn-octeon-console.log', code)
+        """Only the bootloader's own console line says what happened."""
+        src = programmer()
+        self.assertIn("Full fpga programming SUCCESS", src)
+        self.assertIn("ob.fifo(", src)
 
     def test_it_uses_no_line_continuations(self):
         """A backslash-newline that loses its newline still passes bash -n.

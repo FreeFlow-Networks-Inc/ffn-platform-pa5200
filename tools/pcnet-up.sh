@@ -26,5 +26,13 @@ octlock_release
 
 systemctl reset-failed ffn-pcnetd 2>/dev/null
 systemctl stop ffn-pcnetd 2>/dev/null
-exec systemd-run --unit=ffn-pcnetd --no-block \
-  /usr/bin/python3 -u /opt/ffn-ngfw-v2/tools/ffn_pcnetd.py --skip-window
+# A persistent ffn-pcnetd.service exists on provisioned MPs, with this same
+# ExecStart. systemd-run refuses to create a transient unit whose name is
+# already loaded ("Unit ffn-pcnetd.service already exists"), which left the
+# host end down after the orchestration's own stop and let the CP's init time
+# out into its initramfs (2026-10-06). Prefer the persistent unit; keep the
+# transient form for hosts that have none.
+if systemctl cat ffn-pcnetd >/dev/null 2>&1; then
+	exec systemctl start ffn-pcnetd
+fi
+exec systemd-run --unit=ffn-pcnetd --no-block /usr/bin/python3 -u /opt/ffn-ngfw-v2/tools/ffn_pcnetd.py --skip-window

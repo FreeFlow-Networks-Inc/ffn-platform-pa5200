@@ -171,6 +171,11 @@ if systemctl is-active --quiet ffn-pcnetd; then
 fi
 echo "host ffn-pcnetd stopped (PCIe CmpltTO/AER hazard)"
 python3 tools/ffn_octctl.py boot --dev 0 --force
+# Program the CE40 FPGA NOW: after the reset into u-boot, before the kernel is
+# staged. Any later Octeon reset reverts the socket to the a101 image, so this
+# is the only place the step can live, and the kernel below must be booted from
+# this same u-boot session. Never fatal; see tools/ffn-fpga-step.sh.
+bash tools/ffn-fpga-step.sh
 # mem= is REQUIRED. Without it the kernel takes whatever the OCTEON boot
 # descriptor offers, which is ~432 MB of the 8 GB this CP actually has
 # (device tree: 0x0+0x10000000 and 0x20000000+0x1F0000000). The suffix
