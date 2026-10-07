@@ -5,7 +5,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from hardware_backend import Controller, COMMANDS
+from hardware_backend import Controller, COMMANDS, HTTPException
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
         'fe100-policy':{'revision','digest'},
@@ -97,11 +97,24 @@ async def execute(resource, action, payload, backend=None):
     return await backend.run(resource,action,payload or None)
 
 
+def error_response(error):
+    """The text a failed adapter run reports.
+
+    The adapter's own validation messages (ValueError) and hardware_backend's
+    fixed controller texts (HTTPException.detail) carry no SSH diagnostics or
+    configuration contents, so clients may see them: a revision conflict is
+    retried by the caller and a timeout is reported as such. Anything else
+    stays generic."""
+    if isinstance(error,ValueError):return str(error)[:512] or 'invalid request'
+    if isinstance(error,HTTPException):return str(error.detail)[:512]
+    return 'MP hardware adapter rejected or could not complete the operation'
+
+
 if __name__=='__main__':
     try:
         result=asyncio.run(execute(sys.argv[1],sys.argv[2],json.load(sys.stdin)))
         print(json.dumps(result))
-    except Exception:
+    except Exception as error:
         # Do not send SSH diagnostics or configuration contents to clients.
-        print(json.dumps({'error':'MP hardware adapter rejected or could not complete the operation'}))
+        print(json.dumps({'error':error_response(error)}))
         sys.exit(2)
