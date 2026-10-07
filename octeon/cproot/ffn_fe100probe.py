@@ -77,6 +77,17 @@ def main():
         os.close(fd)
         return 1
 
+    # The CP's PCIe window presents this BAR reversed under one kernel and in
+    # CPU order under another (fe100/ffn_fe100.py probes the same word). Say
+    # which this is, so the le=/be= columns below have a verdict.
+    probe = bytes(m[0xffffc:0xffffc + 4])
+    if probe == (0x000a0001).to_bytes(4, "big"):
+        print("  BAR byte order: cpu (prom_chip_rev_num reads 000a0001 in place): trust the be= column")
+    elif probe == (0x000a0001).to_bytes(4, "little"):
+        print("  BAR byte order: reversed (prom_chip_rev_num reads 0100 0a00): trust the le= column")
+    else:
+        print("  BAR byte order: unrecognised, prom_chip_rev_num bytes %s (expected 000a0001 either way)" % probe.hex())
+
     print("  --- register reads (offsets from the DWARF-recovered CSR map) ---")
     allones = 0
     for off, name in REGS:
