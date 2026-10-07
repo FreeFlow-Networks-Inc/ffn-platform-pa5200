@@ -86,7 +86,10 @@ async def execute(action,payload,backend=None,directory=Path('/var/lib/ffn-ngfw/
         rows.append(row)
     if candidate!=(directory/'candidate-config.xml').read_bytes() or running!=(directory/'running-config.xml').read_bytes():
         raise ValueError('Configuration changed while reading aggregate status; refresh')
-    return dict(owner='ffn-controld',provider='pa5200',revision=activation['revision'],
+    # config.revision is what the plane daemon compares an operator's
+    # observed_revision with when resolving an unknown apply outcome; without
+    # it an interrupted aggregates apply could never be cleared.
+    return dict(owner='ffn-controld',provider='pa5200',revision=activation['revision'],config={'revision':activation['revision']},
         candidate_revision=intent['revision'],running_revision=committed['revision'],aggregates=rows,
         orphan_members=intent['orphan_members'],running_aggregates=committed['aggregates'],
         observation=values[2],activation=activation,applied=bool(rows) and all(r['applied'] for r in rows))

@@ -139,6 +139,32 @@ class Lifecycle:
             raise
         if self.unit(UNITS[role]).get('Result') != 'success': raise ValueError('Restart owner did not succeed')
 
+    def cycle_dp(self, before, clock=time.monotonic, sleep=time.sleep):
+        """After a verified CP restart, bring the DP onto a new, ready boot.
+
+        The DP's packet fabric, trunk link and packet owners belong to the CP's
+        BCM lifetime. A DP that survived the CP outage on its NFS root cannot
+        recover them in place (its BGX link latches a fault that the link helper
+        refuses to clear under a live packet engine), so it is reset through its
+        own owner. A DP that is down or already on a new boot is only waited
+        for: the supervisor cold-boots a DP it cannot reach, and a second reset
+        would be a repeated hardware action that no deadline authorizes."""
+        settings = self.settings().get('dp') or {}
+        if not settings.get('enabled'):
+            raise ValueError('CP restarted, but the DP restart owner is not commissioned; restart the DP explicitly')
+        current = self.observe()
+        if current['dp']['fresh'] and current['dp']['boot_id'] == before['dp']['boot_id']:
+            self.start_owner('dp', settings['timeout'])
+        deadline = clock() + settings['timeout']
+        while clock() < deadline:
+            try: after = self.observe()
+            except Exception: sleep(3); continue
+            dp = after['dp']
+            if dp['fresh'] and dp['boot_id'] != before['dp']['boot_id'] and (dp['ready'] or dp.get('restart_acknowledged')):
+                return after
+            sleep(3)
+        raise ValueError('CP restarted, but no new ready DP boot before the deadline; restart the DP explicitly')
+
     def work(self, ident, clock=time.monotonic, sleep=time.sleep):
         if not re.fullmatch('[0-9a-f]{32}', ident): raise ValueError('Invalid worker identity')
         with lock(self.root):
@@ -170,6 +196,18 @@ class Lifecycle:
                     target = after[role]
                     if target['fresh'] and (target['ready'] or target.get('restart_acknowledged')) and target['boot_id'] != before[role]['boot_id']:
                         job['after'] = after
+                        if role == 'cp':
+                            # The acknowledged outage covers the DP too: its packet
+                            # fabric belongs to the CP lifetime that just ended.
+                            job['message'] = 'CP restarted; restarting DP, whose packet fabric belongs to the CP lifetime'
+                            save(self.root / 'state.json', state)
+                            after = self.cycle_dp(before, clock, sleep)
+                            job['after'] = after
+                            ready = target['ready'] and after['dp']['ready']
+                            message = ('CP and DP restarted; new boots and ready agents verified. Traffic recovery must be checked separately.'
+                                       if ready else 'CP and DP restarted; a processor is in its recovery runtime. Dataplane is not ready for forwarding.')
+                            job.update(status='succeeded', ready=ready, message=message)
+                            break
                         if after[other]['fresh'] and before[other]['boot_id'] and after[other]['boot_id'] != before[other]['boot_id']:
                             raise ValueError('Unexpected reboot of the other processor; inspect boot owner')
                         message = (role.upper() + ' restarted; new boot and ready agent verified. Traffic recovery must be checked separately.'

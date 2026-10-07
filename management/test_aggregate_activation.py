@@ -40,6 +40,32 @@ class ActivationTests(unittest.TestCase):
                 self.assertEqual([c[:2] for c in calls],[('dp','status'),('cp','status'),('cp','recover' if reboot else 'stop')]+([] if reboot else [('dp','recover')])+[('dp','fabric'),('cp','fabric')])
                 guard.assert_called_once_with(running.read_bytes())
 
+    def test_recover_withdraws_a_group_from_an_earlier_bcm_lifetime(self):
+        """After a CP restart the CP still lists the group under its old epoch and
+        refuses a stop that names it; recover must send the CP a recover with the
+        previous epoch (as resume_selection does), and a stop only when the
+        lifetime is unchanged."""
+        for changed in (True, False):
+            with self.subTest(lifetime_changed=changed),tempfile.TemporaryDirectory() as tmp:
+                directory=Path(tmp);running=directory/'running.xml';running.write_bytes(XML)
+                activation.atomic(directory/'revision.json',{'revision':0})
+                current_epoch='new-cp' if changed else 'old-cp'
+                calls=[]
+                def remote(role,operation,payload):
+                    calls.append((role,operation,payload))
+                    if operation=='status' and role=='cp':
+                        return dict(epoch=current_epoch,groups={'ae1':dict(token='tok',epoch='old-cp',phase='active',ports=[21,22])})
+                    return {}
+                revision=activation.plan(XML)['revision']
+                with patch.object(activation,'DIRECTORY',directory),patch.object(activation,'RUNNING',running),\
+                     patch.object(activation.subprocess,'run') as systemctl,patch.object(activation,'status',return_value={'groups':{},'revision':1}):
+                    result=activation.execute('apply',dict(group='ae1',operation='recover',running_revision=revision,revision=0),remote)
+                self.assertTrue(result['stopped'])
+                systemctl.assert_called_once()
+                self.assertEqual(systemctl.call_args[0][0][:3],['systemctl','disable','--now'])
+                expected=('cp','recover',dict(group='ae1',token='tok',epoch='new-cp',previous_epoch='old-cp')) if changed else ('cp','stop',dict(group='ae1',token='tok',epoch='old-cp'))
+                self.assertEqual(calls,[('cp','status',{}),expected])
+
     def test_restart_never_replaces_live_or_foreign_owners_or_failed_cleanup(self):
         for scenario in ('live-dp','foreign-dp','foreign-cp','overlap','cleanup-failed','disabled','changed-config'):
             with self.subTest(scenario=scenario),tempfile.TemporaryDirectory() as tmp:

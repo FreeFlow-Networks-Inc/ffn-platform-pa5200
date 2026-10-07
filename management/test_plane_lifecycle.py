@@ -2,7 +2,7 @@ import copy
 import tempfile
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 import plane_lifecycle as p
 
 
@@ -83,6 +83,50 @@ class LifecycleTests(unittest.TestCase):
         for r in p.ROLES:new[r]['boot_id']='c'*32
         self.client.observe.side_effect=[self.before,new]
         self.assertIn('other processor',self.client.work(job['id'])['message'])
+
+    def test_cp_restart_also_cycles_the_dp(self):
+        """The DP's packet fabric belongs to the CP lifetime: a CP restart resets
+        the DP through its own owner once the CP is verified, and succeeds only
+        on a new ready DP boot."""
+        job = self.client.submit(self.payload('cp'))
+        cp_new = copy.deepcopy(self.before); cp_new['cp']['boot_id'] = 'c'*32
+        both_new = copy.deepcopy(cp_new); both_new['dp']['boot_id'] = 'd'*32
+        self.client.observe.side_effect = [self.before, cp_new, cp_new, both_new]
+        result = self.client.work(job['id'])
+        self.assertEqual(result['status'], 'succeeded')
+        self.assertEqual(self.client.start_owner.call_args_list, [call('cp',30), call('dp',30)])
+        self.assertIn('CP and DP restarted', result['message'])
+        self.assertEqual(result['after']['dp']['boot_id'], 'd'*32)
+
+    def test_cp_restart_waits_for_a_dp_that_was_down_without_a_second_reset(self):
+        job = self.client.submit(self.payload('cp'))
+        cp_new = copy.deepcopy(self.before); cp_new['cp']['boot_id'] = 'c'*32
+        down = copy.deepcopy(cp_new); down['dp'].update(fresh=False, ready=False, boot_id=None)
+        both_new = copy.deepcopy(cp_new); both_new['dp']['boot_id'] = 'd'*32
+        self.client.observe.side_effect = [self.before, cp_new, down, down, both_new]
+        result = self.client.work(job['id'])
+        self.assertEqual(result['status'], 'succeeded')
+        self.client.start_owner.assert_called_once_with('cp',30)
+
+    def test_cp_restart_without_a_new_dp_boot_never_claims_success(self):
+        job = self.client.submit(self.payload('cp'))
+        cp_new = copy.deepcopy(self.before); cp_new['cp']['boot_id'] = 'c'*32
+        self.client.observe.side_effect = [self.before] + [cp_new]*60
+        ticks = [0.0]
+        result = self.client.work(job['id'], clock=lambda: ticks[0], sleep=lambda s: ticks.__setitem__(0, ticks[0]+s))
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('DP', result['message'])
+        self.assertEqual(self.client.start_owner.call_args_list, [call('cp',30), call('dp',30)])
+
+    def test_cp_restart_without_commissioned_dp_owner_fails_clearly(self):
+        job = self.client.submit(self.payload('cp'))
+        self.client.settings.return_value = {'cp': {'enabled': True, 'timeout': 30}, 'dp': {'enabled': False, 'timeout': 30}}
+        cp_new = copy.deepcopy(self.before); cp_new['cp']['boot_id'] = 'c'*32
+        self.client.observe.side_effect = [self.before, cp_new]
+        result = self.client.work(job['id'])
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('not commissioned', result['message'])
+        self.client.start_owner.assert_called_once_with('cp',30)
 
     def test_boot_changes_before_dispatch_cancels(self):
         job = self.client.submit(self.payload())

@@ -110,6 +110,22 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result['partner_consistency']['state'],'incomplete')
         self.assertEqual(result['partner_consistency']['missing_members'],['ethernet1/24'])
 
+    def test_status_carries_the_revision_the_plane_daemon_resolves_against(self):
+        """planed's resolve compares the operator's observed_revision with
+        status.config.revision; an interrupted aggregates apply could never be
+        cleared while the status had no config."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)
+            for source in ('candidate','running'):(path/(source+'-config.xml')).write_bytes(XML)
+            backend=AsyncMock()
+            async def query(resource,action):
+                return FACE if resource=='faceplate' else {}
+            backend.run.side_effect=query
+            with patch('aggregate_activation.status',return_value=dict(revision=7,activation_supported=True,offload_ready=False,offload_blocker=None,groups={})):
+                result=asyncio.run(execute('status',{},backend,path))
+            self.assertEqual(result['config'],{'revision':7})
+            self.assertEqual(result['revision'],7)
+
     def test_daemon_reads_both_configs_and_never_applies(self):
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)
