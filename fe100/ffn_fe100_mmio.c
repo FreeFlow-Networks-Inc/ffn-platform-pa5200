@@ -13,6 +13,14 @@
 #include <unistd.h>
 
 static volatile uint32_t *regs;
+/* The PCIe window presents the FE100 reversed under one CP kernel and in
+ * CPU order under another. prom_chip_rev_num (0xffffc) is hardwired
+ * 0x000a0001 and read-only, so it tells which at open time. */
+#define FFN_PROBE_OFFSET 0xffffc
+#define FFN_PROBE_VALUE 0x000a0001u
+static int swap;
+static inline uint32_t from_bar(uint32_t v) { return swap ? le32toh(v) : v; }
+static inline uint32_t to_bar(uint32_t v) { return swap ? htole32(v) : v; }
 static unsigned char known[0x100000 / 4];
 static int writable;
 static unsigned faults;
@@ -87,6 +95,18 @@ int ffn_fe100_open(uint64_t base, const char *log_path, int enable_writes)
     regs = mmap(NULL, 0x100000, PROT_READ | (enable_writes ? PROT_WRITE : 0), MAP_SHARED, fd, 0);
     close(fd);
     if (regs == MAP_FAILED) { regs = NULL; return -1; }
+    {
+        uint32_t probe = regs[FFN_PROBE_OFFSET / 4];
+        if (probe == FFN_PROBE_VALUE) swap = 0;
+        else if (le32toh(probe) == FFN_PROBE_VALUE) swap = 1;
+        else {
+            fprintf(trace, "FE100 BAR byte order unrecognised: prom_chip_rev_num 0x%08x\n", probe);
+            munmap((void *)regs, 0x100000);
+            regs = NULL;
+            return -1;
+        }
+        fprintf(trace, "BAR byte order: %s\n", swap ? "reversed" : "cpu");
+    }
     writable = enable_writes;
     return 0;
 }
@@ -123,7 +143,7 @@ static int external_command(uint32_t value)
 {
     uint32_t target = (value >> 1) & 0xfffff;
     uint32_t op = (value >> 25) & 7;
-    uint32_t addr = le32toh(regs[0x80504 / 4]);
+    uint32_t addr = from_bar(regs[0x80504 / 4]);
     if ((value & ~0x0e1fffffU) || !(value & 1) || (op != 1 && op != 2))
         return 0;
     if (target == 0x2200) return addr == 0;
@@ -145,7 +165,7 @@ int fe100_reg_rd(uint32_t dev, uint32_t off, uint32_t *value)
         if (trace) fprintf(trace, "DENIED READ dev=%u off=0x%x\n", dev, off);
         return 12;
     }
-    *value = le32toh(regs[off / 4]);
+    *value = from_bar(regs[off / 4]);
     fprintf(trace, "R 0x%05x 0x%08x\n", off, *value);
     return 0;
 }
@@ -159,7 +179,7 @@ int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
         return 12;
     }
     fprintf(trace, "W 0x%05x 0x%08x\n", off, value);
-    regs[off / 4] = htole32(value);
+    regs[off / 4] = to_bar(value);
     __sync_synchronize();
     return 0;
 }
