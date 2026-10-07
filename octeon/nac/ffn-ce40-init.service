@@ -1,0 +1,24 @@
+[Unit]
+Description=FFN CE40 post-boot initialisation (ILKPHY_CFG, vendor order)
+Documentation=file:///usr/share/doc/ffn/CE40-BRINGUP.md
+# The socket must exist and must be the CE40 personality; ffn_ce40_init.py
+# checks the latter itself and exits 0 on an a101 boot.
+ConditionPathExists=/sys/bus/pci/devices/0003:06:00.0
+After=local-fs.target
+# The Interlaken PHY towards the FE100 is configured here; anything that
+# brings the FE100 up wants it done first.
+Before=ffn-fe100-pci.service ffn-fe100-control.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ffn_nac.ko claims feed:a00d directly once it is staged; until then the
+# proven ffn_ca1.ko is bound through new_id by the script. Writes need
+# allow_write=1, and only a freshly loaded module can take that parameter,
+# so load it here rather than letting something else load it read-only first.
+ExecStartPre=-/sbin/insmod /lib/modules/extra/ffn_nac.ko allow_write=1
+ExecStartPre=-/sbin/insmod /lib/modules/extra/ffn_ca1.ko allow_write=1
+ExecStart=/usr/local/sbin/ffn_ce40_init.py
+
+[Install]
+WantedBy=multi-user.target

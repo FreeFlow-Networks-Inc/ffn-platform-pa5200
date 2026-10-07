@@ -126,7 +126,11 @@ obvious way to prove the link after the ILKPHY write lands.
 
 ## Status and the honest caveat
 
-**Extracted, not yet executed.** Two things gate trying it:
+**Executed and wired (2026-10-07).** `ffn_ce40_init.py` performs the vendor's
+order on every boot from `ffn-ce40-init.service` (deployed in the CP root,
+ordered before the FE100 units): on the live CP it read fpga version 19,
+DDR layout 2, RLD cal `0xe2`, and wrote `ILKPHY_CFG 0xeec -> 0x72`, verified by
+read-back. The two gates below are therefore history, kept for the record:
 
 1. **It is unconfirmed that `feed:a00d` enumerates on our board at all.** See
    [README.md](README.md). The CE40 is an FPGA and may only appear as a PCI

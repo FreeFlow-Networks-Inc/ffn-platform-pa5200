@@ -99,7 +99,8 @@ fresh boot. `0x28000` is the one the vendor's `ce40_init()` writes with `0x72`
 register for the other links. Writing `0x72` to `0x28000` took and read back
 on 2026-10-06, and **reverted to `0xeec` on the next reprogram** — so the write
 is a post-boot CP initialisation step (the `ce40_init` equivalent), not part of
-the FPGA load, and it is not yet wired into FFN's boot.
+the FPGA load. It is now wired: `ffn_ce40_init.py` under `ffn-ce40-init.service`
+does it on every boot (verified on the live CP, 2026-10-07).
 
 ## SerDes lane status (`0x2c000`–`0x2ffff`, 4 × 10 live)
 
