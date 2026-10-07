@@ -83,8 +83,13 @@ int dp_engine_scan(struct dp_engine_set *set, struct dp_engine_ctx *ctx)
 
 	/* Clip once, here, rather than trusting each engine to respect the
 	 * budget. An engine that forgets cannot then run away. */
-	if (ctx->payload_len > DP_ENGINE_SCAN_MAX)
+	if (ctx->payload_len > DP_ENGINE_SCAN_MAX) {
 		ctx->payload_len = DP_ENGINE_SCAN_MAX;
+		/* Say so. A stateful engine cannot otherwise distinguish a
+		 * clipped frame from a short one, and the difference decides
+		 * whether its stream state is still valid. */
+		ctx->truncated = 1;
+	}
 
 	for (uint32_t i = 0; i < set->count; i++) {
 		struct dp_engine *e = &set->e[i];

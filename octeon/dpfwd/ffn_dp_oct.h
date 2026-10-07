@@ -122,6 +122,21 @@ struct dp_flow_ent {
     uint8_t  used, verdict, flags, scans;
     uint16_t rule_id, egress;
     uint32_t pkts;
+    /* Content-scanner position, one per DIRECTION. The flow key is
+     * normalised bidirectional, so a single counter would interleave
+     * client->server and server->client bytes into one automaton and
+     * match across the switch -- a false positive on traffic that
+     * never contained the pattern. [0] is a->b, [1] is b->a.
+     *
+     * These cost NOTHING: offsets 28-31 were padding before `bytes`
+     * (measured, both x86-64 and mips64 BE), so dp_flow_ent is still
+     * 40 bytes. That matters at a million flows.
+     *
+     * uint16_t is exact, not a guess: a state index is < nstates <=
+     * DP_AHO_MAX_STATES = 65536, so the largest value is 65535. The
+     * static assert in ffn_dp_ctd.c holds anyone raising that cap to
+     * revisiting this field rather than silently truncating. */
+    uint16_t scan_state[2];
     uint64_t bytes;
 };
 

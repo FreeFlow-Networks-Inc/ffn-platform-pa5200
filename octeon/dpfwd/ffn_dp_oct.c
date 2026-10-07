@@ -156,11 +156,21 @@ static int dp_key_eq(const struct dp_flow_key *a, const struct dp_flow_key *b)
 }
 
 /* Normalize so both directions of a conversation share one entry. */
+/* Which half of the normalised key this packet is travelling on: non-zero for
+ * a->b, zero for b->a. Factored out rather than written twice because the
+ * per-direction scanner state in dp_flow_ent is indexed by it, and a second
+ * copy of this predicate drifting from the first would silently cross the two
+ * directions' automaton state -- the exact bug the split exists to prevent. */
+static int dp_tuple_is_a_to_b(const struct dp_tuple *t)
+{
+    return (t->src_ip < t->dst_ip) ||
+           (t->src_ip == t->dst_ip && t->sport <= t->dport);
+}
+
 void dp_flow_key_from_tuple(struct dp_flow_key *k, const struct dp_tuple *t)
 {
     memset(k, 0, sizeof(*k));
-    int a_first = (t->src_ip < t->dst_ip) ||
-                  (t->src_ip == t->dst_ip && t->sport <= t->dport);
+    int a_first = dp_tuple_is_a_to_b(t);
     if (a_first) {
         k->ip_a = t->src_ip; k->port_a = t->sport;
         k->ip_b = t->dst_ip; k->port_b = t->dport;
@@ -403,7 +413,8 @@ static int dp_l3_resolve(struct dp_ctx *c, const struct dp_tuple *t,
  * reaches the port table, direction scoping is advisory.
  */
 static int dp_inspect(struct dp_ctx *c, const uint8_t *pkt,
-                      const struct dp_tuple *t, struct dp_result *out)
+                      const struct dp_tuple *t, struct dp_flow_ent *fe,
+                      struct dp_result *out)
 {
     struct dp_engine_ctx ec;
     int v;
@@ -417,6 +428,12 @@ static int dp_inspect(struct dp_ctx *c, const uint8_t *pkt,
     ec.direction   = DP_DIR_UNKNOWN;
     ec.l4_proto    = t->proto;
     ec.dport       = t->dport;
+    /* Per-direction, because the flow key is normalised bidirectional: one
+     * shared counter would step the automaton with request and response bytes
+     * interleaved. NULL with no flow entry -- the stateful engines then scan
+     * the packet standalone, which loses cross-packet matches and invents
+     * none. */
+    ec.scan_state  = fe ? &fe->scan_state[dp_tuple_is_a_to_b(t) ? 0 : 1] : NULL;
 
     c->stat_engine_scanned++;
     v = dp_engine_scan(c->engines, &ec);
@@ -509,7 +526,7 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         if (out->decision == FP_INSPECT_W && c->engines && t.pay_len &&
             fe->scans < DP_ENGINE_FLOW_PKTS) {
             fe->scans++;
-            out->decision = dp_inspect(c, pkt, &t, out);
+            out->decision = dp_inspect(c, pkt, &t, fe, out);
             if (out->decision == FP_DROP_W) {
                 fe->verdict = (out->engine_verdict >= DP_EV_RESET)
                               ? FP_V_RESET_W : FP_V_DROP_W;
@@ -538,7 +555,9 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
     out->rule_id = rule_id;
     out->egress = egress;
     out->decision = dec = dp_l3_resolve(c, &t, out);
-    egress = out->egress;
+    /* Cache policy intent, not this packet's resolved next hop. Both
+     * directions share a flow key; routing must still resolve each packet's
+     * destination and refresh neighbour/rewrite metadata on cache hits. */
 
     if (!fe)
         fe = dp_flow_insert(&c->flows, &key);
@@ -564,7 +583,7 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
     if (dec == FP_INSPECT_W && fe && c->engines && t.pay_len &&
         fe->scans < DP_ENGINE_FLOW_PKTS) {
         fe->scans++;
-        out->decision = dec = dp_inspect(c, pkt, &t, out);
+        out->decision = dec = dp_inspect(c, pkt, &t, fe, out);
     }
 
     if (fe) {
@@ -962,6 +981,15 @@ int dp_poll_once(struct dp_ctx *c)
         struct dp_result res;
         c->stat_rx++;
         dp_process(c, burst[i].data, burst[i].len, burst[i].vsys, &res);
+        if (res.routed && (res.decision == FP_FORWARD_W || res.decision == FP_INSPECT_W) &&
+            dp_l3_rewrite(c->l3, burst[i].data, burst[i].len, &res.nh) != DP_L3_OK) {
+            /* TTL/rewrite failure belongs to this packet, not the session's
+             * policy verdict. Never transmit it with an unchanged L3 header. */
+            if (res.decision == FP_FORWARD_W) c->stat_forward--;
+            else c->stat_inspect--;
+            c->stat_drop++;
+            res.decision = FP_DROP_W;
+        }
         burst[i].decision = res.decision;
         burst[i].egress = res.egress;
         if (res.decision == FP_FORWARD_W || res.decision == FP_INSPECT_W) {
