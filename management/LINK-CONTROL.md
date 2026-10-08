@@ -5,7 +5,7 @@ control daemon. The CP exposes fixed operations, not arbitrary registers or shel
 commands. Each change requires a current revision; ambiguous outcomes remain
 journaled and block further writes.
 
-Network > Faceplate Ports offers supported SDK speeds and an immediate Apply
+Device > Faceplate Ports offers supported SDK speeds and an immediate Apply
 speed action. Network > Interfaces > Advanced uses the selected platform's
 capabilities and stores link speed in candidate XML for configd to apply on
 commit. Fixed SDK speed disables auto-negotiation; Auto preserves the existing
@@ -73,7 +73,7 @@ its advertisement, and never resets the chip, reloads firmware or starts packet
 forwarding. A partial failure leaves the existing PHY/faceplate journals pending.
 Restart actions are not persisted as boot intent.
 
-Network > Faceplate Ports exposes **Renegotiate** and negotiation status.
+Device > Faceplate Ports exposes **Renegotiate** and negotiation status.
 The API returns separate legacy MII and 10G AN control/status observations. The privileged MP CLI uses the same daemon:
 
 ```sh
@@ -201,7 +201,7 @@ preserves other MP commands and UI sections, and reloads the MP daemon and
 manager API when its router changes.
 It neither restarts BCM/PHY services nor changes a physical mapping on install.
 
-Administrators use **Network → Faceplate Ports → Identify copper ports**:
+Administrators use **Device → Faceplate Ports → Identify copper ports**:
 
 1. Select an unmapped port with no cable attached and start identification.
 2. Connect one spare active Ethernet peer to that exact port. Leave existing

@@ -102,8 +102,6 @@ async function check(writable) {
   assert.equal(restart.disabled,true);
   const ack=parent.all().find(n=>n.type==='checkbox');ack.checked=true;ack.onchange();
   assert.equal(restart.disabled,!writable);
-  await pages.phy(parent);
-  assert.equal(parent.all().find(n=>n.textContent==='Apply PHY setting').disabled,!writable);
-  assert.ok(parent.all().some(n=>n.textContent==='17 / ethernet1/2'));
+  assert.ok(!pages.phy,'the Copper PHYs page is gone: PHY speed is a Faceplate Ports setting');
 }
 (async()=>{await check(true);await check(false);console.log('PA-5220 UI tests passed');})().catch(e=>{console.error(e);process.exit(1);});
