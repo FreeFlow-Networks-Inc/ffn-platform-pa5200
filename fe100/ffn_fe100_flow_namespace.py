@@ -43,18 +43,29 @@ def probe(first=FIRST, last=LAST):
     from ffn_fe100_live_sessions import LiveSessions
     from ffn_fe100_sessions import key4, entry4
     from ffn_fe100_session_adapter import encode_native, decode_native, SUCCESS, NOT_FOUND
-    io = LiveSessions(writable=False)
-    state = io.status()
-    report = dict(schema=1, cp_boot_id=state.get('cp_boot_id'), owner_sha256=state.get('owner_sha256'),
-                  initialized=state.get('initialized') is True, blockers=list(state.get('blockers', [])),
+    report = dict(schema=1, cp_boot_id=None, owner_sha256=None, initialized=False, blockers=[],
                   first=first, last=last, proved=False, operations=[])
+    # One handle only: the mapping is opened once per process. The writable
+    # constructor evaluates this boot's readiness itself and refuses with the
+    # blockers when the device is not initialised.
+    try:
+        io = LiveSessions(writable=True)
+    except RuntimeError as error:
+        report['blockers'] = [str(error)[:300]]
+        try:
+            peek = LiveSessions(writable=False).status()
+            report.update(cp_boot_id=peek.get('cp_boot_id'), owner_sha256=peek.get('owner_sha256'), blockers=list(peek.get('blockers') or report['blockers']))
+        except Exception:
+            pass
+        return report
+    state = io.status()
+    report.update(cp_boot_id=state.get('cp_boot_id'), owner_sha256=state.get('owner_sha256'),
+                  initialized=state.get('initialized') is True, blockers=list(state.get('blockers', [])))
     if not report['initialized']:
         return report
     if any(state['registers'].get(r) for r in ('0x40428', '0x40450')):
         report['blockers'] = ['hardware flow tables are not empty; the range proof needs empty tables']
         return report
-    io.lock.close()
-    io = LiveSessions(writable=True)
     wires = [entry4(key4(*PROBE_KEYS[0]), first), entry4(key4(*PROBE_KEYS[1]), last)]
     touched = []
     def call(op, wire):
