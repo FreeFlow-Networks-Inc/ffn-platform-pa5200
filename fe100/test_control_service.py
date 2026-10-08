@@ -49,7 +49,9 @@ class ControlTests(unittest.TestCase):
             owner=control.PolicyController()
             try:status=owner.execute('status',{})
             finally:owner.close()
-        self.assertFalse(status['flow_ids']['commissioned']);self.assertIn('probe',status['flow_ids']['reason'])
+        # Without FE100 hardware the probe reports either an error or no matching boot; either leaves it uncommissioned.
+        self.assertFalse(status['flow_ids']['commissioned']);self.assertTrue(status['flow_ids']['reason'])
+        self.assertEqual((status['flow_ids']['first'],status['flow_ids']['next_id']),(0x10000,None))
         admission=status['admission']
         self.assertEqual((admission['mode'],admission['hardware_admission'],admission['installed']),('supervised-dry-run',False,0))
         self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
