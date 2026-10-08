@@ -13,8 +13,8 @@
     {
       "id": "nif",
       "label": "Faceplate Ports",
-      "tab": "network",
-      "after": "interfaces"
+      "tab": "device",
+      "after": "dash-hardware"
     },
     {
       "id": "routing",
@@ -51,12 +51,6 @@
       "label": "BCM Switch Service",
       "tab": "device",
       "after": "dash-system"
-    },
-    {
-      "id": "phy",
-      "label": "Copper PHYs",
-      "tab": "network",
-      "after": "interfaces"
     },
     {
       "id": "vifs",

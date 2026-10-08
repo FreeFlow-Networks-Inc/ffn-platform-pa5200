@@ -129,7 +129,8 @@ class ApplyTests(unittest.TestCase):
                     status=Status()
                     with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.time.sleep') as sleep:
                         if 'conflict' in reason or 'changed' in reason:
-                            PlatformApplier(path).reconcile(status)
+                            with self.assertLogs('ffn-configd','WARNING') as logged:PlatformApplier(path).reconcile(status)
+                            self.assertIn('re-reading and retrying',logged.output[0])
                             self.assertEqual(status.errors,[])
                             self.assertTrue(face['ports'][0]['enabled'])
                             self.assertEqual(reads,[1,2])

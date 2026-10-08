@@ -452,36 +452,6 @@ window.ffnExtensions.renderDataplaneControls = async parent => {
       },!writable||!port.available||port.admin_configuration===false||port.phy_pending);
     }
   }
-  async function phyPage(parent){
-    parent.replaceChildren();const root=element('div',undefined,parent);element('h2','Copper PHYs',root);
-    const message=element('p','Reading PHYs...',root);let data,user;
-    try{[data,user]=await Promise.all([api(prefix+'/phy'),api('/api/auth/me')]);}catch(e){message.textContent=e.message;return;}
-    if(!root.isConnected)return;message.textContent=data.warning;
-    const writable=['admin','superuser'].includes(user.role)&&!data.saved?.pending;
-    if(data.saved?.pending)element('p','Previous PHY change unresolved; inspect hardware before retrying.',root);
-    const table=element('table',undefined,root);table.className='data-table';
-    const headings=element('tr',undefined,element('thead',undefined,table));
-    for(const title of ['PHY address / port','Identity','Firmware','Link','Negotiated speed','Advertise'])element('th',title,headings);
-    const body=element('tbody',undefined,table);
-    for(const phy of data.phys){
-      const row=element('tr',undefined,body);
-      for(const value of [String(phy.phy)+(phy.interface?' / '+phy.interface:' / mapping unverified'),phy.identified?'BCM84848':'Unknown',phy.ready?'Running 0x'+phy.firmware.toString(16):'Not ready',phy.link?'Up':'Down',phy.speed_mbps?phy.speed_mbps+' Mbps':'Unknown'])element('td',value,row);
-      const cell=element('td',undefined,row),select=element('select',undefined,cell);
-      for(const speed of ['auto',...(phy.supported_speeds||[]).map(String)]){const o=element('option',speed==='auto'?'Auto (100M/1G/10G)':speed+' Mbps only',select);o.value=speed;}
-      select.value=phy.configured_speed||'auto';select.disabled=!writable||!phy.ready;
-      select.setAttribute('aria-label','PHY '+phy.phy+' advertised speed');
-      button(cell,'Apply PHY setting',async()=>{
-        if(!confirm('Change PHY '+phy.phy+' advertisement? This can interrupt '+(phy.interface||'an unmapped copper port')+'.'))return;
-        root.querySelectorAll('button,select').forEach(n=>{n.disabled=true;});
-        try{const result=await api(prefix+'/phy/set',{method:'POST',body:JSON.stringify({revision:data.revision,phy:phy.phy,speed:select.value})});
-          if(result.activation!=='verified')throw new Error('PHY configuration unverified');
-          if(root.isConnected)await phyPage(parent);
-        }catch(e){message.textContent=e.message+' Refresh before another change.';refresh.disabled=false;}
-      },!writable||!phy.ready);
-    }
-    const refresh=button(root,'Refresh',()=>phyPage(parent));
-  }
-  window.ffnExtensions.registerPage('pa5200','phy',phyPage);
   async function bcmService(parent){
     parent.replaceChildren();const root=element('div',undefined,parent);
     element('h2','BCM Switch Service',root);

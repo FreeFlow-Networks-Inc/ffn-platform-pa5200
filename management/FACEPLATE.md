@@ -1,6 +1,6 @@
 # Faceplate administrative control
 
-Network > Faceplate Ports maps ethernet1/1 through ethernet1/24 to the verified
+Device > Faceplate Ports maps ethernet1/1 through ethernet1/24 to the verified
 BCM faceplate list. Internal NIF/fabric ports and the extra SDK port 12 cannot be
 addressed through this API. Speed controls and their activation requirements are described in LINK-CONTROL.md.
 Admin enable/disable does not configure VLANs or L3 forwarding; use Dataplane

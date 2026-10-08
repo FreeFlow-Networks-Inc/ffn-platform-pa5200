@@ -1,5 +1,6 @@
 """Apply committed PA-5200 ethernet configuration through the MP owner daemon."""
 import json
+import logging
 import re
 import subprocess
 import uuid
@@ -104,6 +105,7 @@ class PlatformApplier:
             except ValueError as error:
                 text=str(error)
                 if attempt==attempts-1 or not ('revision conflict' in text or 'Configuration changed' in text):raise
+                logging.getLogger('ffn-configd').warning('faceplate revision moved under the apply for port %s (%s); re-reading and retrying',port,text[-120:])
                 time.sleep(1);faceplate=rpc('faceplate')
 
     def reconcile(self, status):
