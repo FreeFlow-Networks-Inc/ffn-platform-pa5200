@@ -16,8 +16,15 @@ exceptions. No appliance addresses, VLAN choices or table allocations are
 embedded in the implementation.
 
 Firewall-local destinations remain on the interface-management-profile path.
-Missing or stale neighbors, policy routing, VRFs, multipath, unsupported route
-attributes, changed ownership and unsupported attachment kinds block planning.
+Missing, failed or incomplete neighbors, policy routing, VRFs, multipath,
+unsupported route attributes, changed ownership and unsupported attachment
+kinds block planning. A neighbor in any kernel-valid state (reachable, stale,
+delay, probe, permanent, noarp) keeps its link address and its plan: under
+forwarded traffic the kernel gets no transport confirmation, so entries cycle
+through those states every reachable_time, and the snapshot projects neighbors
+to destination, device, link address and validity so that cycle changes
+neither the plan nor the generation digest. The DP producer drains a route
+notification and ends the generation only when the projected topology differs.
 Snapshots before and after planning must agree. Collection shares the existing
 eight-second session-observation budget. Missing or changed route evidence
 does not withdraw the software policy; it marks hardware planning unavailable.
