@@ -126,7 +126,9 @@ def evaluate_row(row,policy,owner,attachments,truncated,nat_qualified):
     if request['nat_required'] and nat_qualified is not True:
         reasons.append('NAT packet rewrite is not qualified for hardware admission')
     if len(indices)==2 and request['ingress']==request['egress']:reasons.append('verified distinct front-port bindings required')
-    try:session_pair4(request['session_id'],request['original'],request['reply'],0,[0,0])
+    # The FE100 session identifier is allocated by the commissioned flow-ID
+    # owner, not taken from the 32-bit conntrack id; validate the tuples alone.
+    try:session_pair4(0,request['original'],request['reply'],0,[0,0])
     except (ValueError,TypeError,KeyError) as error:reasons.append('session tuple encoding: '+str(error))
     l3=row.get('l3')
     if not isinstance(l3,dict):reasons.append('DP route/neighbor observation is unavailable')

@@ -93,7 +93,7 @@ class AdmissionTests(unittest.TestCase):
             (dict(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/1']],inspection_required=True)),'flow requires software enforcement: inspection profile'),
             (dict(tcp_state=2),'flow requires software enforcement: not established'),
             (dict(nat=dict(source=True,destination=False)),'NAT packet rewrite is not qualified for hardware admission'),
-            (dict(conntrack_id=2**31),'session tuple encoding: '),
+            (dict(original=dict(ORIGINAL,protocol=1),reply=dict(REPLY,protocol=1)),'session tuple encoding: '),
             (dict(l3=None),'DP route/neighbor observation is unavailable'),
             (dict(l3=dict(available=False,hardware_admission=False,blockers=['No route to 198.51.100.2'],directions=[],snapshot_digest='d'*64)),'No route to 198.51.100.2'),
             (dict(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/9']],inspection_required=False)),'interface owner is absent from applied bindings: ethernet1/9'),
@@ -104,6 +104,12 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(expected=expected):
                 self.assertEqual(item['stage'],'blocked')
                 self.assertTrue(any(reason.startswith(expected) for reason in item['blockers']),item['blockers'])
+
+    def test_conntrack_ids_beyond_the_fe100_session_space_are_not_a_tuple_failure(self):
+        # The allocator gap is generation-wide; a large conntrack id must not be a per-row reason.
+        self.receiver.sessions['c'*64]=row(conntrack_id=2**31+5)
+        item=self.run_eval()['sessions'][0]
+        self.assertEqual(item['stage'],'admissible-pending-commissioning');self.assertEqual(item['session_id'],2**31+5)
 
     def test_attachment_ownership_and_intent_gaps_are_per_interface(self):
         self.attachments=attachments(attachment('ethernet1/1',observed=False,blockers=['CP physical redirect ownership is missing, stale or pending']))

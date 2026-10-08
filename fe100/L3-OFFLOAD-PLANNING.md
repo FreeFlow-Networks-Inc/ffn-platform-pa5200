@@ -74,3 +74,17 @@ Existing isolated FE100 tests establish packet rewriting under their documented
 conditions. They do not authorize diverting production traffic into hardware.
 The interface/VLAN configuration must already agree with the upstream network;
 this planner never changes it to match observed traffic.
+
+## Measured after the interface pair followed the routes (2026-10-08, late)
+
+With the DP planner selecting the pair from the routes (FFN-NGFW
+`codex/l3-neighbor-validity`) and the receivers accepting `l3.pair`, the live
+inventory on the PA-5220 held 128 sessions of which 97 were software and L3
+candidates, every one resolved to ae1.69 to ethernet1/1. The supervised
+evaluation then named what remains per session: NAT rewrite not qualified (all
+97, every LAN-to-WAN session is translated) and aggregate hardware egress not
+commissioned for ae1.69 (all 97); generation-wide, policy activation,
+front-port qualification and the flow-ID allocator. The 31 non-candidates were
+TCP sessions not yet established or not yet assured by conntrack. So the gates
+to a first admitted session on this appliance are, in order: the flow-ID
+namespace, NAT packet qualification, and aggregate egress selection.
