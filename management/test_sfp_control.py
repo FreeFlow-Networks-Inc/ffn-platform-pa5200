@@ -12,6 +12,21 @@ import ffn_sfp_control as sfp
 import ffn_faceplate as face
 
 
+# Identity page read from the 1000BASE-LX module in faceplate port 5 of the PA-5220 (2026-10-08).
+LX=bytes.fromhex('0304070000000200000000010d000a64373700004f454d202020202020202020202020200000005f474c432d4c482d534d4420202020202041202020051e0006001a00004353594745314f433538323620202020323431313031202068f0016f')
+
+
+def identity(connector=7,codes10g=0,codes1g=0,nominal=13,wavelength=1310,br_max=0,vendor='TEST',part='MODULE'):
+    page=bytearray(96);page[0]=3;page[1]=4;page[2]=connector;page[3]=codes10g;page[6]=codes1g;page[12]=nominal
+    page[20:36]=vendor.ljust(16).encode();page[40:56]=part.ljust(16).encode();page[60:62]=wavelength.to_bytes(2,'big');page[66]=br_max
+    page[63]=sum(page[:63])&255;page[95]=sum(page[64:95])&255
+    return bytes(page)
+
+
+SR_DUAL=identity(codes10g=0x10,codes1g=0x01,nominal=103,wavelength=850,part='AFBR-709SMZ')
+COPPER=identity(connector=0x22,codes1g=0x08,nominal=13,wavelength=0,part='SFP-1000T')
+
+
 class SfpControlTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
@@ -104,31 +119,84 @@ class SfpControlTests(unittest.TestCase):
                     face.apply(dict(revision=current['revision'],port=5,enabled=False))
             self.assertIn('pending',json.loads(face.STATE.read_text()))
 
-    def test_gigabit_recipe_is_fixed_serialized_and_restores_shared_script(self):
+    def test_module_rates_from_sff8472_codes_and_nominal_rate(self):
+        # LX: 1000BASE-LX code, 1.3 GBd nominal, 1310 nm, LC. Dual-rate SR:
+        # 10GBASE-SR and 1000BASE-SX codes, 10.3 GBd nominal, 850 nm.
+        self.assertEqual(sfp.module_speeds(LX),[1000]);self.assertTrue(sfp.optical(LX))
+        self.assertEqual(sfp.module_summary(LX),dict(vendor='OEM',part='GLC-LH-SMD',wavelength_nm=1310,optical=True,speeds=[1000]))
+        self.assertEqual(sfp.module_speeds(SR_DUAL),[1000,10000])
+        self.assertEqual(sfp.module_speeds(identity(nominal=103,wavelength=850)),[10000])
+        self.assertEqual(sfp.module_speeds(identity(nominal=255,br_max=42,wavelength=1310)),[10000])
+        self.assertEqual(sfp.module_speeds(identity(nominal=0,wavelength=1310)),[])
+        self.assertFalse(sfp.optical(COPPER));self.assertEqual(sfp.module_speeds(COPPER),[1000])
+        with self.assertRaises(ValueError):sfp.module_speeds(bytes(96))
+        corrupt=bytearray(LX);corrupt[12]=14
+        with self.assertRaises(ValueError):sfp.module_speeds(bytes(corrupt))
+
+    def test_link_mode_follows_the_module_and_refuses_undeclared_rates(self):
+        self.assertEqual(sfp.link_mode(LX,'auto'),(1000,True));self.assertEqual(sfp.link_mode(LX,'1000'),(1000,True))
+        with self.assertRaisesRegex(ValueError,'supports 1000; 10000'):sfp.link_mode(LX,'10000')
+        self.assertEqual(sfp.link_mode(SR_DUAL,'auto'),(10000,False));self.assertEqual(sfp.link_mode(SR_DUAL,'1000'),(1000,True))
+        self.assertEqual(sfp.link_mode(SR_DUAL,'10000'),(10000,False))
+        self.assertIsNone(sfp.link_mode(COPPER,'auto'));self.assertIsNone(sfp.link_mode(identity(nominal=0,wavelength=1310),'auto'))
+
+    def recipe_controller(self,markers):
         path=Path(self.tmp.name)/'recipe.c';path.write_text('prior recipe')
         controller=types.ModuleType('ffn_aggregate_hardware')
         controller.SCRIPT=path;controller.acquire=lambda lock:None
         captured=[]
         def call(request):
             captured.append(path.read_text())
-            return dict(ok=True,completed=True,markers=['FFN_SFP_LINK 0 3 1 1 1'])
+            return dict(ok=True,completed=True,markers=list(markers))
         controller.call=call
+        return path,controller,captured
+
+    def test_gigabit_recipe_is_fixed_serialized_and_restores_shared_script(self):
+        path,controller,captured=self.recipe_controller(['FFN_SFP_LINK 0 3 1 1000 1 -4'])
         import builtins
         real_open=builtins.open
         def open_lock(path,*args,**kwargs):
             if path=='/run/ffn-forward-test.lock':path=Path(self.tmp.name)/'recipe.lock'
             return real_open(path,*args,**kwargs)
         with patch.dict(sys.modules,ffn_aggregate_hardware=controller),\
-             patch.object(sfp,'gigabit_fiber',return_value=True),patch('builtins.open',side_effect=open_lock):
-            self.assertTrue(sfp.configure_gigabit_fiber(5,16,'auto'))
+             patch.object(sfp,'module_identity',return_value=LX),patch('builtins.open',side_effect=open_lock):
+            result=sfp.configure_gigabit_fiber(5,16,'auto')
+            self.assertEqual((result['speed'],result['autoneg'],result['link_mode'],result['changed'],result['autoneg_mode_control']),(1000,True,'1000BASE-X',True,-4))
             self.assertIn('BCM_PORT_PHY_CONTROL_AUTONEG_MODE',captured[0])
             self.assertNotIn('0NEG_MODE',captured[0])
             self.assertIn('bcm_port_interface_set(0,16,BCM_PORT_IF_GMII)',captured[0])
+            self.assertIn('bcm_port_speed_set(0,16,1000)',captured[0]);self.assertIn('ifn!=3 ||',captured[0])
+            self.assertIn('bcm_port_enable_set(0,16,0)',captured[0]);self.assertIn('bcm_port_enable_set(0,16,1)',captured[0])
             self.assertEqual(path.read_text(),'prior recipe')
+            # A fixed 1000 on 1 Gb/s optics is the same Clause 37 mode.
+            self.assertEqual(sfp.configure_fiber(5,16,'1000')['autoneg'],True)
             with self.assertRaises(ValueError):sfp.configure_gigabit_fiber(5,16,'10000')
             controller.call=lambda r:dict(ok=True,completed=False,markers=[])
             with self.assertRaises(RuntimeError):sfp.configure_gigabit_fiber(5,16,'auto')
             self.assertEqual(path.read_text(),'prior recipe')
+            controller.call=lambda r:dict(ok=True,completed=True,markers=['FFN_SFP_LINK 0 4 0 1000 1 0'])
+            with self.assertRaisesRegex(RuntimeError,'readback mismatch'):sfp.configure_fiber(5,16,'auto')
+        with patch.dict(sys.modules,ffn_aggregate_hardware=controller),\
+             patch.object(sfp,'module_identity',side_effect=OSError('no module')):
+            self.assertFalse(sfp.configure_fiber(5,16,'auto'))
+        with patch.dict(sys.modules,ffn_aggregate_hardware=controller),patch.object(sfp,'module_identity',return_value=COPPER):
+            self.assertFalse(sfp.configure_fiber(5,16,'auto'))
+
+    def test_ten_gigabit_optics_restore_the_native_interface_without_autoneg(self):
+        path,controller,captured=self.recipe_controller(['FFN_SFP_LINK 0 10 0 10000 1 0'])
+        import builtins
+        real_open=builtins.open
+        def open_lock(path,*args,**kwargs):
+            if path=='/run/ffn-forward-test.lock':path=Path(self.tmp.name)/'recipe.lock'
+            return real_open(path,*args,**kwargs)
+        with patch.dict(sys.modules,ffn_aggregate_hardware=controller),\
+             patch.object(sfp,'module_identity',return_value=SR_DUAL),patch('builtins.open',side_effect=open_lock):
+            result=sfp.configure_fiber(5,16,'auto')
+            self.assertEqual((result['speed'],result['autoneg'],result['link_mode']),(10000,False,'XFI'))
+            self.assertIn('bcm_port_interface_set(0,16,BCM_PORT_IF_XFI)',captured[0]);self.assertIn('bcm_port_speed_set(0,16,10000)',captured[0])
+            self.assertIn('ifn!=10 ||',captured[0]);self.assertNotIn('bcm_port_autoneg_set(0,16,1)',captured[0].split('if(rv==0 && 0)')[0][-40:])
+            controller.call=lambda r:dict(ok=True,completed=True,markers=['FFN_SFP_LINK 0 3 1 1000 1 -4'])
+            self.assertEqual(sfp.configure_fiber(5,16,'1000')['link_mode'],'1000BASE-X')
 
     def test_mux_resolution_follows_channels_not_vendor_adapter_numbers(self):
         root=Path(self.tmp.name);mux=root/'1-0075';mux.mkdir()
