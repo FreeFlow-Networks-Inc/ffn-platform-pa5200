@@ -18,4 +18,6 @@ UMask=0077
 NoNewPrivileges=yes
 
 [Install]
-WantedBy=multi-user.target
+# PartOf propagates the control daemon stop; being wanted by it brings the
+# unit back when the daemon (re)starts instead of leaving it stopped.
+WantedBy=multi-user.target ffn-controld.service
