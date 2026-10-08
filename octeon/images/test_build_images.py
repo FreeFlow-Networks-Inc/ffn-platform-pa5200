@@ -108,6 +108,7 @@ class BuildInputTests(unittest.TestCase):
                        'usr/local/sbin/ffn_fe100_attachments.py',
                        'usr/local/sbin/ffn_fe100_attachment_runtime.py',
                        'usr/local/sbin/ffn_fe100_admission.py',
+                       'usr/local/sbin/ffn_fe100_flow_namespace.py',
                        'usr/local/lib/ffn/fe100_attachment_config.py',
                        'usr/local/sbin/validate_attachments.py',
                        'usr/local/sbin/validate_path_resources.py',

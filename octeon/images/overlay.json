@@ -524,6 +524,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_flow_namespace.py",
+      "usr/local/sbin/ffn_fe100_flow_namespace.py"
+    ],
+    [
+      "platform",
       "management/fe100_attachment_config.py",
       "usr/local/lib/ffn/fe100_attachment_config.py"
     ],

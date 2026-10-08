@@ -49,6 +49,7 @@ class ControlTests(unittest.TestCase):
             owner=control.PolicyController()
             try:status=owner.execute('status',{})
             finally:owner.close()
+        self.assertFalse(status['flow_ids']['commissioned']);self.assertIn('probe',status['flow_ids']['reason'])
         admission=status['admission']
         self.assertEqual((admission['mode'],admission['hardware_admission'],admission['installed']),('supervised-dry-run',False,0))
         self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
