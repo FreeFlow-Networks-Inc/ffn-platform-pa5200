@@ -88,3 +88,7 @@ front-port qualification and the flow-ID allocator. The 31 non-candidates were
 TCP sessions not yet established or not yet assured by conntrack. So the gates
 to a first admitted session on this appliance are, in order: the flow-ID
 namespace, NAT packet qualification, and aggregate egress selection.
+
+The flow-ID namespace was commissioned the same night (`FLOW-ID-OWNERSHIP.md`):
+the control owner's status reports it and the admission evaluation's
+generation list is down to policy activation and front-port qualification.
