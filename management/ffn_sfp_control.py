@@ -11,7 +11,19 @@ from pathlib import Path
 import re
 import struct
 
-from ffn_i2cread import read_regs, write_reg
+
+
+# The I2C reader is the CP's own module, installed beside this one. It is
+# imported on first use so the classification and link-mode helpers stay
+# importable (and testable) where it is absent.
+def read_regs(*args):
+    from ffn_i2cread import read_regs as read
+    return read(*args)
+
+
+def write_reg(*args):
+    from ffn_i2cread import write_reg as write
+    return write(*args)
 
 LOCK = Path('/run/ffn-sfp-control.lock')
 SYSFS = Path('/sys/bus/i2c/devices')

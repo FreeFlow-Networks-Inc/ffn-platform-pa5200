@@ -91,7 +91,7 @@ def sfp_module(port,present=True):
     except (OSError,ValueError):pass
     import ffn_sfp_control as sfp
     try:summary=sfp.module_summary(sfp.module_identity(port))
-    except (OSError,ValueError):return None
+    except (OSError,ValueError,ImportError):return None   # no reader here: the cage is not observable
     try:
         MODULES.mkdir(mode=0o700,parents=True,exist_ok=True)
         temp=record.with_suffix('.tmp');temp.write_text(json.dumps(summary));temp.replace(record)
@@ -198,6 +198,7 @@ def apply(request):
     if saved.get('pending'): raise ValueError('previous operation unresolved; inspect hardware before retry')
     saved['pending']=request
     save(saved)
+    mode=False   # the link mode an optical module dictated, when one did
     if port.get('media')=='copper':
         # Disable the MAC before the PHY; enable the PHY before the MAC.
         # Journal both steps as one faceplate operation; partial failure stays pending.
@@ -207,7 +208,6 @@ def apply(request):
         if request.get('enabled') is True:
             call({'op':'port.set','port':port['bcm_port'],'enable':True})
     else:
-        mode=False
         if 'speed' in request:
             mode=port.get('media')=='sfp' and sfp_link_apply(port,request['speed'])
             if not mode:call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
