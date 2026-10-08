@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import struct
 import sys
+import tempfile
 import time
 import unittest
 from collections import Counter
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'debian'))
 from ffn_native_aggregate import aggregate_library,Member,Unit,units,AggregateOwner
 from ffn_native_packet import checked
+from ffn_packet_cpus import CpuReservations
 from ffn_aggregate_datapath import Gates
 
 
@@ -144,6 +146,8 @@ class AggregateTests(unittest.TestCase):
         owner=AggregateOwner.__new__(AggregateOwner)
         owner.lib=self.lib;owner.handle=self.ctx;owner.parent='ae1';owner.members=[11,19]
         owner.port=11;owner.started=False;owner.network_key=None;owner.unit_names={}
+        scope=tempfile.TemporaryDirectory();self.addCleanup(scope.cleanup)
+        owner.cpu_reservations=CpuReservations(root=Path(scope.name)/'cpus',run=Path(scope.name)/'run')
         gates=Gates(owner.members);gates.apply({p:dict(collect=True,distribute=True) for p in owner.members})
         now=time.monotonic();engine=SimpleNamespace(members={p:dict(lease=now+5,deadline=now+5) for p in owner.members})
         inspector=SimpleNamespace(handle=None,lib=None,cfg={'ports':[]},counts=Counter())

@@ -64,6 +64,9 @@ def checked(result):
 
 
 class PacketOwner:
+    # Worker CPU reservations are claimed in the shared run directory; an
+    # owner may be given its own (tests, a scoped root) before it resumes.
+    cpu_reservations=None
     def __init__(self,port,source,lib=None):
         if type(port) is not int or not 1<=port<=24 or type(source) is not int or not 0<=source<=65535:
             raise ValueError('Invalid commissioned port mapping')
@@ -110,7 +113,7 @@ class PacketOwner:
 
     def resume(self):
         if not self.started:
-            self.cpu_reservations=CpuReservations()
+            if self.cpu_reservations is None:self.cpu_reservations=CpuReservations()
             self.cpu_token,cpus=self.cpu_reservations.reserve()
             try:checked(self.lib.ffn_packet_start(self.handle,*cpus))
             except BaseException:
