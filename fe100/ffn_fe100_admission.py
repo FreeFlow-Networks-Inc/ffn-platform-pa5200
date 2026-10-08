@@ -96,8 +96,15 @@ def evaluate_row(row,policy,owner,attachments,truncated,nat_qualified):
     if row.get('software_candidate') is not True:
         return dict(item,stage='software',blockers=list(row.get('blockers') or ['not a software candidate']))
     reasons=[];rule=row.get('rule') or {};pairs=rule.get('interface_pairs') or []
-    names=tuple(pairs[0]) if len(pairs)==1 and len(pairs[0])==2 else None
-    if names is None:reasons.append('interface pair is ambiguous')
+    l3=row.get('l3') if isinstance(row.get('l3'),dict) else {}
+    # The DP's L3 plan names the pair the routes selected among those the rule
+    # authorises; a legacy plan only exists for rules with a single pair.
+    selected=l3.get('pair')
+    if isinstance(selected,list) and len(selected)==2 and list(selected) in [list(p) for p in pairs if isinstance(p,list)]:
+        names=tuple(selected)
+    elif len(pairs)==1 and len(pairs[0])==2:names=tuple(pairs[0])
+    else:names=None
+    if names is None:reasons.append('interface pair unresolved by the routes among %d authorised' % len(pairs))
     bindings=policy.get('bindings') or {};indices={}
     for name in names or ():
         binding=bindings.get(name)

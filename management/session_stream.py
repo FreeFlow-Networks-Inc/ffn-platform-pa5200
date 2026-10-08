@@ -47,12 +47,16 @@ def validate_l3(row,policy):
         if not value['blockers'] or value.get('directions')!=[]:raise ValueError('Invalid blocked L3 observation')
         return
     pairs=(row.get('rule') or {}).get('interface_pairs')
-    if (not row['software_candidate'] or value['blockers'] or not isinstance(pairs,list) or
-            len(pairs)!=1 or not isinstance(pairs[0],list) or len(pairs[0])!=2 or
+    # The producer names the pair the routes selected; a legacy producer only
+    # planned sessions whose rule authorised exactly one pair.
+    pair=value.get('pair')
+    if pair is None and isinstance(pairs,list) and len(pairs)==1:pair=pairs[0]
+    if (not row['software_candidate'] or value['blockers'] or not isinstance(pairs,list) or not pairs or
+            not isinstance(pair,list) or len(pair)!=2 or list(pair) not in [list(p) for p in pairs if isinstance(p,list)] or
             not isinstance(value.get('directions'),list) or len(value['directions'])!=2):
         raise ValueError('Invalid directional L3 observation')
     destinations=[row['translated']['destination'],row['original']['source']]
-    for direction,name,destination in zip(value['directions'],reversed(pairs[0]),destinations):
+    for direction,name,destination in zip(value['directions'],reversed(pair),destinations):
         binding=policy['bindings'].get(name)
         if (not isinstance(direction,dict) or not isinstance(binding,dict) or
                 direction.get('interface')!=name or direction.get('destination')!=destination or

@@ -73,6 +73,15 @@ class AdmissionTests(unittest.TestCase):
         self.assertNotIn('relayed configuration intent differs from the CP policy barrier',result['generation'])
         self.assertEqual(result['sessions'][0]['stage'],'admissible-pending-commissioning')
 
+    def test_pair_resolved_by_the_dataplane_plan_is_used_when_the_rule_authorises_several(self):
+        value=row(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/1'],['ethernet1/5','ethernet1/9']],inspection_required=False))
+        value['l3']['pair']=['ethernet1/5','ethernet1/1']
+        self.receiver.sessions['c'*64]=value
+        item=self.run_eval()['sessions'][0]
+        self.assertEqual((item['stage'],item['interfaces']),('admissible-pending-commissioning',['ethernet1/5','ethernet1/1']))
+        value['l3']['pair']=['ethernet1/1','ethernet1/5']   # not an authorised pair: refused, never guessed
+        self.assertIn('interface pair unresolved by the routes among 2 authorised',self.run_eval()['sessions'][0]['blockers'])
+
     def test_software_candidate_blockers_pass_through_without_evaluation(self):
         self.receiver.sessions['c'*64]=row(software_candidate=False,blockers=['tcp-not-established'],original={},reply={},l3=None)
         item=self.run_eval()['sessions'][0]
@@ -80,7 +89,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_each_production_gate_names_its_own_reason(self):
         cases=[
-            (dict(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/1'],['ethernet1/1','ethernet1/5']],inspection_required=False)),'interface pair is ambiguous'),
+            (dict(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/1'],['ethernet1/1','ethernet1/5']],inspection_required=False)),'interface pair unresolved'),
             (dict(rule=dict(scope='vsys1',name='r',interface_pairs=[['ethernet1/5','ethernet1/1']],inspection_required=True)),'flow requires software enforcement: inspection profile'),
             (dict(tcp_state=2),'flow requires software enforcement: not established'),
             (dict(nat=dict(source=True,destination=False)),'NAT packet rewrite is not qualified for hardware admission'),
