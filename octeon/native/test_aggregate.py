@@ -18,7 +18,13 @@ from ffn_aggregate_datapath import Gates
 def frame(kind=b'\x88\xb5',tail=0):return bytes(12)+kind+bytes(45)+bytes([tail])
 def tagged(data,tag=123):return data[:12]+b'\x81\x00'+struct.pack('!H',tag)+data[12:]
 def wire(data,source):return b'\0\x18'+struct.pack('!H',source)+data
-def encoded(data,source):return b'\1'+struct.pack('!H',source)+b'\0'+data[:12]+bytes(8)+data[12:]+bytes(max(0,60-len(data)))
+def encoded(data,source,fill=0):return b'\1'+struct.pack('!H',source)+b'\0'+data[:12]+bytes(1)+bytes([fill])*3+bytes(4)+data[12:]+bytes(max(0,60-len(data)))
+def lb_key(data):
+    """The 8-bit LAG load-balance key the native owner carries in the RAW_DSA area."""
+    import zlib
+    from ffn_aggregate_datapath import flow_key
+    crc=zlib.crc32(flow_key(data)+b'\0\0')
+    return (crc^(crc>>8)^(crc>>16)^(crc>>24))&255
 
 
 class AggregateTests(unittest.TestCase):
@@ -85,11 +91,29 @@ class AggregateTests(unittest.TestCase):
         self.inject.send(wire(frame(),41));time.sleep(.04);checked(self.lib.ffn_packet_pause(self.ctx));self.empty(self.peer)
     def test_hardware_egress_ack_expiry_falls_back_to_software_member(self):
         self.gates(offload=.1);value=tagged(frame())
-        self.peer.send(value);self.poll();self.assertEqual(self.collect.recv(4096),encoded(value,0x8001))
+        self.peer.send(value);self.poll();self.assertEqual(self.collect.recv(4096),encoded(value,0x8001,lb_key(value)))
         time.sleep(.12);self.peer.send(value);self.poll()
         self.assertIn(self.collect.recv(4096),(encoded(value,41),encoded(value,42)))
         self.assertEqual(self.stats()[3],1)
         out=(C.c_uint64*4)();checked(self.lib.ffn_aggregate_unit_stats(self.ctx,123,out,4));self.assertEqual(out[2],2)
+    def test_hardware_egress_frames_carry_the_flow_load_balance_key(self):
+        self.gates(offload=5);keys=set()
+        for i in range(24):
+            ipv4=bytes(12)+b'\x08\0\x45'+bytes(8)+b'\x11'+bytes(2)+bytes([192,0,2,i,198,51,100,2])+bytes(26)
+            ipv6=bytes(12)+b'\x86\xdd\x60'+bytes(7)+bytes([i])*32+bytes(6)
+            for value in (ipv4,tagged(ipv4),ipv6,frame(tail=i)):
+                self.peer.send(value);self.poll()
+                self.assertEqual(self.collect.recv(4096),encoded(value,0x8001,lb_key(value)))
+                keys.add(lb_key(value))
+        self.assertGreater(len(keys),8)
+        # Transport ports never enter the key: every fragment of a flow keeps one member.
+        a=bytes(12)+b'\x08\0\x45'+bytes(8)+b'\x11'+bytes(2)+bytes([192,0,2,9,198,51,100,2])+b'\x12\x34\x00\x35'+bytes(22)
+        b=a[:34]+b'\x43\x21\x00\x50'+a[38:]
+        self.assertEqual(lb_key(a),lb_key(b))
+        # Byte 0 (the DSA tagged flag) and the upper four bytes stay clear in
+        # every mode; the switch's egress program reads them.
+        self.gates();self.peer.send(a);self.poll()
+        self.assertIn(self.collect.recv(4096),(encoded(a,41),encoded(a,42)))
     def test_normalized_inspection_and_local_management_bypass(self):
         self.gates(inspect=1)
         value=tagged(frame(tail=2));self.inject.send(wire(value,41));self.inject.send(wire(value,42));self.poll()

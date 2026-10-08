@@ -19,7 +19,12 @@ from aggregate_config import plan,parse
 
 DIRECTORY=Path('/var/lib/ffn-ngfw/aggregate-runtime')
 RUNNING=Path('/var/lib/ffn-ngfw/config/running-config.xml')
-OFFLOAD_BLOCKER='BCM egress is implemented but TM hash distribution is not commissioned; use OCTEON software activation'
+# Hardware egress: the CP programs the ingress load-balance key extraction with
+# the owned trunk (ffn_aggregate_bcm_lag.py) and the DP uses the LAG destination
+# only while that program is verified. On this SDK the switch applies no user
+# field program to TM-header packets, so the key never reaches the LAG resolver
+# and the mode stays gated; see AGGREGATE-ACTIVATION.md.
+OFFLOAD_BLOCKER='BCM egress works but cannot distribute flows: the trunk port injects TM-header frames the switch never parses, so its LAG key is one constant and every flow leaves through one member; hardware distribution needs INJECTED-type injection, a re-architecture; use OCTEON software activation'
 CP=['ssh','-F','/etc/ffn-ngfw/ssh-cp.conf','-o','BatchMode=yes','ffn-cp']
 DP=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-o','ServerAliveInterval=3','-o','ServerAliveCountMax=2',
     '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
