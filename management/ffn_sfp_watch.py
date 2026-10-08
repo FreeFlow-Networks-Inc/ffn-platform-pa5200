@@ -18,9 +18,10 @@ import sys
 import time
 sys.path.insert(0, '/usr/local/sbin')
 
-INTERVAL = 2.0          # presence poll
+INTERVAL = 5.0          # presence poll: two PCA9555 reads share bus 1 with the thermal governor
 SETTLE = 1.0            # a fresh module's EEPROM needs a moment before it answers
 IDENTITY_DEADLINE = 30  # give up on a module whose identity never validates
+BACKOFF = 60.0          # after a bus timeout, leave the bus alone for this long
 LOCK = '/run/ffn-faceplate.lock'
 
 
@@ -43,17 +44,24 @@ class Watcher:
         self.clock, self.log = clock, log
         self.previous = None
         self.pending = {}
+        self.quiet_until = 0.0
 
     def emit(self, **event):
         self.log(json.dumps(event, sort_keys=True, default=str))
 
     def poll(self):
+        now = self.clock()
+        if now < self.quiet_until:
+            return
         try:
             present = presence(self.inventory)
         except (OSError, RuntimeError, ValueError) as error:
-            self.emit(event='presence-unavailable', error=str(error)[:200])
+            # A timeout means the bus or a device is wedged; polling into it
+            # only adds traffic. Back off and let the governor and operators
+            # see a quiet bus.
+            self.quiet_until = now + BACKOFF
+            self.emit(event='presence-unavailable', error=str(error)[:200], backoff_seconds=BACKOFF)
             return
-        now = self.clock()
         if self.previous is not None:
             for port in sorted(present):
                 if present[port] and not self.previous.get(port, False):

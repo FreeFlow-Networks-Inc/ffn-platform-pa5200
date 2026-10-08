@@ -114,6 +114,7 @@ class BuildInputTests(unittest.TestCase):
                      'etc/systemd/system/ffn-fe100-control.service',
                      'etc/systemd/system/ffn-sfp-watch.service',
                      'usr/local/sbin/ffn_sfp_watch.py',
+                     'usr/local/sbin/ffn-i2c-recover',
                      'usr/local/sbin/ffn_fe100_controld.py',
                      'usr/local/sbin/ffn_fe100_control_socket.py',
                      'etc/systemd/system/ffn-fe100-recovery.timer',

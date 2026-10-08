@@ -105,9 +105,15 @@ class WatcherTests(unittest.TestCase):
         with patch.object(self.watcher,'relink',side_effect=RuntimeError('BCM operation failed')):
             self.advance();self.advance()
         self.assertEqual(self.events[-1],dict(event='relink',port=5,result='error',error='BCM operation failed'))
+        good=self.cages.inventory
         self.cages.inventory=lambda:(_ for _ in ()).throw(OSError('bus'))
         self.watcher.inventory=self.cages.inventory;self.advance()
-        self.assertEqual(self.events[-1]['event'],'presence-unavailable')
+        self.assertEqual(self.events[-1]['event'],'presence-unavailable');self.assertEqual(self.events[-1]['backoff_seconds'],watch.BACKOFF)
+        # A wedged bus is left alone for the back-off; polling resumes afterwards.
+        count=len(self.events);self.watcher.inventory=good;self.advance();self.advance()
+        self.assertEqual(len(self.events),count)
+        self.now+=watch.BACKOFF;self.advance()
+        self.assertEqual(len(self.events),count);self.assertIsNotNone(self.watcher.previous)
 
 
 if __name__=='__main__':unittest.main()

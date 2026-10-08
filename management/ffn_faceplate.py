@@ -73,11 +73,30 @@ def sfp_link_apply(port,speed):
     return sfp.configure_fiber(port['port'],port['bcm_port'],speed)
 
 
-def sfp_module(port):
-    """Identity of the present module, or None when absent or unreadable."""
+MODULES=Path('/run/ffn-sfp-modules')
+
+
+def sfp_module(port,present=True):
+    """Identity of the present module, read once per insertion and cached.
+
+    Status is polled by the console every few seconds; an EEPROM read through
+    the cage multiplexer each time is bus traffic the thermal governor shares.
+    The record is kept while the cage reports a module and dropped when it
+    does not, so a swapped module is read again after its absence was seen.
+    """
+    record=MODULES/('%d.json'%port)
+    if not present:
+        record.unlink(missing_ok=True);return None
+    try:return json.loads(record.read_text())
+    except (OSError,ValueError):pass
     import ffn_sfp_control as sfp
-    try:return sfp.module_summary(sfp.module_identity(port))
+    try:summary=sfp.module_summary(sfp.module_identity(port))
     except (OSError,ValueError):return None
+    try:
+        MODULES.mkdir(mode=0o700,parents=True,exist_ok=True)
+        temp=record.with_suffix('.tmp');temp.write_text(json.dumps(summary));temp.replace(record)
+    except OSError:pass
+    return summary
 
 
 def aggregate_member(port):
@@ -142,7 +161,7 @@ def observe():
                  control_scope='sfp-transmitter-and-switch-mac')
         p['enabled']=bool(p['mac_enabled'] and optic['tx_enabled']) if optic else None
         p['link']=bool(p['mac_link'] and p['enabled'] and optic['present']) if optic else None
-        p['module']=sfp_module(p['port']) if optic and optic.get('present') else None
+        p['module']=sfp_module(p['port'],bool(optic and optic.get('present'))) if optic else None
         if not optic:p['admin_error']='SFP transmitter control unavailable'
     revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled'),p.get('optics')) for p in ports]).encode()).hexdigest()[:12],16)
     sync_path=Path('/run/ffn-copper-link.json')

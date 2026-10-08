@@ -269,6 +269,11 @@
     ],
     [
       "platform",
+      "octeon/i2c/ffn-i2c-recover.sh",
+      "usr/local/sbin/ffn-i2c-recover"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn-sfp-watch.service",
       "etc/systemd/system/ffn-sfp-watch.service"
     ],
