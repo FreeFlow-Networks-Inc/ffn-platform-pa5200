@@ -32,23 +32,34 @@ def rule_id(rule,token):
     return value if isinstance(value,str) and 1<=len(value)<=128 else None
 
 
-def generation(policy,owner,flow_ids,qualified):
-    """Reasons that block every session of the held generation."""
+def generation(owner,flow_ids,qualified,configuration_digest):
+    """Reasons that block every session of the held generation.
+
+    The DP's applied policy generation (its own revision and digest) is fenced
+    by the observation intake whenever it changes; the barrier the owner holds
+    is the committed configuration digest the MP relays with the interface
+    intent, so that is what must agree with the owner.
+    """
     reasons=[]
     if owner.get('admission_enabled') is not True:
         reasons.append('policy generation is not activated for hardware admission (phase %s)'%owner.get('phase'))
     if qualified is not True:reasons.append('front-port offload is not qualified')
     if flow_ids is not True:reasons.append('durable hardware flow-ID allocator is not commissioned')
-    if (policy.get('revision'),policy.get('digest'))!=(owner.get('revision'),owner.get('digest')):
-        reasons.append('applied DP policy generation differs from the CP policy barrier')
+    if configuration_digest is None:reasons.append('committed interface intent has not been relayed for this generation')
+    elif configuration_digest!=owner.get('digest'):
+        reasons.append('relayed configuration intent differs from the CP policy barrier')
     return reasons
 
 
-def request_for(row,policy,indices,names):
-    """The paired admission request the production path would receive."""
+def request_for(row,policy,owner,indices,names):
+    """The paired admission request the production path would receive.
+
+    Revision and policy digest are the CP owner's barrier (what admit_pair
+    compares against its state); the NAT digest is the DP's NAT generation.
+    """
     rule=row.get('rule') or {};nat=row.get('nat') or {};proto=(row.get('original') or {}).get('protocol')
-    return dict(session_id=row.get('conntrack_id'),revision=policy.get('revision'),
-                policy_digest=policy.get('digest'),nat_digest=policy.get('nat_digest'),
+    return dict(session_id=row.get('conntrack_id'),revision=owner.get('revision'),
+                policy_digest=owner.get('digest'),nat_digest=policy.get('nat_digest'),
                 rule_id=rule_id(rule,row.get('token')),verdict='allow',
                 original=row.get('original'),reply=row.get('reply'),
                 ingress=indices.get(names[0]) if names else None,egress=indices.get(names[1]) if names else None,
@@ -79,7 +90,7 @@ def plan_for(row,policy,l3,indices,names,attachments):
     return plan
 
 
-def evaluate_row(row,policy,attachments,truncated,nat_qualified):
+def evaluate_row(row,policy,owner,attachments,truncated,nat_qualified):
     item=dict(identity=row.get('identity'),session_id=row.get('conntrack_id'),interfaces=[],
               protocol=(row.get('original') or {}).get('protocol'),nat=None,established=None)
     if row.get('software_candidate') is not True:
@@ -100,7 +111,7 @@ def evaluate_row(row,policy,attachments,truncated,nat_qualified):
         elif attachment.get('ownership_observed') is not True:
             reasons.extend(name+': '+str(r) for r in attachment.get('blockers') or ['attachment ownership is not observed'])
     item['interfaces']=list(names or ())
-    request=request_for(row,policy,indices,names)
+    request=request_for(row,policy,owner,indices,names)
     item.update(nat=request['nat_required'],established=request['established'])
     if request['rule_id'] is None:reasons.append('granting rule identity is unavailable')
     if request['inspection_required'] is not False:reasons.append('flow requires software enforcement: inspection profile')
@@ -121,22 +132,22 @@ def evaluate_row(row,policy,attachments,truncated,nat_qualified):
 
 
 def evaluate(receiver,attachments,owner,capabilities,flow_ids=False,qualified=False,
-             limit=PROJECTION_BYTES,bound=MAX_EVALUATED):
+             configuration_digest=None,limit=PROJECTION_BYTES,bound=MAX_EVALUATED):
     """Dry-run the admission gate chain over the supervised inventory."""
     base=dict(mode=MODE,hardware_admission=False,installed=0)
     if receiver is None or getattr(receiver,'ready',False) is not True or not isinstance(receiver.policy,dict):
         return dict(base,available=False,reason='supervised observation inventory is not ready',evaluated=0,total=0)
-    policy=receiver.policy
+    policy=receiver.policy;owner=owner if isinstance(owner,dict) else {}
     truncated_intent=False;intents={}
     if isinstance(attachments,dict) and attachments.get('available') is True:
         intents={r['intent']['name']:r for r in attachments.get('interfaces') or ()}
         truncated_intent=attachments.get('truncated') is True
     nat_qualified=isinstance(capabilities,dict) and capabilities.get('nat_packet_qualification') is True
-    common=generation(policy,owner if isinstance(owner,dict) else {},flow_ids,qualified)
+    common=generation(owner,flow_ids,qualified,configuration_digest)
     rows=[];reasons=collections.Counter();remaining=set()
     inventory=sorted(receiver.sessions.items())[:bound]
     for identity,row in inventory:
-        item=evaluate_row(row,policy,intents,truncated_intent,nat_qualified)
+        item=evaluate_row(row,policy,owner,intents,truncated_intent,nat_qualified)
         for name in item['interfaces']:
             remaining.update(str(r) for r in (intents.get(name) or {}).get('remaining') or ())
         reasons.update(item['blockers']);rows.append(item)

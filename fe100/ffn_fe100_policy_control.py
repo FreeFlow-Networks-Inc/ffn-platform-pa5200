@@ -80,8 +80,10 @@ class PolicyController:
             attachments=dict(available=False,hardware_admission=False,interfaces=[],reason=str(error)[:256])
         # Dry run of the production gate chain over the held inventory: it
         # reports what blocks each session and installs nothing.
+        intent=self.observations.configuration
         try:admission=evaluate(self.observations.receiver,attachments,result,capabilities(),
-                               flow_ids=self.owner.flow_ids is not None,qualified=self.owner.qualified())
+                               flow_ids=self.owner.flow_ids is not None,qualified=self.owner.qualified(),
+                               configuration_digest=intent['config_digest'] if isinstance(intent,dict) else None)
         except Exception as error:
             admission=dict(mode=MODE,hardware_admission=False,installed=0,available=False,reason=str(error)[:256])
         return dict(result,capabilities=capabilities(),attachments=attachments,admission=admission)

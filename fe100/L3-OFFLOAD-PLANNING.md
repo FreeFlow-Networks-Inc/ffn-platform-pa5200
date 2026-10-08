@@ -59,7 +59,9 @@ applied bindings and the resolved attachment intent, validates them with the
 production validators (tuple encoding, distinct bindings, inspection and
 establishment requirements, NAT qualification, next-hop shape) and reports the
 reasons that remain, separated into per-session blockers, generation-wide
-reasons (policy activation, qualification, flow-ID allocator, barrier match)
+reasons (policy activation, qualification, flow-ID allocator, and whether the
+relayed configuration digest matches the owner's commit barrier; the DP's own
+policy generation is fenced by the intake, not compared here)
 and the commissioning items (zone and miss path, LIF/LEF, flow-ID namespace,
 next-hop leases). It evaluates at most 128 sessions per status call and bounds
 its projection to 16 KiB of the RPC envelope. The `status` response carries it

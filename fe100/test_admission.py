@@ -45,6 +45,7 @@ class AdmissionTests(unittest.TestCase):
         self.attachments=attachments(attachment('ethernet1/1'),attachment('ethernet1/5'))
 
     def run_eval(self,**kw):
+        kw.setdefault('configuration_digest',OWNER['digest'])
         return A.evaluate(self.receiver,self.attachments,OWNER,CAPABILITIES,**kw)
 
     def test_clean_session_is_admissible_only_pending_generation_and_commissioning(self):
@@ -61,11 +62,16 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn('egress LIF per attachment',result['commissioning'])
         self.assertEqual(result['reasons'],{})
 
-    def test_generation_mismatch_and_activation_are_reported_once(self):
-        owner=dict(OWNER,phase='active',admission_enabled=True,digest='f'*64)
-        reasons=A.generation(POLICY,owner,True,True)
-        self.assertEqual(reasons,['applied DP policy generation differs from the CP policy barrier'])
-        self.assertEqual(A.generation(POLICY,dict(OWNER,admission_enabled=True),True,True),[])
+    def test_generation_reasons_compare_the_relayed_commit_barrier_not_the_dp_generation(self):
+        active=dict(OWNER,phase='active',admission_enabled=True)
+        self.assertEqual(A.generation(active,True,True,'f'*64),['relayed configuration intent differs from the CP policy barrier'])
+        self.assertEqual(A.generation(active,True,True,None),['committed interface intent has not been relayed for this generation'])
+        self.assertEqual(A.generation(active,True,True,OWNER['digest']),[])
+        # The DP's own policy generation (revision 9 / its plan digest) never has to equal the owner's barrier.
+        self.receiver.policy.update(revision=9,digest='9'*64)
+        result=self.run_eval()
+        self.assertNotIn('relayed configuration intent differs from the CP policy barrier',result['generation'])
+        self.assertEqual(result['sessions'][0]['stage'],'admissible-pending-commissioning')
 
     def test_software_candidate_blockers_pass_through_without_evaluation(self):
         self.receiver.sessions['c'*64]=row(software_candidate=False,blockers=['tcp-not-established'],original={},reply={},l3=None)
@@ -115,7 +121,8 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.run_eval()['sessions'][0]['blockers'],[])
 
     def test_request_mirrors_the_paired_admission_fields(self):
-        request=A.request_for(row(),POLICY,{'ethernet1/5':5,'ethernet1/1':1},('ethernet1/5','ethernet1/1'))
+        request=A.request_for(row(),dict(POLICY,revision=9,digest='9'*64),OWNER,{'ethernet1/5':5,'ethernet1/1':1},('ethernet1/5','ethernet1/1'))
+        self.assertEqual((request['revision'],request['policy_digest'],request['nat_digest']),(OWNER['revision'],OWNER['digest'],POLICY['nat_digest']))
         self.assertEqual(set(request),{'session_id','revision','policy_digest','nat_digest','rule_id','verdict','original',
                                        'reply','ingress','egress','inspection_required','nat_required','established'})
         self.assertEqual((request['rule_id'],request['ingress'],request['egress'],request['verdict']),('vsys1/allow-out',5,1,'allow'))
