@@ -13,7 +13,7 @@ from native_plane_boot import profile, sha
 STATE = Path('/var/lib/ffn/plane-restart')
 CP_UNITS = ('ffn-management-i2c.service','ffn-thermal.service','ffn-bcmd.service',
             'ffn-front-ports.service','ffn-mdio.service','ffn-copper.service',
-            'ffn-fe100-pci.service','ffn-fe100-links.service')
+            'ffn-fe100-pci.service','ffn-fe100-links.service','ffn-fe100-init.service')
 
 
 def save(path,data):

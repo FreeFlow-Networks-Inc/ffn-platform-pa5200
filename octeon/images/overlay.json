@@ -319,6 +319,16 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn-fe100-init.service",
+      "etc/systemd/system/ffn-fe100-init.service"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_init.py",
+      "usr/local/sbin/ffn_fe100_init.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_bcm_lab.py",
       "usr/local/sbin/ffn_fe100_bcm_lab.py"
     ],
