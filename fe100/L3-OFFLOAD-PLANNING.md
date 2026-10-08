@@ -52,6 +52,22 @@ by the native table lab. The live observation relay still does not invoke this
 admission controller; commissioned attachment mappings and the commit
 withdrawal barrier remain required before production integration.
 
+The supervised CP owner now dry-runs that gate chain over the inventory the
+relay holds (`ffn_fe100_admission.py`): per session it builds the paired
+admission request and the path-owner plan from the DP's L3 directions, the
+applied bindings and the resolved attachment intent, validates them with the
+production validators (tuple encoding, distinct bindings, inspection and
+establishment requirements, NAT qualification, next-hop shape) and reports the
+reasons that remain, separated into per-session blockers, generation-wide
+reasons (policy activation, qualification, flow-ID allocator, barrier match)
+and the commissioning items (zone and miss path, LIF/LEF, flow-ID namespace,
+next-hop leases). It evaluates at most 128 sessions per status call and bounds
+its projection to 16 KiB of the RPC envelope. The `status` response carries it
+as `admission`, and `show platform fe100 sessions` attaches it as `supervised`.
+Nothing is installed by the evaluation: `installed` is always zero and
+`hardware_admission` stays false. A session that reports no blocker is
+admissible only once the generation and commissioning items are closed.
+
 Existing isolated FE100 tests establish packet rewriting under their documented
 conditions. They do not authorize diverting production traffic into hardware.
 The interface/VLAN configuration must already agree with the upstream network;

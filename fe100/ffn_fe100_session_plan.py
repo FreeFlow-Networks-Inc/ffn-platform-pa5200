@@ -143,6 +143,14 @@ if __name__=='__main__':
         if len(raw)>524288:raise ValueError('Session plan exceeds 512 KiB')
         request=json.loads(raw)
         from ffn_fe100_live_sessions import LiveSessions
-        print(json.dumps(plan(request,LiveSessions().status())))
+        result=plan(request,LiveSessions().status())
+        # The supervised owner's dry-run admission evaluation over the live
+        # relay inventory; unavailable when the control service is not serving.
+        try:
+            from ffn_fe100_policy_control import dispatch
+            result['supervised']=dispatch('status',{}).get('admission') or dict(available=False,reason='no admission evaluation')
+        except Exception as error:
+            result['supervised']=dict(mode='supervised-dry-run',hardware_admission=False,available=False,reason=str(error)[:256])
+        print(json.dumps(result))
     except (ValueError,KeyError,TypeError,OSError,RuntimeError) as error:
         print(json.dumps({'error':str(error)[:512]}));raise SystemExit(2)

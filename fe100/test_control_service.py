@@ -44,5 +44,15 @@ class ControlTests(unittest.TestCase):
                 with self.assertRaises(ValueError):dispatch(owner,dict(operation='activate'))
             finally:owner.close()
 
+    def test_status_carries_the_supervised_dry_run_admission_evaluation(self):
+        with patch.object(control,'ROOT',self.root):
+            owner=control.PolicyController()
+            try:status=owner.execute('status',{})
+            finally:owner.close()
+        admission=status['admission']
+        self.assertEqual((admission['mode'],admission['hardware_admission'],admission['installed']),('supervised-dry-run',False,0))
+        self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
+        self.assertFalse(status['admission_enabled']);self.assertEqual(status['observations']['mode'],'supervised-observation-only')
+
 
 if __name__=='__main__':unittest.main()

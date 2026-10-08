@@ -74,10 +74,17 @@ class PolicyController:
         if operation!='status':return result
         from ffn_fe100_nat import capabilities
         from ffn_fe100_attachment_runtime import resolve
+        from ffn_fe100_admission import MODE,evaluate
         try:attachments=resolve(self.observations.configuration,self.observations.receiver,self.owner.state['digest'])
         except Exception as error:
             attachments=dict(available=False,hardware_admission=False,interfaces=[],reason=str(error)[:256])
-        return dict(result,capabilities=capabilities(),attachments=attachments)
+        # Dry run of the production gate chain over the held inventory: it
+        # reports what blocks each session and installs nothing.
+        try:admission=evaluate(self.observations.receiver,attachments,result,capabilities(),
+                               flow_ids=self.owner.flow_ids is not None,qualified=self.owner.qualified())
+        except Exception as error:
+            admission=dict(mode=MODE,hardware_admission=False,installed=0,available=False,reason=str(error)[:256])
+        return dict(result,capabilities=capabilities(),attachments=attachments,admission=admission)
 
     def close(self):self.journal.close()
 

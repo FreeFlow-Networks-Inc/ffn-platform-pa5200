@@ -519,6 +519,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_admission.py",
+      "usr/local/sbin/ffn_fe100_admission.py"
+    ],
+    [
+      "platform",
       "management/fe100_attachment_config.py",
       "usr/local/lib/ffn/fe100_attachment_config.py"
     ],
