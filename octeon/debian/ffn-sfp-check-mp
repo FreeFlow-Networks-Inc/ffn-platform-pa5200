@@ -1,0 +1,8 @@
+#!/bin/sh
+# MP control surface for the SFP+ transmit check: JSON stdout. Installed on
+# the MP as /usr/local/sbin/ffn-sfp-check beside ffn-faceplate; runs the
+# check on the CP, where the cages, the modules and the switch are read.
+set -eu
+case "${1:-status}" in status) ;; *) echo 'usage: ffn-sfp-check [status]' >&2; exit 2 ;; esac
+exec ssh -F /etc/ffn-ngfw/ssh-cp.conf -o BatchMode=yes -o StrictHostKeyChecking=yes \
+  -o ConnectTimeout=5 ffn-cp "python3 /usr/local/sbin/ffn_sfp_check.py status"

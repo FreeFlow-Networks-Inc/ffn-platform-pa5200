@@ -269,6 +269,11 @@
     ],
     [
       "platform",
+      "management/ffn_sfp_check.py",
+      "usr/local/sbin/ffn_sfp_check.py"
+    ],
+    [
+      "platform",
       "octeon/i2c/ffn-i2c-recover.sh",
       "usr/local/sbin/ffn-i2c-recover"
     ],

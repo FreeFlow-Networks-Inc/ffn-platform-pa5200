@@ -116,4 +116,54 @@ class WatcherTests(unittest.TestCase):
         self.assertEqual(len(self.events),count);self.assertIsNotNone(self.watcher.previous)
 
 
+class VerifyTests(unittest.TestCase):
+    """The transmit check runs on its own cadence, journals verdict changes and applies local remedies once."""
+    def setUp(self):
+        self.now=1000.0;self.events=[];self.checks=[];self.remedied=[]
+        self.present={5:True,13:False}
+        self.results=[dict(port=5,verdict='ok',detail='',remedy=None,diagnostics=dict(tx_power_dbm=-5.2,rx_power_dbm=-10.2))]
+        def check(present):
+            self.checks.append(dict(present))
+            if isinstance(self.results,Exception):raise self.results
+            return [dict(r) for r in self.results]
+        self.watcher=watch.Watcher(lambda:{p:dict(present=v) for p,v in self.present.items()},lambda port:b'x',lambda port:dict(port=port,result='relinked'),
+                                   clock=lambda:self.now,log=lambda line:self.events.append(json.loads(line)),check=check,
+                                   remedies={'enable-transmitter':lambda r:self.remedied.append(('tx',r['port'])) or dict(result='transmitter-enabled'),
+                                             'relink':lambda r:self.remedied.append(('relink',r['port'])) or dict(result='relinked')},
+                                   check_interval=60)
+    def test_check_runs_at_its_interval_and_journals_only_verdict_changes(self):
+        self.watcher.poll();self.assertEqual(len(self.checks),1)
+        self.assertEqual([e['event'] for e in self.events],['transmit']);self.assertEqual(self.events[0]['verdict'],'ok');self.assertEqual(self.events[0]['tx_power_dbm'],-5.2)
+        self.now+=5;self.watcher.poll();self.assertEqual(len(self.checks),1)          # not yet
+        self.now+=60;self.watcher.poll();self.assertEqual(len(self.checks),2)         # same verdict: no new event
+        self.assertEqual(len(self.events),1)
+        self.results=[dict(port=5,verdict='no-rx-light',detail='no light from the far end (RX -35 dBm)',remedy='far-end',diagnostics=dict(tx_power_dbm=-5.2,rx_power_dbm=-35.0))]
+        self.now+=60;self.watcher.poll()
+        self.assertEqual(self.events[-1]['event'],'transmit');self.assertEqual(self.events[-1]['verdict'],'no-rx-light');self.assertEqual(self.remedied,[])
+    def test_local_remedies_run_once_per_verdict_and_the_port_is_rejudged(self):
+        self.results=[dict(port=5,verdict='transmitter-off',detail='TX_DISABLE asserted by the cage control line',remedy='enable-transmitter',diagnostics=None)]
+        self.watcher.poll()
+        self.assertEqual(self.remedied,[('tx',5)]);self.assertEqual([e['event'] for e in self.events],['transmit','remediated'])
+        self.assertEqual(self.events[-1]['result'],'transmitter-enabled')
+        self.now+=60;self.watcher.poll()                    # still off: judged again and remedied again, since it was re-judged
+        self.assertEqual(self.remedied,[('tx',5),('tx',5)])
+        self.results=[dict(port=5,verdict='link-mode-mismatch',detail='switch runs SGMII, module needs GMII',remedy='relink',diagnostics=None)]
+        self.now+=60;self.watcher.poll();self.assertEqual(self.remedied[-1],('relink',5))
+        self.results=[dict(port=5,verdict='attachment-pending',detail='left pending',remedy='reapply',diagnostics=None)]
+        self.now+=60;self.watcher.poll();self.assertEqual(self.remedied[-1],('relink',5))   # no local remedy for reapply
+        self.assertEqual(self.events[-1]['remedy'],'reapply')
+    def test_a_failing_check_backs_off_like_a_failing_bus_and_insertion_work_takes_precedence(self):
+        self.results=OSError('[Errno 145] Connection timed out')
+        self.watcher.poll()
+        self.assertEqual(self.events[-1]['event'],'check-unavailable');self.assertEqual(self.watcher.quiet_until,self.now+watch.BACKOFF)
+        self.results=[dict(port=5,verdict='ok',detail='',remedy=None,diagnostics=None)]
+        self.now+=watch.BACKOFF+1;self.present[13]=True;self.watcher.poll()
+        self.assertIn(13,self.watcher.pending);self.assertEqual(len(self.checks),1)       # a pending insertion defers the check
+        self.now+=watch.SETTLE+1;self.watcher.poll();self.assertNotIn(13,self.watcher.pending)
+        self.assertEqual(len(self.checks),2)
+    def test_no_module_and_disabled_verdicts_are_not_journaled(self):
+        self.results=[dict(port=5,verdict='no-module',detail='no transceiver in the cage',remedy=None,diagnostics=None),dict(port=13,verdict='disabled',detail='',remedy=None,diagnostics=None)]
+        self.watcher.poll();self.assertEqual(self.events,[])
+
+
 if __name__=='__main__':unittest.main()
