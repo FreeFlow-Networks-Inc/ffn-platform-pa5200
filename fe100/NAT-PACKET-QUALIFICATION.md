@@ -113,6 +113,23 @@ or production-owner lifetimes. Its matrix has eight cases: TCP/UDP, address/port
 translation, and both directions. Missing cases remain explicit. The result
 always reports `production_admission: false`.
 
+## Recording the result for the control owner (2026-10-08)
+
+The owner's front-port and NAT gates read one lifetime-bound record,
+[QUALIFICATION.md](QUALIFICATION.md). After the auditor accepts a run for the
+current CP boot and BCM owner, submit its summary from the MP:
+
+```sh
+python3 /usr/local/sbin/validate_nat_results.py --internal R1.json R2.json R3.json R4.json \
+  | ssh -F /etc/ffn-ngfw/ssh-cp.conf ffn-cp \
+      python3 /usr/local/sbin/ffn_fe100_qualification.py submit --scope internal-loop
+```
+
+The internal scope needs both protocols with `--nat port`, forward and
+`--reverse-nat`; the external scope needs the complete eight-case matrix. The
+record dies with the CP boot and is retired by a switch daemon restart.
+Production admission is still the explicit activation.
+
 ## Limits
 
 TCP fixtures are ACK+PSH segments for rewrite/checksum testing; they do not

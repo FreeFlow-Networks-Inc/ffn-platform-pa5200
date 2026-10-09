@@ -112,9 +112,16 @@ def plan(request,hardware):
             translated=reverse(reply)
             if row['translated']!=translated:raise ValueError('Translation does not match kernel reply tuple')
             pairs=row['rule']['interface_pairs']
-            if len(pairs)!=1 or len(pairs[0])!=2:raise ValueError('Ambiguous interface pair')
+            if not pairs or any(not isinstance(p,list) or len(p)!=2 for p in pairs):raise ValueError('Ambiguous interface pair')
+            # The DP's L3 plan names the pair the routes selected among those
+            # the rule authorises; without it only a single authorised pair is known.
+            observed=(row.get('l3') or {}).get('pair')
+            if observed in pairs:pair=observed
+            elif len(pairs)==1:pair=pairs[0]
+            else:
+                reasons.append('interface pair unresolved: the rule authorises %d pairs and the routes selected none of them' % len(pairs));pair=pairs[0]
             owners={}
-            for name in pairs[0]:
+            for name in pair:
                 binding=policy['bindings'].get(name)
                 if (not isinstance(binding,dict) or not integer(binding.get('index'),1,2**31-1) or
                     not isinstance(binding.get('device'),str) or not isinstance(binding.get('alias'),str)):
@@ -124,7 +131,8 @@ def plan(request,hardware):
             item['directions']=[dict(match=original,translated=translated),dict(match=reply,translated=reverse(original))]
             item['nat']=any(original[k]!=translated[k] for k in original)
             if item['nat']:reasons.append('FE100 NAT packet/checksum qualification is incomplete')
-            item['l3']=l3_observation(row.get('l3'),pairs[0],owners,
+            item['interface_pair']=list(pair)
+            item['l3']=l3_observation(row.get('l3'),pair,owners,
                                       [translated['destination'],original['source']])
             reasons.extend(item['l3']['blockers'])
             reasons.append('ordered route/neighbor invalidation and hardware exception handling are not connected')
@@ -143,6 +151,14 @@ if __name__=='__main__':
         if len(raw)>524288:raise ValueError('Session plan exceeds 512 KiB')
         request=json.loads(raw)
         from ffn_fe100_live_sessions import LiveSessions
-        print(json.dumps(plan(request,LiveSessions().status())))
+        result=plan(request,LiveSessions().status())
+        # The supervised owner's dry-run admission evaluation over the live
+        # relay inventory; unavailable when the control service is not serving.
+        try:
+            from ffn_fe100_policy_control import dispatch
+            result['supervised']=dispatch('status',{}).get('admission') or dict(available=False,reason='no admission evaluation')
+        except Exception as error:
+            result['supervised']=dict(mode='supervised-dry-run',hardware_admission=False,available=False,reason=str(error)[:256])
+        print(json.dumps(result))
     except (ValueError,KeyError,TypeError,OSError,RuntimeError) as error:
         print(json.dumps({'error':str(error)[:512]}));raise SystemExit(2)
