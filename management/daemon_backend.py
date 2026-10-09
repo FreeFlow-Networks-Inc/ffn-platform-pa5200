@@ -8,7 +8,7 @@ from pathlib import Path
 from hardware_backend import Controller, COMMANDS
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
-        'fe100-policy':{'revision','digest'},
+        'fe100-policy':{'revision','digest'},'dhcp':{'revision','servers','configuration'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
         'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
 
@@ -99,9 +99,9 @@ async def execute(resource, action, payload, backend=None):
                 from ffn_inspection import validate
                 validate(payload)
         if action=='validate':
-            if resource=='network':return await backend.run('network','validate',payload)
+            if resource in ('network','dhcp'):return await backend.run(resource,'validate',payload)
             return {'validated':True}
-        actual='patch' if resource=='network' else payload['operation'] if resource=='thermal' else 'set'
+        actual='patch' if resource=='network' else 'apply' if resource=='dhcp' else payload['operation'] if resource=='thermal' else 'set'
         return await backend.run(resource,actual,None if resource=='thermal' else payload)
     if action not in ('status','lookup') or (resource,action) not in COMMANDS:
         raise ValueError('unsupported operation')

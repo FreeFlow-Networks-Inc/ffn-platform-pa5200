@@ -13,6 +13,35 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_dhcp_servers_are_applied_as_one_intent_and_read_back(self):
+        import sys
+        from types import ModuleType
+        intent={'ae1.69':dict(interface='ae1.69',address='10.1.0.2/22',pools=[['10.1.0.100','10.1.0.199']],reserved={},lease=86400,probe=False,options={})}
+        fake=ModuleType('ffn_dhcp_intent');fake.compile_intent=lambda root:dict(servers=intent)
+        with patch.dict(sys.modules,{'ffn_dhcp_intent':fake}):
+            calls=[]
+            def rpc(resource,action='status',payload=None):
+                calls.append((resource,action,payload))
+                if action=='apply':return dict(applied=True)
+                return dict(config=dict(revision=len([c for c in calls if c[1]=='apply']),servers=intent if any(c[1]=='apply' for c in calls) else {},configuration=None))
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=rpc)
+            self.assertFalse(status.errors);self.assertEqual(status.applied[0][0],'network/dhcp/interface/ae1.69')
+            self.assertEqual(calls[1],('dhcp','apply',dict(revision=0,servers=intent,configuration='d'*64)))
+            # already applied for this configuration: nothing is sent
+            calls.clear();status=Status()
+            configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=lambda r,a='status',p=None:(calls.append((r,a,p)) or dict(config=dict(revision=1,servers=intent,configuration='d'*64))))
+            self.assertEqual([c[1] for c in calls],['status']);self.assertFalse(status.errors)
+            # readback mismatch and an unreachable resource with servers committed are commit failures
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=lambda r,a='status',p=None:dict(config=dict(revision=1,servers={},configuration='d'*64)) if a!='apply' else {})
+            self.assertEqual(status.errors[0][0],'network/dhcp');self.assertIn('readback',status.errors[0][2])
+            def down(resource,action='status',payload=None):raise ValueError('MP dhcp/status request: no such resource')
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertTrue(status.errors)
+            # ... but with no server committed the resource may be absent
+            fake.compile_intent=lambda root:dict(servers={})
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertFalse(status.errors)
+            fake.compile_intent=lambda root:(_ for _ in ()).throw(ValueError('ae1.69: pool is outside 10.1.0.0/22'))
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertIn('outside',status.errors[0][2])
+
     def test_new_committed_aggregate_starts_through_controller(self):
         import hashlib
         with tempfile.TemporaryDirectory() as temp:

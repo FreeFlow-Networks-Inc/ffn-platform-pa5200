@@ -272,6 +272,26 @@
         "sfp-check",
         "status"
       ]
+    },
+    "dhcp": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
+        "apply"
+      ]
     }
   },
   "role": "mp"

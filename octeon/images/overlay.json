@@ -950,6 +950,16 @@
       "usr/local/sbin/ffn_network.py"
     ],
     [
+      "core",
+      "opt/ffn_dhcp_server.py",
+      "usr/local/lib/ffn/ffn_dhcp_server.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-dhcp-server.service",
+      "etc/systemd/system/ffn-dhcp-server.service"
+    ],
+    [
       "platform",
       "octeon/debian/ffn_overlay.py",
       "usr/local/sbin/ffn_overlay.py"
