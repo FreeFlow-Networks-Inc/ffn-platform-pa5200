@@ -3,7 +3,10 @@
 import ctypes as C
 import ipaddress
 import os
+import subprocess
+import sys
 from ffn_packet_cpus import CpuReservations
+import ffn_tap_steering
 
 LIBRARY='/usr/local/lib/libffn-packet.so'
 COUNTERS=('rx','tx','envelope_rejected','length_drop','backpressure_drop',
@@ -70,8 +73,8 @@ class PacketOwner:
     def __init__(self,port,source,lib=None):
         if type(port) is not int or not 1<=port<=24 or type(source) is not int or not 0<=source<=65535:
             raise ValueError('Invalid commissioned port mapping')
-        self.lib=lib or library();self.port=port;self.started=False
-        self.handle=self.lib.ffn_packet_open(b'ffnpkt0',b'ffn-data',('p'+str(port)).encode(),source)
+        self.lib=lib or library();self.port=port;self.started=False;self.tap='p'+str(port);self.steering=None
+        self.handle=self.lib.ffn_packet_open(b'ffnpkt0',b'ffn-data',self.tap.encode(),source)
         if not self.handle:checked(-1)
 
     def configure(self,addresses,inspector):
@@ -121,7 +124,19 @@ class PacketOwner:
                 self.close()
                 raise
             self.started=True
+            self.steer()
         checked(self.lib.ffn_packet_resume(self.handle))
+
+    # The forwarding namespace; tests on a build host have none and are not steered.
+    namespace='ffn-data'
+    def steer(self):
+        """Spread the kernel's forwarding of this TAP's frames over unreserved CPUs; never fails the attachment."""
+        if not os.path.exists('/run/netns/'+self.namespace):return None
+        try:self.steering=ffn_tap_steering.steer(self.tap,self.namespace)
+        except (OSError,ValueError,subprocess.SubprocessError) as error:
+            self.steering=None
+            print('receive steering for %s not applied: %s'%(self.tap,error),file=sys.stderr,flush=True)
+        return self.steering
 
     def workers(self):
         out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.handle,out,8))

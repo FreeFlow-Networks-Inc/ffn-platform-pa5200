@@ -111,6 +111,7 @@ class AggregateOwner(PacketOwner):
     def __init__(self,parent,mapping,aliases=None,lib=None):
         self.lib=lib or aggregate_library();self.parent=parent;self.members=sorted(mapping)
         self.port=self.members[0];self.started=False;self.network_key=None;self.unit_names={}
+        self.tap=parent;self.steering=None
         aliases=aliases or {}
         members=(Member*len(mapping))(*(Member(p,mapping[p],aliases.get(p,0)) for p in self.members))
         self.handle=self.lib.ffn_aggregate_open(b'ffnpkt0',b'ffn-data',parent.encode(),members,len(members),int(parent[2:]))

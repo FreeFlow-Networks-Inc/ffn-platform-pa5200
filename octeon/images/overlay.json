@@ -906,6 +906,11 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn_tap_steering.py",
+      "usr/local/sbin/ffn_tap_steering.py"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_packet_cpus.py",
       "usr/local/sbin/ffn_packet_cpus.py"
     ],

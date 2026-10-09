@@ -159,7 +159,7 @@ jobs:
       - name: VIF assignments and adapter guards
         run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter test_vif_probe test_network_init
       - name: copper VIF mapping, carrier leases and packet transport
-        run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport test_trunk_io
+        run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport test_trunk_io test_tap_steering
       - name: MP VIF observation and configuration ordering
         run: cd management && python3 -m unittest test_vif_backend test_copper_forwarding test_daemon_backend
       - name: aggregate control lock contention
