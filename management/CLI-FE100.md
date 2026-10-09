@@ -30,6 +30,12 @@ qualification and production admission, and reports the remaining prerequisites.
 An unreachable controller or missing capability report returns unavailable;
 installed code is never represented as verified hardware forwarding.
 
+`sessions` plans the current DP session inventory against the FE100 (observation
+only) and, under `supervised`, attaches the control service's dry-run admission
+evaluation of the continuously relayed inventory: per session the production
+gate reasons that remain, plus the generation-wide and commissioning items.
+`supervised.installed` is always zero; nothing in this view admits a flow.
+
 Append `json` to a specific view for structured output, for example
 `show platform fe100 recovery json`. The original bare `show platform fe100`
 continues to return the complete JSON observation for compatibility.
