@@ -56,6 +56,27 @@ class ControlTests(unittest.TestCase):
         self.assertEqual((admission['mode'],admission['hardware_admission'],admission['installed']),('supervised-dry-run',False,0))
         self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
         self.assertFalse(status['admission_enabled']);self.assertEqual(status['observations']['mode'],'supervised-observation-only')
+        self.assertFalse(status['qualification']['front_port']);self.assertFalse(status['capabilities']['nat_packet_qualification'])
+
+    def test_qualify_records_the_lifetime_bound_result_and_lifts_the_gates(self):
+        import ffn_fe100_qualification as qualification
+        from test_qualification import external,LIFETIME
+        with patch.object(control,'ROOT',self.root),patch.object(qualification,'RECORD',self.root/'qualification.json'), \
+             patch.object(qualification,'live_lifetime',return_value=dict(LIFETIME)):
+            owner=control.PolicyController()
+            try:
+                self.assertFalse(owner.owner.qualified());self.assertFalse(owner.owner.nat_qualified())
+                with self.assertRaises(ValueError):owner.execute('qualify',dict(scope='internal-loop',summary={'schema':1}))
+                with self.assertRaises(ValueError):owner.execute('qualify',dict(summary=external()))
+                state=owner.execute('qualify',dict(scope='external-wire',summary=external()))
+                self.assertTrue(drained(state));self.assertEqual(state['qualification']['scope'],'external-wire')
+                self.assertTrue(owner.owner.qualified());self.assertTrue(owner.owner.nat_qualified())
+                status=owner.execute('status',{})
+                self.assertEqual((status['qualification']['front_port'],status['qualification']['nat_rewrite'],status['qualification']['cases']),(True,True,8))
+                self.assertTrue(status['capabilities']['nat_packet_qualification'])
+                self.assertFalse(status['admission_enabled'])   # activation remains the explicit operation
+            finally:owner.close()
+            self.assertTrue((self.root/'qualification.json').is_file())
 
 
 if __name__=='__main__':unittest.main()

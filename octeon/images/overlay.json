@@ -529,6 +529,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_qualification.py",
+      "usr/local/sbin/ffn_fe100_qualification.py"
+    ],
+    [
+      "platform",
       "management/fe100_attachment_config.py",
       "usr/local/lib/ffn/fe100_attachment_config.py"
     ],
