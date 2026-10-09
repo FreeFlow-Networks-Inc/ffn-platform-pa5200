@@ -110,3 +110,11 @@ Install it at `/usr/local/sbin/ffn_port_led_enable.py` on the CP, install
 The service belongs only to the PA-5220 platform. No core FFN platform hook or
 BCM restart is needed. Startup ordering is after `ffn-bcmd.service`; full reboot
 qualification remains outstanding.
+
+The CP image overlay now includes and enables this service. Previously the
+implementation existed in the repository but was omitted from generated images.
+`PartOf=ffn-bcmd.service` reapplies the gate when the switch service is deliberately
+restarted. Starting this LED service alone does not restart BCM or enable ports.
+Use `python3 /usr/local/sbin/ffn_port_led_enable.py --status` to read CSR8 without
+writing hardware. An enabled output gate does not prove physical illumination,
+activity blinking, carrier, or packet forwarding.

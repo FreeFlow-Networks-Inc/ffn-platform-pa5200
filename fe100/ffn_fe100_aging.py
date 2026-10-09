@@ -31,11 +31,11 @@ Nor from SEM's registers. 0x78000-0x78818 is 269 registers of aggregate status
 anywhere, because the counters live in FCM's external DDR and FCM's own block
 is a memory controller (BIST, request FIFOs, latency).
 
-The FE100 pushes them instead, as CONTROL/STATS_COUNTER CPU messages carrying
-per-flow packet and octet totals keyed by flow_idx -- which is the flow ID
-SessionManager already writes into every entry. `ffn_fe100_flowstats` decodes
-those and implements this probe; see its docstring for the layout, for why the
-message type that looks right is not, and for what is still unqualified.
+The PA-5220 pushes FLOWSTATS (19) messages with compact per-flow packet and
+octet deltas. The native C decoder and NativeCounterStream accumulate those
+increments into activity tokens; the old CONTROL/STATS_COUNTER reference codec
+is not the observed hardware format. A missing or unhealthy source is unknown
+activity, never proof that an offloaded session is idle.
 
     probe(entry) -> hashable token, or None when activity cannot be read
 
@@ -202,6 +202,6 @@ def fetch_probe(_backend):
     """
     raise NotImplementedError(
         'backend.fetch() is byte-stable and cannot detect traffic; use '
-        'ffn_fe100_flowstats.FlowStatsProbe, which is fed by the '
-        'CONTROL/STATS_COUNTER messages the FE100 pushes. See the module '
+        'ffn_fe100_flowstats.NativeCounterStream, fed by decoded native '
+        'FLOWSTATS delta events. See the module '
         'docstring.')

@@ -30,6 +30,35 @@ report hashes. Full packet reports and their combined audit remain on MP at
 not TCP connection or production NAT qualification. The focused MIPS64 Python
 suite passed 105 tests.
 
+## Internal MAC and routed source-MAC checks, 2026-09-28
+
+The commissioning harness also supports `--mac-loopback --single-port` on an
+unconfigured front port. This avoids needing a test cable or borrowing a
+configured WAN interface. It refuses configured candidate/running ports and
+restores the MAC, BCM and FE100 journals before reporting success.
+
+Three one-packet cases passed baseline, miss, hit, drop, removal and cleanup:
+UDP address/port translation; TCP address/port translation with source-MAC
+rewrite; and reverse TCP translation with source-MAC rewrite. The independent
+auditor recomputed the complete expected frames, including TTL, VLAN and both
+checksums. Reports remain on MP in
+`/var/log/ffn-fe100-nat-internal-qualification.json`.
+
+Source-MAC rewriting uses a separately journaled SMAC entry and the next-hop's
+source-MAC selector. The codec accepts the MAC and table index as arguments;
+the fixed MAC is confined to the lab fixture. Slot occupancy, write/readback,
+exact cleanup and the pinned native ABI are checked.
+
+```sh
+python3 /usr/local/sbin/validate_front_sessions.py \
+  --cross --vlan-return --mac-loopback --single-port \
+  --nat port --protocol tcp --rewrite-source-mac --reverse-nat --count 1
+python3 /usr/local/sbin/validate_nat_results.py --internal REPORT.json
+```
+
+These are sequential internal probes, not external wire, simultaneous TCP
+session or production offload qualification. Production admission stays disabled.
+
 ## Queue-map correction
 
 The original-address QMAP fixture produced four session hits, four egress
@@ -83,6 +112,23 @@ rejects failed cleanup/capture loss, and refuses to combine different CP/BCM
 or production-owner lifetimes. Its matrix has eight cases: TCP/UDP, address/port
 translation, and both directions. Missing cases remain explicit. The result
 always reports `production_admission: false`.
+
+## Recording the result for the control owner (2026-10-08)
+
+The owner's front-port and NAT gates read one lifetime-bound record,
+[QUALIFICATION.md](QUALIFICATION.md). After the auditor accepts a run for the
+current CP boot and BCM owner, submit its summary from the MP:
+
+```sh
+python3 /usr/local/sbin/validate_nat_results.py --internal R1.json R2.json R3.json R4.json \
+  | ssh -F /etc/ffn-ngfw/ssh-cp.conf ffn-cp \
+      python3 /usr/local/sbin/ffn_fe100_qualification.py submit --scope internal-loop
+```
+
+The internal scope needs both protocols with `--nat port`, forward and
+`--reverse-nat`; the external scope needs the complete eight-case matrix. The
+record dies with the CP boot and is retired by a switch daemon restart.
+Production admission is still the explicit activation.
 
 ## Limits
 

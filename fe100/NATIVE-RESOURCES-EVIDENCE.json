@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "scope": "isolated-resource-tables",
+  "production_admission": false,
+  "packets_sent": 0,
+  "native_library_sha256": "4d1f0ff13fff28e73ce11e1979c935b86c00587ea48d7234c7273abaf8d5ea91",
+  "controller_sha256": "e0009eb18e631119caf2ceea646e02e92f05abd7f03c5c856bf182742e79d0a9",
+  "hardware_report": "/var/lib/ffn/fe100/resource-validation-1790888323460067938.json",
+  "checks": [
+    "paired-source-mac-and-next-hop-readback-removal",
+    "neighbor-generation-drain",
+    "drain-ack-required-before-reclaim",
+    "durable-restart-recovery",
+    "ambiguous-native-write-recovery",
+    "paired-NAT-flow-and-next-hop-ordered-drain",
+    "leased-ordered-withdrawal-close",
+    "leased-ordered-withdrawal-idle-expiry",
+    "leased-ordered-withdrawal-heartbeat-expiry",
+    "leased-ordered-withdrawal-topology-generation",
+    "leased-ordered-withdrawal-neighbor-generation",
+    "leased-ordered-withdrawal-producer-restart"
+  ],
+  "cleanup_verified": true,
+  "after_flows_empty": true,
+  "service_owner_unchanged": true,
+  "running_and_candidate_configuration_unchanged": true,
+  "wan_and_aggregate_packet_workers_unchanged": true
+}

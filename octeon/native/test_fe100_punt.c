@@ -1,0 +1,157 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#include "ffn_fe100_punt.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+/* Actual isolated 23/24 TCP miss capture. Benchmark addresses only. */
+static const char sample[]=
+"001800140100040010000008812c00384d05d42b000000000000000d00000000"
+"40060ffebf68bf69c6120001c612000205c0408d00170a0e"
+"02ff0000000202ff0000000108004500007f000040004006ae51c6120001c6120002"
+"bf68bf6912340000567800005018ffff67dc0000"
+"46464e2d46453130302d53455353494f4e3ae4b7bf02b2424fe9a9facbc5247d7309"
+"00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char ttl_sample[]=
+"001800140100080010000005811c00b80000000000000000000003e90000000205c0408d00170a0e"
+"02ff0000000202ff0000000108004500007f000040000106ed51c6120001c6120002bf68bf6912340000567800005018ffffa3250000"
+"46464e2d46453130302d53455353494f4e3a1618ec0d676d45098c22c8ba9dc5d6a400000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char fragment_sample[]=
+"0018001401000b0010000004811c00b80000000000000000000000000000001e05c0408d00170a0e"
+"02ff0000000202ff0000000108004500007f000020004006ce51c6120001c6120002bf68bf6912340000567800005018ffff15250000"
+"46464e2d46453130302d53455353494f4e3a94f0c17750734bdc8a57c567b121124c00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char udp_miss_sample[]=
+"001800140100040010000008812c00387d5c1ef400000000000000130000000040110ffebf68bf69c6120001c612000205c0"
+"408100170a0e02ff0000000202ff00000001080045000073000040004011ae52c6120001c6120002bf68bf69005fb30e4646"
+"4e2d46453130302d53455353494f4e3ab1320d1db1934a53b5c9c823b4ac339100000102030405060708090a0b0c0d0e0f10"
+"1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char udp_ttl_expired_sample[]=
+"001800140100080010000005811c00b80000000000000000000003e90000000205c0408100170a0e02ff0000000202ff0000"
+"0001080045000073000040000111ed52c6120001c6120002bf68bf69005fbcdd46464e2d46453130302d53455353494f4e3a"
+"c805b0fd785d4246a73ee73380ead38e00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+"2122232425262728292a2b2c2d2e2f30313233";
+static const char udp_fragment_sample[]=
+"0018001401000e0010000004811c00b80000000000000000000000000000001e05c0408100170a0e02ff0000000202ff0000"
+"0001080045000073000020004011ce52c6120001c6120002bf68bf69005f4b6146464e2d46453130302d53455353494f4e3a"
+"45cd1004add4416ba054e09c43387ed400000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+"2122232425262728292a2b2c2d2e2f30313233";
+static const char udp_mtu_exceeded_sample[]=
+"001800140100080010000005811c00b80000000000000000000003e90000000d05c0408100170a0e02ff0000000202ff0000"
+"0001080045000073000040004011ae52c6120001c6120002bf68bf69005f111946464e2d46453130302d53455353494f4e3a"
+"e23cbf25d9fd4024beecc75e90b1efd500000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+"2122232425262728292a2b2c2d2e2f30313233";
+static const char misc_arp_sample[]=
+"0018001401000a0010000004811c00b80000000000000000000000000000002005c000650017000e02ff0000000202ff0000"
+"00010806000108000604000102ff00000001c6120001000000000000c612000246464e2d46453130302df947e4db1294455c"
+"955d6e5a8643000700000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+static const char misc_icmp_sample[]=
+"001800140100080010000004811c00b80000000000000000000000000000002005c0406600170a0e02ff0000000202ff0000"
+"0001080045000058000040004001ae7dc6120001c61200020800f2c80064000046464e2d46453130302d4ca238a3f2784b4c"
+"9a2bd7211bbd77b600000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00";
+static const char misc_ipv6_sample[]=
+"001800140100040010000008814400381d29a00600000000000000190000000080110ffebf68bf6920010db8000000000000"
+"00000000000120010db800000000000000000000000205c080790017140e02ff0000000202ff0000000186dd600000000043"
+"114020010db800000000000000000000000120010db8000000000000000000000002bf68bf690043e6de46464e2d46453130"
+"302d01c97ebba6564bddb2c1c6ce236ff18200000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e"
+"1f";
+static const char misc_fragment_nonfirst_sample[]=
+"0018001401000e0010000004811c00b80000000000000000000000000000001e05c0408100170a0e02ff0000000202ff0000"
+"0001080045000073000000014011ee51c6120001c6120002bf68bf69005fe06346464e2d46453130302d53455353494f4e3a"
+"0d98397e6ece4044837c0c7e672505c400000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+"2122232425262728292a2b2c2d2e2f30313233";
+static const char vlan_miss_sample[]=
+"001800140100040010000008812c00387d5c1ef400000000000000240000000040110ffebf68bf69c6120001c6120002"
+"05c0408500178a1202ff0000000202ff0000000181000fa1080045000073000040004011ae52c6120001c6120002bf68bf69"
+"005f84f046464e2d46453130302d53455353494f4e3a63743f066a504e4cbd04687273f15a000000010203040506070809"
+"0a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233";
+static const char control_icmp6_sample[]=
+"001800140100090010000004811c00b80000000000000000000000000000002005c080790017140e02ff0000000202ff0000"
+"000186dd6000000000433aff20010db800000000000000000000000120010db80000000000000000000000028000a6330064"
+"000046464e2d46453130302d1b5f3a331ff149ee9a461fd82c479a9600000102030405060708090a0b0c0d0e0f1011121314"
+"15161718191a1b1c1d1e1f";
+static const char control_ndp_sample[]=
+"0018001401000f0010000004811c00b80000000000000000000000000000002005c080960017140e3333ff00000202ff0000"
+"000186dd6000000000603aff20010db8000000000000000000000001ff0200000000000000000001ff000002870007380000"
+"000020010db8000000000000000000000002010102ff00000001fd0846464e2d46453130302dccd642606aca4e52a47ec8de"
+"7e58259600000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000000";
+static const char control_lacp_sample[]=
+"001800140100090010000001811c003800000000000000000000000000000ffe05c000b70017000e0180c200000202ff0000"
+"0001880901010114800002ff000000010001800000013f0000000214800002ff000000020001800000023f00000003100000"
+"0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+"000000000000000000000000000046464e2d46453130302d3935416c3a384229a63f0bd04470dd2200000102030405060708"
+"090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+static const char control_lldp_sample[]=
+"0018001401000f0010000004811c00b80000000000000000000000000000002005c000610017000e0180c200000e02ff0000"
+"000188cc02070402ff000000010405076c6f6f70060200780a3b46464e2d46453130302d6f7cf22b0cc94cd583b493f21db2"
+"df2d00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000";
+int main(void) {
+    uint8_t wire[256]={0},copy[256];size_t n=strlen(sample)/2;
+    struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
+    struct ffn_fe100_punt result;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(sample+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.frame==wire+56 && result.length==141 && result.flow_id==13);
+    assert(result.front==23 && result.in_lif==23 && result.zone==4094 && result.message==8);
+    for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    assert(!ffn_fe100_punt_decode(wire,n+1,&scope,&result));
+    const unsigned invalid_offsets[]={0,2,4,7,8,9,11,30,31,32,33,34,36,40,44,48,50,52,54,55,68,70,77,79,82,86,90};
+    for(size_t i=0;i<sizeof(invalid_offsets)/sizeof(invalid_offsets[0]);i++) {
+        memcpy(copy,wire,n);copy[invalid_offsets[i]]^=0x80;
+        assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        assert(!result.frame && !result.length);
+    }
+    for(unsigned type=0;type<256;type++) {
+        if(type==8)continue;
+        memcpy(copy,wire,n);copy[11]=(uint8_t)type;
+        assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+    }
+    scope.front=24;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.front=23;
+    scope.zone=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.zone=4094;
+    scope.in_lif=24;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+    assert(!ffn_fe100_punt_decode(NULL,n,&scope,&result));
+    assert(!ffn_fe100_punt_decode(wire,n,NULL,&result));
+    assert(!ffn_fe100_punt_decode(wire,n,&scope,NULL));
+    scope.in_lif=23;
+    const char *exceptions[]={ttl_sample,fragment_sample};
+    for(unsigned k=0;k<2;k++) {
+        n=strlen(exceptions[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(exceptions[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
+        assert(result.frame==wire+40 && result.length==141 && result.message==(k?4:5));
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+        wire[31]=0;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+    }
+    const char *udp_samples[]={udp_miss_sample,udp_ttl_expired_sample,udp_fragment_sample,udp_mtu_exceeded_sample};
+    for(unsigned k=0;k<4;k++) {
+        n=strlen(udp_samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(udp_samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
+        assert(result.length==129);
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    }
+    n=strlen(vlan_miss_sample)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(vlan_miss_sample+i*2,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
+    assert(result.length==133 && result.frame==wire+56);
+    wire[54]^=128;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));wire[54]^=128;
+    wire[71]=0xff;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+    const char *misc_samples[]={misc_arp_sample,misc_icmp_sample,misc_ipv6_sample,misc_fragment_nonfirst_sample};
+    for(unsigned k=0;k<4;k++) {
+        n=strlen(misc_samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(misc_samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
+        assert(result.frame==wire+(k==2?80:40));
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    }
+    const char *control_samples[]={control_icmp6_sample,control_ndp_sample,control_lacp_sample,control_lldp_sample};
+    for(unsigned k=0;k<4;k++) {
+        n=strlen(control_samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(control_samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==(k<2?1:2));
+        assert(result.frame==wire+40 && result.length==n-40 && result.zone==4094);
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+        if(k==2) {wire[30]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
+        if(k==3) {wire[45]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
+    }
+    puts("FE100 native punt decoder: real wire fixture, truncation, scope and type rejection passed");
+    return 0;
+}

@@ -50,5 +50,43 @@ class SessionPlanTests(unittest.TestCase):
         row=plan(self.request,{})['sessions'][0]
         self.assertNotIn('directions',row);self.assertIn('unsupported-protocol',row['blockers'])
 
+    def test_pair_selected_by_the_dataplane_among_several_authorised(self):
+        session=self.request['observation']['sessions'][0]
+        session['rule']={'interface_pairs':[['ae2.80','ethernet1/2'],['ae2.80','ethernet1/3']]}
+        self.request['observation']['policy']['bindings']['ethernet1/3']=dict(device='p3',index=12,alias='')
+        row=plan(self.request,{})['sessions'][0]
+        self.assertTrue(any(r.startswith('interface pair unresolved') for r in row['blockers']))
+        self.assertEqual(row['interface_pair'],['ae2.80','ethernet1/2'])
+        bindings=self.request['observation']['policy']['bindings']
+        directions=[]
+        for name,dst in [('ethernet1/3','198.51.100.2'),('ae2.80','192.0.2.2')]:
+            directions.append(dict(bindings[name],interface=name,destination=dst,next_hop=dst,
+                mtu=1500,vlan=80 if name=='ae2.80' else None,decrement_ttl=True,
+                source_mac='02:00:00:00:00:01',destination_mac='02:00:00:00:00:02',
+                exceptions=['ttl-expired','mtu-exceeded','ipv4-fragments']))
+        session['l3']=dict(available=True,hardware_admission=False,blockers=[],directions=directions,snapshot_digest='d'*64,pair=['ae2.80','ethernet1/3'])
+        row=plan(self.request,{'initialized':True})['sessions'][0]
+        self.assertEqual(row['interface_pair'],['ae2.80','ethernet1/3']);self.assertTrue(row['l3']['available'])
+        self.assertFalse(any(r.startswith('interface pair unresolved') for r in row['blockers']))
+        self.assertEqual(sorted(row['interfaces']),['ae2.80','ethernet1/3'])
+
+    def test_l3_observation_retained_but_never_authorizes_hardware(self):
+        row=self.request['observation']['sessions'][0]
+        bindings=self.request['observation']['policy']['bindings']
+        directions=[]
+        for name,dst in [('ethernet1/2','198.51.100.2'),('ae2.80','192.0.2.2')]:
+            directions.append(dict(bindings[name],interface=name,destination=dst,next_hop=dst,
+                mtu=1500,vlan=80 if name=='ae2.80' else None,decrement_ttl=True,
+                source_mac='02:00:00:00:00:01',destination_mac='02:00:00:00:00:02',
+                exceptions=['ttl-expired','mtu-exceeded','ipv4-fragments']))
+        row['l3']=dict(available=True,hardware_admission=False,blockers=[],directions=directions,snapshot_digest='d'*64)
+        result=plan(self.request,{'initialized':True})['sessions'][0]
+        self.assertTrue(result['l3']['available']);self.assertFalse(result['hardware_eligible'])
+        for field,value in [('index',999),('destination','192.0.2.99'),('destination_mac','ff:ff:ff:ff:ff:ff'),
+                            ('decrement_ttl',False),('vlan',True),('mtu',1)]:
+            request=copy.deepcopy(self.request)
+            request['observation']['sessions'][0]['l3']['directions'][0][field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):plan(request,{})
+
 
 if __name__=='__main__':unittest.main()

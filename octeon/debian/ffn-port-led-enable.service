@@ -1,6 +1,7 @@
 [Unit]
 Description=PA-5220 front-port LED output enable
 After=ffn-bcmd.service
+PartOf=ffn-bcmd.service
 ConditionPathExists=/sys/bus/pci/devices/0001:01:00.0
 
 [Service]

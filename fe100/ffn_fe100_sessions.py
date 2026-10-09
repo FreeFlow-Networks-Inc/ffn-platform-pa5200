@@ -184,7 +184,7 @@ class SessionManager:
             self.remove(ident)
         self.recovery_required = False
 
-    def install(self, session_id, entries, revision):
+    def install(self, session_id, entries, revision, *, lookup_zones=None):
         uint(session_id,32,'session ID'); uint(revision,64,'policy revision')
         if self.recovery_required:
             raise RuntimeError('offload recovery required')
@@ -197,10 +197,19 @@ class SessionManager:
             raise ValueError('invalid bidirectional entries')
         for entry in entries:
             validate_entry4(entry)
+        zones=tuple(int.from_bytes(e[2:4],'big') for e in entries)
+        if lookup_zones is None:
+            if zones[0]!=zones[1]:raise ValueError('explicit directional lookup zones required')
+        elif (not isinstance(lookup_zones,(tuple,list)) or len(lookup_zones)!=2 or
+              tuple(uint(z,16,'lookup zone') for z in lookup_zones)!=zones):
+            raise ValueError('flow keys do not match commissioned lookup zones')
         for forward,reverse in (entries,entries[::-1]):
             a,b=output_key4(forward),reverse[:16]
-            if a[:4] != b[:4] or a[4:6] != b[6:8] or a[6:8] != b[4:6] or a[8:12] != b[12:16] or a[12:16] != b[8:12]:
-                raise ValueError('directional actions must reverse the same zone and translated tuple')
+            # The two ingress lookup zones may differ (interzone traffic).
+            # Zones are supplied by the trusted path owner, not translated by
+            # the action. Both directions must still reverse the exact tuple.
+            if a[:2] != b[:2] or a[4:6] != b[6:8] or a[6:8] != b[4:6] or a[8:12] != b[12:16] or a[12:16] != b[8:12]:
+                raise ValueError('directional actions must reverse the translated tuple')
         # Preflight BOTH keys before touching either direction.
         for entry in entries:
             if self.backend.fetch(entry[:16]) is not None:

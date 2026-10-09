@@ -1,0 +1,17 @@
+[Unit]
+Description=FFN MP-owned dataplane interface management services
+Requires=ffn-controld.service
+After=ffn-controld.service
+PartOf=ffn-controld.service
+
+[Service]
+ExecStart=/opt/ffn-ngfw-v2/venv/bin/python /opt/ffn-platforms/pa5200-management/interface_services.py
+Restart=always
+RestartSec=5
+UMask=0077
+KillMode=control-group
+
+[Install]
+# PartOf propagates the control daemon stop; being wanted by it brings the
+# unit back when the daemon (re)starts instead of leaving it stopped.
+WantedBy=multi-user.target ffn-controld.service

@@ -374,22 +374,36 @@ window.ffnExtensions.renderDataplaneControls = async parent => {
     const refresh=button(header,'Refresh',()=>faceplate(parent));
     const message=element('p','Reading faceplate hardware…',root);
     let data, user;
-    try { [data,user]=await Promise.all([api(prefix+'/faceplate'),api('/api/auth/me')]); }
+    let transmit=null;
+    try { [data,user,transmit]=await Promise.all([api(prefix+'/faceplate'),api('/api/auth/me'),api(prefix+'/sfp-check').catch(()=>null)]); }
     catch(e) { message.textContent=e.message;return; }
     if (!root.isConnected) return;
+    const checks=new Map(((transmit&&transmit.ports)||[]).map(p=>[p.port,p]));
     const writable=['admin','superuser'].includes(user.role) && !data.saved?.pending;
     if(writable && window.ffnCopperIdentify)await window.ffnCopperIdentify.render(root,()=>faceplate(parent));
     message.textContent=data.saved?.pending ? 'Previous change has an uncertain outcome. Review hardware state before resolving it.' :
       'Changes apply immediately through the MP daemon and persist across boot. Speed changes can interrupt the link. Copper Auto advertises all supported speeds; optical Auto retains its advertisement. Copper link reflects the external PHY; switch link and forwarding are reported separately.';
     const table=element('table',undefined,root);table.className='data-table';
     const headings=element('tr',undefined,element('thead',undefined,table));
-    for(const h of ['Port','Admin','Link','Negotiated speed','Configured speed','Action']) element('th',h,headings);
+    for(const h of ['Port','Admin','Link','Transmit','Negotiated speed','Configured speed','Action']) element('th',h,headings);
     const body=element('tbody',undefined,table);
     for(const port of data.ports) {
       const row=element('tr',undefined,body);
       for(const value of [port.name,port.available?(port.enabled===null?'Unknown':port.enabled?'Enabled':'Disabled'):'Unavailable',
                          port.link===null?'Unknown':port.media==='copper'?(port.link?'Up':'Down')+' (switch '+(port.mac_link?'up':'down')+')':port.link?'Up':'Down',port.speed_mbps?port.speed_mbps+' Mbps':'Unknown'])
         element('td',value,row);
+      const transmitCell=element('td',undefined,row);
+      const check=checks.get(port.port);
+      if(port.media!=='sfp'){transmitCell.textContent='—';}
+      else if(!check){element('small',transmit?'not checked':'check unavailable',transmitCell);}
+      else{
+        const badge=element('span',check.verdict,transmitCell);
+        badge.className='badge '+(check.verdict==='ok'?'badge-up':check.verdict==='no-module'||check.verdict==='disabled'?'badge-log':check.remedy==='hardware'?'badge-error':'badge-warning');
+        badge.title=check.detail||'';
+        const d=check.diagnostics||{};
+        if(d.tx_power_dbm!==undefined&&d.tx_power_dbm!==null)element('small',' TX '+d.tx_power_dbm+' dBm / RX '+(d.rx_power_dbm===null||d.rx_power_dbm===undefined?'—':d.rx_power_dbm+' dBm'),transmitCell);
+        if(check.verdict!=='ok'&&check.detail)element('small',check.detail+(check.remedy==='reapply'?' (re-apply the committed configuration)':''),transmitCell);
+      }
       const speedCell=element('td',undefined,row);
       const speedSelect=element('select',undefined,speedCell);
       for(const value of ['auto',...(port.supported_speeds||[]).map(String)]){

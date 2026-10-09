@@ -13,6 +13,35 @@ class Status:
     def fail(self,*args): self.errors.append(args)
 
 class ApplyTests(unittest.TestCase):
+    def test_dhcp_servers_are_applied_as_one_intent_and_read_back(self):
+        import sys
+        from types import ModuleType
+        intent={'ae1.69':dict(interface='ae1.69',address='10.1.0.2/22',pools=[['10.1.0.100','10.1.0.199']],reserved={},lease=86400,probe=False,options={})}
+        fake=ModuleType('ffn_dhcp_intent');fake.compile_intent=lambda root:dict(servers=intent)
+        with patch.dict(sys.modules,{'ffn_dhcp_intent':fake}):
+            calls=[]
+            def rpc(resource,action='status',payload=None):
+                calls.append((resource,action,payload))
+                if action=='apply':return dict(applied=True)
+                return dict(config=dict(revision=len([c for c in calls if c[1]=='apply']),servers=intent if any(c[1]=='apply' for c in calls) else {},configuration=None))
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=rpc)
+            self.assertFalse(status.errors);self.assertEqual(status.applied[0][0],'network/dhcp/interface/ae1.69')
+            self.assertEqual(calls[1],('dhcp','apply',dict(revision=0,servers=intent,configuration='d'*64)))
+            # already applied for this configuration: nothing is sent
+            calls.clear();status=Status()
+            configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=lambda r,a='status',p=None:(calls.append((r,a,p)) or dict(config=dict(revision=1,servers=intent,configuration='d'*64))))
+            self.assertEqual([c[1] for c in calls],['status']);self.assertFalse(status.errors)
+            # readback mismatch and an unreachable resource with servers committed are commit failures
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=lambda r,a='status',p=None:dict(config=dict(revision=1,servers={},configuration='d'*64)) if a!='apply' else {})
+            self.assertEqual(status.errors[0][0],'network/dhcp');self.assertIn('readback',status.errors[0][2])
+            def down(resource,action='status',payload=None):raise ValueError('MP dhcp/status request: no such resource')
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertTrue(status.errors)
+            # ... but with no server committed the resource may be absent
+            fake.compile_intent=lambda root:dict(servers={})
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertFalse(status.errors)
+            fake.compile_intent=lambda root:(_ for _ in ()).throw(ValueError('ae1.69: pool is outside 10.1.0.0/22'))
+            status=Status();configd_applier.reconcile_dhcp(None,status,'d'*64,rpc=down);self.assertIn('outside',status.errors[0][2])
+
     def test_new_committed_aggregate_starts_through_controller(self):
         import hashlib
         with tempfile.TemporaryDirectory() as temp:
@@ -149,7 +178,7 @@ class ApplyTests(unittest.TestCase):
         </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
         config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/24']}}}
         self.assertEqual(configd_applier.committed_routes(dev,config),[
-            {'dst':'0.0.0.0/0','via':'192.0.2.254','dev':'p1','metric':100}])
+            {'dst':'0.0.0.0/0','via':'192.0.2.254','dev':'p1','metric':100,'track_link':True,'onlink':False,'monitor':{}}])
         dev.find('.//static-route').clear()
         with patch.object(configd_applier.sqlite3,'connect') as db:
             self.assertEqual(configd_applier.committed_routes(dev,config),[])
@@ -166,6 +195,20 @@ class ApplyTests(unittest.TestCase):
             client.plane_request.side_effect=RuntimeError('controld unavailable')
             with self.assertRaises(RuntimeError):configd_applier.rpc('network','apply',{'revision':9})
             direct.assert_not_called()
+
+    def test_route_conflicts_and_gateway_prefix_have_actionable_errors(self):
+        from xml.etree import ElementTree as ET
+        dev=ET.fromstring('''<entry><network><virtual-router><ffn-candidate-managed>yes</ffn-candidate-managed>
+        <entry name="default"><routing-table><ip><static-route><entry name="wan"><destination>0.0.0.0/0</destination>
+        <nexthop><ip-address>192.0.2.254</ip-address></nexthop><interface>ethernet1/1</interface><metric>100</metric>
+        </entry></static-route></ip></routing-table></entry></virtual-router></network></entry>''')
+        config={'ports':{'p1':{'mode':'l3','addresses':['192.0.2.1/32']}}}
+        self.assertTrue(configd_applier.committed_routes(dev,config)[0]['track_link'])  # Stored intent; runtime withholds an unreachable next hop.
+        config['ports']['p1']['addresses']=['192.0.2.1/24']
+        routes=dev.find('.//static-route');routes.append(copy.deepcopy(routes[0]))
+        with self.assertRaisesRegex(ValueError,'primary/backup metrics'):configd_applier.committed_routes(dev,config)
+        routes[1].find('metric').text='200'
+        self.assertEqual(len(configd_applier.committed_routes(dev,config)),2)
 
     def test_interface_config_reaches_mp_and_unsupported_is_error(self):
         xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>

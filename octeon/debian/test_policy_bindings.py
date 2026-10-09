@@ -36,7 +36,37 @@ class BindingTests(unittest.TestCase):
 
     def test_candidate_preview_never_invents_dhcp_address(self):
         xml=self.candidate().replace('<ip><entry name="LAN gateway"/></ip>','<dhcp-client><enable>yes</enable></dhcp-client>')
-        self.assertEqual(binding.preview(xml,{},{}),({},{},[]))
+        current,rows,pending=binding.preview(xml,{},{})
+        self.assertEqual(pending,['ae1']);self.assertEqual(rows[current['ae1']['device']]['addr_info'],[])
+
+    def test_disconnected_physical_interface_and_object_validate_without_owner(self):
+        xml=self.candidate().replace('</ethernet>','<entry name="ethernet1/5"><link-state>down</link-state><layer3><ip><entry name="LAN gateway"/></ip></layer3></entry></ethernet>')
+        current,rows,pending=binding.preview(xml,{},{})
+        self.assertIn('ethernet1/5',pending)
+        self.assertEqual(rows[current['ethernet1/5']['device']]['addr_info'][0]['local'],'192.0.2.1')
+        self.assertEqual(binding.discover({},self.run,self.proc,102),{})
+
+    def test_removed_or_non_routed_interface_cannot_use_stale_binding(self):
+        live={'ethernet1/5':dict(device='p5',index=5,alias='old')}
+        self.assertNotIn('ethernet1/5',binding.preview(self.candidate(),live,{})[0])
+
+    def test_physical_owner_without_carrier_and_stale_evidence(self):
+        row=dict(owner='physical-5',ports=[5],boot_id=self.token,pid=42,process_start='900',
+                 updated_monotonic=100,interfaces={'p5':15})
+        path=self.run/'ffn-physical-5-status.json'
+        links={'p5':dict(ifindex=15,flags=[],operstate='DOWN',linkinfo=dict(info_kind='tun',info_data={'type':'tap'}))}
+        with patch.object(binding,'trusted',return_value=True):
+            path.write_text(json.dumps(row))
+            self.assertEqual(binding.discover(links,self.run,self.proc,102),{'ethernet1/5':'p5'})
+            for key,value in [('boot_id','old'),('process_start','901'),('updated_monotonic',90),('owner','wan1')]:
+                path.write_text(json.dumps(dict(row,**{key:value})))
+                self.assertEqual(binding.discover(links,self.run,self.proc,102),{},key)
+            path.write_text(json.dumps(row));links['p5']['ifindex']=16
+            self.assertEqual(binding.discover(links,self.run,self.proc,102),{})
+
+    def test_candidate_admin_down_aggregate_is_still_configurable(self):
+        xml=self.candidate().replace('<entry name="ae1">','<entry name="ae1"><link-state>down</link-state>')
+        self.assertIn('ae1',binding.preview(xml,{}, {})[0])
 
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -63,9 +93,13 @@ class BindingTests(unittest.TestCase):
     def test_stale_dead_or_replaced_owner_withdrawn(self):
         for key,value in [('boot_id','old'),('process_start','901'),('updated_monotonic',95),
                           ('updated_monotonic',103),('gates_verified',False),('network_ready',False),
-                          ('distributing',[]),('control_only',True),('network_update_pending',True)]:
+                          ('control_only',True),('network_update_pending',True)]:
             old=copy.deepcopy(self.row);self.row[key]=value
             self.assertEqual(self.discover(),{},key);self.row=old
+
+    def test_configured_owner_without_carrier_or_dhcp_lease_remains_bound(self):
+        self.row.update(distributing=[],network_ready=False,configuration_ready=True)
+        self.assertEqual(self.discover(),{'ae7':'ae7','ae7.123':'ae7.123'})
     def test_child_requires_alias_tag_parent_and_apply(self):
         baseline=copy.deepcopy(self.links)
         for change in ({'ifalias':'foreign'},{'link_index':11},{'master':'bridge'},

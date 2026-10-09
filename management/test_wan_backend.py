@@ -33,7 +33,7 @@ class Backend(unittest.TestCase):
         self.assertTrue(execute('validate',self.payload,self.call,self.drain)['validated'])
         self.assertEqual(self.calls,[('cp','status'),('dp','status')])
 
-    def test_attach_recovers_reprobes_and_requires_current_wire_ack(self):
+    def test_attach_recovers_without_external_traffic_probe(self):
         def call(role,op,payload):
             self.calls.append((role,op))
             if (role,op)==('cp','status'):
@@ -43,25 +43,15 @@ class Backend(unittest.TestCase):
             if op=='recover':return {'revision':4}
             if op=='finish':return {'revision':6,'wire_qualified':True}
             if (role,op)==('cp','start'):
-                self.assertEqual(payload,{'revision':6,'dp_boot_id':BOOT})
+                self.assertEqual(payload,{'revision':4,'dp_boot_id':BOOT})
                 return {'revision':7,'ready':{'1':True}}
             if (role,op)==('dp','start'):return {'running':True}
             return {}
         result=execute('apply',self.payload|{'operation':'attach'},call,self.drain)
         self.assertTrue(result['attachment']['running'])
         self.assertEqual(self.calls,[('cp','status'),('dp','status'),('dp','attachment-status'),
-            ('mp','drain'),('cp','recover'),('cp','prepare'),('dp','probe'),('cp','finish'),
-            ('cp','abort'),('cp','start'),('dp','start')])
-        self.calls=[]
-        def no_return(role,op,payload):
-            value=call(role,op,payload)
-            if op=='finish':value['wire_qualified']=False
-            return value
-        with self.assertRaisesRegex(ValueError,'no port-1 return traffic'):
-            execute('apply',self.payload|{'operation':'attach'},no_return,self.drain)
-        self.assertNotIn(('cp','start'),self.calls)
-        self.assertEqual(self.calls[-1],('cp','abort'))
-    def test_attach_recovers_missing_fabric_after_boot_and_before_wire_probe(self):
+            ('mp','drain'),('cp','recover'),('cp','start'),('dp','start')])
+    def test_attach_recovers_missing_fabric_after_boot_without_wire_probe(self):
         ready=False
         def call(role,op,payload):
             nonlocal ready
@@ -83,7 +73,7 @@ class Backend(unittest.TestCase):
         self.assertNotIn(('dp','reconcile'),self.calls);self.calls=[]
         self.assertTrue(execute('apply',request,call,self.drain)['attachment']['running'])
         self.assertLess(self.calls.index(('mp','drain')),self.calls.index(('dp','reconcile')))
-        self.assertLess(self.calls.index(('dp','reconcile')),self.calls.index(('cp','prepare')))
+        self.assertLess(self.calls.index(('dp','reconcile')),self.calls.index(('cp','start')))
         ready=False;self.calls=[]
         def stale(role,op,payload):
             value=call(role,op,payload)
@@ -92,5 +82,24 @@ class Backend(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'not acknowledged'):
             execute('apply',request,stale,self.drain)
         self.assertNotIn(('cp','prepare'),self.calls)
+
+    def test_dp_only_restart_with_retained_cp_redirect(self):
+        old_boot='864f1d5e-40c0-469e-a2c7-b7f395d0252b'
+        def call(role,op,payload):
+            self.calls.append((role,op))
+            if (role,op)==('cp','status'):
+                return dict(revision=3,epoch='same',state=dict(epoch='same',enabled=True,dp_boot_id=old_boot))
+            if (role,op)==('dp','status'):
+                return dict(boot_id=BOOT,fabric_available=True,fabric_ready=True)
+            if op=='attachment-status':return dict(running=False)
+            if op=='recover':return dict(revision=4)
+            if (role,op)==('cp','start'):
+                self.assertEqual(payload,dict(revision=4,dp_boot_id=BOOT))
+                return dict(revision=5,ready={'1':True})
+            if (role,op)==('dp','start'):return dict(running=True)
+            return {}
+        self.assertTrue(execute('apply',self.payload|{'operation':'attach'},call,self.drain)['attachment']['running'])
+        self.assertEqual(self.calls,[('cp','status'),('dp','status'),('dp','attachment-status'),
+            ('mp','drain'),('cp','recover'),('cp','start'),('dp','start')])
 
 if __name__=='__main__':unittest.main()

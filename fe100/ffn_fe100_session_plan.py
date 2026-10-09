@@ -33,6 +33,40 @@ def reverse(value):
                 destination_port=value['source_port'],protocol=value['protocol'])
 
 
+def l3_observation(value, pairs, owners, destinations):
+    """Validate a DP next-hop observation; never promote it to admission."""
+    if value is None:
+        return dict(available=False,hardware_admission=False,directions=[],
+                    blockers=['DP route/neighbor observation is unavailable'])
+    if (not isinstance(value,dict) or type(value.get('available')) is not bool or
+        value.get('hardware_admission') is not False or not isinstance(value.get('blockers'),list) or
+        any(not isinstance(reason,str) for reason in value['blockers'])):
+        raise ValueError('Invalid DP L3 observation')
+    if not value['available']:
+        if not value['blockers'] or value.get('directions')!=[]:raise ValueError('Invalid blocked L3 observation')
+        return value
+    if (value['blockers'] or not re.fullmatch('[0-9a-f]{64}',value.get('snapshot_digest','')) or
+        not isinstance(value.get('directions'),list) or len(value['directions'])!=2):
+        raise ValueError('Incomplete DP L3 observation')
+    for direction,name,destination in zip(value['directions'],reversed(pairs),destinations):
+        binding=owners.get(name,{})
+        if (direction.get('interface')!=name or direction.get('destination')!=destination or
+            any(direction.get(k)!=binding.get(k) for k in ('device','index','alias')) or
+            direction.get('decrement_ttl') is not True or
+            direction.get('exceptions')!=['ttl-expired','mtu-exceeded','ipv4-fragments'] or
+            not integer(direction.get('mtu'),576,9216) or
+            direction.get('vlan') is not None and not integer(direction['vlan'],1,4094)):
+            raise ValueError('L3 route does not match the acknowledged session binding')
+        ipaddress.IPv4Address(direction['next_hop'])
+        for key in ('source_mac','destination_mac'):
+            mac=direction.get(key)
+            if not isinstance(mac,str) or not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}',mac):
+                raise ValueError('Invalid next-hop Ethernet address')
+            raw=bytes.fromhex(mac.replace(':',''))
+            if not any(raw) or raw[0]&1:raise ValueError('Non-unicast next-hop Ethernet address')
+    return value
+
+
 def plan(request,hardware):
     if not isinstance(request,dict) or set(request)!={'nonce','observation'}:raise ValueError('Invalid plan envelope')
     nonce=request['nonce'];data=request['observation']
@@ -78,9 +112,16 @@ def plan(request,hardware):
             translated=reverse(reply)
             if row['translated']!=translated:raise ValueError('Translation does not match kernel reply tuple')
             pairs=row['rule']['interface_pairs']
-            if len(pairs)!=1 or len(pairs[0])!=2:raise ValueError('Ambiguous interface pair')
+            if not pairs or any(not isinstance(p,list) or len(p)!=2 for p in pairs):raise ValueError('Ambiguous interface pair')
+            # The DP's L3 plan names the pair the routes selected among those
+            # the rule authorises; without it only a single authorised pair is known.
+            observed=(row.get('l3') or {}).get('pair')
+            if observed in pairs:pair=observed
+            elif len(pairs)==1:pair=pairs[0]
+            else:
+                reasons.append('interface pair unresolved: the rule authorises %d pairs and the routes selected none of them' % len(pairs));pair=pairs[0]
             owners={}
-            for name in pairs[0]:
+            for name in pair:
                 binding=policy['bindings'].get(name)
                 if (not isinstance(binding,dict) or not integer(binding.get('index'),1,2**31-1) or
                     not isinstance(binding.get('device'),str) or not isinstance(binding.get('alias'),str)):
@@ -90,6 +131,11 @@ def plan(request,hardware):
             item['directions']=[dict(match=original,translated=translated),dict(match=reply,translated=reverse(original))]
             item['nat']=any(original[k]!=translated[k] for k in original)
             if item['nat']:reasons.append('FE100 NAT packet/checksum qualification is incomplete')
+            item['interface_pair']=list(pair)
+            item['l3']=l3_observation(row.get('l3'),pair,owners,
+                                      [translated['destination'],original['source']])
+            reasons.extend(item['l3']['blockers'])
+            reasons.append('ordered route/neighbor invalidation and hardware exception handling are not connected')
         item['blockers']=reasons+hardware_blockers+pending
         rows.append(item)
     return dict(schema=1,nonce=nonce,available=True,mode='observation-only',producer=producer,policy=policy,
@@ -105,6 +151,14 @@ if __name__=='__main__':
         if len(raw)>524288:raise ValueError('Session plan exceeds 512 KiB')
         request=json.loads(raw)
         from ffn_fe100_live_sessions import LiveSessions
-        print(json.dumps(plan(request,LiveSessions().status())))
+        result=plan(request,LiveSessions().status())
+        # The supervised owner's dry-run admission evaluation over the live
+        # relay inventory; unavailable when the control service is not serving.
+        try:
+            from ffn_fe100_policy_control import dispatch
+            result['supervised']=dispatch('status',{}).get('admission') or dict(available=False,reason='no admission evaluation')
+        except Exception as error:
+            result['supervised']=dict(mode='supervised-dry-run',hardware_admission=False,available=False,reason=str(error)[:256])
+        print(json.dumps(result))
     except (ValueError,KeyError,TypeError,OSError,RuntimeError) as error:
         print(json.dumps({'error':str(error)[:512]}));raise SystemExit(2)

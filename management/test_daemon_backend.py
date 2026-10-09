@@ -5,6 +5,49 @@ import tempfile
 from daemon_backend import execute,require_front_mode
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dhcp_apply_is_revision_fenced_and_forwards_the_intent_to_the_dataplane(self):
+        backend=AsyncMock()
+        intent=dict(revision=4,servers={'ae1.69':dict(interface='ae1.69',address='10.1.0.2/22',pools=[['10.1.0.100','10.1.0.199']],reserved={},lease=86400,probe=False,options={})},configuration='c'*64)
+        backend.run.side_effect=[dict(config=dict(revision=4,servers={}),boot_id='b',running=None),dict(config=dict(revision=5,servers=intent['servers']),boot_id='b',running=None)]
+        result=await execute('dhcp','apply',intent,backend)
+        self.assertEqual(result['config']['revision'],5)
+        self.assertEqual(backend.run.await_args_list[-1].args,('dhcp','apply',intent))
+        backend.reset_mock();backend.run.side_effect=[dict(config=dict(revision=9,servers={}))]
+        with self.assertRaisesRegex(ValueError,'revision conflict'): await execute('dhcp','apply',intent,backend)
+        backend.reset_mock();backend.run.side_effect=[dict(config=dict(revision=4,servers={})),dict(validated=True)]
+        self.assertTrue((await execute('dhcp','validate',intent,backend))['validated'])
+        self.assertEqual(backend.run.await_args_list[-1].args,('dhcp','validate',intent))
+        with self.assertRaisesRegex(ValueError,'unsupported fields'): await execute('dhcp','apply',dict(intent,extra=1),backend)
+        backend.reset_mock();backend.run.side_effect=None;backend.run.return_value=dict(config=dict(revision=4,servers={}))
+        self.assertEqual((await execute('dhcp','status',{},backend))['config']['revision'],4)
+
+    async def test_observation_refresh_is_backend_owned_and_revision_fenced(self):
+        backend=AsyncMock()
+        backend.run.side_effect=[dict(config=dict(revision=9),boot_id='new-boot'),dict(ports=[
+            dict(port=1,available=True,enabled=True,link=True),dict(port=5,available=True,enabled=False,link=True)]),dict(acknowledged=True)]
+        self.assertTrue((await execute('route-links','refresh',{},backend))['acknowledged'])
+        self.assertEqual(backend.run.await_args_list[-1].args,('network','health',dict(revision=9,boot_id='new-boot',links=dict(p1=True,p5=False))))
+        backend.reset_mock()
+        with self.assertRaises(ValueError): await execute('route-links','refresh',{'links':{'p5':True}},backend)
+        backend.run.assert_not_awaited()
+        backend.run.side_effect=[dict(config=dict(revision=9),boot_id='old-boot'),dict(ports=[]),ValueError('revision changed')]
+        with self.assertRaisesRegex(ValueError,'revision changed'): await execute('route-links','refresh',{},backend)
+
+    async def test_route_link_refresh_validates_without_changing_hardware(self):
+        backend=AsyncMock();backend.run.return_value=dict(config=dict(revision=7),boot_id='boot')
+        result=await execute('network','validate',dict(revision=7,refresh_route_links=True),backend)
+        self.assertTrue(result['validated'])
+        backend.run.assert_awaited_once_with('network','status')
+
+    async def test_route_link_refresh_uses_observed_hardware_not_caller_links(self):
+        backend=AsyncMock()
+        backend.run.side_effect=[dict(config=dict(revision=7),boot_id='boot'),dict(ports=[
+            dict(port=1,available=True,enabled=True,link=True),dict(port=5,available=True,enabled=True,link=False)]),dict(acknowledged=True)]
+        self.assertTrue((await execute('network','apply',dict(revision=7,refresh_route_links=True),backend))['acknowledged'])
+        self.assertEqual(backend.run.await_args_list[-1].args,('network','health',dict(revision=7,boot_id='boot',links=dict(p1=True,p5=False))))
+        with self.assertRaises(ValueError):
+            await execute('network','apply',dict(revision=7,refresh_route_links=True,links=dict(p5=True)),backend)
+
     async def test_none_cannot_be_bypassed_by_direct_hardware_enable(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'running.xml'

@@ -15,6 +15,8 @@ class SessionBackendTests(unittest.TestCase):
         self.assertFalse(result['hardware_admission']);self.assertEqual(call.call_count,2)
         self.assertEqual(call.call_args_list[0].args[0],backend.DP)
         self.assertEqual(call.call_args_list[1].args[0],backend.CP)
+        self.assertIn('LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps',backend.CP[1])
+        self.assertIn('LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0',backend.CP[1])
         for action,payload in [('apply',{}),('status',{'nonce':'user'}),('status',[]),('delete',{})]:
             with patch.object(backend,'call') as call,self.assertRaises(ValueError):backend.execute(action,payload)
             call.assert_not_called()
@@ -27,6 +29,14 @@ class SessionBackendTests(unittest.TestCase):
             if argv==backend.CP:result['producer']={'pid':5}
             return result
         with patch.object(backend,'call',side_effect=changed),self.assertRaises(ValueError):backend.execute('status',{})
+
+    def test_blocked_policy_keeps_continuous_transport_status_visible(self):
+        stream=dict(fresh=True,ready=False,cp_acknowledged=True,hardware_admission=False)
+        with patch.object(backend,'call',side_effect=ValueError('Policy acknowledgement required')) as call,patch.object(backend,'read_status',return_value=stream):
+            result=backend.execute('status',{})
+        self.assertFalse(result['available']);self.assertFalse(result['hardware_admission'])
+        self.assertEqual(result['continuous_stream'],stream)
+        self.assertIn('Policy acknowledgement',result['reason']);self.assertEqual(call.call_count,1)
 
 
 if __name__=='__main__':unittest.main()

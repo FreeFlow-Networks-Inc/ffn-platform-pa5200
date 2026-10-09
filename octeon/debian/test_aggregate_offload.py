@@ -7,7 +7,8 @@ class OffloadTests(unittest.TestCase):
     def setUp(self):
         self.gates=Gates([23,24]);self.driver=Offload(1,[23,24])
         self.gates.apply({p:dict(collect=True,distribute=True) for p in (23,24)})
-        self.ack=dict(tid=1,verified=True,exists=True,psc=9,ingress_metadata='physical-or-fixed-spa',members=[23,24])
+        self.ack=dict(tid=1,verified=True,exists=True,psc=9,ingress_metadata='physical-or-fixed-spa',members=[23,24],lb_key='pmf-dsa',
+                      key_program=dict(program='pmf-dsa',port=24,group=12,offset=128))
         self.frame=bytes.fromhex('002304000001024feb9130b488b5')+bytes(46)
 
     def test_hardware_destination_and_unchanged_inner_frame(self):
@@ -33,6 +34,15 @@ class OffloadTests(unittest.TestCase):
             self.driver.acknowledge(self.ack,10,0)
             with self.assertRaises(ValueError):self.driver.acknowledge(dict(self.ack,**change),11,0)
             self.assertFalse(self.driver.ready(self.gates,11))
+
+    def test_unverified_load_balance_key_program_keeps_software_selection(self):
+        # The switch would send every flow to one member without the key
+        # program, so a readback that lacks it is not an error but a fallback.
+        for ack in (dict(self.ack,lb_key=None),dict(self.ack,lb_key='other'),{k:v for k,v in self.ack.items() if k not in ('lb_key','key_program')}):
+            self.driver.acknowledge(self.ack,10,0);self.assertTrue(self.driver.ready(self.gates,11))
+            self.driver.acknowledge(ack,11,0)
+            self.assertFalse(self.driver.ready(self.gates,11));self.assertEqual(self.driver.members,[]);self.assertIsNone(self.driver.key_program)
+        self.driver.acknowledge(self.ack,12,0);self.assertEqual(self.driver.key_program['group'],12)
 
     def test_source_metadata_keeps_member_identity_across_empty_full_transitions(self):
         for source,physical in [(0x8001,34),(0x8101,35),(34,34),(35,35),(0x8002,0x8002)]:

@@ -19,7 +19,12 @@ from aggregate_config import plan,parse
 
 DIRECTORY=Path('/var/lib/ffn-ngfw/aggregate-runtime')
 RUNNING=Path('/var/lib/ffn-ngfw/config/running-config.xml')
-OFFLOAD_BLOCKER='BCM egress is implemented but TM hash distribution is not commissioned; use OCTEON software activation'
+# Hardware egress: the CP programs the ingress load-balance key extraction with
+# the owned trunk (ffn_aggregate_bcm_lag.py) and the DP uses the LAG destination
+# only while that program is verified. On this SDK the switch applies no user
+# field program to TM-header packets, so the key never reaches the LAG resolver
+# and the mode stays gated; see AGGREGATE-ACTIVATION.md.
+OFFLOAD_BLOCKER='BCM egress works but cannot distribute flows: the trunk port injects TM-header frames the switch never parses, so its LAG key is one constant and every flow leaves through one member; hardware distribution needs INJECTED-type injection, a re-architecture; use OCTEON software activation'
 CP=['ssh','-F','/etc/ffn-ngfw/ssh-cp.conf','-o','BatchMode=yes','ffn-cp']
 DP=['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-o','ServerAliveInterval=3','-o','ServerAliveCountMax=2',
     '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
@@ -283,10 +288,15 @@ def supervise(name):
         state.update(token=intent['token'],running_revision=selected['running_revision'])
         save()
         if hashlib.sha256(RUNNING.read_bytes()).hexdigest()!=selected['running_revision']:raise ValueError('Committed configuration changed before startup')
+        progress('Applying DP interface configuration')
         dp=subprocess.Popen(command('dp','serve'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None,start_new_session=True,bufsize=0)
         dp.stdin.write((json.dumps(intent)+'\n').encode());dp.stdin.flush()
-        ready,_,_=select.select([dp.stdout],[],[],12)
-        if not ready:raise RuntimeError('DP aggregate owner did not initialize')
+        # Creating VLANs and installing interface profiles can exceed the old
+        # 12-second deadline on OCTEON. Allow a bounded setup budget based on
+        # the configured work; the normal five-second heartbeat is unchanged.
+        startup_timeout=min(300,30+15*len(intent['network'].get('units',[])))
+        ready,_,_=select.select([dp.stdout],[],[],startup_timeout)
+        if not ready:raise RuntimeError('DP aggregate interface setup exceeded its startup deadline')
         first=dp.stdout.readline(65537)
         if len(first)>65536 or not first.endswith(b'\n'):raise RuntimeError('Invalid DP startup frame')
         row=json.loads(first)
@@ -347,9 +357,9 @@ def supervise(name):
                         last_dp=time.monotonic();state['dataplane']=row;state['dp_received_monotonic']=last_dp
                         acknowledged=row.get('configuration_revision')==network_revision(intent)
                         state['configuration_revision']=network_revision(intent)
-                        ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('distributing'))
+                        ready=row.get('attachment_ready') or (not intent['network'].get('enabled',True) and row.get('configuration_ready',False))
                         state['state']='control-only' if intent['control_only'] else 'apply-failed' if row.get('network_error') or state.get('configuration_error') else 'reconciling' if not acknowledged else ('active' if row.get('network_ready') else 'awaiting-address') if ready else 'negotiating'
-                        state['applied']=bool(acknowledged and ready and row.get('network_ready')) and not intent['control_only'] and not state.get('configuration_error')
+                        state['applied']=bool(acknowledged and ready and row.get('configuration_ready',row.get('network_ready'))) and not intent['control_only'] and not state.get('configuration_error') and not row.get('network_error')
                     save()
     except KeyboardInterrupt:state.update(state='stopping',applied=False);save()
     except BaseException as error:

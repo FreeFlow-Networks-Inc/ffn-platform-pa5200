@@ -25,6 +25,14 @@ def fixture(protocol='udp',mode='address',ingress=13):
 
 
 class NatResultsTests(unittest.TestCase):
+    def test_internal_proof_cannot_be_misreported_as_external_wire(self):
+        r=fixture();r.update(egress=r['ingress'],internal_mac_loopback=True,single_port=True,
+                             external_wire_verified=False,mac_cleanup={'restored':True})
+        self.assertTrue(audit(r,internal=True)['internal_mac_loopback'])
+        with self.assertRaises(ValueError):audit(r)
+        r['mac_cleanup']['restored']=False
+        with self.assertRaises(ValueError):audit(r,internal=True)
+
     def test_matrix_is_evidence_only_even_when_complete(self):
         result=summarize([fixture(*case) for case in sorted(CASES)])
         self.assertTrue(result['complete']);self.assertFalse(result['production_admission'])

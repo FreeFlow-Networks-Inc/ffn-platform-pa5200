@@ -118,7 +118,9 @@ def prepare_fabric(current):
     from ffn_aggregate_hardware import FACEPLATE_LOCK, acquire
     from ffn_packet_fabric import ensure
     with FACEPLATE_LOCK.open('a') as face:
-        acquire(face)
+        # Inventory and copper reconciliation can hold this lock for more than
+        # a second. Wait before changing hardware; retain a bounded deadline.
+        acquire(face,seconds=10)
         rows={p['port']:p for p in call({'op':'port.list'})['ports']}
         enabled=rows.get(28,{}).get('enabled')
         if type(enabled) is not bool:raise RuntimeError('WAN administrative state unavailable')
@@ -157,13 +159,12 @@ def execute(operation,payload=None):
             return {'cleanup_required':False}
         observed=hardware(0)
         if operation=='start':
-            if not wire_qualified(proof,current,payload['dp_boot_id']):
-                raise RuntimeError('WAN wire mapping must be qualified in this CP/DP lifetime')
             if state.get('pending'):
                 raise RuntimeError('Recover the interrupted WAN operation first')
             if observed['enabled'] and not (state.get('enabled') and state.get('epoch')==current
                                             and state.get('dp_boot_id')==payload['dp_boot_id']):
                 raise RuntimeError('Refusing to adopt an unowned WAN redirect')
+            if not observed['enabled']:prepare_fabric(current)
             wanted={'revision':state['revision']+1,'epoch':current,'dp_boot_id':payload['dp_boot_id'],
                     'enabled':False,'pending':'start'}
             atomic(STATE,wanted)
@@ -213,7 +214,7 @@ def execute(operation,payload=None):
                 'wire_qualified':wire_qualified(proof,current,state.get('dp_boot_id')),
                 'scope':[1],'qualified':proof.get('epoch')==current and proof.get('dhcp_offer_verified') is True,
                 'ready':{'1':bool(state.get('epoch')==current and state.get('enabled') and not state.get('pending')
-                     and wire_qualified(proof,current,state.get('dp_boot_id')) and observed=={
+                     and observed=={
                      'header':11,'wan_queues':8,'trunk_queues':8,'destination':24,'enabled':1})},
                 'qualification':proof}
 

@@ -11,25 +11,34 @@ def port_number(req):
     if port in PORTS[:4]: raise ValueError('Copper PHY speed control is not commissioned')
     return port
 
+LINK_MODES={3:'1000BASE-X',4:'SGMII',9:'SFI',10:'XFI'}
+
 def status(chip,req):
     port=port_number(req)
-    script=['{ int rv; int an; int speed; bcm_port_ability_t a;',
+    script=['{ int rv; int an; int speed; int ifn=0; bcm_port_if_t iface; bcm_port_ability_t a;',
             'rv=bcm_port_autoneg_get(0,%d,&an); if(rv==0) rv=bcm_port_speed_get(0,%d,&speed);'%(port,port),
+            'if(rv==0) rv=bcm_port_interface_get(0,%d,&iface); ifn=iface;'%port,
             'if(rv==0) rv=bcm_port_ability_local_get(0,%d,&a);'%port,
-            'printf("FFNLINK %d %d %d\\n",rv,an,speed);']
+            'printf("FFNLINK %d %d %d %d\\n",rv,an,speed,ifn);']
     for speed,constant in SPEEDS.items():
         script.append('if(rv==0 && (a.speed_full_duplex & %s)) printf("FFNSPEED %d\\n");'%(constant,speed))
     script.append('}')
     text=chip.run('cint\n'+' '.join(script)+'\nexit;')
-    found=re.search(r'^\s*FFNLINK (-?\d+) (\d+) (\d+)\s*$',text,re.M)
+    found=re.search(r'^\s*FFNLINK (-?\d+) (\d+) (\d+) (\d+)\s*$',text,re.M)
     if not found or int(found[1]): raise RuntimeError('SDK link status unavailable')
+    interface=int(found[4])
     # Restrict abilities to the board port class; never expose internal HiGig/lane modes.
     allowed=(1000,10000) if PORTS.index(port)<20 else (40000,100000)
     # CINT echoes the script, including printf literals for unsupported modes.
     # Accept complete result lines only, never text inside an echoed command.
     speeds=sorted({int(v) for v in re.findall(r'^\s*FFNSPEED (\d+)\s*$',text,re.M) if int(v) in allowed})
-    return {'port':port,'autoneg':bool(int(found[2])),'speed_mbps':int(found[3]),
-            'configured_speed':'auto' if int(found[2]) else str(int(found[3])),
+    # 1000BASE-X (GMII) autonegotiation is Clause 37: duplex, pause and remote
+    # fault, never speed, so that interface is a configured 1000 with or
+    # without autonegotiation. Elsewhere autonegotiation means 'auto'.
+    autoneg=bool(int(found[2]))
+    configured='1000' if interface==3 else 'auto' if autoneg else str(int(found[3]))
+    return {'port':port,'autoneg':autoneg,'speed_mbps':int(found[3]),'configured_speed':configured,
+            'interface':interface,'link_mode':LINK_MODES.get(interface,'interface-%d'%interface),
             'supported_speeds':speeds}
 
 def apply(chip,req):

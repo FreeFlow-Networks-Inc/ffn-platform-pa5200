@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "scope": "isolated-native-QMAP-paired-UDP-port-NAT",
+  "production_admission": false,
+  "throughput_qualified": false,
+  "report": "/var/log/ffn-fe100-loop-1790892879264153697.json",
+  "physical_report": "/var/lib/ffn/fe100/guarded-physical-1790892891985854614.json",
+  "native_library_sha256": "878b059e623613d45a7d294d57ab95d954f3146e31cf3c370e98d1b0db028fce",
+  "resource_adapter_sha256": "4781084b87c065faf3ed1b2092fa01cb90d2cfe90497419c088731a63063ea37",
+  "packet_lab_sha256": "668d37456342f621940243383d9872f7ec81082ac81adec0b87c7812a1ffce1a",
+  "bcm_recipe_sha256": "f28f0f7db26d79331b1d3616b52e4299c52489c7a017afb6cf9c5a23da49b122",
+  "phases": {
+    "baseline": {"sent": 64, "original": 64, "rewritten": 0, "capture_drops": 0},
+    "miss": {"sent": 64, "original": 0, "rewritten": 0, "capture_drops": 0},
+    "hit": {"sent": 64, "original": 0, "rewritten": 64, "capture_drops": 0},
+    "after_owner_exit": {"sent": 64, "original": 64, "rewritten": 0, "capture_drops": 0}
+  },
+  "fault_injection": {"owner_exit_code": 99, "guardian_phase": "drained", "withdrawal_acknowledged": true},
+  "cleanup_verified": true,
+  "ports_restored": true,
+  "repeated_drain_with_disabled_baseline_verified": true,
+  "configuration_unchanged": true,
+  "production_control_and_packet_workers_unchanged": true,
+  "resource_lifecycle_checks": 12,
+  "attachment_lifecycle_checks": 7,
+  "host_control_tests": 100,
+  "cp_packet_and_resource_tests": 45,
+  "dp_image_tests": 24,
+  "native_host_sanitizer_and_mips_abi_tests": "passed",
+  "initial_failed_attempt": {
+    "report": "/var/log/ffn-fe100-loop-1790892346954297473.json",
+    "cause": "Lab restore supplied snapshot bytes to index-only resource delete",
+    "physical_report": "/var/lib/ffn/fe100/guarded-physical-1790892360690558958.json",
+    "manual_recovery_verified": true,
+    "regression_fixed": true
+  },
+  "limitations": [
+    "Isolated synthetic paired IPv4 UDP test, not production traffic or throughput",
+    "Production QMAP selector ownership and BCM queue lifetime integration remain incomplete",
+    "Production ingress steering, trusted policy admission and exception/accounting handoff remain disabled"
+  ]
+}

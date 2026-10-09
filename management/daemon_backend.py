@@ -8,7 +8,7 @@ from pathlib import Path
 from hardware_backend import Controller, COMMANDS, HTTPException
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
-        'fe100-policy':{'revision','digest'},
+        'fe100-policy':{'revision','digest'},'dhcp':{'revision','servers','configuration'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
         'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
 
@@ -25,6 +25,20 @@ def require_front_mode(port,config=Path('/var/lib/ffn-ngfw/config/running-config
 
 async def execute(resource, action, payload, backend=None):
     backend=backend or Controller()
+    if resource=='route-links' and action=='refresh':
+        if payload: raise ValueError('Observation refresh takes no payload')
+        observed=await backend.run('network','status')
+        faceplate=await backend.run('faceplate','status')
+        links={'p'+str(p['port']):p.get('available') is True and p.get('enabled') is True and p.get('link') is True for p in faceplate['ports']}
+        return await backend.run('network','health',dict(revision=observed['config']['revision'],boot_id=observed['boot_id'],links=links))
+    if resource=='network' and action in ('validate','apply') and payload.get('refresh_route_links') is True:
+        if set(payload)!={'revision','refresh_route_links'}: raise ValueError('Invalid link refresh')
+        observed=await backend.run('network','status')
+        if observed['config']['revision']!=payload['revision']: raise ValueError('Network revision changed')
+        if action=='validate': return {'validated':True}
+        faceplate=await backend.run('faceplate','status')
+        links={'p'+str(p['port']):p.get('available') is True and p.get('enabled') is True and p.get('link') is True for p in faceplate['ports']}
+        return await backend.run('network','health',dict(revision=payload['revision'],boot_id=observed['boot_id'],links=links))
     if resource == 'lacp':
         if action == 'status':
             if payload: raise ValueError('status takes no payload')
@@ -85,9 +99,9 @@ async def execute(resource, action, payload, backend=None):
                 from ffn_inspection import validate
                 validate(payload)
         if action=='validate':
-            if resource=='network':return await backend.run('network','validate',payload)
+            if resource in ('network','dhcp'):return await backend.run(resource,'validate',payload)
             return {'validated':True}
-        actual='patch' if resource=='network' else payload['operation'] if resource=='thermal' else 'set'
+        actual='patch' if resource=='network' else 'apply' if resource=='dhcp' else payload['operation'] if resource=='thermal' else 'set'
         return await backend.run(resource,actual,None if resource=='thermal' else payload)
     if action not in ('status','lookup') or (resource,action) not in COMMANDS:
         raise ValueError('unsupported operation')

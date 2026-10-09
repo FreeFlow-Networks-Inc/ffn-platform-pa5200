@@ -71,7 +71,10 @@ class BuildInputTests(unittest.TestCase):
                        ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS', 'MODULES'))
         complete = base + ''.join('CONFIG_' + n + '=y\n' for n in b.DP_POLICY_BUILTINS)
         complete += ''.join('CONFIG_' + n + '=m\n' for n in b.DP_POLICY_MODULES)
+        complete += 'CONFIG_HIGH_RES_TIMERS=y\n'
         b.check_kernel_config(complete, 'dp')
+        with self.assertRaisesRegex(ValueError, 'DP timing'):
+            b.check_kernel_config(complete.replace('CONFIG_HIGH_RES_TIMERS=y\n', ''), 'dp')
         for name in b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'DP policy'):
                 b.check_kernel_config('\n'.join(line for line in complete.splitlines()
@@ -91,9 +94,34 @@ class BuildInputTests(unittest.TestCase):
         overlay=json.loads(Path(__file__).with_name('overlay.json').read_text())
         paths={row[2] for row in overlay['cp']}
         for name in ('usr/local/ffn/ffn_bcm_link.py',
+                     'usr/local/ffn/ffn_bcm_trunk.py',
+                     'usr/local/sbin/ffn_bcm_reference.py',
                      'usr/local/sbin/ffn_packet_fabric.py',
                      'usr/local/share/ffn/bcm/ffn_bcm_front_init.c',
                      'etc/systemd/system/ffn-mdio.service',
+                       'usr/local/sbin/ffn_fe100_recovery.py',
+                       'usr/local/sbin/ffn_fe100_flow_ids.py',
+                       'usr/local/sbin/ffn_fe100_observations.py',
+                       'usr/local/sbin/ffn_fe100_path_owner.py',
+                       'usr/local/sbin/ffn_fe100_path_sessions.py',
+                       'usr/local/sbin/ffn_fe100_resource_tables.py',
+                       'usr/local/sbin/ffn_fe100_attachments.py',
+                       'usr/local/sbin/ffn_fe100_attachment_runtime.py',
+                       'usr/local/sbin/ffn_fe100_admission.py',
+                       'usr/local/sbin/ffn_fe100_flow_namespace.py',
+                       'usr/local/sbin/ffn_fe100_qualification.py',
+                       'usr/local/lib/ffn/fe100_attachment_config.py',
+                       'usr/local/sbin/validate_attachments.py',
+                       'usr/local/sbin/validate_path_resources.py',
+                     'etc/systemd/system/ffn-fe100-recovery.service',
+                     'etc/systemd/system/ffn-fe100-control.service',
+                     'etc/systemd/system/ffn-sfp-watch.service',
+                     'usr/local/sbin/ffn_sfp_watch.py',
+                       'usr/local/sbin/ffn_sfp_check.py',
+                     'usr/local/sbin/ffn-i2c-recover',
+                     'usr/local/sbin/ffn_fe100_controld.py',
+                     'usr/local/sbin/ffn_fe100_control_socket.py',
+                     'etc/systemd/system/ffn-fe100-recovery.timer',
                      'usr/local/sbin/ffn_hardware_verify.py'):
             self.assertIn(name,paths)
 
@@ -233,6 +261,9 @@ class BuildInputTests(unittest.TestCase):
             destinations = [row[2] for row in entries]
             self.assertEqual(len(destinations), len(set(destinations)))
             self.assertIn('usr/local/sbin/ffn_'+role+'_agent.py', destinations)
+            self.assertIn('usr/local/lib/ffn/session_stream.py', destinations)
+            self.assertIn('usr/local/sbin/'+('ffn_fe100_session_stream.py' if role=='cp' else 'ffn_session_stream_dp.py'), destinations)
+            if role=='dp':self.assertIn('usr/local/sbin/validate_session_stream.py', destinations)
             for origin, source, dest in entries:
                 self.assertIn(origin, ('core', 'platform'))
                 self.assertFalse(Path(source).is_absolute())
@@ -249,8 +280,8 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
-        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer']),
-                            ('dp', ['ffn-network.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'])]:
+        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-sfp-watch.service', 'ffn-port-led-enable.service', 'ffn-port-events.service']),
+                            ('dp', ['ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')
                 overlay[role].append(['platform', unit, 'etc/systemd/system/' + unit])
@@ -273,7 +304,7 @@ class BuildInputTests(unittest.TestCase):
         config = self.root / 'config'
         config.write_text(''.join('CONFIG_'+s+'=y\n' for s in
                                  ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS',
-                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
+                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM', 'HIGH_RES_TIMERS') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
         def pin(p):
             return dict(path=str(p), sha256=b.sha(p))
         inputs = dict(kernel_repository=str(platform), kernel_commit='c'*40,
@@ -319,6 +350,10 @@ class BuildInputTests(unittest.TestCase):
                 self.assertIn('rootfs/lib/modules/6.18-test', names)
                 self.assertEqual(tar.getmember('rootfs/usr/bin/python3').uid, 1234)
                 self.assertEqual(tar.getmember('rootfs/usr/local/sbin/'+asset['role']+'.py').uid, 0)
+                if asset['role']=='cp':
+                    timer=tar.getmember('rootfs/etc/systemd/system/timers.target.wants/ffn-fe100-recovery.timer')
+                    self.assertTrue(timer.issym())
+                    self.assertEqual(timer.linkname,'../ffn-fe100-recovery.timer')
 
 
 if __name__ == '__main__':

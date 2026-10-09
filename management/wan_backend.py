@@ -68,23 +68,13 @@ def execute(action,payload,call=remote,drain=before_commit):
                         or fresh.get('fabric_available') is not True):
                     raise RuntimeError('DP packet fabric changed during recovery')
                 dp=fresh
-            proof=current.get('qualification',{})
-            qualified=(current.get('wire_qualified') is True
-                       and proof.get('report',{}).get('boot_id')==dp['boot_id'])
-            if not qualified:
-                if attachment['running']:raise ValueError('Withdraw the existing WAN attachment before requalification')
-                if (current['state'].get('pending') or current['state'].get('enabled')
-                        or current['state'].get('epoch')!=current.get('epoch')):
-                    current=call('cp','recover',{'revision':current['revision']})
-                token=str(uuid.uuid4())
-                try:
-                    call('cp','prepare',{'revision':current['revision'],'token':token,'dp_boot_id':dp['boot_id']})
-                    report=call('dp','probe',{})
-                    current=call('cp','finish',{'token':token,'report':report})
-                finally:
-                    call('cp','abort',{'token':token})
-                if not current.get('wire_qualified'):
-                    raise ValueError('WAN wire qualification received no port-1 return traffic; check the physical link and upstream connection')
+            # A committed attachment needs queue/redirect and boot readback.
+            # External traffic and DHCP probes remain explicit diagnostics.
+            if (current['state'].get('pending') or current['state'].get('epoch')!=current.get('epoch') or
+                    current['state'].get('enabled') and current['state'].get('dp_boot_id')!=dp['boot_id']):
+                # A DP-only reboot retains the CP switch redirect. Withdraw
+                # that old attachment before commissioning the new DP lifetime.
+                current=call('cp','recover',{'revision':current['revision']})
             result=call('cp','start',{'revision':current['revision'],'dp_boot_id':dp['boot_id']})
             try:attachment=call('dp','start',{'boot_id':dp['boot_id']})
             except BaseException:
@@ -122,4 +112,6 @@ if __name__=='__main__':
     except (RuntimeError,KeyError,subprocess.TimeoutExpired) as error:
         # Transport/SDK errors may follow a hardware write. Preserve an unknown
         # journal outcome for explicit status inspection and reconciliation.
+        import syslog
+        syslog.syslog(syslog.LOG_ERR, 'ffn-wan-backend: '+str(error)[:1024])
         print(json.dumps({'error':str(error)[:1024]}));sys.exit(1)

@@ -119,6 +119,41 @@
       "core",
       "opt/ffn_controld_client.py",
       "usr/local/lib/ffn/ffn_controld_client.py"
+    ],
+    [
+      "platform",
+      "management/session_stream.py",
+      "usr/local/lib/ffn/session_stream.py"
+    ],
+    [
+      "core",
+      "opt/ffn_vrrp.py",
+      "usr/local/lib/ffn/ffn_vrrp.py"
+    ],
+    [
+      "core",
+      "opt/ffn_route_monitor.py",
+      "usr/local/lib/ffn/ffn_route_monitor.py"
+    ],
+    [
+      "core",
+      "opt/ffn_route_probe.py",
+      "usr/local/lib/ffn/ffn_route_probe.py"
+    ],
+    [
+      "core",
+      "opt/ffn_static_routes.py",
+      "usr/local/lib/ffn/ffn_static_routes.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-static-routes.service",
+      "etc/systemd/system/ffn-static-routes.service"
+    ],
+    [
+      "core",
+      "opt/ffn_interface_services.py",
+      "usr/local/lib/ffn/ffn_interface_services.py"
     ]
   ],
   "cp": [
@@ -224,6 +259,31 @@
     ],
     [
       "platform",
+      "management/ffn_sfp_control.py",
+      "usr/local/sbin/ffn_sfp_control.py"
+    ],
+    [
+      "platform",
+      "management/ffn_sfp_watch.py",
+      "usr/local/sbin/ffn_sfp_watch.py"
+    ],
+    [
+      "platform",
+      "management/ffn_sfp_check.py",
+      "usr/local/sbin/ffn_sfp_check.py"
+    ],
+    [
+      "platform",
+      "octeon/i2c/ffn-i2c-recover.sh",
+      "usr/local/sbin/ffn-i2c-recover"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-sfp-watch.service",
+      "etc/systemd/system/ffn-sfp-watch.service"
+    ],
+    [
+      "platform",
       "management/ffn_nif_control.py",
       "usr/local/sbin/ffn_nif_control.py"
     ],
@@ -276,6 +336,16 @@
       "platform",
       "octeon/debian/ffn-fe100-links.sh",
       "usr/local/sbin/ffn-fe100-links.sh"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-init.service",
+      "etc/systemd/system/ffn-fe100-init.service"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_init.py",
+      "usr/local/sbin/ffn_fe100_init.py"
     ],
     [
       "platform",
@@ -394,6 +464,11 @@
     ],
     [
       "platform",
+      "fe100/validate_nat_lifecycle.py",
+      "usr/local/sbin/validate_nat_lifecycle.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_nexthop.py",
       "usr/local/sbin/ffn_fe100_nexthop.py"
     ],
@@ -409,6 +484,26 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_guard.py",
+      "usr/local/sbin/ffn_fe100_guard.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_lab_guard.py",
+      "usr/local/sbin/ffn_fe100_lab_guard.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_guard_lab.py",
+      "usr/local/sbin/ffn_fe100_guard_lab.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_lab_ports.py",
+      "usr/local/sbin/ffn_fe100_lab_ports.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_parser_apply.py",
       "usr/local/sbin/ffn_fe100_parser_apply.py"
     ],
@@ -419,13 +514,103 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_flow_ids.py",
+      "usr/local/sbin/ffn_fe100_flow_ids.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy.py",
       "usr/local/sbin/ffn_fe100_policy.py"
     ],
     [
       "platform",
+      "fe100/ffn_fe100_path_owner.py",
+      "usr/local/sbin/ffn_fe100_path_owner.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_path_sessions.py",
+      "usr/local/sbin/ffn_fe100_path_sessions.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_resource_tables.py",
+      "usr/local/sbin/ffn_fe100_resource_tables.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_attachments.py",
+      "usr/local/sbin/ffn_fe100_attachments.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_attachment_runtime.py",
+      "usr/local/sbin/ffn_fe100_attachment_runtime.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_admission.py",
+      "usr/local/sbin/ffn_fe100_admission.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_flow_namespace.py",
+      "usr/local/sbin/ffn_fe100_flow_namespace.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_qualification.py",
+      "usr/local/sbin/ffn_fe100_qualification.py"
+    ],
+    [
+      "platform",
+      "management/fe100_attachment_config.py",
+      "usr/local/lib/ffn/fe100_attachment_config.py"
+    ],
+    [
+      "platform",
+      "fe100/validate_attachments.py",
+      "usr/local/sbin/validate_attachments.py"
+    ],
+    [
+      "platform",
+      "fe100/validate_path_resources.py",
+      "usr/local/sbin/validate_path_resources.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_observations.py",
+      "usr/local/sbin/ffn_fe100_observations.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_policy_control.py",
       "usr/local/sbin/ffn_fe100_policy_control.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_control_socket.py",
+      "usr/local/sbin/ffn_fe100_control_socket.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_controld.py",
+      "usr/local/sbin/ffn_fe100_controld.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-control.service",
+      "etc/systemd/system/ffn-fe100-control.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-recovery.service",
+      "etc/systemd/system/ffn-fe100-recovery.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-recovery.timer",
+      "etc/systemd/system/ffn-fe100-recovery.timer"
     ],
     [
       "platform",
@@ -601,6 +786,51 @@
       "platform",
       "octeon/debian/ffn-copper-link.timer",
       "etc/systemd/system/ffn-copper-link.timer"
+    ],
+    [
+      "platform",
+      "management/ffn_physical_forwarding.py",
+      "usr/local/sbin/ffn_physical_forwarding.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_session_stream.py",
+      "usr/local/sbin/ffn_fe100_session_stream.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_port_led_enable.py",
+      "usr/local/sbin/ffn_port_led_enable.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-port-led-enable.service",
+      "etc/systemd/system/ffn-port-led-enable.service"
+    ],
+    [
+      "platform",
+      "management/ffn_bcm_reference.py",
+      "usr/local/sbin/ffn_bcm_reference.py"
+    ],
+    [
+      "platform",
+      "octeon/bcmagent/ffn_bcm_trunk.py",
+      "usr/local/ffn/ffn_bcm_trunk.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_front_traffic.py",
+      "usr/local/sbin/ffn_front_traffic.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_port_events.py",
+      "usr/local/sbin/ffn_port_events.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-port-events.service",
+      "etc/systemd/system/ffn-port-events.service"
     ]
   ],
   "dp": [
@@ -666,6 +896,31 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn_packet_socket.py",
+      "usr/local/sbin/ffn_packet_socket.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_native_packet.py",
+      "usr/local/sbin/ffn_native_packet.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_tap_steering.py",
+      "usr/local/sbin/ffn_tap_steering.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_packet_cpus.py",
+      "usr/local/sbin/ffn_packet_cpus.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_native_aggregate.py",
+      "usr/local/sbin/ffn_native_aggregate.py"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_fabric.py",
       "usr/local/sbin/ffn_fabric.py"
     ],
@@ -698,6 +953,16 @@
       "platform",
       "octeon/debian/ffn_network.py",
       "usr/local/sbin/ffn_network.py"
+    ],
+    [
+      "core",
+      "opt/ffn_dhcp_server.py",
+      "usr/local/lib/ffn/ffn_dhcp_server.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-dhcp-server.service",
+      "etc/systemd/system/ffn-dhcp-server.service"
     ],
     [
       "platform",
@@ -778,6 +1043,66 @@
       "platform",
       "octeon/debian/policy-bindings.json",
       "etc/ffn/policy-bindings.json"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_physical_runtime.py",
+      "usr/local/sbin/ffn_physical_runtime.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-physical@.service",
+      "etc/systemd/system/ffn-physical@.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_session_stream_dp.py",
+      "usr/local/sbin/ffn_session_stream_dp.py"
+    ],
+    [
+      "core",
+      "dataplanes/ctlease/ffn_ctlease.py",
+      "usr/local/lib/ffn/ffn_ctlease.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_accounting.py",
+      "usr/local/lib/ffn/ffn_fe100_accounting.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_flowstats.py",
+      "usr/local/lib/ffn/ffn_fe100_flowstats.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_sessions.py",
+      "usr/local/lib/ffn/ffn_fe100_sessions.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/validate_session_stream.py",
+      "usr/local/sbin/validate_session_stream.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-static-routes.conf",
+      "etc/systemd/system/ffn-static-routes.service.d/20-platform.conf"
+    ],
+    [
+      "core",
+      "systemd/ffn-interface-services.service",
+      "etc/systemd/system/ffn-interface-services.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_interface_profile_source.py",
+      "usr/local/lib/ffn/ffn_interface_profile_source.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-interface-services.conf",
+      "etc/systemd/system/ffn-interface-services.service.d/20-platform.conf"
     ]
   ]
 }

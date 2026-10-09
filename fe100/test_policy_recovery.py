@@ -15,6 +15,8 @@ class Recovery(unittest.TestCase):
             self.assertFalse(result['admission_enabled'])
             self.assertFalse(result['capabilities']['production_admission'])
             self.assertFalse(result['capabilities']['nat_packet_qualification'])
+            self.assertTrue(result['capabilities']['path_resources']['drain_before_reclaim'])
+            self.assertFalse(result['capabilities']['path_resources']['production_connected'])
             self.assertIn('snat-and-dnat',result['capabilities']['encoded_actions'])
             self.assertEqual(result['sessions'],0)
 
@@ -23,7 +25,9 @@ class Recovery(unittest.TestCase):
             first = control.control('replace', {'revision': 0, 'digest': 'a'*64})
             for _ in range(2):
                 result = control.control('reconcile', {})
-                self.assertEqual(result, first)
+                self.assertEqual({k:v for k,v in result.items() if k!='observations'},
+                                 {k:v for k,v in first.items() if k!='observations'})
+                self.assertFalse(result['observations']['ready'])
             self.assertFalse(result['admission_enabled'])
 
     def test_journal_lock_contention_does_not_report_drained(self):
@@ -47,8 +51,9 @@ class Recovery(unittest.TestCase):
             recovery.publish({'outcome': 'blocked'}, path)
             self.assertEqual(json.loads(path.read_text()), {'outcome': 'blocked'})
             self.assertEqual(list(Path(directory).glob('*.tmp')), [])
-        for operation, payload in [('reconcile', {'revision': 1}), ('activate', {}), ('status', [])]:
-            with self.assertRaises(ValueError): control.control(operation, payload)
+            with patch.object(control,'ROOT',Path(directory)):
+                for operation, payload in [('reconcile', {'revision': 1}), ('activate', {}), ('status', [])]:
+                    with self.assertRaises(ValueError): control.control(operation, payload)
 
 
 if __name__ == '__main__': unittest.main()

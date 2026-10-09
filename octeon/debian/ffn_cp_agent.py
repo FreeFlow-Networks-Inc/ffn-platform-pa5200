@@ -167,9 +167,15 @@ def policy_status(path='/var/lib/ffn/fe100/policy-sessions.sqlite3'):
         row = db.execute('SELECT body FROM policy_state WHERE id=1').fetchone()
         state = json.loads(row[0]) if row else {}
         count = db.execute('SELECT count(*) FROM sessions').fetchone()[0]
+        try:
+            from session_stream import read_status
+            stream=read_status(Path(path).with_name('session-stream.json'))
+        except ImportError:
+            stream={'available':False,'ready':False,'hardware_admission':False}
         return {'available': True, 'source': 'session intent journal',
                 'configured_revision': state.get('revision'), 'configured_phase': state.get('phase'),
                 'journaled_sessions': count, 'hardware_activation_verified': False,
+                'session_stream':stream,
                 'recovery': policy_recovery_status(Path(path).with_name('policy-recovery.json'),
                     state.get('revision'), count, state.get('phase'))}
     finally:

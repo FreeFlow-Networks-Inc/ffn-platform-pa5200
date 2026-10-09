@@ -61,6 +61,8 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
 {
     int rv = 0;
     int fe100_test = 0;
+    int lab_port_a = 16;
+    int lab_port_b = 7;
     int single_front = fe100_test == 9 || fe100_test == 12 || fe100_test == 15 || fe100_test == 16 || fe100_test == 23 || fe100_test == 24 || fe100_test == 37 || fe100_test == 64;
     int n;
     int cos;
@@ -318,8 +320,9 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
              * RAW_DSA egress removes the eight-byte tag on the front port. */
             hw_bytes1[0]=0xc0;hw_bytes1[1]=0;hw_bytes1[2]=0x10;hw_bytes1[3]=0;
             hw_bytes2[0]=0;hw_bytes2[1]=0;
-            hw_bytes2[2]=fe100_test==53 ? 0 : 2;
-            hw_bytes2[3]=fe100_test==53 ? 0xe0 : 0;
+            src=fe100_test==53 ? lab_port_b : lab_port_a;
+            hw_bytes2[2]=(src<<5)>>8;
+            hw_bytes2[3]=(src<<5)&255;
             hw_mac[5]=0xee;
             /* Allow tagged/untagged test egress and its VLAN field. The
              * synthetic DA, NIF ingress and destination port remain exact. */
@@ -396,7 +399,7 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
             if (rv == 0) rv = bcm_field_qualify_EtherType(0, hw_entry, 0x88b5, 0xffff);
             if (rv == 0) rv = bcm_field_qualify_SrcMac(0, hw_entry, hw_mac, hw_mask);
         }
-        src=hw_cross ? (fe100_test<=56 ? 3 : 24) : (fe100_test==53 ? 7 : 16);
+        src=hw_cross ? (fe100_test<=56 ? 3 : 24) : (fe100_test==53 ? lab_port_b : lab_port_a);
         BCM_GPORT_SYSTEM_PORT_ID_SET(dst, src);
         if(rv==0 && hw_cross) {
             /* Experimental RAW ingress: reproduce control/trap flags from
@@ -556,16 +559,34 @@ int ffn_copper_return_preflight(int unit, int port, int numq, uint32 flags, int 
     if (fe100_test == 44 || fe100_test == 45 || fe100_test==51 || fe100_test==52) {
         /* Isolated 5->DAC->13->FE100->MP capture. Leave all other routes
          * intact. Refuse to adopt an unexpected forwarding configuration. */
-        rv=bcm_port_force_forward_get(0,20,&dst,&an_value);
-        if (rv==0 && an_value) rv=-8;
-        src=fe100_test>=51 ? 16 : 7;
+        src=fe100_test>=51 ? lab_port_a : lab_port_b;
         cos=fe100_test==44 || fe100_test==51;
+        rv=bcm_port_force_forward_get(0,20,&dst,&an_value);
+        if (rv==0 && an_value) {
+            /* Drain ingress before dismantling the commissioned exception
+             * return. Activation still requires an unowned return port. */
+            if (cos || dst!=24) rv=-8;
+            else {
+                rv=bcm_switch_control_port_get(0,20,bcmSwitchPortHeaderType,&dp_header);
+                if (rv==0 && dp_header!=BCM_SWITCH_PORT_HEADER_TYPE_RAW) rv=-8;
+            }
+        }
         if (rv==0) rv=bcm_port_force_forward_get(0,src,&dst,&an_value);
-        if (rv==0 && (!an_value || dst!=(cos ? 24 : 3))) rv=-8;
-        if (rv==0) rv=bcm_port_force_forward_set(0,src,cos ? 3 : 24,1);
+        if (rv==0 && cos && (!an_value || dst!=24)) rv=-8;
+        if (rv==0 && !cos && an_value && dst!=3 && dst!=24) rv=-8;
+        if (rv==0 && !cos && !an_value) {
+            /* A previous drain may have succeeded before a later table
+             * restore failed. The separate port owner can then restore the
+             * disabled baseline. Read it back; never re-enable its redirect. */
+            rv=bcm_port_enable_get(0,src,&an_link);
+            if (rv==0 && an_link) rv=-8;
+        }
+        if (rv==0 && (cos || (an_value && dst==3)))
+            rv=bcm_port_force_forward_set(0,src,cos ? 3 : 24,1);
         if (rv==0) rv=bcm_port_force_forward_get(0,src,&dst,&an_value);
         printf("FFN_SESSION_ROUTE port=%d destination=%d enabled=%d rv=%d\n",src,dst,an_value,rv);
-        if (rv==0 && (!an_value || dst!=(cos ? 3 : 24))) rv=-1;
+        if (rv==0 && ((cos && (!an_value || dst!=3)) ||
+                     (!cos && an_value && dst!=24))) rv=-1;
     }
     if (fe100_test == 36) {
         /* Read-only inventory before DP transport commissioning. */

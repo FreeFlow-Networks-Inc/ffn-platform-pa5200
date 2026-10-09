@@ -34,3 +34,5 @@ Verify recovery in order:
 Wire qualification is not DHCP lease acquisition, internet reachability or
 hardware NAT verification. The WAN packet owner reports hardware offload false.
 An empty LAN/security/NAT configuration must not be replaced by test defaults.
+
+The MP installation must also include `octeon/debian/ffn-dhcp-mp` as `/usr/local/sbin/ffn-dhcp`: the `dhcp` plane resource (the dataplane DHCP server, see the core docs/dhcp-server.md) relays through it exactly as `network` relays through `ffn-network`.

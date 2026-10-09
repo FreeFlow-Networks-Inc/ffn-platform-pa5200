@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "scope": "deployed CP observation-owner worker crash and MP relay resynchronization",
+  "report_id": "1790887378679361283",
+  "fault": "SIGKILL worker",
+  "recovery_seconds": 18.725206972914748,
+  "control_owner_changed": true,
+  "dp_producer_changed": true,
+  "fresh_snapshot_acknowledged_by_cp_and_mp": true,
+  "policy_revision_unchanged": true,
+  "saved_configuration_unchanged": true,
+  "hardware_sessions_tested": 0,
+  "production_admission": false
+}

@@ -3,7 +3,7 @@
 # Uses the existing pinned MP -> CP -> DP management connection.
 set -eu
 case "${1:-status}" in
-    status|validate|patch|lookup) action=${1:-status} ;;
+    status|validate|patch|lookup|health) action=${1:-status} ;;
     *) echo 'usage: ffn-network [status|validate|patch|lookup] (validate/patch/lookup read JSON stdin)' >&2; exit 2 ;;
 esac
 exec ssh -o BatchMode=yes -o ConnectTimeout=10 \

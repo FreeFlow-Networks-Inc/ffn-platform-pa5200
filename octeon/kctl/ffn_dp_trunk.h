@@ -231,9 +231,17 @@ static netdev_tx_t trunk_xmit(struct sk_buff *skb, struct net_device *dev)
     if (!trunk_accepting || trunk_error || skb->len < 14 || skb->len > FFN_TRUNK_MAX)
         goto drop;
     /* Only the commissioned Jericho ITMH + RAW_DSA format is admitted. An
-     * Ethernet stack must not accidentally inject ARP/IPv6 as a TM command. */
+     * Ethernet stack must not accidentally inject ARP/IPv6 as a TM command.
+     * The switch strips the eight-byte RAW_DSA area before faceplate
+     * transmission, but its egress program reads it as a DSA tag: byte 0
+     * carries the tagged flag (a set flag makes it rebuild a VLAN tag from
+     * the other bytes) and the upper four bytes carry PCP/VID, so those five
+     * must stay zero. Bytes 1..3 carry the aggregate owner's LAG load-balance
+     * key, which a field entry on the trunk port copies into the switch's
+     * key. */
     if (skb->len < 26 || skb_copy_bits(skb, 0, envelope, sizeof(envelope)) ||
-        envelope[0] != 1 || envelope[3] || memchr_inv(envelope + 16, 0, 8))
+        envelope[0] != 1 || envelope[3] || envelope[16] ||
+        memchr_inv(envelope + 20, 0, 4))
         goto drop;
     for (slot = 0; slot < FFN_TX_SLOTS; slot++)
         if (trunk_pending[slot].index < 0)
@@ -360,7 +368,7 @@ corrupt:
 static int trunk_poll(void *unused)
 {
     while (!kthread_should_stop()) {
-        unsigned n, pending;
+        unsigned n = 0, pending;
         unsigned long flags;
         if (READ_ONCE(trunk_running) && !READ_ONCE(trunk_error))
             for (n = 0; n < 64 && trunk_receive() > 0; n++)
@@ -378,7 +386,13 @@ static int trunk_poll(void *unused)
             netif_carrier_off(trunk);
             netif_stop_queue(trunk);
         }
-        usleep_range(500, 1000);
+        /* A full receive budget means there may still be queued work. Yield
+         * to runnable tasks, then drain another bounded burst without the
+         * fixed idle delay. Reap TX and check stop/error on every pass. */
+        if (n == 64 && !READ_ONCE(trunk_error))
+            cond_resched();
+        else
+            usleep_range(500, 1000);
     }
     return 0;
 }

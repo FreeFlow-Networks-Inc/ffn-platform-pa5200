@@ -8,7 +8,8 @@ records intent before writes; a failed restore is never marked successful.
 BCM routing and packet injection are controlled separately by the MP tester.
 
 Reference: VM 5220-sysroot1-full libpandp_cp.so DWARF, usr/share/pdt/fe100.py,
-opt/dpfs/etc/fe-parser.json. IPv4 UDP test key, LIF1, ACL31 and NH31 only.
+opt/dpfs/etc/fe-parser.json. Reserved benchmark keys, profile-selected lab LIFs,
+ACL31 and NH31 only. Environment port selection requires an isolated supervisor.
 """
 from ffn_fe100 import register_map_path
 import ctypes as C
@@ -26,27 +27,52 @@ from ffn_fe100_sessions import key4, entry4, forwarding_entry4, nat_entry4, outp
 from ffn_fe100_session_adapter import encode_native, decode_native
 from ffn_fe100_nexthop import LIB, SHA, encode as next_hop
 
-FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN','13'))
-if FRONT_RETURN not in (5,13):raise ValueError('unsupported front return')
-EGRESS=(18-FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
+from ffn_fe100_lab_ports import profile
+PORT_PROFILE=profile()
+PORT_PAIR=PORT_PROFILE['front']
+FRONT_RETURN=int(os.environ.get('FFN_FE100_FRONT_RETURN',str(PORT_PAIR[1])))
+if FRONT_RETURN not in PORT_PAIR:raise ValueError('unsupported front return')
+EGRESS=next(p for p in PORT_PAIR if p!=FRONT_RETURN) if os.environ.get('FFN_FE100_CROSS')=='1' else FRONT_RETURN
+if os.environ.get('FFN_FE100_MAC_SINGLE')=='1':EGRESS=FRONT_RETURN
 VLAN_RETURN=os.environ.get('FFN_FE100_VLAN_RETURN')=='1'
+ROUTED_LAB=os.environ.get('FFN_FE100_ROUTED_LAB')=='1'
+MAC_LOOPBACK=os.environ.get('FFN_FE100_MAC_LOOPBACK')=='1'
+SMAC_REWRITE=os.environ.get('FFN_FE100_SMAC_LAB')=='1'
+PAIRED_NAT_LAB=os.environ.get('FFN_FE100_PAIRED_NAT_LAB')=='1'
+SPLIT_PATH_LAB=os.environ.get('FFN_FE100_SPLIT_PATH_LAB')=='1'
+IPV6_MISS_LAB=os.environ.get('FFN_FE100_IPV6_MISS_LAB')=='1'
+IPV6_LAB_KEY=bytes.fromhex('80110ffebf68bf6920010db800000000000000000000000120010db8000000000000000000000002')
+RETURN_PORT=EGRESS if MAC_LOOPBACK else FRONT_RETURN
 NAT_MODE=os.environ.get('FFN_FE100_NAT_LAB')
 PROTOCOL={'udp':17,'tcp':6}[os.environ.get('FFN_FE100_LAB_PROTOCOL','udp')]
-LAB_LIF=2 if FRONT_RETURN==5 else 1
+LAB_LIF=PORT_PROFILE['lif'][FRONT_RETURN]
 KEY = (key4('198.18.0.2','198.18.0.1',49001,49000,PROTOCOL,4094) if FRONT_RETURN==5 else
        key4('198.18.0.1', '198.18.0.2', 49000, 49001, PROTOCOL, 4094))
 if NAT_MODE:
-    if not VLAN_RETURN or EGRESS==FRONT_RETURN:raise ValueError('NAT lab requires isolated cross-port VLAN return')
+    if not (ROUTED_LAB and PORT_PAIR!=[5,13]) and (not VLAN_RETURN or (EGRESS==FRONT_RETURN and not MAC_LOOPBACK)):
+        raise ValueError('NAT lab requires isolated cross-port or internal MAC VLAN return')
     from ffn_fe100_nat_lab import tuples
-    ORIGINAL,TRANSLATED=tuples(NAT_MODE,FRONT_RETURN==5)
+    ORIGINAL,TRANSLATED=tuples(NAT_MODE,(FRONT_RETURN==5)!=(os.environ.get('FFN_FE100_NAT_REVERSE')=='1'))
     KEY=key4(ORIGINAL['source'],ORIGINAL['destination'],ORIGINAL['source_port'],ORIGINAL['destination_port'],PROTOCOL,4094)
 IDENTITY = entry4(KEY, 1001)
 FORWARD = (nat_entry4(KEY,1001,31,TRANSLATED) if NAT_MODE else
-           forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN))
+           forwarding_entry4(KEY, 1001, 31,decrement_ttl=VLAN_RETURN or ROUTED_LAB))
 RETURN_KEY=output_key4(FORWARD)
 RETURN_KEY=RETURN_KEY[:2]+(4093).to_bytes(2,'big')+RETURN_KEY[4:]
 RETURN_IDENTITY=entry4(RETURN_KEY,1002)
 DROP = forwarding_entry4(KEY, 1001, drop=True)
+REVERSE_IDENTITY=REVERSE_FORWARD=REVERSE_DROP=None
+if PAIRED_NAT_LAB:
+    if not NAT_MODE or PORT_PAIR==[5,13] or VLAN_RETURN or (EGRESS!=FRONT_RETURN and not SPLIT_PATH_LAB):
+        raise ValueError('Paired NAT lab requires an isolated same-port optical return')
+    reverse_original,reverse_translated=tuples(NAT_MODE,not ((FRONT_RETURN==5)!=(os.environ.get('FFN_FE100_NAT_REVERSE')=='1')))
+    reverse_key=key4(reverse_original['source'],reverse_original['destination'],reverse_original['source_port'],reverse_original['destination_port'],PROTOCOL,4093 if SPLIT_PATH_LAB else 4094)
+    REVERSE_IDENTITY=entry4(reverse_key,1003)
+    REVERSE_FORWARD=nat_entry4(reverse_key,1003,30 if SPLIT_PATH_LAB else 31,reverse_translated)
+    REVERSE_DROP=forwarding_entry4(reverse_key,1003,drop=True)
+if SPLIT_PATH_LAB and (not PAIRED_NAT_LAB or not ROUTED_LAB or EGRESS==FRONT_RETURN or
+                       VLAN_RETURN or MAC_LOOPBACK):
+    raise ValueError('split-path commissioning requires distinct routed paired NAT legs')
 ROOT = Path('/var/lib/ffn/fe100')
 WORKER_STATE = {}
 
@@ -67,9 +93,25 @@ def front_qmap(flow,ingress,queue):
 def worker(request, fd):
     from ffn_fe100 import Fe100, bar0_base_and_size, memory_decode_on
     kind = request['kind']
+    if kind=='session6':
+        # Only fetch/delete of the isolated IPv6 miss key; no IPv6 action API.
+        from ffn_fe100_live_sessions import LiveSessions
+        if not IPV6_MISS_LAB or request['op'] not in ('fetch','delete'):
+            raise ValueError('IPv6 miss recovery was not selected')
+        if 'live' not in WORKER_STATE:WORKER_STATE['live']=LiveSessions(True,lock_fd=fd,commissioning=True)
+        native=bytes(16)+IPV6_LAB_KEY+bytes(88)
+        if request['op']=='delete':
+            native=bytes.fromhex(request['data'])
+            if (len(native)!=144 or native[16:56]!=IPV6_LAB_KEY or
+                    native[56:76]!=bytes(20) or native[80:88]!=bytes(8)):
+                raise ValueError('Not an owned plain IPv6 identity')
+        rc,result=WORKER_STATE['live'].call(request['op'],native)
+        return {'rc':rc,'data':result.hex()}
     if kind=='readiness':
         from ffn_fe100_live_sessions import LiveSessions
-        return LiveSessions(False,lock_fd=fd,commissioning=True).status()
+        if 'readiness' not in WORKER_STATE:
+            WORKER_STATE['readiness']=LiveSessions(False,lock_fd=fd,commissioning=True)
+        return WORKER_STATE['readiness'].status()
     if kind == 'session':
         from ffn_fe100_live_sessions import LiveSessions
         if 'live' not in WORKER_STATE: WORKER_STATE['live'] = LiveSessions(True, lock_fd=fd,commissioning=True)
@@ -78,9 +120,11 @@ def worker(request, fd):
         # A first physical packet can create an identity entry with an ASIC
         # allocated flow ID. Allow exact-key deletion of that learned entry;
         # only the controller's preflight/ownership journal may request it.
-        learned = (len(data)==64 and data[:16] in (KEY,RETURN_KEY) and
+        keys=(KEY,RETURN_KEY)+((REVERSE_IDENTITY[:16],) if PAIRED_NAT_LAB else ())
+        allowed=(IDENTITY,RETURN_IDENTITY,FORWARD,DROP)+((REVERSE_IDENTITY,REVERSE_FORWARD,REVERSE_DROP) if PAIRED_NAT_LAB else ())
+        learned = (len(data)==64 and data[:16] in keys and
                    data==entry4(data[:16],int.from_bytes(data[36:40],'big')))
-        if data not in (IDENTITY, RETURN_IDENTITY, FORWARD, DROP) and not (learned and request['op']=='delete'):
+        if data not in allowed and not (learned and request['op']=='delete'):
             raise ValueError('unrecognized lab session')
         rc, native = live.call(request['op'], encode_native(data))
         return {'rc':rc, 'data':decode_native(native, data[:16]).hex() if rc == 0 else data.hex(),
@@ -97,16 +141,13 @@ def worker(request, fd):
         finally:
             fe.close()
     specs = {'parser':(0x20000,32,'parser_entry_fetch','parser_entry_insert'),
-             'lif':(0x80000,36,'fetch_lif_entry','insert_lif_entry'),
              'acl':(0x80000,90,'fetch_acl_entry','insert_acl_entry'),
-             'qm':(0x80000,84,'fetch_qm_entry','insert_qm_entry'),
              'spm':(0x70000,2,'fetch_spm_entry','set_spm_entry'),
-             'lef':(0x58000,10,'fetch_lef_entry','insert_lef_entry'),
              'txport':(0x10000,3,'get_tx_portmap_entry','set_tx_portmap_entry'),
-             'nexthop':(0x50000,16,'fetch_nexthop_entry','insert_nexthop_entry')}
+             'rxport':(0x10000,1,'get_rx_portmap_entry','set_rx_portmap_entry')}
     base, size, getname, putname = specs[kind]
     index = request['index']
-    if index not in (range(55) if kind == 'parser' else (5,13) if kind=='txport' else (52,53,54,55) if kind=='spm' else (1,2,31) if kind == 'lif' else (30,31)):
+    if index not in (range(55) if kind == 'parser' else PORT_PAIR if kind in ('txport','rxport') else (52,53,54,55) if kind=='spm' else (30,31)):
         raise ValueError('outside reserved lab indices')
     if 'lib' not in WORKER_STATE and hashlib.sha256(Path(LIB).read_bytes()).hexdigest() != SHA:
         raise RuntimeError('owner ABI changed')
@@ -132,48 +173,125 @@ def worker(request, fd):
     if len(data) != size: raise ValueError('incorrect table entry length')
     if kind == 'acl' and 'data' not in request:
         data = data[:4]+b'\x40'+data[5:]
-    if kind=='qm' and 'data' not in request:data=data[:7]+b'\x01'+data[8:]
     entry = (C.c_ubyte*size).from_buffer_copy(data)
     op = request['op']
-    if op == 'delete':
-        if kind not in ('acl','qm','nexthop','lef','txport','lif'): raise ValueError('delete not supported')
+    if kind=='rxport':
+        # Reference owner ABI: key is swdev/device/BCM port; fetch's third
+        # argument is int*, set's is int, delete takes only the key pointer.
+        key=(C.c_ubyte*3)(0,0,PORT_PROFILE['physical'][index])
+        result=C.c_int(data[0])
+        if op not in ('fetch','insert','delete'):raise ValueError('invalid RX map operation')
+        fn=getattr(lib,'pan_fe100_'+({'fetch':getname,'insert':putname,'delete':'delete_rx_portmap_entry'}[op]))
+        fn.argtypes=[C.c_uint32,C.c_void_p]+([] if op=='delete' else [C.POINTER(C.c_int) if op=='fetch' else C.c_int])
+        args=(0,key) if op=='delete' else (0,key,C.byref(result) if op=='fetch' else result.value)
+    elif op == 'delete':
+        if kind not in ('acl','txport'): raise ValueError('delete not supported')
         fn = getattr(lib,'pan_fe100_delete_'+('tx_portmap' if kind=='txport' else kind)+'_entry')
-        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind in ('lef','txport','lif') else 2)
-        args = (0,index) if kind in ('lef','txport','lif') else (0,1 if kind in ('acl','qm') else 0,index)
+        fn.argtypes = [C.c_uint32]+[C.c_int]*(1 if kind=='txport' else 2)
+        args = (0,index) if kind=='txport' else (0,1,index)
     else:
         if op not in ('fetch','insert'): raise ValueError('invalid table operation')
         fn = getattr(lib,'pan_fe100_'+(getname if op == 'fetch' else putname))
-        fn.argtypes = [C.c_uint32,C.c_void_p]+([C.c_int]* (2 if kind == 'nexthop' else 0 if kind=='spm' else 1))
-        args = (0,entry,0,index) if kind == 'nexthop' else (0,entry) if kind=='spm' else (0,entry,index)
+        fn.argtypes = [C.c_uint32,C.c_void_p]+([] if kind=='spm' else [C.c_int])
+        args = (0,entry) if kind=='spm' else (0,entry,index)
     fn.restype = C.c_int
     shim.ffn_flow_watchdog(10)
     try: rc = fn(*args)
     finally: shim.ffn_flow_watchdog(0)
     if shim.ffn_fe100_faults(): raise RuntimeError('register scope violation; inspect '+trace)
+    if kind=='rxport':entry=bytes((result.value,))
     return {'rc':rc,'data':bytes(entry).hex(),'trace':trace}
 
 
+def recovery_profile():
+    return {'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
+            'internal_mac_loopback':MAC_LOOPBACK,'return_port':RETURN_PORT,'routed_lab':ROUTED_LAB,
+            'session_key':KEY.hex(),'return_key':RETURN_KEY.hex(),'pair':PORT_PAIR,
+            'paired_nat':PAIRED_NAT_LAB,'ipv6_miss':IPV6_MISS_LAB,'smac_rewrite':SMAC_REWRITE,
+            'split_path':SPLIT_PATH_LAB,
+            'forward_entry':FORWARD.hex(),'reverse_entry':REVERSE_FORWARD.hex() if REVERSE_FORWARD else None}
+
+
+def generation_sources(root,boot):
+    prefixes=('fhm-','fdt-train-','fdt-recover-','flu-init-','flu-verified-','fcm-','sem-init-','warm-lab-')
+    return {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.glob('*'+boot+'.json'))
+            if p.name.startswith(prefixes)}
+
+
 class Lab:
-    def __init__(self):
+    def __init__(self,recovery=None):
         self.lock = open('/run/ffn-fe100-tables.lock','a')
-        fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        try:fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BaseException:self.lock.close();raise
+        self.workers = {}
+        self.resources = None
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if recovery is not None:
+            try:
+                path=Path(recovery)
+                if path.is_symlink() or path.resolve().parent!=ROOT.resolve():raise ValueError('recovery journal outside lab root')
+                record=json.loads(path.read_text())
+                self.validate_recovery(record,boot,generation_sources(ROOT,boot))
+                self.path,self.record=path,record
+                self.prepared=bool(record.get('session_touched'))
+                return
+            except BaseException:self.lock.close();raise
         self.path = ROOT/('packet-session-'+str(time.time_ns())+'.json')
-        self.record = {'schema':1,'owner_sha256':SHA,
-                       'profile':{'ingress':FRONT_RETURN,'egress':EGRESS,'vlan_return':VLAN_RETURN,'nat_mode':NAT_MODE,
-                                  'session_key':KEY.hex(),'return_key':RETURN_KEY.hex()},
-                       'cp_boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        self.record = {'schema':2,'owner_sha256':SHA,
+                       'profile':recovery_profile(),'generation_sources':generation_sources(ROOT,boot),
+                       'cp_boot_id':boot,
                        'changes':[], 'snapshots':{}, 'stage':'preflight', 'session_offload_verified':False}
         self.prepared = False
-        self.workers = {}
-        self.save()
+        try:self.save()
+        except BaseException:self.lock.close();raise
+
+    @staticmethod
+    def validate_recovery(record,boot,sources):
+        if (record.get('schema')!=2 or record.get('owner_sha256')!=SHA or record.get('cp_boot_id')!=boot or
+                record.get('profile')!=recovery_profile() or not sources or record.get('generation_sources')!=sources):
+            raise RuntimeError('lab recovery profile, boot or initialization generation changed')
+        if not isinstance(record.get('changes'),list):raise ValueError('invalid lab recovery journal')
+        for change in record['changes']:
+            if not isinstance(change,dict) or set(change)!={'kind','index','before','wanted','restored'}:
+                raise ValueError('invalid lab recovery intent')
+            if type(change['restored']) is not bool:raise ValueError('invalid recovery acknowledgement')
+
+    def close(self):
+        if self.resources is not None:self.resources.close();self.resources=None
+        for process,err in self.workers.values():
+            try:process.stdin.close()
+            except BrokenPipeError:pass
+            try:process.wait(timeout=2)
+            except subprocess.TimeoutExpired:process.kill();process.wait()
+            process.stdout.close();err.close()
+        self.workers.clear();self.lock.close()
 
     def save(self):
         temp = self.path.with_suffix('.tmp')
         with temp.open('w') as f:
             json.dump(self.record,f); f.flush(); os.fsync(f.fileno())
         os.replace(temp,self.path)
+        fd=os.open(self.path.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
 
     def call(self, kind, op='fetch', index=31, data=None):
+        # Resource hardware interaction belongs to the typed native driver.
+        # The lab retains its existing durable intent/readback journal and
+        # inherited global lock; native workers never allocate their own pool.
+        if kind in ('smac','nexthop','lif','lef','qm'):
+            from ffn_fe100_resource_tables import ResourceTables,SPECS
+            if self.resources is None:
+                self.resources=ResourceTables(dict(smac=[30,31],nexthop=[30,31],
+                    lif=sorted(set(PORT_PROFILE['lif'].values())|{31}),lef=[30,31],qmap4=[30,31]),
+                    lock_fd=self.lock.fileno())
+            table='qmap4' if kind=='qm' else kind
+            # Restore journals carry the old snapshot even for delete. The
+            # native delete ABI accepts only the owned index, not entry data.
+            raw=(bytes.fromhex(data) if isinstance(data,str) else data) if op=='insert' else None
+            result=self.resources.call(table,op,index,raw)
+            return dict(rc=3 if result is None else 0,
+                        data=(result if result is not None else bytes(SPECS[table])).hex())
         req = dict(kind=kind,op=op,index=index)
         if data is not None: req['data'] = data.hex() if isinstance(data,bytes) else data
         if kind in self.workers and self.workers[kind][0].poll() is not None:
@@ -230,18 +348,28 @@ class Lab:
     def prepare(self):
         if self.prepared or self.record['changes']: raise RuntimeError('already prepared')
         if self.call('session')['rc'] != 3: raise RuntimeError('lab flow already owned')
+        if PAIRED_NAT_LAB:
+            if self.call('session',data=REVERSE_IDENTITY)['rc']!=3:raise RuntimeError('reverse lab flow already owned')
+            for kind in ('acl','qm'):
+                if self.call(kind,index=30)['rc']!=3:raise RuntimeError('reverse lab resource occupied: '+kind)
+        if IPV6_MISS_LAB and self.call('session6')['rc']!=3:
+            raise RuntimeError('IPv6 lab miss identity already exists')
         for index in (30,31):
             if self.call('nexthop',index=index)['rc'] != 3: raise RuntimeError('lab next-hop occupied')
+        if SPLIT_PATH_LAB:
+            for kind,index in (('nexthop',29),('lef',30),('lif',PORT_PROFILE['lif'][EGRESS])):
+                if self.call(kind,index=index)['rc']!=3:raise RuntimeError('split-path resource occupied: '+kind)
         if self.call('acl')['rc'] != 3: raise RuntimeError('lab ACL occupied')
+        if SMAC_REWRITE and self.call('smac')['rc']!=3:raise RuntimeError('lab source-MAC slot occupied')
         if VLAN_RETURN:
-            if EGRESS==FRONT_RETURN:raise RuntimeError('VLAN return requires distinct ports')
+            if EGRESS==FRONT_RETURN and not MAC_LOOPBACK:raise RuntimeError('VLAN return requires distinct ports')
             if self.call('lif',index=31)['rc']!=3:raise RuntimeError('return LIF31 occupied')
             if self.call('session',data=RETURN_IDENTITY)['rc']!=3:raise RuntimeError('return flow already owned')
         lif = self.call('lif',index=LAB_LIF)
         expected = bytearray(36)
         struct.pack_into('>III',expected,4,0x80050000,8,FRONT_RETURN<<16)
         expected[16:26]=(63<<32).to_bytes(10,'big');expected[26:36]=(FRONT_RETURN<<32).to_bytes(10,'big')
-        if lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]:
+        if not ((MAC_LOOPBACK or PORT_PAIR!=[5,13]) and lif['rc']==3) and (lif['rc'] or bytes.fromhex(lif['data'])[4:] != expected[4:]):
             raise RuntimeError('ingress LIF differs from front-port baseline')
         from ffn_fe100_parser_apply import SOURCE, encode
         source = SOURCE.read_bytes()
@@ -251,17 +379,27 @@ class Lab:
         # Parsed traffic can learn a session before the explicit install.
         # Record ownership after absent-key preflight, before enabling parsing,
         # so an interrupted prepare/miss phase also removes learned entries.
-        self.prepared=True;self.record['session_touched']=True;self.save()
+        self.prepared=True;self.record['session_touched']=True
+        if PAIRED_NAT_LAB:self.record['reverse_session_touched']=True
+        self.save()
         # ACL allow is an exact 5-tuple+zone match in the native IPv4 table.
         acl = bytearray(90);struct.pack_into('>I',acl,0,1<<15)
         acl[4:20]=KEY;acl[21:37]=b'\0'+b'\xff'*15
         self.write('acl',31,bytes(acl))
+        if PAIRED_NAT_LAB:
+            acl[4:20]=REVERSE_IDENTITY[:16]
+            self.write('acl',30,bytes(acl))
         front_return='FFN_FE100_FRONT_RETURN' in os.environ
         if front_return:
+            for port in sorted({FRONT_RETURN,RETURN_PORT}|({EGRESS} if SPLIT_PATH_LAB else set())):
+                mapping=bytes((port,));rx=self.call('rxport',index=port)
+                if rx['rc'] not in (0,3) or (rx['rc']==0 and rx['data']!=mapping.hex()):
+                    raise RuntimeError('RX port mapping conflict')
+                if rx['rc']==3:self.write('rxport',port,mapping)
             from ffn_fe100_nexthop import encode_front
             if self.call('lef')['rc']!=3:raise RuntimeError('LEF31 occupied')
             if self.call('qm')['rc']!=3:raise RuntimeError('QMAP31 occupied')
-            physical=7 if EGRESS==13 else 16
+            physical=PORT_PROFILE['physical'][EGRESS]
             mapping=bytes((0,0,physical))
             tx=self.call('txport',index=EGRESS)
             if tx['rc']!=3 and tx['data']!=mapping.hex():raise RuntimeError('TX port mapping conflict')
@@ -269,20 +407,41 @@ class Lab:
             # XF removes the CPU message header and emits a DSA-tagged frame
             # through NIF. The scoped BCM rule selects RAW_DSA front egress.
             from ffn_fe100_bcm_lab import run
-            queues=run({'mode':'queue-status'})['queue_ids']
+            queues=run({'mode':'queue-status','front_ports':PORT_PAIR})['queue_ids']
             self.record['bcm_queue_ids']=queues;self.save()
             self.write('qm',31,front_qmap(FORWARD,FRONT_RETURN,queues[physical]))
+            if PAIRED_NAT_LAB:
+                reverse_ingress=EGRESS if SPLIT_PATH_LAB else FRONT_RETURN
+                reverse_physical=PORT_PROFILE['physical'][FRONT_RETURN] if SPLIT_PATH_LAB else physical
+                self.write('qm',30,front_qmap(REVERSE_FORWARD,reverse_ingress,queues[reverse_physical]))
             self.write('lef',31,struct.pack('>IIH',0x80000000|(EGRESS<<16),0,0))
-            wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None)
+            if SMAC_REWRITE:
+                from ffn_fe100_nexthop import encode_smac
+                self.write('smac',31,encode_smac('02:52:20:ab:cd:ef'))
+            wanted=encode_front(31,dmac='02:52:20:ab:cd:ee',vlan=4000 if VLAN_RETURN else None,
+                                smac_index=31 if SMAC_REWRITE else None)
+            if SPLIT_PATH_LAB:
+                mapping=bytes((0,0,PORT_PROFILE['physical'][FRONT_RETURN]))
+                tx=self.call('txport',index=FRONT_RETURN)
+                if tx['rc']!=3 and tx['data']!=mapping.hex():raise RuntimeError('reverse TX mapping conflict')
+                if tx['rc']==3:self.write('txport',FRONT_RETURN,mapping)
+                self.write('lef',30,struct.pack('>IIH',0x80000000|(FRONT_RETURN<<16),0,0))
+                self.write('nexthop',30,encode_front(30,dmac='02:52:20:ab:cd:ee',
+                                                   smac_index=31 if SMAC_REWRITE else None))
         else:wanted=next_hop(destination=8,dmac='02:52:20:ab:cd:ee')
         self.write('nexthop',31,wanted)
-        struct.pack_into('>II',expected,4,0x80040000,(4094<<16)|30)
+        struct.pack_into('>II',expected,4,0x80040000,(4094<<16)|(29 if SPLIT_PATH_LAB else 30))
+        if SPLIT_PATH_LAB:
+            reverse_lif=bytearray(expected)
+            struct.pack_into('>II',reverse_lif,8,(4093<<16)|29,EGRESS<<16)
+            reverse_lif[26:36]=(EGRESS<<32).to_bytes(10,'big')
+            self.write('lif',PORT_PROFILE['lif'][EGRESS],bytes(reverse_lif))
         if VLAN_RETURN:
             # Packed owner DWARF: VID at key bits49:38; pport at37:32.
             expected[16:26]=((4095<<38)|(63<<32)).to_bytes(10,'big')
             capture=bytearray(expected)
-            struct.pack_into('>II',capture,4,0x80050000,(4093<<16)|8)
-            capture[26:36]=((4000<<38)|(FRONT_RETURN<<32)).to_bytes(10,'big')
+            struct.pack_into('>III',capture,4,0x80050000,(4093<<16)|8,RETURN_PORT<<16)
+            capture[26:36]=((4000<<38)|(RETURN_PORT<<32)).to_bytes(10,'big')
             self.record['return_session_touched']=True;self.save()
             self.write('lif',31,bytes(capture))
         self.write('lif',LAB_LIF,bytes(expected))
@@ -292,13 +451,21 @@ class Lab:
             zero = '8000000080000000000000000000000000000000000000000000000000000001'
             if before['data'] not in (zero,wanted.hex()): raise RuntimeError('unexpected parser table')
             if before['data'] != wanted.hex(): self.write('parser',index,wanted)
-        self.prepared=True;self.record['stage']='prepared';self.save()
+        # A miss can allocate a plain identity before install is requested.
+        # Journal ownership of this preflight-empty exact key so EOF after
+        # miss-only commissioning also removes its hardware-learned identity.
+        self.prepared=True;self.record['session_touched']=True
+        if IPV6_MISS_LAB:self.record['session6_touched']=True
+        self.record['stage']='prepared';self.save()
 
-    def remove_session(self,return_flow=False):
-        key=RETURN_KEY if return_flow else KEY
-        current = self.call('session',data=RETURN_IDENTITY if return_flow else IDENTITY)
+    def remove_session(self,return_flow=False,reverse=False):
+        if reverse and (return_flow or not PAIRED_NAT_LAB):raise ValueError('Invalid reverse lab cleanup')
+        identity=REVERSE_IDENTITY if reverse else RETURN_IDENTITY if return_flow else IDENTITY
+        key=identity[:16]
+        owned=(REVERSE_FORWARD,REVERSE_DROP) if reverse else (FORWARD,DROP)
+        current = self.call('session',data=identity)
         if current['rc'] == 3: return
-        if current['data'] not in (FORWARD.hex(),DROP.hex()):
+        if current['data'] not in tuple(v.hex() for v in owned):
             data=bytes.fromhex(current['data'])
             if not self.prepared or data!=entry4(key,int.from_bytes(data[36:40],'big')):
                 raise RuntimeError('session ownership conflict: '+current['data'])
@@ -307,17 +474,37 @@ class Lab:
             self.record.setdefault('learned_entries',[]).append(current)
             self.record['session_touched']=True;self.save()
         self.call('session','delete',data=current['data'])
-        if self.call('session',data=RETURN_IDENTITY if return_flow else IDENTITY)['rc'] != 3: raise RuntimeError('session delete not verified')
+        if self.call('session',data=identity)['rc'] != 3: raise RuntimeError('session delete not verified')
 
     def restore(self):
         errors=[]
+        if self.record.get('session6_touched'):
+            try:
+                current=self.call('session6')
+                if current['rc']==0:
+                    raw=bytes.fromhex(current['data'])
+                    if raw[16:56]!=IPV6_LAB_KEY or raw[56:76]!=bytes(20) or raw[80:88]!=bytes(8):
+                        raise RuntimeError('IPv6 lab identity ownership conflict')
+                    self.record['learned_ipv6_identity']=current;self.save()
+                    self.call('session6','delete',data=raw)
+                elif current['rc']!=3:raise RuntimeError('IPv6 identity lookup failed')
+                if self.call('session6')['rc']!=3:raise RuntimeError('IPv6 identity deletion not verified')
+            except Exception as e:errors.append(str(e))
         # Only remove a flow after our durable insert intent, never preflight conflicts.
         if self.record.get('session_touched'):
             try: self.remove_session()
             except Exception as e: errors.append(str(e))
+        if self.record.get('reverse_session_touched'):
+            try:self.remove_session(reverse=True)
+            except Exception as e:errors.append(str(e))
         if self.record.get('return_session_touched'):
             try:self.remove_session(return_flow=True)
             except Exception as e:errors.append(str(e))
+        if errors:
+            # Never restore a next hop/LIF while an owned flow could still
+            # reference it. Keep the exact durable intent for recovery.
+            self.record['cleanup_errors']=errors;self.record['stage']='recovery_required';self.save()
+            raise RuntimeError('; '.join(errors))
         for c in reversed(self.record['changes']):
             if c['restored']: continue
             try:
@@ -346,8 +533,16 @@ class Lab:
             self.call('session','update',data=wanted)
             actual=self.call('session')
             if actual['rc'] or actual['data']!=wanted.hex(): raise RuntimeError('session readback mismatch: '+str(actual))
+            if PAIRED_NAT_LAB:
+                self.remove_session(reverse=True)
+                wanted=REVERSE_FORWARD if op=='install' else REVERSE_DROP
+                self.call('session','insert',data=wanted)
+                self.call('session','update',data=wanted)
+                actual=self.call('session',data=REVERSE_IDENTITY)
+                if actual['rc'] or actual['data']!=wanted.hex():raise RuntimeError('reverse session readback mismatch')
         elif op=='remove':
             if self.record.get('session_touched'): self.remove_session()
+            if self.record.get('reverse_session_touched'):self.remove_session(reverse=True)
         elif op!='snapshot': raise ValueError('unknown command')
         snapshot=self.call('snapshot')
         self.record['snapshots'][op+'-'+str(time.time_ns())]=snapshot;self.save()
@@ -409,12 +604,7 @@ def main():
             lab.restore()
             print(json.dumps({'restored':True,'journal':str(lab.path)}),flush=True)
         finally:
-            for process,err in lab.workers.values():
-                try:process.stdin.close()
-                except BrokenPipeError:pass
-                try:process.wait(timeout=2)
-                except subprocess.TimeoutExpired:process.kill();process.wait()
-                err.close()
+            lab.close()
 
 
 if __name__=='__main__':main()

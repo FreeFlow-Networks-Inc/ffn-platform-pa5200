@@ -106,3 +106,12 @@ Live deployment readback: power CSR=0x3c (both present/good), LED CSR6=0x55
 The governor and forwarding service remained active, with no thermal or
 PSU errors. This verifies commanded register state; visual lamp confirmation
 and physical unplug/reinsert behavior have not yet been tested.
+
+## Bus sharing
+
+The governor holds `/run/ffn-i2c-bus1.lock` for each sensor sample. SFP
+module page readers take the same lock per page read and read pages in
+eight-byte transactions, after whole-page reads on the shared bus starved
+this loop's watchdog on 2026-10-09 (`management/SFP-CHECK.md`, "Bus sharing
+with the thermal governor"). The status line now ends with the sample
+duration, for example `PWM 191/255; 0 sensor errors; sample 1.3s`.

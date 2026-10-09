@@ -177,10 +177,15 @@ def safe_install(source, root, destination):
 def enable_runtime_units(root, role, owners):
     # Only infrastructure starts automatically. Packet owners still require
     # MP intent and current CP/DP qualification before attaching interfaces.
-    units = {'cp': [('timers.target', 'ffn-copper-link.timer'),
+    units = {'cp': [('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
+                    ('multi-user.target', 'ffn-port-led-enable.service'),
+                    ('multi-user.target', 'ffn-fe100-control.service'),
+                    ('multi-user.target', 'ffn-sfp-watch.service'),
+                    ('timers.target', 'ffn-fe100-recovery.timer'),
                     ('timers.target', 'ffn-aggregate-watchdog.timer')],
-             'dp': [('multi-user.target', 'ffn-network.service'),
+             'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
+                    ('multi-user.target', 'ffn-dhcp-server.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
         directory = root / ('etc/systemd/system/' + target + '.wants')
@@ -220,7 +225,7 @@ def check_host():
         raise ValueError('Linux with Python 3.12+ tar data filtering required')
 
 
-DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS',
+DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS', 'NF_CONNTRACK_MARK',
                       'NF_CT_NETLINK', 'NF_NAT', 'NF_TABLES', 'NFT_CT')
 DP_POLICY_MODULES = ('NFT_FIB_IPV4', 'NFT_FIB_IPV6', 'NFT_FIB_INET', 'NFT_NUMGEN', 'NFT_HASH')
 
@@ -237,6 +242,10 @@ def check_kernel_config(conf, role):
             value = values.get('CONFIG_' + symbol)
             if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
                 raise ValueError('Missing DP policy kernel requirement: ' + symbol)
+        # At HZ=100, low-resolution timers turn submillisecond packet polling
+        # sleeps into 10ms pauses, even when forwarding cores are otherwise idle.
+        if values.get('CONFIG_HIGH_RES_TIMERS') != 'y':
+            raise ValueError('Missing DP timing kernel requirement: HIGH_RES_TIMERS')
     if role == 'cp':
         for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
             value = values.get('CONFIG_' + symbol)
@@ -254,15 +263,18 @@ def check_mdio_source(tree):
         raise ValueError('CP requires the Cavium Clause 45 device-address fix')
 
 
-def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work):
+def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work, *, core):
     """Build hardware adapters against this image, never import loose old modules."""
     module = work / (role + '-hardware')
     module.mkdir()
     names = ('ffn_bcm', 'ffn_bde', 'ffn_mdioctl', 'ffn_fe100') if role == 'cp' else (
-        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe')
+        'ffn_dp_link', 'ffn_dp_packet_init', 'ffn_dp_packet_probe', 'ffn_ctlease')
     for p in (platform / 'octeon/kctl').iterdir():
         if p.suffix in ('.c', '.h'):
             shutil.copyfile(p, module / p.name)
+    if role == 'dp':
+        for name in ('ffn_ctlease.c', 'ffn_ctlease.h'):
+            shutil.copyfile(core / 'dataplanes/ctlease' / name, module / name)
     (module / 'Makefile').write_text('obj-m += ' + ' '.join(n + '.o' for n in names) + '\n')
     run(['make', '-C', tree, 'M=' + str(module), 'ARCH=mips',
          'CROSS_COMPILE=' + cross, 'LOCALVERSION=', 'KCFLAGS=-Werror', 'modules'])
@@ -271,9 +283,40 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(artifact)
         modules = image_policy.root_path(root, 'lib/modules')
         safe_install(artifact, root, str(modules.relative_to(root) / release / 'extra' / artifact.name))
+    if role == 'dp':
+        # Ship the qualified native endpoint without loading it or granting
+        # production hardware admission. It must match this exact kernel.
+        artifact = work / 'libffn-ctlease.so'
+        run([userspace_cross + 'gcc', '-D_GNU_SOURCE', '-std=c11', '-O2', '-Wall',
+             '-Wextra', '-Werror', '-fPIC', '-shared',
+             core / 'dataplanes/ctlease/ffn_ctlease_client.c', '-o', artifact])
+        elf(artifact)
+        safe_install(artifact, root, 'usr/lib/ffn/libffn-ctlease.so')
+    image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
+                          output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+    native = work / (role + '-native')
+    native = native / 'native'
+    ignore = shutil.ignore_patterns('*.so', '*.o', '__pycache__', 'test-hwio')
+    shutil.copytree(platform / 'octeon/native', native, ignore=ignore)
+    shutil.copytree(platform / 'octeon/dpfwd', native.parent / 'dpfwd', ignore=ignore)
+    run(['make', '-B', '-C', native, 'CC=' + userspace_cross + 'gcc', 'all'])
+    for name in ('packet', 'hwio', 'inline'):
+        artifact = native / ('libffn-' + name + '.so')
+        elf(artifact)
+        safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
+    probe = work / ('ffn-fe100-packet-probe-' + role)
+    run([userspace_cross + 'gcc', '-O2', '-Wall', '-Wextra', '-Werror',
+         platform / 'fe100/ffn_fe100_packet_probe.c', '-o', probe])
+    elf(probe)
+    safe_install(probe, root, 'usr/local/sbin/ffn-fe100-packet-probe')
+    for name in ('ffn-fe100-punt-probe', 'ffn-fe100-stats-probe'):
+        run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', name])
+        elf(native / name)
+        safe_install(native / name, root, 'usr/local/sbin/' + name)
     if role == 'cp':
-        image_policy.compiler(output([userspace_cross + 'gcc', '-dumpmachine']),
-                              output([userspace_cross + 'gcc', '--version']).splitlines()[0])
+        artifact = native / 'libffn-fe100-resources.so'
+        elf(artifact)
+        safe_install(artifact, root, 'usr/local/lib/' + artifact.name)
         adapters = work / 'fe100-adapters'
         run(['sh', platform / 'fe100/build-adapters.sh', adapters],
             env=dict(os.environ, CC=userspace_cross + 'gcc'))
@@ -371,7 +414,7 @@ def build(config, platform, core, out):
             elf(bundle / 'vmlinux')
             release = (tree / 'include/config/kernel.release').read_text().strip()
             build_hardware(platform, tree, root, role, cross,
-                           cfg.get('userspace_cross_compile', cross), release, work)
+                           cfg.get('userspace_cross_compile', cross), release, work, core=core)
             run(['depmod', '-b', root, release])
             shutil.copyfile(tree / '.config', bundle / 'kernel.config')
             shutil.copyfile(initramfs, out / (role + '-initramfs.cpio'))

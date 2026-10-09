@@ -58,10 +58,68 @@ def copper_apply(port,request):
         finally:bus.close()
 
 
+def sfp_inventory():
+    import ffn_sfp_control as sfp
+    return sfp.inventory()
+
+
+def sfp_apply(port,enabled):
+    import ffn_sfp_control as sfp
+    return sfp.set_enabled(port,enabled)
+
+
+def sfp_link_apply(port,speed):
+    import ffn_sfp_control as sfp
+    return sfp.configure_fiber(port['port'],port['bcm_port'],speed)
+
+
+MODULES=Path('/run/ffn-sfp-modules')
+
+
+def sfp_module(port,present=True):
+    """Identity of the present module, read once per insertion and cached.
+
+    Status is polled by the console every few seconds; an EEPROM read through
+    the cage multiplexer each time is bus traffic the thermal governor shares.
+    The record is kept while the cage reports a module and dropped when it
+    does not, so a swapped module is read again after its absence was seen.
+    """
+    record=MODULES/('%d.json'%port)
+    if not present:
+        record.unlink(missing_ok=True);return None
+    try:return json.loads(record.read_text())
+    except (OSError,ValueError):pass
+    import ffn_sfp_control as sfp
+    try:summary=sfp.module_summary(sfp.module_identity(port))
+    except (OSError,ValueError,ImportError):return None   # no reader here: the cage is not observable
+    try:
+        MODULES.mkdir(mode=0o700,parents=True,exist_ok=True)
+        temp=record.with_suffix('.tmp');temp.write_text(json.dumps(summary));temp.replace(record)
+    except OSError:pass
+    return summary
+
+
+def aggregate_member(port):
+    """True while an aggregate owner that is not stopped holds this port."""
+    aggregate_state=Path('/etc/ffn/aggregate-hardware.json')
+    return aggregate_state.exists() and any(g.get('phase')!='stopped' and port in g.get('ports',[])
+        for g in json.loads(aggregate_state.read_text()).get('groups',{}).values())
+
+
+def expected_speeds(request,mode):
+    """Readbacks consistent with a link request: the module-resolved rate when a
+    recipe ran, and 'auto' as well while that mode autonegotiates (a BCM daemon
+    started before the 1000BASE-X readback rule reports Clause 37 as auto)."""
+    if not isinstance(mode,dict):return {request['speed']}
+    return {str(mode['speed'])}|({'auto'} if mode.get('autoneg') else set())
+
+
 def observe():
     physical={p['port']:p for p in call({'op':'port.list'})['ports']}
     try: copper=copper_inventory()
     except (ImportError,OSError,ValueError,RuntimeError): copper=None
+    try: optics=sfp_inventory()
+    except (ImportError,OSError,ValueError,RuntimeError): optics={}
     ports=[]
     for front,chip in enumerate(PORTS,1):
         if front<=4:
@@ -76,7 +134,8 @@ def observe():
         if p['available'] and p['port']>4:
             try:
                 link=call({'op':'port.link.status','port':p['bcm_port']})
-                p.update(speed_configuration=True, supported_speeds=link['supported_speeds'], configured_speed=link['configured_speed'])
+                p.update(speed_configuration=True, supported_speeds=link['supported_speeds'], configured_speed=link['configured_speed'],
+                         link_mode=link.get('link_mode'), autoneg=link.get('autoneg'))
             except (RuntimeError,ValueError,KeyError,OSError):
                 p['speed_error']='Link control unavailable; BCM link-control update may need activation'
     for p in ports[:4]:
@@ -95,7 +154,16 @@ def observe():
                  pair_map_register=phy.get('pair_map_register'),pair_map_recovery=ready and phy.get('pair_map_recovery',False),
                  datapath_link=bool(p['mac_link'] and phy.get('link')))
         if ready:p.pop('speed_error',None)
-    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled')) for p in ports]).encode()).hexdigest()[:12],16)
+    for p in ports[4:20]:
+        optic=optics.get(p['port'])
+        p.update(media='sfp',mac_enabled=p['enabled'],mac_link=p['link'],
+                 optics=optic,admin_configuration=bool(optic and optic.get('control_ready')),
+                 control_scope='sfp-transmitter-and-switch-mac')
+        p['enabled']=bool(p['mac_enabled'] and optic['tx_enabled']) if optic else None
+        p['link']=bool(p['mac_link'] and p['enabled'] and optic['present']) if optic else None
+        p['module']=sfp_module(p['port'],bool(optic and optic.get('present'))) if optic else None
+        if not optic:p['admin_error']='SFP transmitter control unavailable'
+    revision=int(hashlib.sha256(json.dumps([(p['port'],p['available'],p['enabled'],p['configured_speed'],p['supported_speeds'],p.get('phy_revision'),p.get('mac_enabled'),p.get('optics')) for p in ports]).encode()).hexdigest()[:12],16)
     sync_path=Path('/run/ffn-copper-link.json')
     try: sync=json.loads(sync_path.read_text()) if sync_path.exists() else {'state':'not-active'}
     except (OSError,ValueError):sync={'state':'unavailable'}
@@ -111,13 +179,13 @@ def apply(request):
     before=observe()
     if request['revision']!=before['revision']: raise ValueError('revision conflict; refresh ports')
     port=before['ports'][request['port']-1]
-    aggregate_state=Path('/etc/ffn/aggregate-hardware.json')
-    if aggregate_state.exists() and any(g.get('phase')!='stopped' and request['port'] in g.get('ports',[])
-        for g in json.loads(aggregate_state.read_text()).get('groups',{}).values()):
+    if aggregate_member(request['port']):
         raise ValueError('Stop the aggregate owner before changing a member link')
     if not port['available']: raise ValueError('port unavailable')
     if port.get('media')=='copper' and (not port.get('admin_configuration') or port.get('phy_pending')):
         raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
+    if port.get('media')=='sfp' and 'enabled' in request and not port.get('admin_configuration'):
+        raise ValueError('SFP transmitter control unavailable')
     if 'restart_autoneg' in request and (request['restart_autoneg'] is not True or set(request)!={'revision','port','restart_autoneg'}
             or not port.get('renegotiate_configuration') or not port.get('enabled')):
         raise ValueError('Renegotiation requires an enabled, ready copper port and a standalone request')
@@ -130,6 +198,7 @@ def apply(request):
     if saved.get('pending'): raise ValueError('previous operation unresolved; inspect hardware before retry')
     saved['pending']=request
     save(saved)
+    mode=False   # the link mode an optical module dictated, when one did
     if port.get('media')=='copper':
         # Disable the MAC before the PHY; enable the PHY before the MAC.
         # Journal both steps as one faceplate operation; partial failure stays pending.
@@ -139,13 +208,23 @@ def apply(request):
         if request.get('enabled') is True:
             call({'op':'port.set','port':port['bcm_port'],'enable':True})
     else:
-        if 'speed' in request: call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
+        if 'speed' in request:
+            mode=port.get('media')=='sfp' and sfp_link_apply(port,request['speed'])
+            if not mode:call({'op':'port.link.set','port':port['bcm_port'],'speed':request['speed']})
+        if port.get('media')=='sfp' and request.get('enabled') is False:
+            sfp_apply(request['port'],False)
         if 'enabled' in request: call({'op':'port.set','port':port['bcm_port'],'enable':request['enabled']})
+        if port.get('media')=='sfp' and request.get('enabled') is True:
+            sfp_apply(request['port'],True)
     after=observe()
     actual=after['ports'][request['port']-1]
     if port.get('media')=='copper' and 'enabled' in request and any(actual.get(k)!=request['enabled'] for k in ('mac_enabled','phy_enabled')):
         raise RuntimeError('Copper PHY/MAC administrative readback mismatch; operation pending')
-    if ('enabled' in request and actual['enabled'] != request['enabled']) or ('speed' in request and actual['configured_speed'] != request['speed']):
+    if port.get('media')=='sfp' and 'enabled' in request and (actual.get('mac_enabled')!=request['enabled'] or
+            not actual.get('optics') or actual['optics'].get('tx_enabled')!=request['enabled'] or
+            actual['optics'].get('tx_disable')==request['enabled']):
+        raise RuntimeError('SFP transmitter/MAC administrative readback mismatch; operation pending')
+    if ('enabled' in request and actual['enabled'] != request['enabled']) or ('speed' in request and actual['configured_speed'] not in expected_speeds(request,mode)):
         raise RuntimeError('administrative state readback did not match; operation pending')
     if 'enabled' in request: saved['ports'][str(request['port'])]=request['enabled']
     if 'speed' in request: saved.setdefault('speeds',{})[str(request['port'])]=request['speed']
@@ -153,6 +232,32 @@ def apply(request):
     save(saved)
     after['saved']=saved
     return {'activation':'verified','data':after}
+
+
+def relink(port,observe=observe,link_apply=sfp_link_apply,link_set=call,member=aggregate_member):
+    """Re-apply a port's configured speed to the module present now.
+
+    Used on transceiver insertion: the configuration applier programmed the
+    speed at commit time for the module present then, and the recipe for the
+    requested speed depends on the module. Nothing here changes configuration;
+    the speed is the one the SDK holds for the port (what the last commit set).
+    A port that is not an SFP cage, is unavailable, has a pending faceplate
+    operation, has no configured speed or MAC enable, or belongs to a running
+    aggregate owner is left alone.
+    """
+    state=observe()
+    if state['saved'].get('pending'):return dict(port=port,result='pending-operation')
+    row=state['ports'][port-1]
+    if row.get('media')!='sfp' or not row.get('available'):return dict(port=port,result='not-an-sfp-port')
+    if member(port):return dict(port=port,result='aggregate-member')
+    if not row.get('mac_enabled') or not row.get('speed_configuration') or not row.get('configured_speed'):
+        return dict(port=port,result='unconfigured')
+    speed=row['configured_speed']
+    mode=link_apply(row,speed)
+    if not mode:link_set({'op':'port.link.set','port':row['bcm_port'],'speed':speed})
+    after=observe()['ports'][port-1]
+    return dict(port=port,name=row.get('name'),result='applied',speed=speed,mode=mode if isinstance(mode,dict) else 'generic',
+                link=after.get('link'),link_mode=after.get('link_mode'),module=after.get('module'))
 
 
 def main():
@@ -180,6 +285,10 @@ def main():
                 raise ValueError('Copper PHY unavailable, mapping unverified or operation pending')
             if port.get('media')=='copper' and 'enabled' in pending and port.get('mac_enabled')!=port.get('phy_enabled'):
                 raise ValueError('PHY and MAC disagree; repair the pending operation before accepting state')
+            if port.get('media')=='sfp' and 'enabled' in pending and (not port.get('optics') or
+                    port.get('mac_enabled')!=port['optics'].get('tx_enabled') or
+                    port['optics'].get('tx_disable')==port.get('mac_enabled')):
+                raise ValueError('SFP transmitter and MAC disagree; repair before accepting state')
             if 'enabled' in pending: state['ports'][str(pending['port'])]=port['enabled']
             if 'speed' in pending:
                 if port['configured_speed'] is None: raise ValueError('link state unavailable')

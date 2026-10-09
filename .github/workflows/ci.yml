@@ -6,8 +6,8 @@ name: CI
 # round, because this is the half that talks to a switch ASIC and an OCTEON,
 # where a mistake costs a re-init or a power cycle rather than a retry.
 #
-# Everything here runs with no secrets, no privileges and no hardware, so it
-# works on pull requests from forks.
+# Tests require no secrets or appliance hardware. Explicit process and kernel
+# isolation tests use runner-local privileges and also work on fork PRs.
 #
 # DELIBERATELY NOT BUILT: the OpenBCM / OpenNSA trees. Their licence permits
 # binary but not source redistribution, so they are not in this repository and
@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: FreeFlow-Networks-Inc/FFN-NGFW
-          ref: 96b46d39ca22c62dab4d86d99353e1a442527132
+          ref: 2919b9b791e3d3b2442d8ec1dea0f7b71926377f
           path: .core-runtime
           submodules: false
           persist-credentials: false
@@ -125,13 +125,21 @@ jobs:
       - name: FE100 profile and native configuration
         run: cd fe100 && python3 -m unittest test_fe100_config test_flu test_session_adapter test_flow_memory test_pci_binding
       - name: FE100 session idle expiry
-        run: cd fe100 && python3 -m unittest test_aging test_flowstats
+        run: cd fe100 && python3 -m unittest test_aging test_flowstats test_counter_stream test_accounting test_flow_ids
+      - name: FE100 independent owner withdrawal and recovery
+        run: cd fe100 && PYTHONPATH=../management:$PYTHONPATH python3 -m unittest test_guard test_lab_guard test_guard_lab test_control_service test_observations
+      - name: FE100 supervisor process failure and orphan recovery
+        run: cd fe100 && sudo env FFN_FE100_GUARD_PROCESS_TEST=yes python3 -m unittest test_guard_process
+      - name: FE100 serialized control service RPC and restart
+        run: cd fe100 && sudo env PYTHONPATH=../management:$PYTHONPATH FFN_FE100_CONTROL_PROCESS_TEST=yes python3 -m unittest test_control_service_process
       - name: bcm agent -- cint result parsing
         run: cd octeon/bcmagent && python3 test_cint_result.py
       - name: bcm agent -- dsc parsing
         run: cd octeon/bcmagent && python3 test_dscparse.py
       - name: bcm agent -- VLAN/STP/trunk ops
-        run: cd octeon/bcmagent && python3 test_l2_ops.py
+        run: cd octeon/bcmagent && python3 -m unittest test_l2_ops test_trunk_readback
+      - name: BCM SDK reference readback
+        run: cd management && python3 -m unittest test_bcm_reference
       - name: bcm agent -- ps parsing
         run: cd octeon/bcmagent && python3 test_psparse.py
       - name: bcm agent -- SOC property drift (declared vs the chip we ran)
@@ -151,7 +159,7 @@ jobs:
       - name: VIF assignments and adapter guards
         run: cd octeon/debian && python3 -m unittest test_vif test_network_adapter test_vif_probe test_network_init
       - name: copper VIF mapping, carrier leases and packet transport
-        run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport test_trunk_io
+        run: cd octeon/debian && python3 -m unittest test_copper_vif test_dp_packet_transport test_trunk_io test_tap_steering
       - name: MP VIF observation and configuration ordering
         run: cd management && python3 -m unittest test_vif_backend test_copper_forwarding test_daemon_backend
       - name: aggregate control lock contention
@@ -160,14 +168,18 @@ jobs:
         run: |
           cd management && python3 -m unittest test_wan_forwarding test_wan_backend
           cd ../octeon/debian && python3 test_wan_probe.py
+      - name: Physical interface attachment ownership
+        run: cd management && python3 -m unittest test_physical_backend test_physical_forwarding test_configd_applier
       - name: CP and DP control telemetry
-        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent
+        run: cd octeon/debian && python3 -m unittest test_control_agents test_dp_agent test_port_led_enable
       - name: live bring-up handshake and control handoff
         run: PYTHONPATH="$GITHUB_WORKSPACE:$PYTHONPATH" python3 -m unittest discover -s management -p test_bringup_handoff.py
       - name: FE100 NAT encoding, ownership and recovery (no hardware)
-        run: cd fe100 && python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions test_warm test_ddr_diagnostics test_bcm_lab test_nat_results
+        run: cd fe100 && PYTHONPATH="../management:$PYTHONPATH" python3 -m unittest test_session_plan test_front_sessions test_nat_sessions test_lifecycle test_policy test_policy_nat test_policy_recovery test_sessions test_session_journal test_session_adapter test_packet_sessions test_live_sessions test_physical_sessions test_warm test_ddr_diagnostics test_bcm_lab test_lab_ports test_nat_results
       - name: central hardware control and FE100 policy barrier
-        run: cd management && python3 -m unittest test_session_backend test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+        run: cd management && python3 -m unittest test_session_backend test_session_stream test_session_l3_stream test_hardware_control test_hardware_harness test_policy_guard test_configd_applier test_cli_extension test_aggregate_config test_aggregate_activation test_aggregate_recovery test_packet_fabric
+      - name: FE100 durable next-hop ownership and session drain ordering
+        run: cd fe100 && PYTHONPATH="../management:$PYTHONPATH" python3 -m unittest test_path_owner test_path_sessions test_path_lifecycle test_resource_tables test_attachments test_attachment_runtime test_fe100_attachment_config
       - name: all four copper PHY and MAC control paths
         run: cd management && PYTHONPATH=../bcm python3 -m unittest test_four_copper_ports test_phy_control test_faceplate test_copper_link test_copper_identify test_copper_identify_backend
       - name: management UI controls
@@ -235,6 +247,28 @@ jobs:
         run: |
           gcc -O2 -Wall -Wextra -Werror -pthread test_flow_memory_mmio.c -o /tmp/ffn-fe100-mmio-test
           /tmp/ffn-fe100-mmio-test
+
+      - name: FE100 native commissioning packet envelopes
+        working-directory: fe100
+        run: |
+          gcc -O2 -Wall -Wextra -Werror ffn_fe100_packet_probe.c -o /tmp/ffn-fe100-probe-host
+          /tmp/ffn-fe100-probe-host --selftest
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_packet_probe.c -o /tmp/ffn-fe100-probe-mips
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-probe-mips --selftest
+
+      - name: FE100 native return envelopes on MIPS64
+        working-directory: octeon/native
+        run: |
+          make test
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror test_fe100_resources.c -ldl -o /tmp/ffn-fe100-resources-test
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-resources-test
+          make CC=mips64-linux-gnuabi64-gcc libffn-fe100-resources.so
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_punt.c test_fe100_punt.c -o /tmp/ffn-fe100-punt-mips
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-punt-mips
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror -pthread ffn_packet.c ffn_fe100_punt.c ffn_fe100_stats.c ffn_fe100_punt_probe.c -o /tmp/ffn-fe100-punt-probe
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_stats.c test_fe100_stats.c -o /tmp/ffn-fe100-stats-mips
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-fe100-stats-mips
+          mips64-linux-gnuabi64-gcc -O2 -Wall -Wextra -Werror ffn_fe100_stats.c ffn_fe100_stats_probe.c -o /tmp/ffn-fe100-stats-probe
 
       # qemu-user-static installs the binary as qemu-mips64-static; the
       # Makefile calls qemu-mips64. Linked rather than the Makefile edited, so

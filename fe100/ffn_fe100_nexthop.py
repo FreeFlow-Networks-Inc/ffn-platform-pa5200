@@ -36,7 +36,14 @@ def encode(destination=8, dmac=None, vlan=None, mtu=1518):
     return struct.pack('>IHHH6s', flags, destination, vlan or 0, mtu, mac)
 
 
-def encode_front(egress_lif, dmac=None, mtu=1518, vlan=None):
+def encode_smac(mac):
+    """Native eight-byte source-MAC entry; insertion API owns wire packing."""
+    raw=bytes.fromhex(mac.replace(':',''))
+    if len(raw)!=6 or not any(raw) or raw[0]&1:raise ValueError('source MAC must be nonzero unicast')
+    return b'\x80\x00'+raw
+
+
+def encode_front(egress_lif, dmac=None, mtu=1518, vlan=None, smac_index=None):
     """Normal LEF forwarding; sysport mode is a CPU message destination.
 
     Sysroot pdt nexthop.insert defaults sysport=False and takes eg_lif.
@@ -47,6 +54,9 @@ def encode_front(egress_lif, dmac=None, mtu=1518, vlan=None):
     raw=bytearray(encode(0,dmac=dmac,mtu=mtu,vlan=vlan))
     struct.pack_into('>I',raw,0,int.from_bytes(raw[:4],'big') & ~(1<<20))
     struct.pack_into('>H',raw,4,egress_lif)
+    if smac_index is not None:
+        if type(smac_index) is not int or not 0<=smac_index<1024:raise ValueError('source MAC index must be 0..1023')
+        struct.pack_into('>I',raw,0,int.from_bytes(raw[:4],'big')|(1<<15)|smac_index)
     return bytes(raw)
 
 
