@@ -36,6 +36,10 @@ SENSORS = [
 ]
 BANKS = [(2, 0x2c), (3, 0x2e)]
 MIN_PWM = 191  # Conservative commissioning floor: 75%, owner permits 105.
+# Shared with the SFP module page readers (management/ffn_sfp_control.py), which
+# take it per page read; a whole-page transfer on this bus takes seconds on the
+# CP and starved this loop's 20 s watchdog on 2026-10-09 (see SFP-CHECK.md).
+BUS_LOCK = Path('/run/ffn-i2c-bus1.lock')
 
 
 def bus(channel):
@@ -103,31 +107,35 @@ def sample():
         result['mp_temperatures'] = mp['sensors']
     except Exception as e:
         result['errors'].append('MP thermal: %s' % e)
-    for name, channel, addr, low, high in SENSORS:
-        try:
-            if addr >= 0x48:
-                t = int.from_bytes(read_regs(bus(channel), addr, 0, 2), 'big', signed=True) / 256
-            else:
-                t = rd(channel, addr, 1)
-            if not 0 < t < 125:
-                raise ValueError('invalid temperature %s' % t)
-            result['temperatures'].append({'name': name, 'celsius': t, 'ramp_start': low, 'maximum': high})
-        except Exception as e:
-            result['errors'].append('%s: %s' % (name, e))
-    for channel, addr in BANKS:
-        try:
-            identify(channel, addr)
-            # ADT7470 does not implement a sequential register block read.
-            for i in range(4):
-                reg = 0x2a + i * 2
-                count = rd(channel, addr, reg) | rd(channel, addr, reg + 1) << 8
-                rpm = 0 if count in (0, 65535) else round(5400000 / count)
-                result['fans'].append({'bank': 4 - channel, 'fan': i + 1, 'rpm': rpm,
-                                       'pwm': rd(channel, addr, 0x32 + i)})
-                if rpm < 5000 or rpm > 20000:
-                    result['errors'].append('fan tachometer outside valid range')
-        except Exception as e:
-            result['errors'].append('fan bank %s: %s' % (4 - channel, e))
+    # One sample is one turn on the bus: module page readers (SFP checks) wait
+    # for it instead of interleaving slow long transfers between these reads.
+    with open(BUS_LOCK, 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for name, channel, addr, low, high in SENSORS:
+            try:
+                if addr >= 0x48:
+                    t = int.from_bytes(read_regs(bus(channel), addr, 0, 2), 'big', signed=True) / 256
+                else:
+                    t = rd(channel, addr, 1)
+                if not 0 < t < 125:
+                    raise ValueError('invalid temperature %s' % t)
+                result['temperatures'].append({'name': name, 'celsius': t, 'ramp_start': low, 'maximum': high})
+            except Exception as e:
+                result['errors'].append('%s: %s' % (name, e))
+        for channel, addr in BANKS:
+            try:
+                identify(channel, addr)
+                # ADT7470 does not implement a sequential register block read.
+                for i in range(4):
+                    reg = 0x2a + i * 2
+                    count = rd(channel, addr, reg) | rd(channel, addr, reg + 1) << 8
+                    rpm = 0 if count in (0, 65535) else round(5400000 / count)
+                    result['fans'].append({'bank': 4 - channel, 'fan': i + 1, 'rpm': rpm,
+                                           'pwm': rd(channel, addr, 0x32 + i)})
+                    if rpm < 5000 or rpm > 20000:
+                        result['errors'].append('fan tachometer outside valid range')
+            except Exception as e:
+                result['errors'].append('fan bank %s: %s' % (4 - channel, e))
     return result
 
 
@@ -216,7 +224,11 @@ def main():
             write_pwm(255)
             notify('READY=1')
             while True:
+                started = time.monotonic()
                 s = sample()
+                sampled = time.monotonic() - started
+                if sampled > 10:
+                    print('thermal sample took %.1fs; bus 1 is contended' % sampled, file=sys.stderr, flush=True)
                 wanted = demand(s)
                 now = time.monotonic()
                 if wanted >= current:
@@ -230,7 +242,7 @@ def main():
                 temp.write_text(json.dumps(s, indent=2) + '\n')
                 temp.replace('/run/ffn-thermal.json')
                 leds(s)
-                notify('WATCHDOG=1\nSTATUS=PWM %d/255; %d sensor errors' % (current, len(s['errors'])))
+                notify('WATCHDOG=1\nSTATUS=PWM %d/255; %d sensor errors; sample %.1fs' % (current, len(s['errors']), sampled))
                 time.sleep(5)
         finally:
             write_pwm(255)

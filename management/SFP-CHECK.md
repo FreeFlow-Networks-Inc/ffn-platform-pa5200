@@ -52,6 +52,33 @@ above it on every supported optic); receive power below −30 dBm, or the
 module's RX LOS flag, is `no-rx-light`. Both live in the module, not in any
 configuration, and are reported as measured.
 
+## Bus sharing with the thermal governor
+
+The first day the check ran (2026-10-09) the CP's fan governor,
+`ffn-thermal.service`, was killed by its 20 s watchdog once per check for
+forty minutes, and the fans ramped to full on every restart. The check and
+the governor share I2C bus 1 and nothing else: no lock, no file. The
+mechanism was the bus itself. On the CP a transfer longer than eight bytes
+leaves the OCTEON TWSI high-level controller and completes at about 25 ms
+per byte (8 bytes in 2 ms, 9 bytes in 305 ms, a 96-byte identity page in
+2.0 s, the 224-byte diagnostics read in 5.0 s), and the adapter is held for
+the whole transfer. Five present modules made ten such transfers back to
+back; the governor's forty-odd one- and two-byte sensor reads each queued
+behind one of them, its loop stretched past 20 s, and systemd killed it.
+
+Two rules now hold, in `ffn_sfp_control.py` and `ffn_thermal.py`:
+
+* Module pages are read in eight-byte transactions (`read_module`). Every
+  SFF-8472 value is two bytes at an even offset, so no boundary splits one.
+  A diagnostics read takes about 60 ms instead of 5 s.
+* `/run/ffn-i2c-bus1.lock` is held by the governor for each sensor sample
+  and by every module page read, so a sample is one uninterrupted turn on
+  the bus. The governor's status line reports the sample duration and
+  journals a warning when a sample exceeds 10 s.
+
+Nothing else on the CP may issue a bus-1 transaction longer than eight bytes
+outside that lock.
+
 ## What it does not do
 
 It does not re-attach a port: that is the committed configuration's apply,

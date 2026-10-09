@@ -5,6 +5,7 @@ Board wiring is derived from the PA-5200 version 11 port map. The active-high
 TX_DISABLE polarity is verified against live SFF-8472 diagnostics. No customer
 interface configuration belongs here. Only the selected cage bit is written.
 """
+from contextlib import contextmanager
 import fcntl
 import math
 from pathlib import Path
@@ -26,9 +27,35 @@ def write_reg(*args):
     return write(*args)
 
 LOCK = Path('/run/ffn-sfp-control.lock')
+# Bus 1 is shared with the thermal governor's sensor reads. A transfer longer
+# than eight bytes leaves the OCTEON TWSI high-level controller and crawls at
+# about 25 ms per byte on the CP (measured 2026-10-09: 8 bytes in 2 ms, 9 bytes
+# in 305 ms, a 96-byte identity page in 2.0 s), holding the adapter the whole
+# time. Module pages are therefore read in eight-byte transactions, under a
+# lock the governor holds for each sensor sample, so its 20 s watchdog never
+# waits behind a page read. Every SFF-8472 value is two bytes at an even
+# offset, so an eight-byte boundary never splits one.
+BUS_LOCK = Path('/run/ffn-i2c-bus1.lock')
+CHUNK = 8
 SYSFS = Path('/sys/bus/i2c/devices')
 BUS = 1
 BITS = (0, 1, 2, 3, 5, 4, 7, 6, 12, 13, 14, 15, 9, 8, 11, 10)
+
+
+@contextmanager
+def bus_hold():
+    """Exclusive turn on bus 1; the thermal governor takes the same lock per sample."""
+    with BUS_LOCK.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def read_module(bus, addr, offset, count):
+    """A module page in CHUNK-byte transactions (see BUS_LOCK); the caller holds the bus."""
+    data = bytearray()
+    for start in range(offset, offset + count, CHUNK):
+        data += read_regs(bus, addr, start, min(CHUNK, offset + count - start))
+    return bytes(data)
 
 
 def bit_for(port):
@@ -152,8 +179,9 @@ def diagnostics(port):
     with LOCK.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         bus = module_bus(port)
-        identity = read_regs(bus, 0x50, 0, 96)
-        data = read_regs(bus, 0x51, 0, 128) if identity[92] & 0x40 else b''
+        with bus_hold():
+            identity = read_module(bus, 0x50, 0, 96)
+            data = read_module(bus, 0x51, 0, 128) if identity[92] & 0x40 else b''
         return decode_diagnostics(identity, data)
 
 
@@ -190,7 +218,9 @@ def module_identity(port):
     """The present module's validated identity page, under the control lock."""
     with LOCK.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        identity = read_regs(module_bus(port), 0x50, 0, 96)
+        bus = module_bus(port)
+        with bus_hold():
+            identity = read_module(bus, 0x50, 0, 96)
     _validate_identity(identity)
     return identity
 

@@ -198,6 +198,25 @@ class SfpControlTests(unittest.TestCase):
             controller.call=lambda r:dict(ok=True,completed=True,markers=['FFN_SFP_LINK 0 3 1 1000 1 -4'])
             self.assertEqual(sfp.configure_fiber(5,16,'1000')['link_mode'],'1000BASE-X')
 
+    def test_module_pages_are_read_in_eight_byte_transactions_under_the_bus_lock(self):
+        # Transfers over eight bytes leave the OCTEON TWSI high-level controller and take
+        # ~25 ms per byte on the CP; whole-page reads starved the thermal governor (2026-10-09).
+        page=bytearray(identity());page[92]=0x60;page[95]=sum(page[64:95])&255;page=bytes(page)
+        eeprom={0x50:page+bytes(160),0x51:bytes(range(256))}
+        calls=[];captured=[]
+        def read(bus,address,offset,count):
+            calls.append((bus,address,offset,count));return eeprom[address][offset:offset+count]
+        bus_lock=Path(self.tmp.name)/'bus1.lock'
+        with patch.object(sfp,'read_regs',side_effect=read),patch.object(sfp,'module_bus',return_value=42),\
+             patch.object(sfp,'BUS_LOCK',bus_lock),patch.object(sfp,'decode_diagnostics',side_effect=lambda i,d:captured.append((i,d)) or {}):
+            self.assertEqual(sfp.module_identity(5),page)
+            sfp.diagnostics(5)
+        self.assertTrue(calls and all(count<=sfp.CHUNK and bus==42 for bus,_,_,count in calls))
+        self.assertEqual(len(calls),12+12+16)
+        self.assertEqual([o for _,a,o,_ in calls if a==0x51],list(range(0,128,8)))
+        self.assertEqual(captured,[(page,bytes(range(128)))])
+        self.assertTrue(bus_lock.exists())
+
     def test_mux_resolution_follows_channels_not_vendor_adapter_numbers(self):
         root=Path(self.tmp.name);mux=root/'1-0075';mux.mkdir()
         adapter=root/'i2c-42';adapter.mkdir()
