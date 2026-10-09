@@ -254,8 +254,11 @@ class PlatformApplier:
                     status.ok('virtual-router/default',None,routes,'pa5200','Static routes read back on DP through MP daemon')
             except (ValueError,RuntimeError,sqlite3.Error) as error:
                 status.fail('virtual-router/default','pa5200',str(error))
-        if not status.errors:
-            reconcile_dhcp(root,status,configuration_revision)
+        # DHCP servers depend only on the dataplane devices and their addresses,
+        # never on the front-port attachments above: a port that cannot attach
+        # must not hold every DHCP server hostage, so this step always runs and
+        # reports on its own.
+        reconcile_dhcp(root,status,configuration_revision)
 
 
 def reconcile_dhcp(root,status,configuration_revision,rpc=None):
