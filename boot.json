@@ -15,6 +15,7 @@
     {"id": "front-ports", "plane": "cp", "unit": "ffn-front-ports.service", "after": ["bcm"], "timeout": 1200},
     {"id": "copper-phy", "plane": "cp", "unit": "ffn-copper.service", "after": ["front-ports"], "timeout": 240},
     {"id": "fe100-links", "plane": "cp", "unit": "ffn-fe100-links.service", "after": ["copper-phy"], "timeout": 660},
+    {"id": "fe100-init", "plane": "cp", "unit": "ffn-fe100-init.service", "after": ["fe100-links"], "timeout": 900},
     {"id": "saved-faceplate-state", "plane": "cp", "unit": "ffn-faceplate-restore.service", "after": ["fe100-links"], "timeout": 360},
     {"id": "cp-worker", "plane": "cp", "unit": "ffn-plane@cp.service", "after": ["saved-faceplate-state"], "timeout": 90},
     {"id": "dp-agent", "plane": "dp", "unit": "ffn-dp-agent.service", "after": ["octeon-boot"], "timeout": 90},
