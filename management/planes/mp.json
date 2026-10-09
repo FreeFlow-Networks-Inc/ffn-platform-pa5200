@@ -232,9 +232,21 @@
       ]
     },
     "plane-lifecycle": {
-      "status": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "status"],
-      "validate": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "validate"],
-      "apply": ["/opt/ffn-ngfw-v2/venv/bin/python", "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py", "apply"]
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/plane_lifecycle.py",
+        "apply"
+      ]
     },
     "plane-images": {
       "validate": [
@@ -250,6 +262,26 @@
       "apply": [
         "/opt/ffn-ngfw-v2/venv/bin/python",
         "/opt/ffn-platforms/pa5200-management/plane_images.py",
+        "apply"
+      ]
+    },
+    "dhcp": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "dhcp",
         "apply"
       ]
     }

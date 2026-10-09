@@ -84,7 +84,7 @@ class PlatformApplier:
     def __init__(self, config): self.config=config
 
     def claims(self, xpath):
-        return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath
+        return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath or '.network.dhcp.' in xpath
                 or '.network.profiles.interface-management-profile.' in xpath
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
 
@@ -254,6 +254,39 @@ class PlatformApplier:
                     status.ok('virtual-router/default',None,routes,'pa5200','Static routes read back on DP through MP daemon')
             except (ValueError,RuntimeError,sqlite3.Error) as error:
                 status.fail('virtual-router/default','pa5200',str(error))
+        if not status.errors:
+            reconcile_dhcp(root,status,configuration_revision)
+
+
+def reconcile_dhcp(root,status,configuration_revision,rpc=None):
+    """The committed DHCP servers, compiled by the core, applied as one intent on the dataplane and read back.
+
+    An MP without the dhcp resource still commits a tree that configures no
+    server; one that configures servers it cannot apply fails the commit.
+    """
+    rpc=rpc or globals()['rpc']
+    try:
+        from ffn_dhcp_intent import compile_intent
+    except ImportError:
+        return   # a core without DHCP servers has nothing to apply
+    try:
+        intent=compile_intent(root)['servers']
+    except ValueError as error:
+        status.fail('network/dhcp','pa5200',str(error));return
+    try:
+        observed=rpc('dhcp')
+    except (ValueError,RuntimeError) as error:
+        if intent:status.fail('network/dhcp','pa5200',str(error))
+        return
+    try:
+        if observed['config'].get('servers')!=intent or observed['config'].get('configuration')!=configuration_revision:
+            rpc('dhcp','apply',dict(revision=observed['config']['revision'],servers=intent,configuration=configuration_revision))
+            observed=rpc('dhcp')
+        if observed['config'].get('servers')!=intent:raise ValueError('DP DHCP server readback mismatch')
+        for device,spec in sorted(intent.items()):
+            status.ok('network/dhcp/interface/'+spec['interface'],None,dict(spec,device=device),'pa5200','DHCP server intent read back on DP through MP daemon')
+    except (ValueError,RuntimeError,KeyError,TypeError) as error:
+        status.fail('network/dhcp','pa5200',str(error))
 
 
 def committed_routes(device,config,db='/var/lib/ffn-ngfw/config-v2.db'):

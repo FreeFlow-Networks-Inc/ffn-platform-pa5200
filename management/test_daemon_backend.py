@@ -5,6 +5,22 @@ import tempfile
 from daemon_backend import execute,require_front_mode
 
 class BackendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dhcp_apply_is_revision_fenced_and_forwards_the_intent_to_the_dataplane(self):
+        backend=AsyncMock()
+        intent=dict(revision=4,servers={'ae1.69':dict(interface='ae1.69',address='10.1.0.2/22',pools=[['10.1.0.100','10.1.0.199']],reserved={},lease=86400,probe=False,options={})},configuration='c'*64)
+        backend.run.side_effect=[dict(config=dict(revision=4,servers={}),boot_id='b',running=None),dict(config=dict(revision=5,servers=intent['servers']),boot_id='b',running=None)]
+        result=await execute('dhcp','apply',intent,backend)
+        self.assertEqual(result['config']['revision'],5)
+        self.assertEqual(backend.run.await_args_list[-1].args,('dhcp','apply',intent))
+        backend.reset_mock();backend.run.side_effect=[dict(config=dict(revision=9,servers={}))]
+        with self.assertRaisesRegex(ValueError,'revision conflict'): await execute('dhcp','apply',intent,backend)
+        backend.reset_mock();backend.run.side_effect=[dict(config=dict(revision=4,servers={})),dict(validated=True)]
+        self.assertTrue((await execute('dhcp','validate',intent,backend))['validated'])
+        self.assertEqual(backend.run.await_args_list[-1].args,('dhcp','validate',intent))
+        with self.assertRaisesRegex(ValueError,'unsupported fields'): await execute('dhcp','apply',dict(intent,extra=1),backend)
+        backend.reset_mock();backend.run.side_effect=None;backend.run.return_value=dict(config=dict(revision=4,servers={}))
+        self.assertEqual((await execute('dhcp','status',{},backend))['config']['revision'],4)
+
     async def test_observation_refresh_is_backend_owned_and_revision_fenced(self):
         backend=AsyncMock()
         backend.run.side_effect=[dict(config=dict(revision=9),boot_id='new-boot'),dict(ports=[

@@ -184,6 +184,7 @@ def enable_runtime_units(root, role, owners):
                     ('timers.target', 'ffn-aggregate-watchdog.timer')],
              'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
+                    ('multi-user.target', 'ffn-dhcp-server.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
         directory = root / ('etc/systemd/system/' + target + '.wants')

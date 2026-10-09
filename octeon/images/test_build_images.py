@@ -274,7 +274,7 @@ class BuildInputTests(unittest.TestCase):
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
         for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-port-led-enable.service', 'ffn-port-events.service']),
-                            ('dp', ['ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-aggregate-dp-watchdog.timer'])]:
+                            ('dp', ['ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')
                 overlay[role].append(['platform', unit, 'etc/systemd/system/' + unit])

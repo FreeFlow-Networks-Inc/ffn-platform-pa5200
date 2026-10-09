@@ -1,0 +1,14 @@
+#!/bin/sh
+# MP control surface for the dataplane DHCP server: JSON stdin for validate
+# and apply, JSON stdout for every action. Installed on the MP as
+# /usr/local/sbin/ffn-dhcp beside ffn-network, over the same pinned
+# MP -> CP -> DP management connection.
+set -eu
+case "${1:-status}" in
+    status|validate|apply) action=${1:-status} ;;
+    *) echo 'usage: ffn-dhcp [status|validate|apply] (validate/apply read JSON stdin)' >&2; exit 2 ;;
+esac
+exec ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    -o UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts \
+    -o 'ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp' \
+    root@127.1.2.2 "python3 /usr/local/lib/ffn/ffn_dhcp_server.py $action"
