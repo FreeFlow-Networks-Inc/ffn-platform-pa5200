@@ -176,9 +176,17 @@ class DPTests(unittest.TestCase):
         self.assertEqual(row['l3']['snapshot_digest'],out[0]['payload']['l3']['snapshot_digest'])
 
     def test_route_notification_invalidates_instead_of_being_ignored(self):
-        source=object()
+        # Without a reference topology any notification ends the generation; the queue is drained first.
+        class Source:
+            reads=0
+            def recv(self,size):
+                self.reads+=1
+                if self.reads>1:raise BlockingIOError
+                return b'notification'
+        source=Source()
         with patch.object(dp.select,'select',return_value=([source],[],[])),self.assertRaises(dp.EventGap):
             dp.check_routes(source)
+        self.assertEqual(source.reads,2)
 
 
 if __name__=='__main__':unittest.main()

@@ -16,8 +16,15 @@ exceptions. No appliance addresses, VLAN choices or table allocations are
 embedded in the implementation.
 
 Firewall-local destinations remain on the interface-management-profile path.
-Missing or stale neighbors, policy routing, VRFs, multipath, unsupported route
-attributes, changed ownership and unsupported attachment kinds block planning.
+Missing, failed or incomplete neighbors, policy routing, VRFs, multipath,
+unsupported route attributes, changed ownership and unsupported attachment
+kinds block planning. A neighbor in any kernel-valid state (reachable, stale,
+delay, probe, permanent, noarp) keeps its link address and its plan: under
+forwarded traffic the kernel gets no transport confirmation, so entries cycle
+through those states every reachable_time, and the snapshot projects neighbors
+to destination, device, link address and validity so that cycle changes
+neither the plan nor the generation digest. The DP producer drains a route
+notification and ends the generation only when the projected topology differs.
 Snapshots before and after planning must agree. Collection shares the existing
 eight-second session-observation budget. Missing or changed route evidence
 does not withdraw the software policy; it marks hardware planning unavailable.
@@ -74,6 +81,21 @@ Existing isolated FE100 tests establish packet rewriting under their documented
 conditions. They do not authorize diverting production traffic into hardware.
 The interface/VLAN configuration must already agree with the upstream network;
 this planner never changes it to match observed traffic.
+
+## Open items measured on the PA-5220 (2026-10-08)
+
+With the projections and the producer recheck installed, a 16 MB download
+through the appliance kept the continuous stream ready for 45 seconds with the
+session held; six short sessions in 30 seconds caused exactly one generation
+restart, at the moment the Security collector recorded their grants (rows
+appear only then), with the reason "Current Security/NAT acknowledgement is
+required": `runtime.status()` is transiently not acknowledged while grants are
+recorded and the producer's context check ends the generation. That flap is the
+next stream item. Independently, every session on this appliance is
+`interface-pair-ambiguous` in the DP's own candidacy gate because its WAN zone
+holds two interfaces; `assess` requires exactly one rule interface pair, so the
+egress has to be resolved from the route (translated destination) and the
+ingress from the original source before any session can become a candidate.
 
 ## Measured after the interface pair followed the routes (2026-10-08, late)
 
