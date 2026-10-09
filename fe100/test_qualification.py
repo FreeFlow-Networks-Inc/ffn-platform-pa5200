@@ -109,11 +109,12 @@ class QualificationTests(unittest.TestCase):
         self.path.write_text('not json')
         self.assertFalse(space.front_port())
 
-    def test_reads_are_cached_by_modification_and_refreshed_after_a_new_record(self):
+    def test_a_new_record_replaces_the_view_at_once(self):
         space = self.qualification(); space.record(external(), 'external-wire')
-        first = space.load(); self.assertIs(space.load(), first)
         self.now = 6000.0; space.record(internal(), 'internal-loop')
         self.assertEqual((space.current()['scope'], space.current()['recorded_at']), ('internal-loop', 6000.0))
+        self.path.unlink()
+        self.assertEqual(space.current()['reason'], 'no qualification record for this CP boot')
 
 
 if __name__ == '__main__':

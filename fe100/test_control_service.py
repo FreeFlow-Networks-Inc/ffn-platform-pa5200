@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import ffn_fe100_policy_control as control
+import ffn_fe100_controld as controld
 from ffn_fe100_controld import dispatch,drained
 
 
@@ -57,6 +58,14 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
         self.assertFalse(status['admission_enabled']);self.assertEqual(status['observations']['mode'],'supervised-observation-only')
         self.assertFalse(status['qualification']['front_port']);self.assertFalse(status['capabilities']['nat_packet_qualification'])
+
+    def test_requested_termination_exits_cleanly_after_the_guardian_cleanup(self):
+        with patch.object(controld,'ROOT',self.root),patch.object(controld.sys,'argv',['ffn_fe100_controld.py']),              patch.object(controld,'supervise',side_effect=InterruptedError('guardian termination requested')) as guard:
+            self.assertIsNone(controld.main())
+            guard.assert_called_once()
+            self.assertTrue((self.root/'control-service-required').is_file())
+            with patch.object(controld,'supervise',return_value=None), self.assertRaises(RuntimeError):
+                controld.main()
 
     def test_qualify_records_the_lifetime_bound_result_and_lifts_the_gates(self):
         import ffn_fe100_qualification as qualification

@@ -98,7 +98,6 @@ class Qualification:
         self.path = Path(path or RECORD)
         self.lifetime = lifetime or live_lifetime
         self.clock = clock
-        self.cache = (None, None)   # (mtime_ns, record)
 
     def record(self, summary, scope):
         row = accept(summary, scope, self.lifetime(), self.clock())
@@ -109,23 +108,17 @@ class Qualification:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, self.path)
-        self.cache = (None, None)
         return self.current()
 
     def load(self):
-        try:
-            info = self.path.stat()
-        except OSError:
-            return None
-        if self.cache[0] == info.st_mtime_ns:
-            return self.cache[1]
+        # Read every time: the record is small, the owner asks every few
+        # seconds, and file timestamps are too coarse to cache on.
         try:
             row = json.loads(self.path.read_text())
         except (OSError, ValueError):
-            row = None
+            return None
         if not isinstance(row, dict) or row.get('schema') != 1 or row.get('scope') not in SCOPES:
-            row = None
-        self.cache = (info.st_mtime_ns, row)
+            return None
         return row
 
     def current(self):
