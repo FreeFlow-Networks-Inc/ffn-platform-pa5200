@@ -132,15 +132,46 @@ and [ITMH layout](https://github.com/Broadcom-Network-Switching-Software/OpenBCM
 The appliance SDK and wire readback, rather than API presence alone, determine
 which operations are enabled.
 
-**Current commissioning result:** fixed membership, source decoding and egress
-delivery passed on the device. A bounded 128-packet test produced 128 physical
-unicast transmissions, but all selected one member despite differing IPv4
-source/destination pairs. Setting the TM ingress hash header count to two did
-not improve distribution and was restored to its original value. Hardware
-activation is therefore blocked in the MP API/CLI and disabled in the WebUI.
-The appliance was returned to software selection with both members distributing.
-The remaining work is a scoped TM hash-key implementation and physical tests
-of distribution, flow affinity and member withdrawal before removing that gate.
+**Load-balance key.** The trunk port receives TM-header (ITMH) frames, which
+the ingress pipeline does not parse, so the switch's own LAG load-balance key
+is one constant and every flow left through one member. The commissioned path
+therefore carries the key: the native DP owner folds the same flow fields its
+software selector hashes (addresses, VLAN, protocol, never transport ports)
+into eight bits and writes them into bytes 1..3 of the RAW_DSA area of every
+hardware-egress frame; a direct-extraction field entry preselected on the
+trunk port (`ffn_aggregate_bcm_lag.py`, group/presel/qualifier 12, extraction
+offset 104) copies that byte into the LAG LB key before the destination is
+resolved. The switch strips the area before faceplate transmission but its
+egress program reads it as a DSA tag: byte 0 holds the tagged flag (a set flag
+makes it rebuild a VLAN tag from the other bytes and the LAN switch drops the
+frame) and the upper four bytes hold PCP/VID, so those five stay zero. The DP
+trunk driver admits bytes 1..3 and refuses any envelope with byte 0 or the
+upper four set (`octeon/kctl/ffn_dp_trunk.h`). The field program is one shared
+resource: installed and verified before the first owned trunk is created,
+verified with every readback, removed after the last owned trunk is destroyed.
+The DP uses the LAG destination only while the CP acknowledgement carries the
+verified program (`lb_key`); an unverified readback is a software-selection
+condition, not a fault.
+
+**Current commissioning result (2026-10-08):** the key path is built and
+verified end to end except for the last step, which this SDK does not take.
+Proven on the appliance with the SDK's own per-port counters: hardware egress
+delivers LAG-destined frames and the LAN answers through it (pings 10/10 on both
+members' peers), the DP trunk driver now admits the key bytes, the field program
+installs and reads back, and the frames reach the LAN intact. Not achieved: the
+switch applies **no user field program at all** to packets of a TM-header port
+(a probe entry redirecting every port-24 packet to the loopback port had no
+effect while an identical entry is accepted and read back), so the extracted key
+never reaches the LAG resolver and the chip's own key stays the constant 257;
+all 128 distinct test flows left through one member. Setting the port's header
+type to INJECTED at run time is refused by this SDK (`BCM_E_UNAVAIL`), so
+hardware distribution needs a configuration-level change of the injection
+envelope (INJECTED-type trunk port, re-initialisation, DP encoder and driver
+changes), which is a separate re-architecture. Hardware activation therefore
+stays blocked in the MP API/CLI and WebUI with that reason; the key path, the
+driver relaxation and the field program ship dormant behind the gate for that
+follow-up. Software selection remains the production mode and was re-verified
+after every window (both members distributing, LAN reachable both ways).
 
 Changing the committed XML withdraws a running owner; activate again against
 the new revision. `configd` reports the actual owner/member application state

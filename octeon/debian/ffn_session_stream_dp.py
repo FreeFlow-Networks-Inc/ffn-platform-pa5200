@@ -50,9 +50,34 @@ def route_watch():
     except BaseException:source.close();raise
 
 
-def check_routes(source):
-    if select.select([source],[],[],0)[0]:
+def drain(source):
+    """Consume queued notifications; a lost one (ENOBUFS) is a gap."""
+    count=0
+    while True:
+        try:source.recv(65536)
+        except BlockingIOError:return count
+        except OSError as error:
+            raise EventGap('Notification queue overflowed; new session snapshot required') from error
+        count+=1
+
+
+def check_routes(source,topology=None,deadline=None,observe=None):
+    """Invalidate the generation only when a notification changed what plans use.
+
+    Under forwarded traffic the neighbour state machine notifies every few
+    seconds without changing any next hop. The projected topology snapshot
+    ignores that churn, so a notification is drained and the snapshot retaken;
+    the generation ends only when the retaken topology differs. Without a
+    reference topology any notification is a gap, as before.
+    """
+    if not select.select([source],[],[],0)[0]:return False
+    drain(source)
+    if topology is None:
         raise EventGap('Route, neighbor or interface changed; new session snapshot required')
+    fresh=(observe or feed.l3.snapshot)(deadline if deadline is not None else time.monotonic()+3)
+    if fresh!=topology:
+        raise EventGap('Route, neighbor or interface changed; new session snapshot required')
+    return True
 
 
 def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
@@ -60,12 +85,15 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     state,collector,rules=feed.context()
     producer=dict(boot_id=collector['boot_id'],pid=os.getpid(),
         process_start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19],stream_id=str(uuid.uuid4()))
-    sequence=0;known=set()
+    sequence=0;known=set();topology=None
+    def recheck():
+        # Do not publish a row/heartbeat computed across a topology change,
+        # including changes arriving during a conntrack burst. Notifications
+        # that left the projected topology unchanged do not end the generation.
+        return check_routes(routes,topology,clock()+3)
     def event(operation,payload):
         nonlocal sequence
-        # Do not publish a row/heartbeat computed across a queued topology
-        # change, including changes arriving during a conntrack burst.
-        check_routes(routes)
+        recheck()
         sequence+=1
         emit(dict(schema=1,nonce=nonce,producer=producer,sequence=sequence,operation=operation,
                   emitted_monotonic=clock(),payload=payload))
@@ -78,7 +106,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
         deadline=clock()+8
         topology=feed.l3.snapshot(deadline)
         rows,changes=snapshot(source,timeout=3,capacity=CAPACITY)
-        rows=replay(rows,changes);check_context();check_routes(routes)
+        rows=replay(rows,changes);check_context();recheck()
         def assess(row):
             value=feed.assess(row,rules,producer['boot_id'])
             value['l3']=feed.l3.plan(value,state['bindings'],topology)
@@ -91,14 +119,14 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
             if len(chunk)==32:event('snapshot',chunk);chunk=[]
         if chunk:event('snapshot',chunk)
         if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
-        check_context();check_routes(routes);event('synchronized',{})
+        check_context();recheck();event('synchronized',{})
         heartbeat=clock()
         while not stop():
             now=clock()
             if now-heartbeat>=1:
                 check_context();event('heartbeat',{});heartbeat=clock()
             readable=select.select([source,routes],[],[],.1)[0]
-            if routes in readable:check_routes(routes)
+            if routes in readable:recheck()
             if source not in readable:continue
             # Bound each burst so traffic cannot starve context checks.
             deadline=clock()+.05;count=0

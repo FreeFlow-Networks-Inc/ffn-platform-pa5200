@@ -264,6 +264,26 @@
     ],
     [
       "platform",
+      "management/ffn_sfp_watch.py",
+      "usr/local/sbin/ffn_sfp_watch.py"
+    ],
+    [
+      "platform",
+      "management/ffn_sfp_check.py",
+      "usr/local/sbin/ffn_sfp_check.py"
+    ],
+    [
+      "platform",
+      "octeon/i2c/ffn-i2c-recover.sh",
+      "usr/local/sbin/ffn-i2c-recover"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-sfp-watch.service",
+      "etc/systemd/system/ffn-sfp-watch.service"
+    ],
+    [
+      "platform",
       "management/ffn_nif_control.py",
       "usr/local/sbin/ffn_nif_control.py"
     ],
@@ -316,6 +336,16 @@
       "platform",
       "octeon/debian/ffn-fe100-links.sh",
       "usr/local/sbin/ffn-fe100-links.sh"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-fe100-init.service",
+      "etc/systemd/system/ffn-fe100-init.service"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_init.py",
+      "usr/local/sbin/ffn_fe100_init.py"
     ],
     [
       "platform",
@@ -516,6 +546,21 @@
       "platform",
       "fe100/ffn_fe100_attachment_runtime.py",
       "usr/local/sbin/ffn_fe100_attachment_runtime.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_admission.py",
+      "usr/local/sbin/ffn_fe100_admission.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_flow_namespace.py",
+      "usr/local/sbin/ffn_fe100_flow_namespace.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_qualification.py",
+      "usr/local/sbin/ffn_fe100_qualification.py"
     ],
     [
       "platform",

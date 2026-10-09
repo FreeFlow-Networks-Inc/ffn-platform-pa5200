@@ -21,8 +21,18 @@ new namespace before admission. This allocator does not establish ownership of
 ASIC-generated miss IDs or replace counter-receiver supervision.
 
 The CP image contains the allocator, and the deployed policy module requires it.
-The production service still exposes barrier/recovery operations only; it has
-not commissioned a range or enabled admissions. Existing isolated table-only
+Since 2026-10-08 the supervised control owner commissions the namespace itself
+(`ffn_fe100_flow_namespace.py`): once this boot's FE100 reads initialised it
+proves the range 0x10000..0xFFFFFFFE on the hardware in a subprocess (two
+isolated entries carrying the first and the last id are inserted, read back
+and removed with the tables empty before and after), journals the generation
+(CP boot, readiness owner, range) and creates the allocator with a digest over
+it. The same boot resumes the journal; a new boot archives the previous
+generation with its last counter and rolls over; a failed proof commissions
+nothing and is retried a minute later. The flow id is an opaque 32-bit tag in
+every session entry and counter record, and the range starts above the fixed
+benchmark ids the isolated validators keep. Admission itself is still not
+enabled: activation and front-port qualification remain. Existing isolated table-only
 validators explicitly retain their fixed benchmark IDs because they transmit
 no packets and require empty session tables. Their backend is not a production
 allocator.

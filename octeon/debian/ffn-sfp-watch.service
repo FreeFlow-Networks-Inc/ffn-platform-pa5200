@@ -1,0 +1,14 @@
+[Unit]
+Description=FFN PA-5200 transceiver insertion re-link (configured speed follows the module present)
+After=ffn-bcmd.service
+Wants=ffn-bcmd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -u /usr/local/sbin/ffn_sfp_watch.py
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

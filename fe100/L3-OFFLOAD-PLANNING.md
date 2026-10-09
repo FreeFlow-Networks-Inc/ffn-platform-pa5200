@@ -16,8 +16,15 @@ exceptions. No appliance addresses, VLAN choices or table allocations are
 embedded in the implementation.
 
 Firewall-local destinations remain on the interface-management-profile path.
-Missing or stale neighbors, policy routing, VRFs, multipath, unsupported route
-attributes, changed ownership and unsupported attachment kinds block planning.
+Missing, failed or incomplete neighbors, policy routing, VRFs, multipath,
+unsupported route attributes, changed ownership and unsupported attachment
+kinds block planning. A neighbor in any kernel-valid state (reachable, stale,
+delay, probe, permanent, noarp) keeps its link address and its plan: under
+forwarded traffic the kernel gets no transport confirmation, so entries cycle
+through those states every reachable_time, and the snapshot projects neighbors
+to destination, device, link address and validity so that cycle changes
+neither the plan nor the generation digest. The DP producer drains a route
+notification and ends the generation only when the projected topology differs.
 Snapshots before and after planning must agree. Collection shares the existing
 eight-second session-observation budget. Missing or changed route evidence
 does not withdraw the software policy; it marks hardware planning unavailable.
@@ -52,7 +59,58 @@ by the native table lab. The live observation relay still does not invoke this
 admission controller; commissioned attachment mappings and the commit
 withdrawal barrier remain required before production integration.
 
+The supervised CP owner now dry-runs that gate chain over the inventory the
+relay holds (`ffn_fe100_admission.py`): per session it builds the paired
+admission request and the path-owner plan from the DP's L3 directions, the
+applied bindings and the resolved attachment intent, validates them with the
+production validators (tuple encoding, distinct bindings, inspection and
+establishment requirements, NAT qualification, next-hop shape) and reports the
+reasons that remain, separated into per-session blockers, generation-wide
+reasons (policy activation, qualification, flow-ID allocator, and whether the
+relayed configuration digest matches the owner's commit barrier; the DP's own
+policy generation is fenced by the intake, not compared here)
+and the commissioning items (zone and miss path, LIF/LEF, flow-ID namespace,
+next-hop leases). It evaluates at most 128 sessions per status call and bounds
+its projection to 16 KiB of the RPC envelope. The `status` response carries it
+as `admission`, and `show platform fe100 sessions` attaches it as `supervised`.
+Nothing is installed by the evaluation: `installed` is always zero and
+`hardware_admission` stays false. A session that reports no blocker is
+admissible only once the generation and commissioning items are closed.
+
 Existing isolated FE100 tests establish packet rewriting under their documented
 conditions. They do not authorize diverting production traffic into hardware.
 The interface/VLAN configuration must already agree with the upstream network;
 this planner never changes it to match observed traffic.
+
+## Open items measured on the PA-5220 (2026-10-08)
+
+With the projections and the producer recheck installed, a 16 MB download
+through the appliance kept the continuous stream ready for 45 seconds with the
+session held; six short sessions in 30 seconds caused exactly one generation
+restart, at the moment the Security collector recorded their grants (rows
+appear only then), with the reason "Current Security/NAT acknowledgement is
+required": `runtime.status()` is transiently not acknowledged while grants are
+recorded and the producer's context check ends the generation. That flap is the
+next stream item. Independently, every session on this appliance is
+`interface-pair-ambiguous` in the DP's own candidacy gate because its WAN zone
+holds two interfaces; `assess` requires exactly one rule interface pair, so the
+egress has to be resolved from the route (translated destination) and the
+ingress from the original source before any session can become a candidate.
+
+## Measured after the interface pair followed the routes (2026-10-08, late)
+
+With the DP planner selecting the pair from the routes (FFN-NGFW
+`codex/l3-neighbor-validity`) and the receivers accepting `l3.pair`, the live
+inventory on the PA-5220 held 128 sessions of which 97 were software and L3
+candidates, every one resolved to ae1.69 to ethernet1/1. The supervised
+evaluation then named what remains per session: NAT rewrite not qualified (all
+97, every LAN-to-WAN session is translated) and aggregate hardware egress not
+commissioned for ae1.69 (all 97); generation-wide, policy activation,
+front-port qualification and the flow-ID allocator. The 31 non-candidates were
+TCP sessions not yet established or not yet assured by conntrack. So the gates
+to a first admitted session on this appliance are, in order: the flow-ID
+namespace, NAT packet qualification, and aggregate egress selection.
+
+The flow-ID namespace was commissioned the same night (`FLOW-ID-OWNERSHIP.md`):
+the control owner's status reports it and the admission evaluation's
+generation list is down to policy activation and front-port qualification.

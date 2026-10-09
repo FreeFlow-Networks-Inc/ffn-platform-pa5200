@@ -107,11 +107,18 @@ class BuildInputTests(unittest.TestCase):
                        'usr/local/sbin/ffn_fe100_resource_tables.py',
                        'usr/local/sbin/ffn_fe100_attachments.py',
                        'usr/local/sbin/ffn_fe100_attachment_runtime.py',
+                       'usr/local/sbin/ffn_fe100_admission.py',
+                       'usr/local/sbin/ffn_fe100_flow_namespace.py',
+                       'usr/local/sbin/ffn_fe100_qualification.py',
                        'usr/local/lib/ffn/fe100_attachment_config.py',
                        'usr/local/sbin/validate_attachments.py',
                        'usr/local/sbin/validate_path_resources.py',
                      'etc/systemd/system/ffn-fe100-recovery.service',
                      'etc/systemd/system/ffn-fe100-control.service',
+                     'etc/systemd/system/ffn-sfp-watch.service',
+                     'usr/local/sbin/ffn_sfp_watch.py',
+                       'usr/local/sbin/ffn_sfp_check.py',
+                     'usr/local/sbin/ffn-i2c-recover',
                      'usr/local/sbin/ffn_fe100_controld.py',
                      'usr/local/sbin/ffn_fe100_control_socket.py',
                      'etc/systemd/system/ffn-fe100-recovery.timer',
@@ -273,7 +280,7 @@ class BuildInputTests(unittest.TestCase):
         (platform / 'agent.py').write_text('# agent\n')
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
-        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-port-led-enable.service', 'ffn-port-events.service']),
+        for role, units in [('cp', ['ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-sfp-watch.service', 'ffn-port-led-enable.service', 'ffn-port-events.service']),
                             ('dp', ['ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')

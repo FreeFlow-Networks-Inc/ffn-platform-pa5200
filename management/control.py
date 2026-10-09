@@ -33,6 +33,7 @@ COMMANDS = {
     ('network', 'patch'): ('/usr/local/sbin/ffn-network', 'patch'),
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
     ('dhcp', 'status'): ('/usr/local/sbin/ffn-dhcp', 'status'),
+    ('sfp-check', 'status'): ('/usr/local/sbin/ffn-sfp-check', 'status'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
     ('inspection', 'status'): ('/usr/local/sbin/ffn-inspection', 'status'),

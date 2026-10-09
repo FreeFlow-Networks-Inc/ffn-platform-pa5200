@@ -225,6 +225,27 @@ static uint32_t aggregate_hash(const uint8_t *frame, size_t size, unsigned front
     for (unsigned i = 0; i < used; i++) crc = aggregate_crc_table[(crc ^ key[i]) & 255] ^ (crc >> 8);
     return crc ^ 0xffffffffu;
 }
+/* Hardware member selection. The switch resolves a LAG destination with the
+ * load-balance key its ingress pipeline computed, but injected frames enter
+ * on a TM-header port where no packet header is parsed, so that key would be
+ * one constant and every flow would leave through one member. The DP
+ * therefore folds the same flow fields its own rendezvous hash uses into an
+ * 8-bit key and carries it in the RAW_DSA area, which the switch strips
+ * before faceplate transmission; a direct-extraction field entry on the
+ * trunk port copies the byte into the LAG LB key (ffn_aggregate_bcm_lag.py).
+ * Only bytes 1..3 of the area may carry it: the switch's egress program reads
+ * the area as a DSA tag whose byte 0 holds the tagged flag (bit 5; a set flag
+ * makes it rebuild a VLAN tag from the other bytes and the frame is lost on
+ * the LAN switch), and the DP trunk driver refuses an envelope with byte 0 or
+ * the upper four bytes set. The byte is replicated across 1..3 so the
+ * extraction offset does not depend on how the system header is counted.
+ * Transport ports are not hashed, so every fragment of a flow keeps one
+ * member. */
+static uint8_t aggregate_lb_key(const uint8_t *frame, size_t size)
+{
+    uint32_t crc = aggregate_hash(frame, size, 0);
+    return (uint8_t)(crc ^ (crc >> 8) ^ (crc >> 16) ^ (crc >> 24));
+}
 static int aggregate_transmit(struct ffn_packet *p, const uint8_t *frame, ssize_t size)
 {
     struct ffn_aggregate *a = p->aggregate;
@@ -234,9 +255,9 @@ static int aggregate_transmit(struct ffn_packet *p, const uint8_t *frame, ssize_
     uint8_t plain[MAX_FRAME]; size_t plain_size;
     int unit = aggregate_classify(a, frame, (size_t)size, plain, &plain_size);
     if (unit < 0) { AG_ADD(a->stats[AG_VLAN], 1); return 0; }
-    int selected = -1; uint32_t best = 0; unsigned destination;
+    int selected = -1; uint32_t best = 0; unsigned destination; uint8_t key = 0;
     int offloaded = now < a->offload_deadline;
-    if (offloaded) destination = 0x8000 | a->tid;
+    if (offloaded) { destination = 0x8000 | a->tid; key = aggregate_lb_key(frame, (size_t)size); }
     else {
         for (unsigned i = 0; i < a->members_count; i++) if (a->distribute & (1u << i)) {
             uint32_t hash = aggregate_hash(frame, (size_t)size, a->members[i].front);
@@ -246,6 +267,7 @@ static int aggregate_transmit(struct ffn_packet *p, const uint8_t *frame, ssize_
     }
     uint8_t packet[MAX_FRAME + 12] = {1, (uint8_t)(destination >> 8), (uint8_t)destination, 0};
     memcpy(packet + 4, frame, 12); memcpy(packet + 24, frame + 12, (size_t)size - 12);
+    if (offloaded) memset(packet + 17, key, 3);
     size_t length = (size_t)(size < 60 ? 60 : size) + 12;
     ssize_t sent = send(p->tx, packet, length, MSG_NOSIGNAL);
     if (sent < 0) { AG_ADD(a->stats[AG_TX_PRESSURE], 1); return io_error(p); }

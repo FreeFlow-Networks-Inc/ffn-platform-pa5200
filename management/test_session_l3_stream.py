@@ -52,6 +52,19 @@ class L3ReceiverTests(unittest.TestCase):
             with self.assertRaises(ValueError):r.accept(message(2,'snapshot',[row]))
             self.assertFalse(r.sessions)
 
+    def test_pair_selected_by_the_producer_among_several_authorised(self):
+        policy,row=fixture();policy['bindings']['wan2']=dict(device='wan2',index=3,alias='owner-wan2')
+        row['rule']={'interface_pairs':[['lan','wan'],['lan','wan2']]}
+        r=self.receiver(policy)
+        with self.assertRaises(ValueError):r.accept(message(2,'snapshot',[row]))
+        row['l3']['pair']=['lan','wan']
+        r=self.receiver(policy);r.accept(message(2,'snapshot',[row]));self.assertEqual(len(r.sessions),1)
+        row['l3']['pair']=['wan','lan']
+        r=self.receiver(policy)
+        with self.assertRaises(ValueError):r.accept(message(2,'snapshot',[row]))
+        legacy_policy,legacy=fixture();r=self.receiver(legacy_policy);r.accept(message(2,'snapshot',[legacy]))
+        self.assertEqual(len(r.sessions),1)
+
     def test_old_topology_cannot_enter_restarted_generation(self):
         policy,row=fixture();r=self.receiver(policy)
         r.accept(message(2,'snapshot',[row]));r.accept(message(3,'synchronized',{}))
@@ -83,7 +96,7 @@ class L3ProducerTests(unittest.TestCase):
             nonlocal changed
             changed=True
             return dict(available=False,hardware_admission=False,blockers=['no route'],directions=[],snapshot_digest='d'*64)
-        def check(source):
+        def check(source,*_):
             if changed:raise dp.EventGap('neighbor changed while planning')
         with patch.object(dp.feed,'context',return_value=(base.state,base.collector,base.rules)), \
              patch.object(dp.feed.runtime,'saved',return_value=base.state), \

@@ -37,6 +37,7 @@ COMMANDS = {
     ('dhcp', 'status'): ('/usr/local/sbin/ffn-dhcp', 'status'),
     ('dhcp', 'validate'): ('/usr/local/sbin/ffn-dhcp', 'validate'),
     ('dhcp', 'apply'): ('/usr/local/sbin/ffn-dhcp', 'apply'),
+    ('sfp-check', 'status'): ('/usr/local/sbin/ffn-sfp-check', 'status'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
     ('inspection', 'status'): ('/usr/local/sbin/ffn-inspection', 'status'),

@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import ffn_fe100_policy_control as control
+import ffn_fe100_controld as controld
 from ffn_fe100_controld import dispatch,drained
 
 
@@ -43,6 +44,48 @@ class ControlTests(unittest.TestCase):
             try:
                 with self.assertRaises(ValueError):dispatch(owner,dict(operation='activate'))
             finally:owner.close()
+
+    def test_status_carries_the_supervised_dry_run_admission_evaluation(self):
+        with patch.object(control,'ROOT',self.root):
+            owner=control.PolicyController()
+            try:status=owner.execute('status',{})
+            finally:owner.close()
+        # Without FE100 hardware the probe reports either an error or no matching boot; either leaves it uncommissioned.
+        self.assertFalse(status['flow_ids']['commissioned']);self.assertTrue(status['flow_ids']['reason'])
+        self.assertEqual((status['flow_ids']['first'],status['flow_ids']['next_id']),(0x10000,None))
+        admission=status['admission']
+        self.assertEqual((admission['mode'],admission['hardware_admission'],admission['installed']),('supervised-dry-run',False,0))
+        self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
+        self.assertFalse(status['admission_enabled']);self.assertEqual(status['observations']['mode'],'supervised-observation-only')
+        self.assertFalse(status['qualification']['front_port']);self.assertFalse(status['capabilities']['nat_packet_qualification'])
+
+    def test_requested_termination_exits_cleanly_after_the_guardian_cleanup(self):
+        with patch.object(controld,'ROOT',self.root),patch.object(controld.sys,'argv',['ffn_fe100_controld.py']),              patch.object(controld,'supervise',side_effect=InterruptedError('guardian termination requested')) as guard:
+            self.assertIsNone(controld.main())
+            guard.assert_called_once()
+            self.assertTrue((self.root/'control-service-required').is_file())
+            with patch.object(controld,'supervise',return_value=None), self.assertRaises(RuntimeError):
+                controld.main()
+
+    def test_qualify_records_the_lifetime_bound_result_and_lifts_the_gates(self):
+        import ffn_fe100_qualification as qualification
+        from test_qualification import external,LIFETIME
+        with patch.object(control,'ROOT',self.root),patch.object(qualification,'RECORD',self.root/'qualification.json'), \
+             patch.object(qualification,'live_lifetime',return_value=dict(LIFETIME)):
+            owner=control.PolicyController()
+            try:
+                self.assertFalse(owner.owner.qualified());self.assertFalse(owner.owner.nat_qualified())
+                with self.assertRaises(ValueError):owner.execute('qualify',dict(scope='internal-loop',summary={'schema':1}))
+                with self.assertRaises(ValueError):owner.execute('qualify',dict(summary=external()))
+                state=owner.execute('qualify',dict(scope='external-wire',summary=external()))
+                self.assertTrue(drained(state));self.assertEqual(state['qualification']['scope'],'external-wire')
+                self.assertTrue(owner.owner.qualified());self.assertTrue(owner.owner.nat_qualified())
+                status=owner.execute('status',{})
+                self.assertEqual((status['qualification']['front_port'],status['qualification']['nat_rewrite'],status['qualification']['cases']),(True,True,8))
+                self.assertTrue(status['capabilities']['nat_packet_qualification'])
+                self.assertFalse(status['admission_enabled'])   # activation remains the explicit operation
+            finally:owner.close()
+            self.assertTrue((self.root/'qualification.json').is_file())
 
 
 if __name__=='__main__':unittest.main()

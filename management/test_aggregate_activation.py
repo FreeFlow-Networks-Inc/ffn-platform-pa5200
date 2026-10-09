@@ -132,14 +132,15 @@ class ActivationTests(unittest.TestCase):
                 return {'boot_id':str(uuid.uuid4())} if role=='dp' else {'epoch':'fixture','groups':{}}
             with patch.object(activation,'RUNNING',running),patch.object(activation,'DIRECTORY',root/'runtime'),patch.object(activation.subprocess,'run') as unit:
                 result=activation.execute('validate',dict(group='ae1',operation='negotiate',running_revision=revision,revision=0),remote)
-                self.assertTrue(result['validated']);self.assertTrue(result['control_only']);unit.assert_not_called()
+                self.assertTrue(result['validated']);self.assertTrue(result['control_only']);self.assertFalse(result['hardware_offload']);unit.assert_not_called()
                 with self.assertRaises(ValueError):activation.execute('validate',dict(group='ae1',operation='negotiate',running_revision=revision,revision=1),remote)
 
-    def test_unqualified_hardware_distribution_cannot_be_activated(self):
+    def test_hardware_distribution_stays_gated_with_the_measured_reason(self):
         remote=Mock()
-        with self.assertRaisesRegex(ValueError,'hash distribution is not commissioned'):
+        with self.assertRaisesRegex(ValueError,'TM-header frames the switch never parses'):
             activation.execute('apply',dict(group='ae1',operation='offload',running_revision='anything',revision=0),remote)
         remote.assert_not_called()
+        self.assertFalse(activation.status()['offload_ready']);self.assertIn('software activation',activation.status()['offload_blocker'])
 
 
 class HardwareTests(unittest.TestCase):

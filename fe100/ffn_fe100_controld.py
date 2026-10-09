@@ -105,7 +105,12 @@ def main():
     # Once managed, client failure must never bypass the service by starting
     # another owner. Keep this durable requirement across service restarts.
     publish(ROOT/'control-service-required',dict(schema=1,service='ffn-fe100-control'))
-    supervise([sys.executable,'-u',__file__,'--worker'],recover,ROOT/'control-guard.json',timeout=25,startup_timeout=45)
+    try:supervise([sys.executable,'-u',__file__,'--worker'],recover,ROOT/'control-guard.json',timeout=25,startup_timeout=45)
+    except InterruptedError as error:
+        # systemd's SIGTERM. The guardian stops the owner and runs the final
+        # drain before re-raising this, so a requested stop is a clean exit,
+        # not a failure to restart from.
+        print(str(error),flush=True);return
     raise RuntimeError('CP owner stopped after withdrawal; service restart required')
 
 
