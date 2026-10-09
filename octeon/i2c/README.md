@@ -172,3 +172,21 @@ vendor sets SOC properties *programmatically at runtime*, which is a different
 mechanism from the `config.bcm` properties FFN has been using, and is a better
 explanation for the PHY never attaching than anything in the config file.
 See `bcm/` for that thread.
+
+## A stuck bus 1 (2026-10-08) and `ffn-i2c-recover`
+
+Every transaction on bus 1 began failing with `ETIMEDOUT` within 20 ms while
+`TWSI_INT` read SDA=0, SCL=1: a slave holding the data line. The thermal
+governor could not write fan PWM and the SFP cage control was unavailable;
+the switch and the optics themselves were unaffected. Rebinding the OCTEON
+controller while the line was held fails ("init low level failed"), so
+`ffn-i2c-recover` releases the line first through the controller's SCL/SDA
+override bits (nine clocks and a STOP, what the kernel's generic recovery
+does), then rebinds the controller, re-creates the muxes with the
+management-I2C script (the same adapter numbers come back) and restarts the
+thermal governor. Reads afterwards took 1 ms again. Before the incident the
+bus carried the thermal governor, the faceplate status polled by the console
+(which read a module EEPROM on every poll) and the SFP insertion watcher
+every two seconds; the faceplate now caches module identity per insertion
+and the watcher polls every five seconds and backs off for a minute after a
+timeout.

@@ -180,6 +180,7 @@ def enable_runtime_units(root, role, owners):
     units = {'cp': [('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
                     ('multi-user.target', 'ffn-port-led-enable.service'),
                     ('multi-user.target', 'ffn-fe100-control.service'),
+                    ('multi-user.target', 'ffn-sfp-watch.service'),
                     ('timers.target', 'ffn-fe100-recovery.timer'),
                     ('timers.target', 'ffn-aggregate-watchdog.timer')],
              'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),

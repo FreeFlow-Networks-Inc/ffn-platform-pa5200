@@ -264,6 +264,26 @@
     ],
     [
       "platform",
+      "management/ffn_sfp_watch.py",
+      "usr/local/sbin/ffn_sfp_watch.py"
+    ],
+    [
+      "platform",
+      "management/ffn_sfp_check.py",
+      "usr/local/sbin/ffn_sfp_check.py"
+    ],
+    [
+      "platform",
+      "octeon/i2c/ffn-i2c-recover.sh",
+      "usr/local/sbin/ffn-i2c-recover"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-sfp-watch.service",
+      "etc/systemd/system/ffn-sfp-watch.service"
+    ],
+    [
+      "platform",
       "management/ffn_nif_control.py",
       "usr/local/sbin/ffn_nif_control.py"
     ],
