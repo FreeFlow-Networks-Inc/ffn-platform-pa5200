@@ -3,6 +3,17 @@ CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror -pthread
 
 all: libffn-packet.so libffn-hwio.so libffn-inline.so libffn-fe100-resources.so
 
+# The FFN Protect tunnel worker links the target's libcrypto (OpenSSL 3). On a
+# cross build pass PROTECT_CFLAGS/PROTECT_LDFLAGS for the target's headers and
+# library (the image builder does); on the host the defaults suffice.
+PROTECT_CFLAGS ?=
+PROTECT_LDFLAGS ?= -lcrypto
+ffn-protect-tunnel: ffn_protect_tunnel.c
+	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations ffn_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
+
+test-protect-tunnel: ffn_protect_tunnel.c test_protect_tunnel.c
+	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations -Wno-unused-function test_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
+
 libffn-fe100-resources.so: ffn_fe100_resources.c ffn_fe100_resources.h
 	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_fe100_resources.c -ldl -o $@
 
@@ -40,7 +51,8 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel
+	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
 	./test-fe100-punt
