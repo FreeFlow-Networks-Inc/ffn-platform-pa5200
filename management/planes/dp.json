@@ -39,6 +39,23 @@
         "/usr/local/lib/ffn/ffn_dhcp_server.py",
         "apply"
       ]
+    },
+    "protect": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_protect_gateway.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_protect_gateway.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_protect_gateway.py",
+        "apply"
+      ]
     }
   }
 }

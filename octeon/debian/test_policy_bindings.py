@@ -64,6 +64,24 @@ class BindingTests(unittest.TestCase):
             path.write_text(json.dumps(row));links['p5']['ifindex']=16
             self.assertEqual(binding.discover(links,self.run,self.proc,102),{})
 
+    def test_protect_gateway_binds_its_tunnel_unit_while_alive_and_labelled(self):
+        token='7d1c4b2e-9f61-4c3a-8e5d-2b7a6f0c1d9e'
+        row=dict(owner='protect-main',gateway='main',tunnel='tunnel.1',token=token,boot_id=self.token,pid=42,process_start='900',
+                 updated_monotonic=100,ifindex=31,configuration_revision='a'*64)
+        path=self.run/'ffn-protect-main-status.json'
+        links={'tunnel.1':dict(ifindex=31,flags=['UP'],ifalias='ffn-protect:'+token,linkinfo=dict(info_kind='tun',info_data={'type':'tun'}))}
+        with patch.object(binding,'trusted',return_value=True):
+            path.write_text(json.dumps(row))
+            self.assertEqual(binding.discover(links,self.run,self.proc,102),{'tunnel.1':'tunnel.1'})
+            for key,value in [('boot_id','old'),('process_start','901'),('updated_monotonic',90),('owner','protect-other'),
+                              ('tunnel','tun0'),('token','not-a-uuid'),('ifindex',32)]:
+                path.write_text(json.dumps(dict(row,**{key:value})))
+                self.assertEqual(binding.discover(links,self.run,self.proc,102),{},key)
+            path.write_text(json.dumps(row))
+            for key,value in [('ifalias','ffn-protect:other'),('master','br0'),('linkinfo',dict(info_kind='tun',info_data={'type':'tap'}))]:
+                altered={'tunnel.1':dict(links['tunnel.1'],**{key:value})}
+                self.assertEqual(binding.discover(altered,self.run,self.proc,102),{},key)
+
     def test_an_owner_publish_between_clock_capture_and_read_is_not_stale(self):
         # Live discovery (no test clock): the owner wrote 100.3 and the caller's clock
         # is read only after the row, so the age is 0.2 s. A clock captured before the

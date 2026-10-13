@@ -155,11 +155,36 @@ def physical_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
     return result
 
 
+def protect_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
+    """Current FFN Protect gateway evidence: each live gateway binds its tunnel unit (tunnel.N) to the
+    TUN device of the same name, which the gateway's worker owns and the daemon labels with its token."""
+    boot=(proc/'sys/kernel/random/boot_id').read_text().strip();result={}
+    for path in run.glob('ffn-protect-*-status.json'):
+        try:
+            if not trusted(path):continue
+            row=json.loads(path.read_text());name=row['gateway'];tunnel=row['tunnel'];token=row['token']
+            if not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,62}',name):continue
+            if path.name!='ffn-protect-'+name+'-status.json' or row['owner']!='protect-'+name or str(uuid.UUID(token))!=token:continue
+            if not isinstance(tunnel,str) or not re.fullmatch(r'tunnel\.[1-9][0-9]{0,3}',tunnel):continue
+            if row['boot_id']!=boot or not fresh(row,now):continue
+            if type(row['pid']) is not int or row['pid']<=1:continue
+            process=(proc/str(row['pid'])/'stat').read_text().rsplit(') ',1)[1].split()
+            if process[0]=='Z' or process[19]!=str(row['process_start']):continue
+            link=links.get(tunnel,{})
+            if (type(link.get('ifindex')) is not int or row.get('ifindex')!=link['ifindex'] or link.get('master') or
+                link.get('ifalias')!='ffn-protect:'+token or link.get('linkinfo',{}).get('info_kind')!='tun' or
+                link.get('linkinfo',{}).get('info_data',{}).get('type')!='tun'):continue
+            result[tunnel]=tunnel
+        except (OSError,ValueError,TypeError,KeyError,IndexError):continue
+    return result
+
+
 def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
     # now stays None for a live call: fresh() then measures each row after reading it.
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip()
     result=wan_binding(links,run,proc,now,boot)
     result.update(physical_bindings(links,run,proc,now))
+    result.update(protect_bindings(links,run,proc,now))
     for path in run.glob('ffn-aggregate-*-status.json'):
         try:
             if not trusted(path):continue

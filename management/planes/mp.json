@@ -292,6 +292,26 @@
         "dhcp",
         "apply"
       ]
+    },
+    "protect": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "protect",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "protect",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "protect",
+        "apply"
+      ]
     }
   },
   "role": "mp"
