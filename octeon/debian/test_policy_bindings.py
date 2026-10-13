@@ -64,6 +64,20 @@ class BindingTests(unittest.TestCase):
             path.write_text(json.dumps(row));links['p5']['ifindex']=16
             self.assertEqual(binding.discover(links,self.run,self.proc,102),{})
 
+    def test_an_owner_publish_between_clock_capture_and_read_is_not_stale(self):
+        # Live discovery (no test clock): the owner wrote 100.3 and the caller's clock
+        # is read only after the row, so the age is 0.2 s. A clock captured before the
+        # publish, which is what one capture per discovery amounted to, stays strict.
+        row=dict(owner='physical-5',ports=[5],boot_id=self.token,pid=42,process_start='900',
+                 updated_monotonic=100.3,interfaces={'p5':15})
+        (self.run/'ffn-physical-5-status.json').write_text(json.dumps(row))
+        links={'p5':dict(ifindex=15,flags=[],operstate='DOWN',linkinfo=dict(info_kind='tun',info_data={'type':'tap'}))}
+        clock=iter([100.5,101.0,101.5,102.0,102.5,103.0,103.5])
+        with patch.object(binding,'trusted',return_value=True),patch.object(binding.time,'monotonic',lambda:next(clock)):
+            self.assertEqual(binding.discover(links,self.run,self.proc),{'ethernet1/5':'p5'})
+        with patch.object(binding,'trusted',return_value=True):
+            self.assertEqual(binding.discover(links,self.run,self.proc,100.0),{})
+
     def test_candidate_admin_down_aggregate_is_still_configurable(self):
         xml=self.candidate().replace('<entry name="ae1">','<entry name="ae1"><link-state>down</link-state>')
         self.assertIn('ae1',binding.preview(xml,{}, {})[0])
