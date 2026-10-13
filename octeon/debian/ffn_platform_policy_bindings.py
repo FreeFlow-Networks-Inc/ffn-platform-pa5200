@@ -106,7 +106,7 @@ def wan_binding(links,run,proc,now,boot):
         if not trusted(path):return {}
         row=json.loads(path.read_text())
         if (row.get('owner')!='wan1' or row.get('boot_id')!=boot or row.get('ports')!=[1]
-                or not 0<=now-row['updated_monotonic']<=5):return {}
+                or not fresh(row,now)):return {}
         pid=row['pid']
         if type(pid) is not int or pid<=1:return {}
         process=(proc/str(pid)/'stat').read_text().rsplit(') ',1)[1].split()
@@ -120,9 +120,21 @@ def wan_binding(links,run,proc,now,boot):
     except (OSError,ValueError,TypeError,KeyError,IndexError):return {}
 
 
+def fresh(row,now):
+    """The owner published within the window.
+
+    A live caller (now=None) measures the age after reading the row, so an
+    owner that published between the caller's clock capture and this read
+    is never mistaken for evidence from the future. With one capture per
+    discovery, that race withdrew an interface from about one read in
+    twenty on 2026-10-13, and each withdrawal replayed the whole security
+    policy on the dataplane. A test clock keeps the strict rule."""
+    age=(time.monotonic() if now is None else now)-row['updated_monotonic']
+    return 0<=age<=5
+
+
 def physical_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
     """Current physical TAP process evidence, independent of physical carrier."""
-    now=time.monotonic() if now is None else now
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip();result={}
     for path in run.glob('ffn-physical-*-status.json'):
         try:
@@ -131,7 +143,7 @@ def physical_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
             if not isinstance(ports,list) or len(ports)!=1 or type(ports[0]) is not int or not 2<=ports[0]<=24:continue
             port=ports[0];name='p'+str(port)
             if path.name!='ffn-physical-'+str(port)+'-status.json' or row['owner']!='physical-'+str(port):continue
-            if row['boot_id']!=boot or not 0<=now-row['updated_monotonic']<=5:continue
+            if row['boot_id']!=boot or not fresh(row,now):continue
             if type(row['pid']) is not int or row['pid']<=1:continue
             process=(proc/str(row['pid'])/'stat').read_text().rsplit(') ',1)[1].split()
             if process[0]=='Z' or process[19]!=str(row['process_start']):continue
@@ -144,7 +156,7 @@ def physical_bindings(links,run=Path('/run'),proc=Path('/proc'),now=None):
 
 
 def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
-    now=time.monotonic() if now is None else now
+    # now stays None for a live call: fresh() then measures each row after reading it.
     boot=(proc/'sys/kernel/random/boot_id').read_text().strip()
     result=wan_binding(links,run,proc,now,boot)
     result.update(physical_bindings(links,run,proc,now))
@@ -154,7 +166,7 @@ def discover(links,run=Path('/run'),proc=Path('/proc'),now=None):
             row=json.loads(path.read_text());name=row['group'];token=row['token']
             if not isinstance(name,str) or not re.fullmatch(r'ae[1-9][0-9]*',name):continue
             if path.name!='ffn-aggregate-'+name+'-status.json' or str(uuid.UUID(token))!=token:continue
-            if row['boot_id']!=boot or not 0<=now-row['updated_monotonic']<=5:continue
+            if row['boot_id']!=boot or not fresh(row,now):continue
             if (row.get('control_only') or row.get('fault') or not row.get('gates_verified') or
                 not row.get('configuration_ready',row.get('network_ready')) or row.get('network_update_pending')):continue
             pid=row['pid']
