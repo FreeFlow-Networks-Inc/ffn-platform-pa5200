@@ -970,6 +970,16 @@
       "etc/systemd/system/ffn-dhcp-server.service"
     ],
     [
+      "core",
+      "opt/ffn_protect_gateway.py",
+      "usr/local/lib/ffn/ffn_protect_gateway.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-protect-gateway.service",
+      "etc/systemd/system/ffn-protect-gateway.service"
+    ],
+    [
       "platform",
       "octeon/debian/ffn_overlay.py",
       "usr/local/sbin/ffn_overlay.py"

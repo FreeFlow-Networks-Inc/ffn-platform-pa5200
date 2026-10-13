@@ -186,6 +186,7 @@ def enable_runtime_units(root, role, owners):
              'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('multi-user.target', 'ffn-dhcp-server.service'),
+                    ('multi-user.target', 'ffn-protect-gateway.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
         directory = root / ('etc/systemd/system/' + target + '.wants')
@@ -263,7 +264,7 @@ def check_mdio_source(tree):
         raise ValueError('CP requires the Cavium Clause 45 device-address fix')
 
 
-def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work, *, core):
+def build_hardware(platform, tree, root, role, cross, userspace_cross, release, work, *, core, protect_cross=None):
     """Build hardware adapters against this image, never import loose old modules."""
     module = work / (role + '-hardware')
     module.mkdir()
@@ -313,6 +314,13 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', name])
         elf(native / name)
         safe_install(native / name, root, 'usr/local/sbin/' + name)
+    if role == 'dp':
+        # The FFN Protect tunnel worker links the dataplane's libcrypto, so it needs a toolchain whose
+        # sysroot carries the OpenSSL 3 headers: protect_cross_compile in the build configuration
+        # (compiler plus --sysroot), falling back to the userspace cross compiler.
+        run(['make', '-B', '-C', native, 'CC=' + (protect_cross or userspace_cross + 'gcc'), 'ffn-protect-tunnel'])
+        elf(native / 'ffn-protect-tunnel')
+        safe_install(native / 'ffn-protect-tunnel', root, 'usr/local/sbin/ffn-protect-tunnel')
     if role == 'cp':
         artifact = native / 'libffn-fe100-resources.so'
         elf(artifact)
@@ -414,7 +422,8 @@ def build(config, platform, core, out):
             elf(bundle / 'vmlinux')
             release = (tree / 'include/config/kernel.release').read_text().strip()
             build_hardware(platform, tree, root, role, cross,
-                           cfg.get('userspace_cross_compile', cross), release, work, core=core)
+                           cfg.get('userspace_cross_compile', cross), release, work, core=core,
+                           protect_cross=cfg.get('protect_cross_compile'))
             run(['depmod', '-b', root, release])
             shutil.copyfile(tree / '.config', bundle / 'kernel.config')
             shutil.copyfile(initramfs, out / (role + '-initramfs.cpio'))

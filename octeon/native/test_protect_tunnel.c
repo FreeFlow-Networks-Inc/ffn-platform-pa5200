@@ -15,6 +15,7 @@ static void fill(struct session *s, int enc_len) {
     s->spi_in = 0x12345678; s->spi_out = 0x9abcdef0; s->enc_len = enc_len; s->ssl_fd = -1;
     for (int i = 0; i < enc_len; i++) s->enc[i] = (unsigned char)(i * 7 + 1);
     for (int i = 0; i < 20; i++) s->auth[i] = (unsigned char)(i * 13 + 3);
+    memcpy(s->enc_out, s->enc, sizeof(s->enc)); memcpy(s->auth_out, s->auth, sizeof(s->auth));
 }
 
 static int ipv4_packet(unsigned char *p, int payload) {
@@ -56,6 +57,19 @@ int main(void) {
         CHECK(esp_unwrap(&gw, saved, saved_len, plain, sizeof(plain)) < 0, "and rejected the second time");
         wire[0] = 0; CHECK(esp_unwrap(&gw, wire, wire_len, plain, sizeof(plain)) < 0, "a datagram with another SPI is refused");
         char label[64]; snprintf(label, sizeof(label), "aes-%d-cbc round trips complete", enc_len * 8); CHECK(1, label);
+    }
+    /* distinct keys per direction: the client encrypts with what the gateway decrypts with, and vice versa */
+    fill(&client, 16); fill(&gw, 16); client.spi_out = gw.spi_in; client.spi_in = gw.spi_out;
+    for (int i = 0; i < 32; i++) { client.enc_out[i] = gw.enc[i] = (unsigned char)(0xa0 + i); client.enc[i] = gw.enc_out[i] = (unsigned char)(0xc0 + i); }
+    for (int i = 0; i < 20; i++) { client.auth_out[i] = gw.auth[i] = (unsigned char)(0xb0 + i); client.auth[i] = gw.auth_out[i] = (unsigned char)(0xd0 + i); }
+    {
+        int len = ipv4_packet(packet, 64), wire_len = esp_wrap(&client, packet, len, wire, sizeof(wire));
+        CHECK(esp_unwrap(&gw, wire, wire_len, plain, sizeof(plain)) == len && !memcmp(plain, packet, (size_t)len), "client -> gateway with the c2s keys");
+        wire_len = esp_wrap(&gw, packet, len, wire, sizeof(wire));
+        CHECK(esp_unwrap(&client, wire, wire_len, plain, sizeof(plain)) == len && !memcmp(plain, packet, (size_t)len), "gateway -> client with the s2c keys");
+        struct session wrong = gw; memcpy(wrong.enc, gw.enc_out, 32); memcpy(wrong.auth, gw.auth_out, 20); wrong.replay = 0; wrong.seq_high = 0;
+        wire_len = esp_wrap(&client, packet, len, wire, sizeof(wire));
+        CHECK(esp_unwrap(&wrong, wire, wire_len, plain, sizeof(plain)) < 0 && wrong.auth_failures == 1, "the outbound keys do not authenticate inbound traffic");
     }
     /* control parsing */
     char value[128];

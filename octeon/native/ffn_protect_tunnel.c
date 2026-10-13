@@ -8,7 +8,8 @@
  * SOCK_SEQPACKET unix socket with one JSON object per message:
  *
  *   {"op":"add","id":7,"client":"10.200.0.5","spi_in":"0x12345678",
- *    "spi_out":"0x9abcdef0","enc":"<hex>","auth":"<hex>"}     -> {"ok":true}
+ *    "spi_out":"0x9abcdef0","enc":"<hex>","auth":"<hex>",
+ *    "enc_out":"<hex>","auth_out":"<hex>"}   (out keys default to enc/auth) -> {"ok":true}
  *   {"op":"ssl","id":8,"client":"10.200.0.6"} + one fd (SCM_RIGHTS) -> {"ok":true}
  *   {"op":"del","id":7}                                       -> {"ok":true}
  *   {"op":"stats"}                     -> {"ok":true,"sessions":[...],"tun":{...}}
@@ -56,7 +57,8 @@ struct session {
     int used, mode, id;
     uint32_t client;            /* host order */
     uint32_t spi_in, spi_out;   /* host order */
-    unsigned char enc[32], auth[20];
+    unsigned char enc[32], auth[20];         /* inbound: client -> gateway */
+    unsigned char enc_out[32], auth_out[20]; /* outbound: gateway -> client */
     int enc_len;
     uint32_t seq_out, seq_high; /* seq_high: highest seq seen inbound */
     uint64_t replay;            /* bitmap below seq_high */
@@ -104,6 +106,8 @@ static int open_tun(const char *name) {
     ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
     snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
     if (ioctl(fd, TUNSETIFF, &ifr) < 0) { int e = errno; close(fd); errno = e; return -1; }
+    /* the poll loop drains in batches; a blocking read on an idle device would stall every other descriptor */
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     return fd;
 }
 
@@ -205,14 +209,14 @@ int esp_wrap(struct session *s, const unsigned char *packet, int len, unsigned c
     if (RAND_bytes(out + ESP_HDR, ESP_IV) != 1) return -1;
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return -1;
-    if (!EVP_EncryptInit_ex(ctx, cipher_for(s->enc_len), NULL, s->enc, out + ESP_HDR) ||
+    if (!EVP_EncryptInit_ex(ctx, cipher_for(s->enc_len), NULL, s->enc_out, out + ESP_HDR) ||
         !EVP_CIPHER_CTX_set_padding(ctx, 0) ||
         !EVP_EncryptUpdate(ctx, out + ESP_HDR + ESP_IV, &enc_len, plain, plain_len) ||
         !EVP_EncryptFinal_ex(ctx, out + ESP_HDR + ESP_IV + enc_len, &tail)) { EVP_CIPHER_CTX_free(ctx); return -1; }
     EVP_CIPHER_CTX_free(ctx);
     enc_len += tail;
     int body = ESP_HDR + ESP_IV + enc_len;
-    if (hmac_sha1_96(s->auth, out, (size_t)body, out + body)) return -1;
+    if (hmac_sha1_96(s->auth_out, out, (size_t)body, out + body)) return -1;
     return body + ESP_ICV;
 }
 
@@ -228,40 +232,42 @@ static void deliver_to_tun(struct session *s, const unsigned char *packet, int l
     else s->drops++;
 }
 
-static void handle_udp(void) {
+static int handle_udp(void) {
     unsigned char buf[MAX_PACKET + 64], plain[MAX_PACKET + 32];
     struct sockaddr_in from;
     socklen_t from_len = sizeof(from);
     ssize_t n = recvfrom(udp_fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from, &from_len);
-    if (n < 0) return;
+    if (n < 0) return 0;
     udp_rx++;
-    if (n == 1 && buf[0] == 0xff) { udp_keepalives++; return; }
-    if (n < ESP_HDR) { udp_malformed++; return; }
+    if (n == 1 && buf[0] == 0xff) { udp_keepalives++; return 1; }
+    if (n < ESP_HDR) { udp_malformed++; return 1; }
     struct session *s = by_spi(ntohl(*(uint32_t *)buf));
-    if (!s) { udp_unknown_spi++; return; }
+    if (!s) { udp_unknown_spi++; return 1; }
     int len = esp_unwrap(s, buf, (int)n, plain, sizeof(plain));
-    if (len < 0) { s->drops++; return; }
+    if (len < 0) { s->drops++; return 1; }
     s->peer = from;   /* authenticated: the client's current public endpoint */
     deliver_to_tun(s, plain, len);
+    return 1;
 }
 
-static void handle_tun(void) {
+static int handle_tun(void) {
     unsigned char packet[MAX_PACKET], out[MAX_PACKET + 64];
     ssize_t n = read(tun_fd, packet, sizeof(packet));
-    if (n <= 0) return;
+    if (n <= 0) return 0;
     tun_rx++;
-    if (!ipv4_ok(packet, (int)n)) { tun_unknown++; return; }
+    if (!ipv4_ok(packet, (int)n)) { tun_unknown++; return 1; }
     struct session *s = by_client(ipv4_dst(packet));
-    if (!s) { tun_unknown++; return; }
+    if (!s) { tun_unknown++; return 1; }
     if (s->mode == SESSION_SSL) {
         if (s->ssl_fd >= 0 && send(s->ssl_fd, packet, (size_t)n, MSG_DONTWAIT | MSG_NOSIGNAL) == n) { s->tx_packets++; s->tx_bytes += (uint64_t)n; }
         else s->drops++;
-        return;
+        return 1;
     }
-    if (!s->peer.sin_port) { s->drops++; return; }   /* nothing authenticated from this client yet */
+    if (!s->peer.sin_port) { s->drops++; return 1; }   /* nothing authenticated from this client yet */
     int len = esp_wrap(s, packet, (int)n, out, sizeof(out));
-    if (len < 0 || sendto(udp_fd, out, (size_t)len, MSG_DONTWAIT, (struct sockaddr *)&s->peer, sizeof(s->peer)) != len) { s->drops++; return; }
+    if (len < 0 || sendto(udp_fd, out, (size_t)len, MSG_DONTWAIT, (struct sockaddr *)&s->peer, sizeof(s->peer)) != len) { s->drops++; return 1; }
     s->tx_packets++; s->tx_bytes += (uint64_t)n;
+    return 1;
 }
 
 static void handle_ssl_session(struct session *s) {
@@ -385,8 +391,14 @@ static void handle_control(int fd) {
         reply(fd, "{\"ok\":false,\"error\":\"esp parameters\"}"); return;
     }
     s->spi_in = (uint32_t)strtoul(spi_in, NULL, 0); s->spi_out = (uint32_t)strtoul(spi_out, NULL, 0);
+    /* each direction has its own keys; a caller that gives one pair uses it both ways */
+    char enc_out[128], auth_out[128];
+    if (!json_string(buf, "enc_out", enc_out, sizeof(enc_out))) snprintf(enc_out, sizeof(enc_out), "%s", enc);
+    if (!json_string(buf, "auth_out", auth_out, sizeof(auth_out))) snprintf(auth_out, sizeof(auth_out), "%s", auth);
     s->enc_len = hex_decode(enc, s->enc, sizeof(s->enc));
-    if ((s->enc_len != 16 && s->enc_len != 32) || hex_decode(auth, s->auth, sizeof(s->auth)) != 20 || !s->spi_in || !s->spi_out || by_spi(s->spi_in)) {
+    if ((s->enc_len != 16 && s->enc_len != 32) || hex_decode(auth, s->auth, sizeof(s->auth)) != 20 ||
+        hex_decode(enc_out, s->enc_out, sizeof(s->enc_out)) != s->enc_len || hex_decode(auth_out, s->auth_out, sizeof(s->auth_out)) != 20 ||
+        !s->spi_in || !s->spi_out || by_spi(s->spi_in)) {
         memset(s, 0, sizeof(*s)); reply(fd, "{\"ok\":false,\"error\":\"esp keys or spi\"}"); return;
     }
     s->mode = SESSION_ESP; s->ssl_fd = -1; s->used = 1;
@@ -425,8 +437,8 @@ int main(int argc, char **argv) {
         int ready = poll(fds, (nfds_t)n, 1000);
         if (ready <= 0) continue;
         int k = 0;
-        if (fds[k++].revents & POLLIN) for (int b = 0; b < 64; b++) { handle_tun(); }
-        if (fds[k++].revents & POLLIN) for (int b = 0; b < 64; b++) { handle_udp(); }
+        if (fds[k++].revents & POLLIN) for (int b = 0; b < 64 && handle_tun(); b++) { }
+        if (fds[k++].revents & POLLIN) for (int b = 0; b < 64 && handle_udp(); b++) { }
         if (fds[k++].revents & POLLIN) {
             int fd = accept4(control_fd, NULL, NULL, SOCK_CLOEXEC);
             if (fd >= 0) { if (client_count < MAX_CONTROL) clients[client_count++] = fd; else close(fd); }

@@ -87,6 +87,8 @@ class PlatformApplier:
     def claims(self, xpath):
         return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath or '.network.dhcp.' in xpath
                 or '.network.profiles.interface-management-profile.' in xpath
+                or '.global-protect.' in xpath or '.network.interface.tunnel.' in xpath or '.shared.certificate.' in xpath
+                or '.shared.authentication-profile.' in xpath or '.shared.server-profile.' in xpath or '.shared.local-user-database.' in xpath
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
 
     def faceplate_apply(self, faceplate, port, change, attempts=3):
@@ -277,6 +279,44 @@ class PlatformApplier:
         # must not hold every DHCP server hostage, so this step always runs and
         # reports on its own.
         reconcile_dhcp(root,status,configuration_revision)
+        # FFN Protect portals and gateways likewise depend only on dataplane devices and addresses.
+        reconcile_protect(root,status,configuration_revision)
+
+
+def reconcile_protect(root,status,configuration_revision,rpc=None):
+    """The committed FFN Protect tree, compiled by the core, applied as one intent on the dataplane and read back by digest.
+
+    The intent carries private keys and shared secrets, so the readback compares the dataplane's digest of
+    what it holds with the digest of what was compiled, never the material itself.
+    """
+    rpc=rpc or globals()['rpc']
+    try:
+        from ffn_protect_intent import compile_intent
+        from ffn_protect_gateway import intent_digest
+    except ImportError:
+        return   # a core without FFN Protect has nothing to apply
+    try:
+        intent=compile_intent(root)['protect']
+    except ValueError as error:
+        status.fail('global-protect','pa5200',str(error));return
+    configured=bool(intent['portals'] or intent['gateways'])
+    try:
+        observed=rpc('protect')
+    except (ValueError,RuntimeError) as error:
+        if configured:status.fail('global-protect','pa5200',str(error))
+        return
+    try:
+        digest=intent_digest(intent)
+        if observed['config'].get('digest')!=digest or observed['config'].get('configuration')!=configuration_revision:
+            rpc('protect','apply',dict(revision=observed['config']['revision'],protect=intent,configuration=configuration_revision))
+            observed=rpc('protect')
+        if observed['config'].get('digest')!=digest:raise ValueError('DP FFN Protect readback mismatch')
+        for name,spec in sorted(intent['portals'].items()):
+            status.ok('global-protect/portal/'+name,None,dict(interface=spec['interface'],address=spec['address']),'pa5200','FFN Protect portal intent read back on DP through MP daemon')
+        for name,spec in sorted(intent['gateways'].items()):
+            status.ok('global-protect/gateway/'+name,None,dict(interface=spec['interface'],address=spec['address'],tunnel=spec['tunnel']),'pa5200','FFN Protect gateway intent read back on DP through MP daemon')
+    except (ValueError,RuntimeError,KeyError,TypeError) as error:
+        status.fail('global-protect','pa5200',str(error))
 
 
 def reconcile_dhcp(root,status,configuration_revision,rpc=None):
