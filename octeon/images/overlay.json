@@ -834,6 +834,26 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn-service-route-forward.service",
+      "etc/systemd/system/ffn-service-route-forward.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_service_route_forward.sh",
+      "usr/local/sbin/ffn_service_route_forward.sh"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-service-route-forward.service",
+      "etc/systemd/system/ffn-service-route-forward.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn_service_route_forward.sh",
+      "usr/local/sbin/ffn_service_route_forward.sh"
+    ],
+    [
+      "platform",
       "octeon/debian/journald-ffn.conf",
       "etc/systemd/journald.conf.d/50-ffn.conf"
     ]
@@ -968,6 +988,26 @@
       "core",
       "systemd/ffn-dhcp-server.service",
       "etc/systemd/system/ffn-dhcp-server.service"
+    ],
+    [
+      "core",
+      "opt/ffn_service_routes.py",
+      "usr/local/lib/ffn/ffn_service_routes.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-service-routes.service",
+      "etc/systemd/system/ffn-service-routes.service"
+    ],
+    [
+      "core",
+      "opt/ffn_service_routes.py",
+      "usr/local/lib/ffn/ffn_service_routes.py"
+    ],
+    [
+      "core",
+      "systemd/ffn-service-routes.service",
+      "etc/systemd/system/ffn-service-routes.service"
     ],
     [
       "core",
