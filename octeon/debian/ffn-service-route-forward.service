@@ -1,0 +1,17 @@
+[Unit]
+Description=Forward the management plane's service-route traffic to the dataplane
+Documentation=file:/usr/local/sbin/ffn_service_route_forward.sh
+After=ffn-dpnet.service network.target
+Wants=ffn-dpnet.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The MP sends routed services (DNS, NTP, updates ...) from 127.1.1.1 over
+# ffnnet0 with the CP as next hop; the CP forwards exactly that source to the
+# DP over ffndp0 and nothing else. Replies follow the main table back.
+ExecStart=/usr/local/sbin/ffn_service_route_forward.sh
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

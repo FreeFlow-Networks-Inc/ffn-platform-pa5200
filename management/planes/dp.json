@@ -73,6 +73,23 @@
         "/usr/local/sbin/ffn_lldp.py",
         "apply"
       ]
+    },
+    "service-routes": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_service_routes.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_service_routes.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/lib/ffn/ffn_service_routes.py",
+        "apply"
+      ]
     }
   }
 }

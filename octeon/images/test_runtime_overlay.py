@@ -13,7 +13,7 @@ class RuntimeOverlayTests(unittest.TestCase):
             directory = root / 'etc/systemd/system'
             directory.mkdir(parents=True)
             units = ('ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service',
-                     'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service', 'ffn-aggregate-dp-watchdog.timer')
+                     'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service', 'ffn-service-routes.service', 'ffn-aggregate-dp-watchdog.timer')
             for name in units:
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'dp', {})
@@ -62,7 +62,7 @@ class RuntimeOverlayTests(unittest.TestCase):
     def test_cp_boot_enables_front_led_service(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); directory = root / 'etc/systemd/system'; directory.mkdir(parents=True)
-            for name in ('ffn-copper-link.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-aggregate-watchdog.timer', 'ffn-port-led-enable.service', 'ffn-port-events.service', 'ffn-sfp-watch.service'):
+            for name in ('ffn-copper-link.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-aggregate-watchdog.timer', 'ffn-port-led-enable.service', 'ffn-port-events.service', 'ffn-sfp-watch.service', 'ffn-service-route-forward.service'):
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'cp', {})
             self.assertTrue((directory / 'multi-user.target.wants/ffn-port-led-enable.service').is_file())

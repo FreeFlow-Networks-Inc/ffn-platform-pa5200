@@ -332,6 +332,26 @@
         "lldp",
         "apply"
       ]
+    },
+    "service-routes": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "service-routes",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "service-routes",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/daemon_backend.py",
+        "service-routes",
+        "apply"
+      ]
     }
   },
   "role": "mp"
