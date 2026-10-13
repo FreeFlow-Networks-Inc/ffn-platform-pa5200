@@ -831,6 +831,11 @@
       "platform",
       "octeon/debian/ffn-port-events.service",
       "etc/systemd/system/ffn-port-events.service"
+    ],
+    [
+      "platform",
+      "octeon/debian/journald-ffn.conf",
+      "etc/systemd/journald.conf.d/50-ffn.conf"
     ]
   ],
   "dp": [
@@ -1103,6 +1108,11 @@
       "platform",
       "octeon/debian/ffn-interface-services.conf",
       "etc/systemd/system/ffn-interface-services.service.d/20-platform.conf"
+    ],
+    [
+      "platform",
+      "octeon/debian/journald-ffn.conf",
+      "etc/systemd/journald.conf.d/50-ffn.conf"
     ]
   ]
 }
