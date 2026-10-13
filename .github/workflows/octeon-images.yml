@@ -36,7 +36,14 @@ jobs:
           ref: ${{ inputs.core_commit }}
           path: core-src
           submodules: false
+          fetch-depth: 0
           persist-credentials: false
+      - name: Require a reviewed core commit (reachable from main)
+        env:
+          CORE_COMMIT: ${{ inputs.core_commit }}
+        run: |
+          git -C core-src fetch --no-tags origin main
+          git -C core-src merge-base --is-ancestor "$CORE_COMMIT" FETCH_HEAD
       - name: Build clean plane candidates
         env:
           BUILD_PROFILE: ${{ vars.OCTEON_BUILD_PROFILE }}
