@@ -185,8 +185,8 @@ class BuildInputTests(unittest.TestCase):
         p.write_text('root:!:0:0:99999:7:::\n')
         b.audit_root(self.root)
         # Deliberately incomplete synthetic hash: this checks account locking.
-        for password in ('', '$6$test'):
-            p.write_text('root:'+password+':0:0:99999:7:::\n')
+        for field in ('', '$6$test'):
+            p.write_text('root:'+field+':0:0:99999:7:::\n')
             with self.assertRaises(ValueError):
                 b.audit_root(self.root)
 
