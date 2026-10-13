@@ -12,12 +12,14 @@ class RuntimeOverlayTests(unittest.TestCase):
             root = Path(tmp)
             directory = root / 'etc/systemd/system'
             directory.mkdir(parents=True)
-            for name in ('ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-aggregate-dp-watchdog.timer'):
+            units = ('ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service',
+                     'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-aggregate-dp-watchdog.timer')
+            for name in units:
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'dp', {})
             build_images.enable_runtime_units(root, 'dp', {})
             links = list(directory.glob('*.wants/*'))
-            self.assertEqual({p.name for p in links}, {'ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-aggregate-dp-watchdog.timer'})
+            self.assertEqual({p.name for p in links}, set(units))
             self.assertTrue(all(p.is_symlink() and p.is_file() for p in links))
 
     def test_boot_rejects_redirected_unit_directory(self):
