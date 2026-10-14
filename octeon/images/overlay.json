@@ -841,6 +841,11 @@
       "platform",
       "octeon/debian/journald-ffn.conf",
       "etc/systemd/journald.conf.d/50-ffn.conf"
+    ],
+    [
+      "platform",
+      "octeon/debian/journald-ffn-volatile.conf",
+      "etc/systemd/journald.conf.d/60-ffn-volatile.conf"
     ]
   ],
   "dp": [
@@ -1138,6 +1143,11 @@
       "platform",
       "octeon/debian/journald-ffn.conf",
       "etc/systemd/journald.conf.d/50-ffn.conf"
+    ],
+    [
+      "platform",
+      "octeon/debian/journald-ffn-volatile.conf",
+      "etc/systemd/journald.conf.d/60-ffn-volatile.conf"
     ]
   ]
 }
