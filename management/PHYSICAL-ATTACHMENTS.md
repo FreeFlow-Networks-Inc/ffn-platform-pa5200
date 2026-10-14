@@ -28,3 +28,30 @@ remain explicit diagnostic operations.
 These attachments forward through the OCTEON software policy provider. They do
 not authorize FE100 hardware NAT. The isolated FE100 rewrite checks and production
 session admission remain separate.
+
+## Native CP owner: ffn-portctl
+
+`octeon/native/ffn_portctl.c` is the C implementation of the CP side of this
+resource (`status`, `start`, `stop`; JSON payload on stdin, observation on
+stdout; exit 2 for a rejected request, 1 for a runtime failure, with the
+message on stderr). It keeps the Python owner's contract exactly: the
+`/etc/ffn/physical-<port>.json` journal, the BCM lifetime fence
+(`<boot_id>:<pid>:<starttime>` of the single ffn_bcmd.py process), the
+aggregate-owner refusal, the administrative withdrawal around the first
+redirect, the journaled packet-fabric preparation (`/etc/ffn/packet-fabric.json`,
+trunk 24 TM_SSP header, eight queues per port), the bounded SDK recipes through
+the BCM service (`cint.run` with the staged `/usr/share/broadcom/ffn_bcm_forward_test.c`)
+and the same readback rules. The difference that matters: every lock
+(`/run/ffn-physical-<port>.lock`, `/run/ffn-faceplate.lock`,
+`/run/ffn-forward-test.lock`, `/run/ffn-packet-fabric.lock`) is waited for up
+to 15 s instead of one second, because `ffn-copper-link.timer` holds the
+faceplate lock about four seconds of every six.
+
+`management/physical_backend.py` runs `/usr/local/sbin/ffn-portctl` on the CP
+when the image carries it and falls back to `ffn_physical_forwarding.py`
+otherwise. The image build installs it for the CP role. Tests:
+`octeon/native/test_portctl.c` (fake BCM service, fake lifetime, in-memory
+journal: state machine, fabric preparation, every rejection, parsers), run by
+`make test`. Environment overrides for a lab run: `FFN_PORTCTL_ETC`,
+`FFN_PORTCTL_RUN`, `FFN_PORTCTL_SCRIPT`, `FFN_PORTCTL_BCM_HOST`,
+`FFN_PORTCTL_BCM_PORT`, `FFN_PORTCTL_PROC`.

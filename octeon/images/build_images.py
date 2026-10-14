@@ -322,6 +322,10 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         elf(native / 'ffn-protect-tunnel')
         safe_install(native / 'ffn-protect-tunnel', root, 'usr/local/sbin/ffn-protect-tunnel')
     if role == 'cp':
+        # The CP owner of a physical port's packet redirect; the MP backend prefers it over the Python owner.
+        run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-portctl'])
+        elf(native / 'ffn-portctl')
+        safe_install(native / 'ffn-portctl', root, 'usr/local/sbin/ffn-portctl')
         artifact = native / 'libffn-fe100-resources.so'
         elf(artifact)
         safe_install(artifact, root, 'usr/local/lib/' + artifact.name)

@@ -18,7 +18,10 @@ def revision(cp,dp):
 
 
 def remote(role,action,port,payload):
-    command=('python3 /usr/local/sbin/ffn_physical_forwarding.py '+action if role=='cp' else
+    # The CP owner is the native ffn-portctl where the image carries it (it waits for the faceplate
+    # lock instead of failing under ffn-copper-link's cadence); older CP roots keep the Python owner.
+    command=('if [ -x /usr/local/sbin/ffn-portctl ]; then exec /usr/local/sbin/ffn-portctl '+action+'; fi; '
+             'exec python3 /usr/local/sbin/ffn_physical_forwarding.py '+action if role=='cp' else
              'python3 /usr/local/sbin/ffn_physical_runtime.py '+action+' '+str(port))
     result=subprocess.run((CP if role=='cp' else DP)+[command],input=json.dumps(payload),text=True,capture_output=True,timeout=45)
     if result.returncode:raise RuntimeError(role+' physical attachment failed: '+result.stderr[-1200:])

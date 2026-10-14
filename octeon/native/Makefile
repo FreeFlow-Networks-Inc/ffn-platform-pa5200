@@ -11,6 +11,13 @@ PROTECT_LDFLAGS ?= -lcrypto
 ffn-protect-tunnel: ffn_protect_tunnel.c
 	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations ffn_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
 
+# The CP owner of one physical port's packet redirect (replaces ffn_physical_forwarding.py).
+ffn-portctl: ffn_portctl.c ffn_portctl.h ffn_json.c ffn_json.h
+	$(CC) $(CFLAGS) ffn_portctl.c ffn_json.c -o $@
+
+test-portctl: ffn_portctl.c ffn_portctl.h ffn_json.c ffn_json.h test_portctl.c
+	$(CC) $(CFLAGS) -Wno-unused-function test_portctl.c -o $@
+
 test-protect-tunnel: ffn_protect_tunnel.c test_protect_tunnel.c
 	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations -Wno-unused-function test_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
 
@@ -51,13 +58,14 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl
 	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
 	./test-fe100-punt
 	./test-fe100-stats
 	./test-fe100-stats-health
+	./test-portctl
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py
