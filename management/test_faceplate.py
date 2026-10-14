@@ -36,6 +36,33 @@ class FaceplateTests(unittest.TestCase):
                 self.assertIn({'op':'port.set','port':16,'enable':False},calls)
                 self.assertEqual(json.loads(state.read_text()),{'ports':{'5':False}})
 
+    def test_copper_speed_change_reaches_the_readback_and_settles(self):
+        """A copper speed set once died in the readback (link mode unbound on the copper branch) after
+        the PHY was written, leaving the operation pending; it must verify and record the speed."""
+        phys=[{'phy':phy,'interface':'ethernet1/%d'%front,'bcm_port':{1:28,2:13,3:14,4:15}[front],'ready':True,'enabled':True,'link':False,'speed_mbps':None,
+               'configured_speed':'auto','supported_speeds':[100,1000,10000],'advertised_speeds':[100,1000,10000],
+               'control_register':0,'negotiation':{'valid':True},'pair_map_register':0xe4,'pair_map_recovery':False}
+              for phy,front in ((16,2),(17,1),(18,4),(19,3))]
+        copper={'revision':7,'phys':phys,'saved':{}}
+        def copper_apply(port,request):
+            row=next(r for r in phys if r['interface']==port['name'])
+            row['configured_speed']=request['speed'];row['advertised_speeds']=[100,1000,10000] if request['speed']=='auto' else [int(request['speed'])]
+            return {'activation':'verified'}
+        with tempfile.TemporaryDirectory() as tmp,patch.object(f,'STATE',Path(tmp)/'state.json'):
+            def call(req):
+                if req['op']=='port.list':return {'ports':[{'port':p,'enabled':True,'link':False,'speed_mb':10000} for p in f.PORTS]}
+                return {'configured_speed':'auto','supported_speeds':[1000,10000]}
+            with patch.object(f,'call',side_effect=call),patch.object(f,'copper_inventory',return_value=copper),patch.object(f,'copper_apply',side_effect=copper_apply):
+                before=f.observe()
+                row=next(p for p in before['ports'] if p['port']==3)
+                self.assertEqual(row['media'],'copper');self.assertEqual(row['advertised_speeds'],[100,1000,10000])
+                result=f.apply({'revision':before['revision'],'port':3,'speed':'1000'})
+                self.assertEqual(result['activation'],'verified')
+                after=next(p for p in result['data']['ports'] if p['port']==3)
+                self.assertEqual(after['configured_speed'],'1000');self.assertEqual(after['advertised_speeds'],[1000])
+                saved=json.loads(f.STATE.read_text())
+                self.assertEqual(saved['speeds'],{'3':'1000'});self.assertNotIn('pending',saved)
+
     def test_speed_persistence_revision_and_readback(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(f,'STATE',Path(tmp)/'state.json'):
             speeds={p:'auto' for p in f.PORTS}
