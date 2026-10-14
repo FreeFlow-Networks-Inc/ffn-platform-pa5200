@@ -187,6 +187,7 @@ def enable_runtime_units(root, role, owners):
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('multi-user.target', 'ffn-dhcp-server.service'),
                     ('multi-user.target', 'ffn-protect-gateway.service'),
+                    ('multi-user.target', 'ffn-lldpd.service'),
                     ('timers.target', 'ffn-aggregate-dp-watchdog.timer')]}
     for target, unit in units[role]:
         directory = root / ('etc/systemd/system/' + target + '.wants')
@@ -321,6 +322,10 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         run(['make', '-B', '-C', native, 'CC=' + (protect_cross or userspace_cross + 'gcc'), 'ffn-protect-tunnel'])
         elf(native / 'ffn-protect-tunnel')
         safe_install(native / 'ffn-protect-tunnel', root, 'usr/local/sbin/ffn-protect-tunnel')
+        # The LLDP agent for front ports: trunk control frames in and out, own code.
+        run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-lldpd'])
+        elf(native / 'ffn-lldpd')
+        safe_install(native / 'ffn-lldpd', root, 'usr/local/sbin/ffn-lldpd')
     if role == 'cp':
         # The CP owner of a physical port's packet redirect; the MP backend prefers it over the Python owner.
         run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-portctl'])

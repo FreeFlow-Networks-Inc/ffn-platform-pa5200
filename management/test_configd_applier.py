@@ -83,14 +83,62 @@ class ApplyTests(unittest.TestCase):
             with patch('configd_applier.rpc') as rpc, self.assertRaisesRegex(ValueError,'missing'):
                 PlatformApplier(path).reconcile(Status())
             rpc.assert_not_called()
-    def test_explicit_lldp_off_is_supported_but_enabled_and_unknown_options_are_not(self):
+    def test_lldp_enable_and_profile_are_accepted_but_malformed_options_are_not(self):
         from xml.etree import ElementTree as ET
-        for body in ('','<lldp/>','<lldp><enable>no</enable></lldp>'):
+        for body in ('','<lldp/>','<lldp><enable>no</enable></lldp>','<lldp><enable>yes</enable></lldp>',
+                     '<lldp><enable>yes</enable><profile>custom</profile></lldp>'):
             configd_applier.validate_physical_options(ET.fromstring('<entry><layer3/>'+body+'</entry>'))
-        for body in ('<lldp><enable>yes</enable></lldp>','<lldp><profile>custom</profile></lldp>',
-                     '<lldp><enable>invalid</enable></lldp>','<lldp><enable>no</enable><enable>yes</enable></lldp>',
-                     '<lldp/><lldp/>','<layer3><unexpected/></layer3>','<layer2/>'):
+        for body in ('<lldp><enable>invalid</enable></lldp>','<lldp><enable>no</enable><enable>yes</enable></lldp>',
+                     '<lldp><transmit>yes</transmit></lldp>','<lldp/><lldp/>','<layer3><unexpected/></layer3>','<layer2/>'):
             with self.assertRaises(ValueError):configd_applier.validate_physical_options(ET.fromstring('<entry>'+body+'</entry>'))
+
+    LLDP_XML='''<config><devices><entry name="localhost.localdomain"><deviceconfig><system><hostname>fw1</hostname></system></deviceconfig>
+    <network><lldp><enable>yes</enable></lldp>
+    <profiles><lldp-profile><entry name="quiet"><mode>transmit-only</mode><option-tlvs><system-description><enabled>no</enabled></system-description>
+    <management-address><enabled>no</enabled></management-address></option-tlvs></entry></lldp-profile></profiles>
+    <interface><ethernet>
+      <entry name="ethernet1/5"><comment>Verizon</comment><layer3><ip><entry name="152.193.185.10/32"/></ip></layer3><lldp><enable>yes</enable><profile>quiet</profile></lldp></entry>
+      <entry name="ethernet1/2"><layer3><ip><entry name="172.19.0.1/24"/></ip></layer3><lldp><enable>no</enable></lldp></entry>
+      <entry name="ethernet1/21"><aggregate-group>ae1</aggregate-group></entry>
+      <entry name="ethernet1/22"><aggregate-group>ae1</aggregate-group><lldp><enable>yes</enable></lldp></entry>
+    </ethernet><aggregate-ethernet><entry name="ae1"><layer3/><lldp><enable>yes</enable></lldp></entry></aggregate-ethernet></interface>
+    </network></entry></devices></config>'''
+
+    def test_compile_lldp_intent_follows_global_switch_profiles_and_aggregates(self):
+        from xml.etree import ElementTree as ET
+        intent=configd_applier.compile_lldp_intent(ET.fromstring(self.LLDP_XML),'08:66:1f:03:08:cd')
+        self.assertTrue(intent['enabled']);self.assertEqual(intent['system'],dict(chassis_id='08:66:1f:03:08:cd',name='fw1',description='FFN-NGFW PA-5200'))
+        self.assertEqual([p['port'] for p in intent['ports']],[5,21,22])
+        five=intent['ports'][0]
+        self.assertEqual((five['mode'],five['tlvs'],five['management'],five['description'],five['aggregate']),
+                         ('transmit-only',['port-description','system-name','system-capabilities'],['152.193.185.10'],'Verizon',''))
+        member=intent['ports'][1]
+        self.assertEqual((member['port'],member['aggregate'],member['mode'],member['tlvs']),(21,'ae1','transmit-receive',list(configd_applier.LLDP_TLVS)))
+        self.assertEqual(intent['ports'][2]['aggregate'],'ae1')
+        off=configd_applier.compile_lldp_intent(ET.fromstring(self.LLDP_XML.replace('<lldp><enable>yes</enable></lldp>\n','<lldp><enable>no</enable></lldp>\n',1)),'08:66:1f:03:08:cd')
+        self.assertFalse(off['enabled']);self.assertEqual(len(off['ports']),3)
+        with self.assertRaisesRegex(ValueError,'does not exist'):
+            configd_applier.compile_lldp_intent(ET.fromstring(self.LLDP_XML.replace('<profile>quiet</profile>','<profile>missing</profile>')),'08:66:1f:03:08:cd')
+
+    def test_reconcile_lldp_applies_once_and_reads_back(self):
+        from xml.etree import ElementTree as ET
+        root=ET.fromstring(self.LLDP_XML);intent=configd_applier.compile_lldp_intent(root,'08:66:1f:03:08:cd')
+        state={'config':{'revision':7,'lldp':{},'configuration':None},'agent':{'running':True}}
+        calls=[]
+        def rpc(resource,action='status',payload=None):
+            calls.append((resource,action,payload))
+            if action=='apply':
+                self.assertEqual(payload['revision'],7);state['config'].update(revision=8,lldp=payload['lldp'],configuration=payload['configuration'])
+                return {'applied':True}
+            return state
+        status=Status();configd_applier.reconcile_lldp(root,status,'acc0e09a',rpc=rpc,chassis_id='08:66:1f:03:08:cd')
+        self.assertEqual([c[:2] for c in calls],[('lldp','status'),('lldp','apply'),('lldp','status')])
+        self.assertEqual(calls[1][2]['lldp'],intent)
+        paths=[a[0] for a in status.applied];self.assertIn('network/lldp',paths);self.assertIn('ethernet1/5/lldp',paths);self.assertEqual(status.errors,[])
+        calls.clear();status=Status();configd_applier.reconcile_lldp(root,status,'acc0e09a',rpc=rpc,chassis_id='08:66:1f:03:08:cd')
+        self.assertEqual([c[1] for c in calls],['status']);self.assertEqual(status.errors,[])
+        state['agent']['running']=False;status=Status();configd_applier.reconcile_lldp(root,status,'acc0e09a',rpc=rpc,chassis_id='08:66:1f:03:08:cd')
+        self.assertTrue(any('not running' in f[2] for f in status.errors))
 
     def test_none_and_omitted_front_ports_disable_data_and_physical_link(self):
         xml='''<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>

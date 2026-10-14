@@ -56,6 +56,23 @@
         "/usr/local/lib/ffn/ffn_protect_gateway.py",
         "apply"
       ]
+    },
+    "lldp": {
+      "status": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_lldp.py",
+        "status"
+      ],
+      "validate": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_lldp.py",
+        "validate"
+      ],
+      "apply": [
+        "/usr/bin/python3",
+        "/usr/local/sbin/ffn_lldp.py",
+        "apply"
+      ]
     }
   }
 }

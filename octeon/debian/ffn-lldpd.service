@@ -1,0 +1,27 @@
+[Unit]
+Description=FFN dataplane LLDP agent for front ports
+Documentation=file:/usr/local/sbin/ffn_lldp.py
+After=network.target ffn-dpnet.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/ffn-lldpd
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+RuntimeDirectory=ffn-lldp
+RuntimeDirectoryMode=0755
+Environment=FFN_LLDP_INTENT=/etc/ffn/lldp.json
+Environment=FFN_LLDP_RUN=/run/ffn-lldp
+Environment=FFN_LLDP_TRUNK=ffnpkt0
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/ffn-lldp
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

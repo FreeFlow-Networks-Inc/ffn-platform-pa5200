@@ -46,10 +46,16 @@ class AggregateTests(unittest.TestCase):
             row=plan(raw)['aggregates'][0]
             self.assertEqual(row['errors'],[]);self.assertFalse(row['subinterfaces'][0]['supported']);self.assertFalse(row['subinterfaces'][0]['applied'])
 
+    def test_enabled_member_lldp_is_accepted_for_the_dataplane_agent(self):
+        raw=XML.replace(b'<aggregate-group>ae1</aggregate-group>',b'<aggregate-group>ae1</aggregate-group><lldp><enable>yes</enable><profile>quiet</profile></lldp>',1)
+        self.assertEqual(plan(raw)['aggregates'][0]['errors'],[])
+        raw=XML.replace(b'<aggregate-group>ae1</aggregate-group>',b'<aggregate-group>ae1</aggregate-group><lldp><transmit>yes</transmit></lldp>',1)
+        self.assertTrue(plan(raw)['aggregates'][0]['errors'])
+
     def test_disabled_member_lldp_from_interface_editor_is_accepted(self):
         raw=XML.replace(b'<aggregate-group>ae1</aggregate-group>',b'<aggregate-group>ae1</aggregate-group><lldp><enable>no</enable></lldp>')
         self.assertEqual(plan(raw)['aggregates'][0]['errors'],[])
-        self.assertTrue(plan(raw.replace(b'<enable>no',b'<enable>yes'))['aggregates'][0]['errors'])
+        self.assertEqual(plan(raw.replace(b'<enable>no',b'<enable>yes'))['aggregates'][0]['errors'],[])   # the dataplane agent transmits for members
 
     def test_current_webui_xml_compiles_to_physical_members(self):
         result=plan(XML);group=result['aggregates'][0]
@@ -74,7 +80,7 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual(result['state'],'blocked');self.assertFalse(result['applied'])
         self.assertTrue(all(p['link'] for p in result['members']))
         self.assertFalse(any(p['attached'] for p in result['members']))
-        self.assertEqual({b['code'] for b in result['blockers']},{'bcm-membership','lacp-negotiation','dataplane-attachment','dhcp-client','lldp'})
+        self.assertEqual({b['code'] for b in result['blockers']},{'bcm-membership','lacp-negotiation','dataplane-attachment','dhcp-client'})
 
     def test_peer_mismatch_and_failed_observations(self):
         group=plan(XML)['aggregates'][0]

@@ -71,8 +71,8 @@ def compile_device(device):
             if any(c.tag not in ('comment','aggregate-group','link-state','link-speed','link-duplex','lldp') for c in member):
                 errors.append(pan+': aggregate members cannot carry independent interface settings')
             lldp=member.find('lldp')
-            if lldp is not None and (lldp.attrib or any(n.tag!='enable' or n.text!='no' or n.attrib or len(n) for n in lldp)):
-                errors.append(pan+': aggregate member LLDP must be disabled')
+            if lldp is not None and (lldp.attrib or any(n.tag not in ('enable','profile') or n.attrib or len(n) for n in lldp) or lldp.findtext('enable','no') not in ('yes','no')):
+                errors.append(pan+': aggregate member LLDP must be enable yes|no with an optional profile')
         if not 2<=len(rows)<=8:errors.append('Aggregate requires 2..8 members')
         if len({r['port'] for r in rows})!=len(rows):errors.append('Duplicate aggregate member')
         l3=entry.find('layer3');bond='bond' if entry.find('bond') is not None else 'layer3/bond'
@@ -185,7 +185,6 @@ def readiness(group,faceplate,network,observations):
         dict(code='lacp-negotiation',message='LACP transmit/receive and member selection are not commissioned'),
         dict(code='dataplane-attachment',message='Aggregate packet attachment to the OCTEON dataplane is not commissioned')])
     if group['network']['dhcp']:blocked.append(dict(code='dhcp-client',message='Aggregate DHCP lease application is not commissioned'))
-    if group['lldp']:blocked.append(dict(code='lldp',message='Aggregate LLDP transmission is not commissioned'))
     return dict(group,members=members,owner='ffn-controld',backend='pa5200-bcm',
         state='blocked',applied=False,activation_supported=False,blockers=blocked,partner_consistency=partner_consistency,
         # Compatibility fields consumed by the common interface view.

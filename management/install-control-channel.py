@@ -53,6 +53,7 @@ def main():
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
     worker['commands']['front-traffic']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'front-traffic','status']}
+    worker['commands']['lldp']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'lldp',a] for a in ('status','validate','apply')}
     # Device > Setup > Interfaces reads and applies the MP's own ports through the controller
     # (CONSOLE-HARDWARE.md); without this entry the card reports the controller unavailable.
     worker['commands']['mp-interfaces']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'mp_interfaces.py'),a] for a in ('status','apply')}
@@ -74,6 +75,8 @@ def main():
             saved=backup/path.relative_to('/');saved.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,saved)
         temp=path.with_name(path.name+'.control-new');temp.write_text(data);temp.chmod(mode);temp.replace(path)
     write(config,json.dumps(worker,indent=2)+'\n',0o600)
+    # The MP relay for the dataplane LLDP agent, beside ffn-dhcp and ffn-protect.
+    write('/usr/local/sbin/ffn-lldp',(Path(__file__).parent.parent/'octeon/debian/ffn-lldp-mp').read_text(),0o755)
     # Runtime Python modules alone cannot activate an aggregate. Install its
     # lifecycle unit with the selected MP channel; configd starts only committed
     # definitions, so installing this template does not enable any front port.

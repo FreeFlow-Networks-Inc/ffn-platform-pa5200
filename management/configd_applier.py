@@ -52,11 +52,10 @@ def validate_physical_options(entry):
     if len(nodes)>1:raise ValueError('Duplicate physical-interface LLDP configuration')
     if nodes:
         node=nodes[0]
-        if (node.attrib or len(node.findall('enable'))>1 or any(child.tag!='enable' or child.attrib or len(child) for child in node)):
+        if (node.attrib or len(node.findall('enable'))>1 or any(child.tag not in ('enable','profile') or child.attrib or len(child) for child in node)):
             raise ValueError('Unsupported physical-interface LLDP options')
         value=node.findtext('enable','no').strip()
-        if value=='yes':raise ValueError('Physical-interface LLDP transmit is not implemented by this backend')
-        if value!='no':raise ValueError('LLDP enable must be yes or no')
+        if value not in ('yes','no'):raise ValueError('LLDP enable must be yes or no')
 
 
 def converge_aggregates(groups, config, observed, timeout=60):
@@ -101,7 +100,7 @@ class PlatformApplier:
 
     def claims(self, xpath):
         return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath or '.network.dhcp.' in xpath
-                or '.network.profiles.interface-management-profile.' in xpath
+                or '.network.profiles.interface-management-profile.' in xpath or '.network.lldp.' in xpath or '.network.profiles.lldp-profile.' in xpath
                 or '.global-protect.' in xpath or '.network.interface.tunnel.' in xpath or '.shared.certificate.' in xpath
                 or '.shared.authentication-profile.' in xpath or '.shared.server-profile.' in xpath or '.shared.local-user-database.' in xpath
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
@@ -296,6 +295,93 @@ class PlatformApplier:
         reconcile_dhcp(root,status,configuration_revision)
         # FFN Protect portals and gateways likewise depend only on dataplane devices and addresses.
         reconcile_protect(root,status,configuration_revision)
+        # LLDP depends on the dataplane agent only; it follows the interfaces it names.
+        reconcile_lldp(root,status,configuration_revision)
+
+
+LLDP_TLVS=('port-description','system-name','system-description','system-capabilities','management-address')
+
+
+def compile_lldp_intent(root,chassis_id,hostname=None):
+    """The committed LLDP intent for the dataplane agent.
+
+    network/lldp/enable is the global switch; each ethernet entry (physical or
+    aggregate member) and each aggregate entry carries lldp/enable and an
+    optional lldp/profile naming network/profiles/lldp-profile/entry (mode and
+    option-tlvs). Members of an LLDP-enabled aggregate transmit with their own
+    port ID and the aggregate's frame address. Management addresses are the
+    port's own layer3 addresses."""
+    device=root.find('./devices/entry')
+    if device is None:raise ValueError('device configuration missing')
+    enabled=device.findtext('network/lldp/enable','no')=='yes'
+    profiles={}
+    for entry in device.findall('network/profiles/lldp-profile/entry'):
+        name=entry.get('name','')
+        mode=entry.findtext('mode','transmit-receive')
+        if mode not in ('transmit-receive','transmit-only','receive-only'):raise ValueError('lldp-profile %s: unsupported mode %s'%(name,mode))
+        tlvs=[]
+        options=entry.find('option-tlvs')
+        for tlv in LLDP_TLVS:
+            node=options.find(tlv) if options is not None else None
+            if node is None or node.findtext('enabled','yes')=='yes':tlvs.append(tlv)
+        profiles[name]=dict(mode=mode,tlvs=tlvs)
+    def settings(entry,name):
+        profile=entry.findtext('lldp/profile','')
+        if profile and profile not in profiles:raise ValueError(name+': lldp-profile '+profile+' does not exist')
+        return profiles.get(profile,dict(mode='transmit-receive',tlvs=list(LLDP_TLVS)))
+    ports={}
+    aggregates={}
+    for entry in device.findall('network/interface/aggregate-ethernet/entry'):
+        if entry.findtext('lldp/enable','no')=='yes':aggregates[entry.get('name','')]=settings(entry,entry.get('name',''))
+    for entry in device.findall('network/interface/ethernet/entry'):
+        name=entry.get('name','');match=re.fullmatch(r'ethernet1/([1-9]|1[0-9]|2[0-4])',name)
+        if not match:continue
+        port=int(match[1]);group=entry.findtext('aggregate-group','')
+        own=entry.findtext('lldp/enable','no')=='yes'
+        if not own and group not in aggregates:continue
+        chosen=settings(entry,name) if own else aggregates[group]
+        addresses=[ip.get('name').split('/')[0] for ip in entry.findall('layer3/ip/entry') if ip.get('name') and re.fullmatch(r'\d+\.\d+\.\d+\.\d+(/\d+)?',ip.get('name'))]
+        ports[port]=dict(port=port,mode=chosen['mode'],tlvs=chosen['tlvs'],description=entry.findtext('comment','')[:255],
+                         management=addresses[:8],aggregate=group if group else '')
+    system=dict(chassis_id=chassis_id,name=hostname or device.findtext('deviceconfig/system/hostname','') or 'FFN-NGFW',description='FFN-NGFW PA-5200')
+    return dict(enabled=enabled,system=system,interval=30,hold=4,ports=[ports[p] for p in sorted(ports)])
+
+
+def reconcile_lldp(root,status,configuration_revision,rpc=None,chassis_id=None):
+    """The committed LLDP intent, applied on the dataplane agent and read back."""
+    rpc=rpc or globals()['rpc']
+    try:
+        if chassis_id is None:
+            try:
+                import mp_interfaces
+                inventory=mp_interfaces.inventory();rows=inventory['ports'] if isinstance(inventory,dict) else inventory
+                chassis_id=next((p.get('mac') for p in rows if p.get('name')=='MGT'),None)
+            except (ImportError,OSError,ValueError,RuntimeError,KeyError,TypeError):chassis_id=None   # no MP inventory here: the MGT MAC is unknown
+            chassis_id=chassis_id or '00:00:00:00:00:00'
+        intent=compile_lldp_intent(root,chassis_id)
+    except (ValueError,OSError,RuntimeError,KeyError) as error:
+        status.fail('network/lldp','pa5200',str(error));return
+    try:
+        observed=rpc('lldp')
+    except (ValueError,RuntimeError) as error:
+        if intent['enabled']:status.fail('network/lldp','pa5200',str(error))
+        return
+    held=(observed.get('config') or {}).get('lldp') if isinstance(observed,dict) else None
+    if not intent['enabled'] and not intent['ports'] and not (isinstance(held,dict) and held.get('enabled')):
+        return   # a configuration without LLDP and a dataplane not running it: nothing to apply
+    try:
+        if observed['config'].get('lldp')!=intent or observed['config'].get('configuration')!=configuration_revision:
+            rpc('lldp','apply',dict(revision=observed['config']['revision'],lldp=intent,configuration=configuration_revision))
+            observed=rpc('lldp')
+        if observed['config'].get('lldp')!=intent:raise ValueError('DP LLDP readback mismatch')
+        agent=observed.get('agent') or {}
+        if intent['enabled'] and not agent.get('running'):raise ValueError('Dataplane LLDP agent is not running')
+        status.ok('network/lldp',None,dict(enabled=intent['enabled'],ports=[p['port'] for p in intent['ports']]),'pa5200',
+                  'LLDP intent read back on DP through MP daemon' if intent['enabled'] else 'LLDP disabled')
+        for p in intent['ports']:
+            status.ok('ethernet1/%d/lldp'%p['port'],None,dict(mode=p['mode']),'pa5200','LLDP agent transmits and receives on this port' if intent['enabled'] else 'LLDP disabled')
+    except (ValueError,RuntimeError,KeyError,TypeError) as error:
+        status.fail('network/lldp','pa5200',str(error))
 
 
 def reconcile_protect(root,status,configuration_revision,rpc=None):

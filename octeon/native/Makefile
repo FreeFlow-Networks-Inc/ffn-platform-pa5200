@@ -18,6 +18,13 @@ ffn-portctl: ffn_portctl.c ffn_portctl.h ffn_json.c ffn_json.h
 test-portctl: ffn_portctl.c ffn_portctl.h ffn_json.c ffn_json.h test_portctl.c
 	$(CC) $(CFLAGS) -Wno-unused-function test_portctl.c -o $@
 
+# The dataplane LLDP agent for front ports (own code; trunk control frames in and out).
+ffn-lldpd: ffn_lldpd.c ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h
+	$(CC) $(CFLAGS) ffn_lldpd.c ffn_lldp.c ffn_json.c -o $@
+
+test-lldp: ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h test_lldp.c
+	$(CC) $(CFLAGS) -Wno-unused-function test_lldp.c -o $@
+
 test-protect-tunnel: ffn_protect_tunnel.c test_protect_tunnel.c
 	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations -Wno-unused-function test_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
 
@@ -58,7 +65,7 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp
 	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
@@ -66,6 +73,7 @@ test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt t
 	./test-fe100-stats
 	./test-fe100-stats-health
 	./test-portctl
+	./test-lldp
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py
