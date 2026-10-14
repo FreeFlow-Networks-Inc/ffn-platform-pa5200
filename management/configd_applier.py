@@ -353,7 +353,8 @@ def reconcile_lldp(root,status,configuration_revision,rpc=None,chassis_id=None):
     try:
         if chassis_id is None:
             import mp_interfaces
-            chassis_id=next((p.get('mac') for p in mp_interfaces.inventory()['ports'] if p.get('name')=='MGT'),None) or '00:00:00:00:00:00'
+            inventory=mp_interfaces.inventory();rows=inventory['ports'] if isinstance(inventory,dict) else inventory
+            chassis_id=next((p.get('mac') for p in rows if p.get('name')=='MGT'),None) or '00:00:00:00:00:00'
         intent=compile_lldp_intent(root,chassis_id)
     except (ValueError,OSError,RuntimeError,KeyError) as error:
         status.fail('network/lldp','pa5200',str(error));return

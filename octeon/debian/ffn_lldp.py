@@ -158,7 +158,8 @@ def execute(action, payload, run=subprocess.run):
 
 if __name__ == '__main__':
     try:
-        payload = json.load(sys.stdin) if sys.argv[1] != 'status' else (json.load(sys.stdin) if not sys.stdin.isatty() else {})
+        data = sys.stdin.read() if not sys.stdin.isatty() else ''
+        payload = json.loads(data) if data.strip() else {}
         print(json.dumps(execute(sys.argv[1], payload)))
     except (ValueError, KeyError, IndexError) as error:
         print(json.dumps({'error': str(error)}))
