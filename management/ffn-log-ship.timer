@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN ship the plane journals to the RAID every two minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=20s
+Unit=ffn-log-ship.service
+
+[Install]
+WantedBy=timers.target

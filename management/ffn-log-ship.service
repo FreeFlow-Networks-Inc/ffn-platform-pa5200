@@ -1,0 +1,11 @@
+[Unit]
+Description=FFN ship the CP and DP journals to the RAID (/opt/ffn-logs)
+After=network-online.target ffn-controld.service
+ConditionPathIsDirectory=/opt/ffn-logs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_log_ship.py
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=240

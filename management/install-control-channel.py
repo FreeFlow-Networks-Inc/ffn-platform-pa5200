@@ -103,6 +103,13 @@ def main():
     write('/etc/systemd/system/ffn-manager-v2.service.d/30-control-channel.conf',
           '[Service]\nEnvironment=FFN_CONTROL_GATEWAY=controld\nEnvironment=FFN_PLANE_SOCKET=/run/ffn-plane-mp/control.sock\n')
     write('/etc/systemd/system/ffn-route-link-feed.service',(extension/'ffn-route-link-feed.service').read_text())
+    # The plane journals live in RAM (journald-ffn-volatile.conf); this timer pulls them onto the RAID.
+    write('/usr/local/sbin/ffn_log_ship.py',Path(__file__).with_name('ffn_log_ship.py').read_text(),0o755)
+    for unit in ('ffn-log-ship.service','ffn-log-ship.timer'):
+        write('/etc/systemd/system/'+unit,Path(__file__).with_name(unit).read_text())
+    wanted=Path('/etc/systemd/system/timers.target.wants/ffn-log-ship.timer')
+    wanted.parent.mkdir(parents=True,exist_ok=True)
+    if not wanted.exists() and not wanted.is_symlink(): wanted.symlink_to('../ffn-log-ship.timer')
     wanted=Path('/etc/systemd/system/multi-user.target.wants/ffn-route-link-feed.service')
     if not wanted.exists(): wanted.symlink_to('../ffn-route-link-feed.service')
     print(json.dumps({'configured':True,'backup':str(backup),'restart_required':
