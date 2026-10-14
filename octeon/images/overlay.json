@@ -349,6 +349,11 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_pipeline_errors.py",
+      "usr/local/sbin/ffn_fe100_pipeline_errors.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_bcm_lab.py",
       "usr/local/sbin/ffn_fe100_bcm_lab.py"
     ],

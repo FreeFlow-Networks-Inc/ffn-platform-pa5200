@@ -49,7 +49,7 @@ class InitTests(unittest.TestCase):
         journal = self.run_init(tools)
         self.assertEqual(journal['stage'], 'completed')
         self.assertEqual([s['name'] for s in journal['steps']], [n for n, _ in I.plan()])
-        self.assertEqual(journal['steps'][17]['name'], 'archive-generation'); self.assertEqual(journal['steps'][17]['result']['reason'], 'no external-table journal')
+        self.assertEqual(journal['steps'][18]['name'], 'archive-generation'); self.assertEqual(journal['steps'][18]['result']['reason'], 'no external-table journal')
         self.assertEqual(journal['steps'][0]['name'], 'block-tlu'); self.assertEqual(journal['steps'][-1]['name'], 'sem')
         self.assertTrue(journal['readiness']['initialized'])
         saved = json.loads((self.root / ('init-' + BOOT + '.json')).read_text())
@@ -64,13 +64,13 @@ class InitTests(unittest.TestCase):
         tools = FakeTools()
         plan = I.plan()
         partial = {'schema': 1, 'cp_boot_id': BOOT, 'stage': 'started', 'started_monotonic': 90.0,
-                   'steps': [{'name': n, 'command': c, 'rc': 0} for n, c in plan[:17]]}
+                   'steps': [{'name': n, 'command': c, 'rc': 0} for n, c in plan[:18]]}
         (self.root / ('init-' + BOOT + '.json')).write_text(json.dumps(partial))
-        tools.done = {n for n, _ in plan[:17]}
+        tools.done = {n for n, _ in plan[:18]}
         journal = self.run_init(tools)
         self.assertEqual(journal['stage'], 'completed')
         executed = [c for c in tools.calls if c[0] != 'ffn_fe100_live_sessions.py']
-        self.assertEqual(executed, [c for _, c in plan[17:] if c is not None])
+        self.assertEqual(executed, [c for _, c in plan[18:] if c is not None])
 
     def test_previous_boot_external_tables_are_archived_only_once_memory_is_reset(self):
         journal = self.root / I.EXTERNAL_TABLES
