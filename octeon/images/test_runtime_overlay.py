@@ -13,7 +13,7 @@ class RuntimeOverlayTests(unittest.TestCase):
             directory = root / 'etc/systemd/system'
             directory.mkdir(parents=True)
             units = ('ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service',
-                     'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-aggregate-dp-watchdog.timer')
+                     'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service', 'ffn-aggregate-dp-watchdog.timer')
             for name in units:
                 (directory / name).write_text('[Unit]\n')
             build_images.enable_runtime_units(root, 'dp', {})

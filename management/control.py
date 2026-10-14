@@ -34,6 +34,7 @@ COMMANDS = {
     ('network', 'lookup'): ('/usr/local/sbin/ffn-network', 'lookup'),
     ('dhcp', 'status'): ('/usr/local/sbin/ffn-dhcp', 'status'),
     ('protect', 'status'): ('/usr/local/sbin/ffn-protect', 'status'),
+    ('lldp', 'status'): ('/usr/local/sbin/ffn-lldp', 'status'),
     ('sfp-check', 'status'): ('/usr/local/sbin/ffn-sfp-check', 'status'),
     ('overlay', 'status'): ('/usr/local/sbin/ffn-overlay', 'status'),
     ('overlay', 'set'): ('/usr/local/sbin/ffn-overlay', 'set'),
@@ -46,6 +47,26 @@ COMMANDS = {
     ('fabric', 'status'): ('/usr/bin/systemctl', 'is-active', 'ffn-fabric.service'),
 }
 LIMIT = 1024 * 1024
+
+
+def lldp_neighbors():
+    """The console's LLDP table from the dataplane agent through the controller (ffn-lldpd on the DP)."""
+    from ffn_controld_client import ControldClient
+    response=ControldClient(timeout=20).plane_request({'v':1,'id':str(uuid.uuid4()),'resource':'lldp','action':'status','payload':{}})
+    if not response.get('ok'): return {'available':False,'reason':'Dataplane LLDP agent unavailable','interfaces':[]}
+    result=response['result'];agent=result.get('agent') or {};table=result.get('neighbours') or {}
+    rows=[]
+    for port in table.get('ports',[]):
+        for n in port.get('neighbours',[]):
+            rows.append({'local_interface':port.get('interface',''),'remote_chassis_id':(n.get('chassis_id') or {}).get('value',''),
+                         'remote_port':(n.get('port_id') or {}).get('value',''),'system_name':n.get('system_name',''),
+                         'system_description':n.get('system_description',''),'ttl':n.get('ttl',0),'expires_in':n.get('expires_in'),
+                         'management_addresses':[m.get('address') for m in n.get('management_addresses',[])],'vlan_id':n.get('vlan_id'),
+                         'capabilities':n.get('capabilities'),'mac_phy':n.get('mac_phy')})
+    enabled=bool((result.get('config') or {}).get('lldp',{}).get('enabled'))
+    if not agent.get('running',False):
+        return {'available':False,'reason':'Dataplane LLDP agent is not running' if enabled else 'LLDP is disabled in the committed configuration','interfaces':rows}
+    return {'available':True,'source':'ffn-lldpd','interfaces':rows,'ports':agent.get('ports',[]),'revision':agent.get('revision')}
 
 
 def mp_interfaces_status():

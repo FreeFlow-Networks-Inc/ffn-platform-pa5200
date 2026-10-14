@@ -144,7 +144,7 @@ def prepare(raw,group,control_only,dp_boot,offload=False):
     network['units']=[{k:u[k] for k in ('name','tag','addresses','mtu','management')} for u in row['subinterfaces'] if u['supported']]
     system='02:'+':'.join(hashlib.sha256(Path('/etc/machine-id').read_bytes()).hexdigest()[n:n+2] for n in range(0,10,2))
     intent=dict(group=group,token=str(uuid.uuid4()),boot_id=dp_boot,system=system,members=[p['port'] for p in row['members']],
-        lacp=row['lacp'],network=network,lldp=row['lldp'],control_only=control_only,offload=offload)
+        lacp=row['lacp'],network=network,lldp=False,control_only=control_only,offload=offload)   # LLDP: the dataplane agent (ffn-lldpd) transmits per member
     return dict(group=group,activation_id=intent['token'],running_revision=compiled['revision'],parent_revision=parent_revision(raw,group),link_revision=link_revision(row),intent=intent,
         speeds={str(p['port']):p['speed'] for p in row['members']})
 

@@ -986,6 +986,16 @@
     ],
     [
       "platform",
+      "octeon/debian/ffn_lldp.py",
+      "usr/local/sbin/ffn_lldp.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-lldpd.service",
+      "etc/systemd/system/ffn-lldpd.service"
+    ],
+    [
+      "platform",
       "octeon/debian/ffn_overlay.py",
       "usr/local/sbin/ffn_overlay.py"
     ],
