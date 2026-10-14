@@ -100,7 +100,7 @@ class PlatformApplier:
 
     def claims(self, xpath):
         return ('.network.interface.ethernet.' in xpath or '.network.interface.aggregate-ethernet.' in xpath or '.network.dhcp.' in xpath
-                or '.network.profiles.interface-management-profile.' in xpath or '.network.lldp.' in xpath or '.network.profiles.lldp-profile.' in xpath
+                or '.network.profiles.interface-management-profile.' in xpath or '.network.lldp.' in xpath or '.network.profiles.lldp-profile.' in xpath or '.deviceconfig.system.route.' in xpath
                 or '.global-protect.' in xpath or '.network.interface.tunnel.' in xpath or '.shared.certificate.' in xpath
                 or '.shared.authentication-profile.' in xpath or '.shared.server-profile.' in xpath or '.shared.local-user-database.' in xpath
                 or '.network.virtual-router.' in xpath or '.deviceconfig.system.mp-interfaces.' in xpath)
@@ -297,6 +297,8 @@ class PlatformApplier:
         reconcile_protect(root,status,configuration_revision)
         # LLDP depends on the dataplane agent only; it follows the interfaces it names.
         reconcile_lldp(root,status,configuration_revision)
+        # Service routes likewise depend only on dataplane devices and addresses.
+        reconcile_service_routes(root,status,configuration_revision)
 
 
 LLDP_TLVS=('port-description','system-name','system-description','system-capabilities','management-address')
@@ -382,6 +384,33 @@ def reconcile_lldp(root,status,configuration_revision,rpc=None,chassis_id=None):
             status.ok('ethernet1/%d/lldp'%p['port'],None,dict(mode=p['mode']),'pa5200','LLDP agent transmits and receives on this port' if intent['enabled'] else 'LLDP disabled')
     except (ValueError,RuntimeError,KeyError,TypeError) as error:
         status.fail('network/lldp','pa5200',str(error))
+
+
+def reconcile_service_routes(root,status,configuration_revision,rpc=None):
+    """The committed service routes, compiled by the core, installed on the dataplane and the MP, and read back."""
+    rpc=rpc or globals()['rpc']
+    try:
+        from ffn_service_routes import compile_intent
+    except ImportError:
+        return   # a core without service routes has nothing to apply
+    try:
+        intent=compile_intent(root)['routes']
+    except ValueError as error:
+        status.fail('deviceconfig/system/route/service','pa5200',str(error));return
+    try:
+        observed=rpc('service-routes')
+    except (ValueError,RuntimeError) as error:
+        if intent:status.fail('deviceconfig/system/route/service','pa5200',str(error))
+        return
+    try:
+        if observed['config'].get('routes')!=intent or observed['config'].get('configuration')!=configuration_revision:
+            rpc('service-routes','apply',dict(revision=observed['config']['revision'],routes=intent,configuration=configuration_revision))
+            observed=rpc('service-routes')
+        if observed['config'].get('routes')!=intent:raise ValueError('DP service-route readback mismatch')
+        for service,spec in sorted(intent.items()):
+            status.ok('deviceconfig/system/route/service/'+service,None,spec,'pa5200','Service route intent read back on DP through MP daemon')
+    except (ValueError,RuntimeError,KeyError,TypeError) as error:
+        status.fail('deviceconfig/system/route/service','pa5200',str(error))
 
 
 def reconcile_protect(root,status,configuration_revision,rpc=None):

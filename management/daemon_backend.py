@@ -8,7 +8,7 @@ from pathlib import Path
 from hardware_backend import Controller, COMMANDS, HTTPException
 
 FIELDS={'phy':{'revision','phy','speed'},'bcm':{'revision','operation','acknowledge_link_outage'},'network':{'revision','ports','routes','vrfs','rules'},
-        'fe100-policy':{'revision','digest'},'dhcp':{'revision','servers','configuration'},'protect':{'revision','protect','configuration'},'lldp':{'revision','lldp','configuration'},
+        'fe100-policy':{'revision','digest'},'dhcp':{'revision','servers','configuration'},'protect':{'revision','protect','configuration'},'lldp':{'revision','lldp','configuration'},'service-routes':{'revision','routes','configuration'},
         'overlay':{'revision','links'},'inspection':{'revision','mode','ports','literal','detectors'},
         'faceplate':{'revision','port','enabled','speed','restart_autoneg','restore_pair_map'},'thermal':{'revision','operation'}}
 
@@ -56,6 +56,70 @@ async def execute(resource, action, payload, backend=None):
             raise ValueError('LACP backend is not qualified')
         if action=='validate': return {'validated':True}
         return await backend.run('lacp',operation,data)
+    if resource=='service-routes':
+        # Two halves: the dataplane installer (relayed) and the MP's own policy-routing rules.
+        import sys as _sys
+        _sys.path[:0]=['/opt/ffn-ngfw-v2','/opt/ffn-ngfw']
+        import ffn_service_routes as _routes
+        if action=='status':
+            if payload: raise ValueError('status takes no payload')
+            observed=await backend.run('service-routes','status')
+            try: observed['mp']=_routes.mp_status()
+            except Exception: observed['mp']=None
+            return observed
+        if action not in ('apply','validate') or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
+        if action=='validate': return await backend.run('service-routes','validate',payload)
+        observed=await backend.run('service-routes','apply',payload)
+        observed['mp']=_routes.mp_apply(_routes.validate_intent(dict(routes=observed['config'].get('routes',{}))))
+        return observed
+    if resource=='service-routes':
+        # Two halves: the dataplane installer (relayed) and the MP's own policy-routing rules.
+        import sys as _sys
+        _sys.path[:0]=['/opt/ffn-ngfw-v2','/opt/ffn-ngfw']
+        import ffn_service_routes as _routes
+        if action=='status':
+            if payload: raise ValueError('status takes no payload')
+            observed=await backend.run('service-routes','status')
+            try: observed['mp']=_routes.mp_status()
+            except Exception: observed['mp']=None
+            return observed
+        if action not in ('apply','validate') or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
+        if action=='validate': return await backend.run('service-routes','validate',payload)
+        observed=await backend.run('service-routes','apply',payload)
+        observed['mp']=_routes.mp_apply(_routes.validate_intent(dict(routes=observed['config'].get('routes',{}))))
+        return observed
+    if resource=='service-routes':
+        # Two halves: the dataplane installer (relayed) and the MP's own policy-routing rules.
+        import sys as _sys
+        _sys.path[:0]=['/opt/ffn-ngfw-v2','/opt/ffn-ngfw']
+        import ffn_service_routes as _routes
+        if action=='status':
+            if payload: raise ValueError('status takes no payload')
+            observed=await backend.run('service-routes','status')
+            try: observed['mp']=_routes.mp_status()
+            except Exception: observed['mp']=None
+            return observed
+        if action not in ('apply','validate') or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
+        if action=='validate': return await backend.run('service-routes','validate',payload)
+        observed=await backend.run('service-routes','apply',payload)
+        observed['mp']=_routes.mp_apply(_routes.validate_intent(dict(routes=observed['config'].get('routes',{}))))
+        return observed
+    if resource=='service-routes':
+        # Two halves: the dataplane installer (relayed) and the MP's own policy-routing rules.
+        import sys as _sys
+        _sys.path[:0]=['/opt/ffn-ngfw-v2','/opt/ffn-ngfw']
+        import ffn_service_routes as _routes
+        if action=='status':
+            if payload: raise ValueError('status takes no payload')
+            observed=await backend.run('service-routes','status')
+            try: observed['mp']=_routes.mp_status()
+            except Exception: observed['mp']=None
+            return observed
+        if action not in ('apply','validate') or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
+        if action=='validate': return await backend.run('service-routes','validate',payload)
+        observed=await backend.run('service-routes','apply',payload)
+        observed['mp']=_routes.mp_apply(_routes.validate_intent(dict(routes=observed['config'].get('routes',{}))))
+        return observed
     if action in ('apply','validate'):
         if resource not in FIELDS or set(payload)-FIELDS[resource]: raise ValueError('unsupported fields')
         if type(payload.get('revision')) is not int or payload['revision']<0: raise ValueError('revision required')
