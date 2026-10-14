@@ -152,6 +152,18 @@ class BuildInputTests(unittest.TestCase):
             policy.debian_root(self.root, 'cp')
         policy.debian_root(self.root, 'dp')
 
+    def test_recommended_packages_are_reported_not_required(self):
+        # The fake root carries only the required set; the diagnostics the mips64 port has not
+        # built (tcpdump, socat, iperf3, iputils) are recommended: reported, never fatal.
+        debian_metadata(self.root)
+        record = policy.debian_root(self.root, 'dp')
+        self.assertIn('tcpdump', record['missing_recommended']); self.assertIn('socat', record['missing_recommended'])
+        self.assertEqual(policy.debian_root(self.root, 'cp')['missing_recommended'], [])
+        status = self.root / 'var/lib/dpkg/status'
+        status.write_text(status.read_text().replace('Package: traceroute', 'Package: removed-traceroute'))
+        with self.assertRaisesRegex(ValueError, 'traceroute'):
+            policy.debian_root(self.root, 'dp')
+
     def test_pinned_seed_tampering(self):
         p = self.root / 'seed'
         p.write_bytes(b'clean')

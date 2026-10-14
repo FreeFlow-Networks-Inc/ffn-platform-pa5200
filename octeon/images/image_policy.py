@@ -1,5 +1,6 @@
 """PA-5200 release input checks. Never execute target files or source os-release."""
 import json
+import sys
 from pathlib import Path, PurePosixPath
 import re
 import shlex
@@ -86,6 +87,13 @@ def debian_root(root, role=None):
         missing = sorted(set(requirements['common'] + requirements[role]) - set(installed))
         if missing:
             raise ValueError('Missing configured ' + role + ' runtime packages: ' + ', '.join(missing))
+        # Diagnostics the mips64 port has not built yet (tcpdump, socat, iperf3, iputils) are
+        # recommended: their absence is recorded in the image metadata, not a build failure,
+        # because no runtime unit depends on them. Required tools above still fail the build.
+        recommended = requirements.get('recommended', {}).get(role, [])
+        missing_recommended = sorted(set(recommended) - set(installed))
+        if missing_recommended:
+            print('warning: ' + role + ' image lacks recommended packages: ' + ', '.join(missing_recommended), file=sys.stderr)
     owned = set()
     infodir = root_path(root, 'var/lib/dpkg/info')
     for p in infodir.glob('*.list'):
@@ -101,7 +109,8 @@ def debian_root(root, role=None):
         if any(p.glob('ld-musl*')):
             raise ValueError('OpenWrt/musl loader is not a Debian glibc plane input')
     return {'distribution': 'debian', 'suite': info.get('VERSION_CODENAME', ''),
-            'architecture': 'mips64', 'libc': 'glibc', 'package_count': len(installed)}
+            'architecture': 'mips64', 'libc': 'glibc', 'package_count': len(installed),
+            'missing_recommended': missing_recommended if role is not None else []}
 
 
 def kernel(tree):
