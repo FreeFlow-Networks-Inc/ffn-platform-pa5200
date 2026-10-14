@@ -258,10 +258,17 @@ static struct ffn_json *mgmt_json(const struct lldp_mgmt_address *m)
     struct ffn_json *o = ffn_json_object();
     char text[64] = "";
     if (m->family == 1 && m->length == 4) snprintf(text, sizeof text, "%u.%u.%u.%u", m->address[0], m->address[1], m->address[2], m->address[3]);
-    else if (m->family == 2 && m->length == 16) {
+    else {
+        /* hex, bounded by construction: an IPv6 address is 39 characters, anything else stops before the buffer ends */
+        static const char HEX[] = "0123456789abcdef";
+        bool ipv6 = m->family == 2 && m->length == 16;
         size_t n = 0;
-        for (int i = 0; i < 16; i += 2) n += (size_t)snprintf(text + n, sizeof text - n, "%s%02x%02x", i ? ":" : "", m->address[i], m->address[i + 1]);
-    } else { size_t n = 0; for (unsigned i = 0; i < m->length && n + 3 < sizeof text; i++) n += (size_t)snprintf(text + n, sizeof text - n, "%02x", m->address[i]); }
+        for (unsigned i = 0; i < m->length && n + 3 < sizeof text; i++) {
+            if (ipv6 && i && !(i & 1)) text[n++] = ':';
+            text[n++] = HEX[m->address[i] >> 4]; text[n++] = HEX[m->address[i] & 15];
+        }
+        text[n] = 0;
+    }
     ffn_json_set(o, "family", ffn_json_string(m->family == 1 ? "ipv4" : m->family == 2 ? "ipv6" : m->family == 6 ? "mac" : "other"));
     ffn_json_set(o, "address", ffn_json_string(text));
     ffn_json_set(o, "interface_number", ffn_json_int(m->interface_number));

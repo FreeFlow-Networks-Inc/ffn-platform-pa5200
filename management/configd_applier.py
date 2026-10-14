@@ -352,9 +352,12 @@ def reconcile_lldp(root,status,configuration_revision,rpc=None,chassis_id=None):
     rpc=rpc or globals()['rpc']
     try:
         if chassis_id is None:
-            import mp_interfaces
-            inventory=mp_interfaces.inventory();rows=inventory['ports'] if isinstance(inventory,dict) else inventory
-            chassis_id=next((p.get('mac') for p in rows if p.get('name')=='MGT'),None) or '00:00:00:00:00:00'
+            try:
+                import mp_interfaces
+                inventory=mp_interfaces.inventory();rows=inventory['ports'] if isinstance(inventory,dict) else inventory
+                chassis_id=next((p.get('mac') for p in rows if p.get('name')=='MGT'),None)
+            except (ImportError,OSError,ValueError,RuntimeError,KeyError,TypeError):chassis_id=None   # no MP inventory here: the MGT MAC is unknown
+            chassis_id=chassis_id or '00:00:00:00:00:00'
         intent=compile_lldp_intent(root,chassis_id)
     except (ValueError,OSError,RuntimeError,KeyError) as error:
         status.fail('network/lldp','pa5200',str(error));return
