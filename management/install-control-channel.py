@@ -53,6 +53,13 @@ def main():
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
     worker['commands']['front-traffic']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'front-traffic','status']}
+    # Device > Setup > Interfaces reads and applies the MP's own ports through the controller
+    # (CONSOLE-HARDWARE.md); without this entry the card reports the controller unavailable.
+    worker['commands']['mp-interfaces']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'mp_interfaces.py'),a] for a in ('status','apply')}
+    # A physical-ports lookup is two ssh hops (CP, then DP through the CP) and an attach four or
+    # more, each bounded at 45 s in the backend; the daemon's 20 s read / 90 s apply defaults are
+    # too tight under replay load. Declared here, checked by the daemon's timeouts() ladder.
+    worker.setdefault('timeouts',{})['physical-ports']={a:(100 if a=='apply' else 60) for a in ('status','lookup','validate','apply')}
     worker['commands']['route-links']={'refresh':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'route-links','refresh']}
     worker['commands']['plane-images']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_images.py'),a]
                                        for a in ('status','validate','apply')}
