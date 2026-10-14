@@ -238,4 +238,25 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual({e[0] for e in status.errors},{'ethernet1/21','ae1'})
         self.assertTrue(all(c[2]['port']==5 for c in calls if c[:2]==('faceplate','apply')))
 
+class LinkSpeedDecisionTests(unittest.TestCase):
+    """The committed link-speed is re-applied when the copper advertisement drifts from it."""
+    def test_copper_auto_must_advertise_every_supported_rate(self):
+        row={'media':'copper','configured_speed':'auto','supported_speeds':[100,1000,10000],'advertised_speeds':[1000,10000]}
+        self.assertTrue(configd_applier.link_speed_change_required(row,'auto'))
+        row['advertised_speeds']=[100,1000,10000]
+        self.assertFalse(configd_applier.link_speed_change_required(row,'auto'))
+
+    def test_copper_fixed_rate_matches_a_single_advertisement(self):
+        row={'media':'copper','configured_speed':'1000','supported_speeds':[100,1000,10000],'advertised_speeds':[1000]}
+        self.assertFalse(configd_applier.link_speed_change_required(row,'1000'))
+        row['advertised_speeds']=[100,1000]
+        self.assertTrue(configd_applier.link_speed_change_required(row,'1000'))
+        self.assertTrue(configd_applier.link_speed_change_required(row,'auto'))
+
+    def test_sfp_ports_compare_the_configured_speed_only(self):
+        row={'media':'sfp','configured_speed':'1000','supported_speeds':[1000,10000]}
+        self.assertFalse(configd_applier.link_speed_change_required(row,'1000'))
+        self.assertTrue(configd_applier.link_speed_change_required(row,'10000'))
+
+
 if __name__=='__main__': unittest.main()

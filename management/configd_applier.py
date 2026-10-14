@@ -26,6 +26,21 @@ def rpc(resource, action='status', payload=None):
     return response['result']
 
 
+def link_speed_change_required(observed,speed):
+    """Does the committed link-speed need a faceplate apply for this port?
+
+    SFP ports expose one configured speed. A copper PHY reports 'auto' whenever
+    autonegotiation advertises more than one rate, so a template 'auto' and a
+    PHY advertising only 1000/10000 looked identical and the 100BASE-TX rate was
+    never restored: a 100 Mb/s partner could not link. Compare the advertised
+    set for copper; 'auto' means every supported rate."""
+    if observed.get('configured_speed')!=speed:return True
+    if observed.get('media')!='copper':return False
+    supported=set(observed.get('supported_speeds') or [])
+    expected=supported if speed=='auto' else {int(speed)}
+    return set(observed.get('advertised_speeds') or [])!=expected
+
+
 def validate_physical_options(entry):
     """Accept explicit off defaults without claiming an unsupported feature."""
     allowed={'comment','link-state','link-speed','link-duplex','layer3','lldp'}
@@ -194,7 +209,7 @@ class PlatformApplier:
             if l3 is not None and (entry.find('link-speed') is not None or observed.get('speed_configuration')):
                 if not observed.get('speed_configuration') or speed not in ['auto']+[str(v) for v in observed.get('supported_speeds',[])]:
                     status.fail(name+'/link-speed','pa5200','Requested speed is unavailable');continue
-                if observed.get('configured_speed')!=speed:
+                if link_speed_change_required(observed,speed):
                     faceplate=self.faceplate_apply(faceplate,port,{'speed':speed})
                 status.ok(name+'/link-speed',None,speed,'pa5200','SDK link setting read back through MP daemon')
             if observed['enabled']!=enabled:
