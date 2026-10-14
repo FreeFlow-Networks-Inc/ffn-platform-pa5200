@@ -14,6 +14,9 @@ from session_stream import Lines,Receiver,send,local_identity,acknowledgement
 REPORT=Path('/run/ffn-fe100-session-relay.json')
 KEY='/run/credentials/ffn-fe100-session-feed.service/plane-agent-key'
 CONFIG=Path('/var/lib/ffn-ngfw/config/running-config.xml')
+# Seconds the DP's emission timeline may run ahead of relay receipt: a snapshot is buffered by the ssh
+# channel in one burst and acknowledged per message through the CP, so the lag scales with session count.
+STREAM_BACKLOG=90
 
 
 def verify_configuration(path,digest):
@@ -41,7 +44,7 @@ def publish(state,path=REPORT):
 
 
 def relay(nonce,read_dp,write_cp,read_cp,save=publish):
-    receiver=Receiver(nonce)
+    receiver=Receiver(nonce,backlog=STREAM_BACKLOG)
     try:
         save(receiver.status())
         while True:

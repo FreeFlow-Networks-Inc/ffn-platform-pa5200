@@ -70,6 +70,27 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.receiver.accept(message(5,'heartbeat',{}))
         self.assertFalse(self.receiver.ready)
 
+    def test_backlog_budget_is_separate_from_the_silence_budget(self):
+        """A producer whose snapshot was buffered in one burst may run ahead of receipt by the backlog
+        budget while silence between messages is still bounded by the shorter timeout."""
+        self.receiver=protocol.Receiver(NONCE,clock=lambda:self.now,backlog=90)
+        self.receiver.accept(message(1,'begin',POLICY));self.synchronized()
+        self.now=9;self.receiver.accept(message(4,'heartbeat',{}))
+        self.now=12;self.receiver.accept(message(5,'heartbeat',{}))   # 12 s behind the producer: within 90
+        self.assertTrue(self.receiver.ready)
+        self.now=23
+        with self.assertRaises(TimeoutError):self.receiver.tick()    # 11 s of silence still expires
+        self.now=1;self.receiver=protocol.Receiver(NONCE,clock=lambda:self.now,backlog=90)
+        self.receiver.accept(message(1,'begin',POLICY));self.synchronized()
+        self.now=9;self.receiver.accept(message(4,'heartbeat',{}))
+        self.now=18;self.receiver.accept(message(5,'heartbeat',{}));self.now=27
+        self.receiver.accept(message(6,'heartbeat',{}));self.now=36;self.receiver.accept(message(7,'heartbeat',{}))
+        for seq,now in ((8,45),(9,54),(10,63),(11,72),(12,81),(13,90)):
+            self.now=now;self.receiver.accept(message(seq,'heartbeat',{}))
+        self.now=99
+        with self.assertRaises(ValueError):self.receiver.accept(message(14,'heartbeat',{}))   # 99 s behind: over 90
+        self.assertFalse(self.receiver.ready)
+
     def test_new_snapshot_clears_prior_inventory_and_changed_nat(self):
         self.synchronized()
         self.receiver.accept(message(1,'begin',POLICY | {'nat_digest':'d'*64},
