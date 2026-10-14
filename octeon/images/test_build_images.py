@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -72,9 +74,17 @@ class BuildInputTests(unittest.TestCase):
         complete = base + ''.join('CONFIG_' + n + '=y\n' for n in b.DP_POLICY_BUILTINS)
         complete += ''.join('CONFIG_' + n + '=m\n' for n in b.DP_POLICY_MODULES)
         complete += 'CONFIG_HIGH_RES_TIMERS=y\n'
+        complete += ''.join('CONFIG_' + n + '=y\n' for n in b.DP_ROOT_IMAGE_BUILTINS)
         b.check_kernel_config(complete, 'dp')
         with self.assertRaisesRegex(ValueError, 'DP timing'):
             b.check_kernel_config(complete.replace('CONFIG_HIGH_RES_TIMERS=y\n', ''), 'dp')
+        # The RAM root is mounted by an initramfs with no modules: every piece
+        # of it must be built in, and a modular squashfs is not good enough.
+        for name in b.DP_ROOT_IMAGE_BUILTINS:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'RAM-root'):
+                b.check_kernel_config(complete.replace('CONFIG_' + name + '=y\n', ''), 'dp')
+            with self.subTest(name=name + '=m'), self.assertRaisesRegex(ValueError, 'RAM-root'):
+                b.check_kernel_config(complete.replace('CONFIG_' + name + '=y\n', 'CONFIG_' + name + '=m\n'), 'dp')
         for name in b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'DP policy'):
                 b.check_kernel_config('\n'.join(line for line in complete.splitlines()
@@ -316,7 +326,8 @@ class BuildInputTests(unittest.TestCase):
         config = self.root / 'config'
         config.write_text(''.join('CONFIG_'+s+'=y\n' for s in
                                  ('64BIT', 'CPU_BIG_ENDIAN', 'CAVIUM_OCTEON_SOC', 'CGROUPS', 'DEVTMPFS',
-                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM', 'HIGH_RES_TIMERS') + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES))
+                                  'I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM', 'HIGH_RES_TIMERS')
+                                 + b.DP_POLICY_BUILTINS + b.DP_POLICY_MODULES + b.DP_ROOT_IMAGE_BUILTINS))
         def pin(p):
             return dict(path=str(p), sha256=b.sha(p))
         inputs = dict(kernel_repository=str(platform), kernel_commit='c'*40,
@@ -331,10 +342,16 @@ class BuildInputTests(unittest.TestCase):
                     data = b'VERSION = 6\nPATCHLEVEL = 18\nSUBLEVEL = 49\n'
                     member = tarfile.TarInfo('Makefile'); member.size = len(data)
                     tar.addfile(member, io.BytesIO(data))
+        squashed = []
         def compiler(args, **kw):
             args = list(map(str, args))
             if args[0].endswith('strip'):
                 shutil.copyfile(args[-1], args[2])
+            if args[0] == 'mksquashfs':
+                # Simulated like the compiler: the real tool is exercised by
+                # test_squash_root_preserves_service_ownership below.
+                squashed.append(args)
+                Path(args[2]).write_bytes(b'hsqs' + b'\0' * 60)
             if args[0] == 'make':
                 tree = Path(args[2])
                 (tree / 'include/config').mkdir(parents=True, exist_ok=True)
@@ -353,11 +370,26 @@ class BuildInputTests(unittest.TestCase):
             self.assertEqual([c.args[3] for c in hardware.call_args_list], ['cp', 'dp'])
         manifest = json.loads((out / 'manifest.json').read_text())
         self.assertEqual({a['role'] for a in manifest['assets']}, {'cp', 'dp'})
+        # Only the DP gets a RAM-root image, packed from the audited tree with
+        # the seed's service-account ownership carried as pseudo definitions.
+        self.assertEqual(len(squashed), 1)
+        self.assertEqual(squashed[0][1].rstrip('/').endswith('dp/rootfs'), True)
+        self.assertIn('-pf', squashed[0]); self.assertIn('xz', squashed[0]); self.assertNotIn('-all-root', squashed[0])
+        self.assertEqual(manifest['build']['dp']['root_image']['name'], 'rootfs.squashfs')
+        self.assertEqual(manifest['build']['dp']['root_image']['size'], 64)
+        self.assertNotIn('root_image', manifest['build']['cp'])
         for asset in manifest['assets']:
             self.assertEqual(b.sha(out / asset['name']), asset['sha256'])
             with tarfile.open(out / asset['name']) as tar:
                 names = tar.getnames()
                 self.assertIn('vmlinux', names)
+                self.assertEqual('rootfs.squashfs' in names, asset['role'] == 'dp')
+                if asset['role'] == 'dp':
+                    self.assertEqual(tar.getmember('rootfs.squashfs').uid, 0)
+                    image = tar.extractfile('rootfs.squashfs').read()
+                    details = json.loads(tar.extractfile('image.json').read())
+                    self.assertEqual(details['root_image']['sha256'], hashlib.sha256(image).hexdigest())
+                    self.assertEqual(details['root_image']['size'], len(image))
                 self.assertIn('rootfs/usr/local/sbin/'+asset['role']+'.py', names)
                 self.assertIn('rootfs/lib/modules/6.18-test', names)
                 self.assertEqual(tar.getmember('rootfs/usr/bin/python3').uid, 1234)
@@ -366,6 +398,35 @@ class BuildInputTests(unittest.TestCase):
                     timer=tar.getmember('rootfs/etc/systemd/system/timers.target.wants/ffn-fe100-recovery.timer')
                     self.assertTrue(timer.issym())
                     self.assertEqual(timer.linkname,'../ffn-fe100-recovery.timer')
+
+
+    @unittest.skipUnless(shutil.which('mksquashfs') and shutil.which('unsquashfs'), 'squashfs-tools not installed')
+    def test_squash_root_preserves_service_ownership(self):
+        root = self.root / 'tree'
+        for name in ('usr/bin/python3', 'var/lib/service/state', 'etc/plain'):
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(b'x')
+        (root / 'var/lib/service/state').chmod(0o640)
+        (root / 'usr/bin/link').symlink_to('python3')
+        owners = {'usr/bin/python3': (0, 0), 'var/lib/service': (105, 108), 'var/lib/service/state': (105, 108),
+                  'usr/bin/link': (105, 108), 'gone/file': (7, 7)}
+        details = b.squash_root(root, owners, self.root / 'tree.squashfs')
+        self.assertEqual(details['sha256'], b.sha(self.root / 'tree.squashfs'))
+        self.assertEqual(details['size'], (self.root / 'tree.squashfs').stat().st_size)
+        self.assertFalse((self.root / 'tree.pseudo').exists())
+        listing = subprocess.check_output(['unsquashfs', '-lln', '-d', '', self.root / 'tree.squashfs'], text=True)
+        # -lln prints "mode uid/gid size date time path"; symlinks end "path -> target".
+        rows = {}
+        for line in listing.splitlines():
+            fields = line.split()
+            if fields and fields[0][0] in '-dl':
+                rows[fields[-3] if '->' in fields else fields[-1]] = fields
+        self.assertEqual(rows['/var/lib/service/state'][1], '105/108')
+        self.assertEqual(rows['/var/lib/service/state'][0], '-rw-r-----')
+        self.assertEqual(rows['/var/lib/service'][1], '105/108')
+        self.assertEqual(rows['/usr/bin/python3'][1], '0/0')
+        self.assertEqual(rows['/etc/plain'][1], '0/0')
+        self.assertEqual(rows['/usr/bin/link'][0][0], 'l')
 
 
 if __name__ == '__main__':

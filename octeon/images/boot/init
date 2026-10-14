@@ -1,6 +1,9 @@
 #!/bin/busybox sh
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Role is part of the image. The MP supplies ffn.nfsroot=IPv4:/export at boot.
+# Role is part of the image. The boot owner supplies ONE root on the kernel
+# command line: ffn.nfsroot=IPv4:/export (CP, or a DP rooted over NFS), or
+# ffn.rootfs=NAME for a DP whose root the CP staged into DP DRAM behind a
+# phram device of that name. Nothing here contacts a server for a RAM root.
 export PATH=/bin:/sbin
 [ "$$" = 1 ] || exit 2
 BB=/bin/busybox
@@ -28,23 +31,78 @@ case "$role" in
     *) fallback 'invalid image role' ;;
 esac
 root=
+image=
 set -f
 for arg in $($BB cat /proc/cmdline); do
     case "$arg" in
         ffn.nfsroot=*) [ -z "$root" ] || fallback 'duplicate NFS root'; root=${arg#ffn.nfsroot=} ;;
+        ffn.rootfs=*) [ -z "$image" ] || fallback 'duplicate RAM root'; image=${arg#ffn.rootfs=} ;;
     esac
 done
 set +f
-echo "$root" | $BB grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/[A-Za-z0-9_./-]+$' || fallback 'MP must supply a valid NFS root'
-server=${root%%:*}; export_path=${root#*:}
-case "$export_path/" in */../*|*/./*|*//*) fallback 'unsafe export path' ;; esac
+[ -z "$root" ] || [ -z "$image" ] || fallback 'both an NFS root and a RAM root were supplied'
 $BB mkdir -p /newroot
-i=0
-until $BB ping -c1 -W1 "$server" >/dev/null 2>&1; do
-    i=$((i+1)); [ "$i" -lt 60 ] || fallback 'root server unreachable'
-    $BB sleep 1
-done
-/sbin/ffn_nfsmount "$root" /newroot "nolock,vers=3,addr=$server,proto=tcp,mountproto=tcp,hard" || fallback 'NFS mount failed'
+sha() { $BB sha256sum | $BB cut -d' ' -f1; }
+if [ -n "$image" ]; then
+    # STAGED RAM ROOT. The CP loaded, while u-boot was still up, a 1 MiB
+    # header region followed by the squashfs image and an optional
+    # provisioning tar, and reserved the whole range from the allocator
+    # (ffn_reserve=) and exposed it as a phram device (phram.phram=). The
+    # header names the sizes and SHA-256 of what follows; nothing is mounted
+    # until the bytes in DRAM match it, because a short or corrupt PCIe
+    # transfer must end in the recovery console, not in a half-booted DP.
+    [ "$role" = dp ] || fallback 'a RAM root is a DP boot'
+    echo "$image" | $BB grep -Eq '^[a-z][a-z0-9]{0,15}$' || fallback 'invalid RAM root name'
+    dev=
+    for entry in /sys/class/mtd/mtd[0-9] /sys/class/mtd/mtd[0-9][0-9]; do
+        [ -f "$entry/name" ] || continue
+        [ "$($BB cat "$entry/name")" = "$image" ] || continue
+        dev=/dev/mtdblock${entry##*/mtd}
+    done
+    [ -n "$dev" ] && [ -b "$dev" ] || fallback "staged RAM root device $image missing"
+    set -- $($BB head -c 4096 "$dev" | $BB tr -d '\0' | $BB head -n 1)
+    [ "${1:-}" = FFN-ROOTFS ] && [ "${2:-}" = 1 ] && [ $# -ge 4 ] || fallback 'staged RAM root header invalid'
+    bytes=$3; digest=$4; pbytes=${5:-0}; pdigest=${6:-}
+    echo "$bytes $pbytes" | $BB grep -Eq '^[1-9][0-9]* [0-9]+$' || fallback 'staged RAM root sizes invalid'
+    echo "$digest$pdigest" | $BB grep -Eq '^([0-9a-f]{64}){1,2}$' || fallback 'staged RAM root digests invalid'
+    # Regions are 1 MiB aligned: header at 0, image at 1 MiB, provisioning
+    # after the image rounded up to the next MiB. Mirrors native_plane_boot.py.
+    image_mib=1
+    provision_mib=$(( 1 + (bytes + 1048575) / 1048576 ))
+    actual=$($BB dd if="$dev" bs=1M skip=$image_mib 2>/dev/null | $BB head -c "$bytes" | sha)
+    [ "$actual" = "$digest" ] || fallback 'staged RAM root digest mismatch'
+    $BB mkdir -p /mnt/lower /mnt/state
+    $BB losetup -r -o $(( image_mib * 1048576 )) /dev/loop0 "$dev" || fallback 'RAM root loop setup failed'
+    $BB mount -t squashfs -o ro /dev/loop0 /mnt/lower || fallback 'RAM root squashfs mount failed'
+    $BB mount -t tmpfs -o mode=755 tmpfs /mnt/state || fallback 'RAM root state mount failed'
+    $BB mkdir -p /mnt/state/upper /mnt/state/work
+    $BB mount -t overlay -o lowerdir=/mnt/lower,upperdir=/mnt/state/upper,workdir=/mnt/state/work overlay /newroot \
+        || fallback 'RAM root overlay mount failed'
+    if [ "$pbytes" -gt 0 ]; then
+        # Identity the image must not carry: SSH host keys, machine-id, plane
+        # credentials. A plain tar of root-relative paths, extracted into the
+        # writable layer only after its own digest matches.
+        [ -n "$pdigest" ] || fallback 'provisioning digest missing'
+        actual=$($BB dd if="$dev" bs=1M skip=$provision_mib 2>/dev/null | $BB head -c "$pbytes" | sha)
+        [ "$actual" = "$pdigest" ] || fallback 'provisioning digest mismatch'
+        if $BB dd if="$dev" bs=1M skip=$provision_mib 2>/dev/null | $BB head -c "$pbytes" | $BB tar -tf - \
+                | $BB grep -Eq '^/|(^|/)\.\.(/|$)'; then
+            fallback 'provisioning archive has unsafe paths'
+        fi
+        $BB dd if="$dev" bs=1M skip=$provision_mib 2>/dev/null | $BB head -c "$pbytes" | $BB tar -xf - -C /newroot \
+            || fallback 'provisioning extract failed'
+    fi
+else
+    echo "$root" | $BB grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/[A-Za-z0-9_./-]+$' || fallback 'MP must supply a valid NFS or RAM root'
+    server=${root%%:*}; export_path=${root#*:}
+    case "$export_path/" in */../*|*/./*|*//*) fallback 'unsafe export path' ;; esac
+    i=0
+    until $BB ping -c1 -W1 "$server" >/dev/null 2>&1; do
+        i=$((i+1)); [ "$i" -lt 60 ] || fallback 'root server unreachable'
+        $BB sleep 1
+    done
+    /sbin/ffn_nfsmount "$root" /newroot "nolock,vers=3,addr=$server,proto=tcp,mountproto=tcp,hard" || fallback 'NFS mount failed'
+fi
 $BB grep -Eq '^ID="?debian"?$' /newroot/usr/lib/os-release || fallback 'Debian root required'
 [ "$($BB cat /newroot/etc/ffn-image-role)" = "$role" ] || fallback 'root role mismatch'
 for foreign in /newroot/etc/openwrt_release /newroot/etc/centos-release /newroot/opt/ffn-compat; do

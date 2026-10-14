@@ -1,6 +1,9 @@
 import io
 import json
+from pathlib import Path
 import struct
+import tarfile
+import tempfile
 import unittest
 from contextlib import nullcontext
 from unittest.mock import Mock,patch
@@ -24,6 +27,76 @@ class NativeBootTests(unittest.TestCase):
     def test_profile_boot_command_preserves_selected_options(self):
         cfg={'cores':40,'fdt':'0x80000','extra':'ffn_reserve=0x400000,4M'}
         self.assertEqual(boot.command(cfg),'bootoctlinux 21000000 numcores=40 console=ttyS0,115200n8 ffn_fdt=0x80000 rw ffn_reserve=0x400000,4M')
+
+    def staged(self,image_size=3*boot.MIB+5,provision_size=None):
+        tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup);root=tmp.name
+        image=Path(root)/'rootfs.squashfs';image.write_bytes(b'hsqs'+b'\x5a'*(image_size-4))
+        cfg={'role':'dp','cores':40,'fdt':'0x80000','extra':'mem=30G ffn_reserve=0x400000,4M',
+             'rootfs':{'path':str(image),'sha256':boot.sha(image.read_bytes())}}
+        if provision_size is not None:
+            archive=Path(root)/'provision.tar'
+            with tarfile.open(archive,'w',format=tarfile.USTAR_FORMAT) as tar:
+                info=tarfile.TarInfo('etc/machine-id');info.size=provision_size
+                tar.addfile(info,io.BytesIO(b'm'*provision_size))
+            cfg['provision']={'path':str(archive),'sha256':boot.sha(archive.read_bytes())}
+        return cfg
+
+    def test_rootfs_plan_lays_regions_out_on_mebibyte_boundaries(self):
+        cfg=self.staged()
+        plan=boot.rootfs_plan(cfg)
+        self.assertEqual(plan['image_offset'],boot.MIB)
+        self.assertEqual(plan['provision_offset'],5*boot.MIB)       # 1 MiB header + 4 MiB rounded image
+        self.assertEqual(plan['reserve_mib'],5)
+        self.assertEqual(plan['arguments'],'ffn_reserve=0x28000000,5M phram.phram=dproot,0x28000000,5Mi ffn.rootfs=dproot')
+        self.assertEqual(len(plan['header']),4096)
+        self.assertEqual(plan['header'].rstrip(b'\0'),('FFN-ROOTFS 1 %d %s\n'%(3*boot.MIB+5,cfg['rootfs']['sha256'])).encode())
+        self.assertTrue(boot.command(cfg).endswith(' rw mem=30G ffn_reserve=0x400000,4M '+plan['arguments']))
+        self.assertLessEqual(len(boot.command(cfg).encode()),247)
+        cfg=self.staged(provision_size=100)
+        plan=boot.rootfs_plan(cfg)
+        self.assertEqual(plan['reserve_mib'],6)
+        self.assertEqual(plan['header'].rstrip(b'\0').split(b' ')[4:],[b'10240',cfg['provision']['sha256'].encode()+b'\n'])
+        self.assertIsNone(boot.rootfs_plan({'role':'dp'}))
+        self.assertNotIn('ffn.rootfs',boot.command({'role':'cp','cores':8,'fdt':'','extra':''}))
+
+    def test_rootfs_plan_refuses_wrong_formats(self):
+        cfg=self.staged()
+        Path(cfg['rootfs']['path']).write_bytes(b'not a squashfs image')
+        with self.assertRaisesRegex(ValueError,'squashfs'):boot.rootfs_plan(cfg)
+        cfg=self.staged(provision_size=1)
+        Path(cfg['provision']['path']).write_bytes(b'\0'*600)
+        with self.assertRaisesRegex(ValueError,'plain tar'):boot.rootfs_plan(cfg)
+        cfg=self.staged()
+        cfg['rootfs']['name']='Bad Name'
+        with self.assertRaisesRegex(ValueError,'device name'):boot.rootfs_plan(cfg)
+
+    def test_dp_boot_stages_root_and_provisioning_before_the_kernel(self):
+        cfg=self.staged(provision_size=100)
+        cfg.update(pci='0003:03:00.0',devnum=3,kernel={'path':'/images/vmlinux','sha256':'k'*64,'notes_sha256':'n'*64},
+                   bootloader={'path':'/images/u-boot.bin','sha256':'b'*64},transport={'unit':'transport.service'},
+                   tools={name:{'path':'/native/'+name} for name in ('reset','boot','csr','load','stage')})
+        before={'boot_id':'old','notes_sha256':'n'*64};after={'boot_id':'new','notes_sha256':'n'*64}
+        with tempfile.TemporaryDirectory() as run_dir, \
+                patch.object(boot,'preflight'),patch.object(boot,'exclusive',return_value=nullcontext()), \
+                patch.object(boot,'stop_transport'),patch.object(boot,'start_root_server'),patch.object(boot,'run') as run, \
+                patch.object(boot,'Path',side_effect=lambda p:Path(run_dir)/str(p).lstrip('/') if str(p).startswith(('/sys/','/run/')) else Path(p)), \
+                patch.object(boot.time,'sleep'),patch.object(node,'observe',side_effect=[before,after]):
+            (Path(run_dir)/'sys/bus/pci/devices/0003:03:00.0').mkdir(parents=True)
+            (Path(run_dir)/'run').mkdir()
+            boot.boot(cfg)
+            header=(Path(run_dir)/'run/ffn-dp-rootfs-header').read_bytes()
+        calls=[c.args[0] for c in run.call_args_list]
+        loads=[c for c in calls if c[0]=='/native/load']
+        self.assertEqual(loads,[
+            ['/native/load','--devnum=3','0x28000000',str(Path(run_dir)/'run/ffn-dp-rootfs-header')],
+            ['/native/load','--devnum=3','0x28100000',cfg['rootfs']['path']],
+            ['/native/load','--devnum=3','0x28500000',cfg['provision']['path']],
+            ['/native/load','--devnum=3','0x21000000','/images/vmlinux']])
+        self.assertEqual(len(header),4096)
+        self.assertIn(b'FFN-ROOTFS 1 ',header)
+        dispatch=[c for c in calls if c[0]=='/usr/bin/python3' and c[1]=='/native/stage'][0]
+        self.assertIn('ffn.rootfs=dproot',dispatch[-1]);self.assertIn('ffn_reserve=0x28000000,6M',dispatch[-1])
+        self.assertIn('phram.phram=dproot,0x28000000,6Mi',dispatch[-1])
 
     def report(self,pid1='/init',osline=''):
         return '\nBEGIN-test\n11111111-1111-1111-1111-111111111111\n6.18.49-ffn\n'+'a'*64+'  /sys/kernel/notes\n'+pid1+'\n'+osline+'\nEND-test\n'

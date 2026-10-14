@@ -77,7 +77,7 @@ Linux managed only 512 MB, so they sat outside it:
 | `ffn-dpsh` control mailbox | `0x400000` | 64 KB (`RING_SIZE`) | CP writes, continuously, Linux up | yes |
 | dpnet staging scratch | `0x500000` | 1 MB | CP writes at bring-up | yes |
 | dpnet rings (`FFN_DPNET_DP_PHYS`) | `0x600000` | 2 MB | CP + DP, continuously, Linux up | yes |
-| staged rootfs squashfs | `0x28000000` | ~19 MB | `ffn-dproot` **reads it from userspace**, Linux up | yes |
+| staged rootfs: 4 KiB header, squashfs at +1 MiB, optional provisioning tar | `0x28000000` | image size, MiB-rounded | the DP initramfs mounts it in place through `phram`, Linux up (`native_plane_boot.py`); the legacy `ffn-dproot` copied it out of `/dev/mem` | yes |
 | staged kernel image | `0x21000000` | ~11 MB | `bootoctlinux` consumes it in u-boot, **before Linux** | **no** |
 | bootloader mailbox | `0x6C000` | <256 B | u-boot only, **before Linux** | **no** |
 

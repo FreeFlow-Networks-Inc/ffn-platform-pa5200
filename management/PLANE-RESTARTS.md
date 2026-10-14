@@ -61,6 +61,20 @@ profile. The boot executor validates the unit before reset and starts it after
 the DP transport. CP restart restoration starts it again after reconnecting the
 unchanged DP. Do not enable the NFS server before its transport address exists.
 
+For a DP rooted from its own DRAM instead, the profile carries `rootfs`
+(absolute `path` and `sha256` of the image's `rootfs.squashfs`, optional
+`name`, default `dproot`) and optionally `provision` (a plain tar of
+root-relative files the image must not contain: SSH host keys, machine-id,
+plane credentials). The boot executor stages a 4 KiB header, the image at
++1 MiB and the archive after it, all at DP physical `0x28000000`, while u-boot
+is still up and before the kernel is loaded; it then boots with
+`ffn_reserve=`, `phram.phram=` and `ffn.rootfs=` added to the command line.
+The DP initramfs mounts nothing until the bytes in DRAM match the digests in
+the header, then overlays a tmpfs on the read-only squashfs and extracts the
+archive into it. No NFS server is involved and `root_server_unit` is not
+needed. The whole command line must still fit the 247-byte mailbox, which
+preflight checks. A DP software update is a DP reboot with a new profile.
+
 Once the native DP root is active, install and enable `ffn-dp-agent.service` and
 select the native DP SSH stream with `install-control-channel.py`. Pin the
 provisioned DP host key; never disable SSH host verification. Confirm a fresh

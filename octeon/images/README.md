@@ -53,8 +53,13 @@ SSH/machine identity. No existing appliance root is accepted.
 (ffn-octeon-transport .deb), `--base-files` (.deb), `--source-date-epoch` and `--out`.
 It produces a plain newc archive with static Debian/FFN executables and records
 the exact input hashes. The DP starts its recovery mailbox before dpnet; both
-roles retain their transports in RAM through systemd handoff. The MP must supply
-`ffn.nfsroot=SERVER_IPV4:/PROVISIONED_EXPORT` in the kernel command line. There is
+roles retain their transports in RAM through systemd handoff. The boot owner must supply
+one root on the kernel command line: `ffn.nfsroot=SERVER_IPV4:/PROVISIONED_EXPORT`,
+or for the DP `ffn.rootfs=NAME` naming the phram device over the image the CP
+staged into DP DRAM. The DP bundle carries that image as `rootfs.squashfs`
+(xz, seed ownership preserved, digest in `image.json` under `root_image`); its
+kernel must build in squashfs, overlayfs, loop and phram, which the builder
+checks. There is
 no default export, customer address, password or SSH key in either seed.
 The root must match the image role and have locally provisioned SSH identity.
 Missing provisioning keeps the recovery environment available.
