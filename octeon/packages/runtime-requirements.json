@@ -2,12 +2,40 @@
   "schema": 1,
   "architecture": "mips64",
   "common": [
-    "base-files", "libc6", "systemd", "systemd-sysv", "python3",
-    "openssh-server", "iproute2", "kmod", "procps", "busybox",
-    "nfs-common", "ffn-octeon-transport"
+    "base-files",
+    "libc6",
+    "systemd",
+    "systemd-sysv",
+    "python3",
+    "openssh-server",
+    "iproute2",
+    "kmod",
+    "procps",
+    "busybox",
+    "nfs-common",
+    "ffn-octeon-transport"
   ],
-  "cp": ["nfs-kernel-server", "rpcbind"],
-  "dp": ["nftables", "conntrack", "conntrackd", "nfct", "ethtool",
-         "tcpdump", "iputils-ping", "iputils-arping", "iputils-tracepath",
-         "traceroute", "iperf3", "socat"]
+  "cp": [
+    "nfs-kernel-server",
+    "rpcbind"
+  ],
+  "dp": [
+    "nftables",
+    "conntrack",
+    "conntrackd",
+    "nfct",
+    "ethtool",
+    "traceroute"
+  ],
+  "recommended": {
+    "cp": [],
+    "dp": [
+      "tcpdump",
+      "iputils-ping",
+      "iputils-arping",
+      "iputils-tracepath",
+      "iperf3",
+      "socat"
+    ]
+  }
 }
