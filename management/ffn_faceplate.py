@@ -58,17 +58,39 @@ def copper_apply(port,request):
         finally:bus.close()
 
 
+SFPCTL='/usr/local/sbin/ffn-sfpctl'
+
+
+def sfpctl(*args):
+    """The native SFP+ cage control (octeon/native/ffn_sfpctl.c): one JSON reply on stdout,
+    {"error": text} with a non-zero status on failure. None when the image has no binary."""
+    import subprocess
+    if not os.access(SFPCTL,os.X_OK):return None
+    done=subprocess.run([SFPCTL,*args],capture_output=True,text=True,timeout=120)
+    try:reply=json.loads(done.stdout)
+    except ValueError:raise RuntimeError('ffn-sfpctl %s: %s'%(args[0],(done.stderr or done.stdout).strip()[:200] or 'no reply'))
+    if done.returncode or (isinstance(reply,dict) and 'error' in reply):
+        raise RuntimeError(reply.get('error') if isinstance(reply,dict) else 'ffn-sfpctl %s failed'%args[0])
+    return reply
+
+
 def sfp_inventory():
+    reply=sfpctl('inventory')
+    if reply is not None:return {int(port):state for port,state in reply.items()}
     import ffn_sfp_control as sfp
     return sfp.inventory()
 
 
 def sfp_apply(port,enabled):
+    reply=sfpctl('set-tx',str(int(port)),'on' if enabled else 'off')
+    if reply is not None:return reply
     import ffn_sfp_control as sfp
     return sfp.set_enabled(port,enabled)
 
 
 def sfp_link_apply(port,speed):
+    reply=sfpctl('link',str(int(port['port'])),str(speed))
+    if reply is not None:return reply['mode'] if isinstance(reply.get('mode'),dict) else False
     import ffn_sfp_control as sfp
     return sfp.configure_fiber(port['port'],port['bcm_port'],speed)
 
@@ -89,9 +111,13 @@ def sfp_module(port,present=True):
         record.unlink(missing_ok=True);return None
     try:return json.loads(record.read_text())
     except (OSError,ValueError):pass
-    import ffn_sfp_control as sfp
-    try:summary=sfp.module_summary(sfp.module_identity(port))
-    except (OSError,ValueError,ImportError):return None   # no reader here: the cage is not observable
+    try:
+        summary=sfpctl('identity',str(int(port)))
+        if summary is None:
+            import ffn_sfp_control as sfp
+            summary=sfp.module_summary(sfp.module_identity(port))
+        else:summary={k:v for k,v in summary.items() if k!='a0'}
+    except (OSError,ValueError,ImportError,RuntimeError):return None   # no reader here: the cage is not observable
     try:
         MODULES.mkdir(mode=0o700,parents=True,exist_ok=True)
         temp=record.with_suffix('.tmp');temp.write_text(json.dumps(summary));temp.replace(record)

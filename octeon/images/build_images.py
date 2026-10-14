@@ -333,6 +333,10 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-portctl'])
         elf(native / 'ffn-portctl')
         safe_install(native / 'ffn-portctl', root, 'usr/local/sbin/ffn-portctl')
+        # The SFP+ cage control: expanders, module pages, link mode, transmit check and insertion watcher.
+        run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-sfpctl'])
+        elf(native / 'ffn-sfpctl')
+        safe_install(native / 'ffn-sfpctl', root, 'usr/local/sbin/ffn-sfpctl')
         artifact = native / 'libffn-fe100-resources.so'
         elf(artifact)
         safe_install(artifact, root, 'usr/local/lib/' + artifact.name)

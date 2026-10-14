@@ -87,4 +87,50 @@ class FaceplateTests(unittest.TestCase):
                 self.assertTrue(json.loads(f.STATE.read_text())['pending'])
                 with self.assertRaises(ValueError): f.apply({'revision':1,'port':1,'enabled':False})
 
+class NativeSfpControlTests(unittest.TestCase):
+    """The faceplate prefers /usr/local/sbin/ffn-sfpctl (octeon/native) and keeps the Python control as the fallback."""
+
+    def run_with(self,reply,returncode=0,stdout=None):
+        calls=[]
+        class Done:
+            def __init__(self,args):self.args=args;self.returncode=returncode;self.stdout=stdout if stdout is not None else json.dumps(reply);self.stderr=''
+        def run(args,**kw):calls.append(args);return Done(args)
+        import subprocess
+        return calls,patch.object(subprocess,'run',side_effect=run),patch.object(f.os,'access',return_value=True)
+
+    def test_inventory_keys_are_ports(self):
+        calls,run,access=self.run_with({'5':dict(present=True,tx_enabled=True,tx_disable=False,control_ready=True)})
+        with run,access:
+            self.assertEqual(f.sfp_inventory(),{5:dict(present=True,tx_enabled=True,tx_disable=False,control_ready=True)})
+        self.assertEqual(calls,[[f.SFPCTL,'inventory']])
+
+    def test_set_tx_and_link_verbs(self):
+        calls,run,access=self.run_with(dict(present=True,tx_enabled=False,tx_disable=True,control_ready=True))
+        with run,access:self.assertFalse(f.sfp_apply(19,False)['tx_enabled'])
+        self.assertEqual(calls[-1],[f.SFPCTL,'set-tx','19','off'])
+        calls,run,access=self.run_with({'mode':{'speed':1000,'autoneg':True,'interface':'BCM_PORT_IF_GMII','link_mode':'1000BASE-X','changed':True,'autoneg_mode_control':-4}})
+        with run,access:self.assertEqual(f.sfp_link_apply({'port':5,'bcm_port':16},'auto')['link_mode'],'1000BASE-X')
+        self.assertEqual(calls[-1],[f.SFPCTL,'link','5','auto'])
+        calls,run,access=self.run_with({'mode':'generic'})
+        with run,access:self.assertIs(f.sfp_link_apply({'port':8,'bcm_port':19},'auto'),False)
+
+    def test_errors_become_runtime_errors(self):
+        calls,run,access=self.run_with({'error':'SFP control lock busy'},returncode=1)
+        with run,access,self.assertRaisesRegex(RuntimeError,'lock busy'):f.sfp_inventory()
+        calls,run,access=self.run_with(None,returncode=1,stdout='')
+        with run,access,self.assertRaises(RuntimeError):f.sfp_apply(5,True)
+
+    def test_module_identity_is_cached_without_the_page(self):
+        calls,run,access=self.run_with({'vendor':'OEM','part':'GLC-LH-SMD','wavelength_nm':1310,'optical':True,'speeds':[1000],'a0':'03'*96})
+        with tempfile.TemporaryDirectory() as tmp,patch.object(f,'MODULES',Path(tmp)),run,access:
+            self.assertEqual(f.sfp_module(5),{'vendor':'OEM','part':'GLC-LH-SMD','wavelength_nm':1310,'optical':True,'speeds':[1000]})
+            self.assertEqual(json.loads((Path(tmp)/'5.json').read_text())['part'],'GLC-LH-SMD')
+            self.assertEqual(f.sfp_module(5)['part'],'GLC-LH-SMD')
+            self.assertIsNone(f.sfp_module(5,present=False))
+        self.assertEqual(calls,[[f.SFPCTL,'identity','5']])
+
+    def test_without_the_binary_the_python_control_runs(self):
+        with patch.object(f.os,'access',return_value=False):
+            self.assertIsNone(f.sfpctl('inventory'))
+
 if __name__=='__main__': unittest.main()

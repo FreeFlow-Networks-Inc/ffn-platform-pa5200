@@ -85,3 +85,13 @@ It does not re-attach a port: that is the committed configuration's apply,
 which the convergence page can replay. It does not read the dataplane's
 frame counters; the attachment journal is the dataplane-side evidence it
 uses. It does not touch copper ports (1-4), which have their own PHY path.
+
+## Native check
+
+Where the CP image carries `/usr/local/sbin/ffn-sfpctl`, `ffn_sfp_check.py
+status` hands over to `ffn-sfpctl check` (same ports and `--no-diagnostics`
+options, same health record) and `ffn-sfp-watch.service` runs
+`ffn-sfpctl watch`. The native check also carries the switch interface name
+in each result's `link.interface`, so the `link-mode-mismatch` verdict is
+judged (the Python faceplate row never carried that field). See
+`octeon/native/ffn_sfp.c` and `test_sfp.c`.

@@ -351,7 +351,12 @@ static void test_json_roundtrip(void)
     assert(!strcmp(d, "{\"a\": [1, -2, true, null, \"x\\n\xc3\xa9\"], \"b\": {\"c\": false}}"));
     free(d); ffn_json_free(v);
     char err[64];
-    assert(!ffn_json_parse("{\"a\": 1.5}", 10, err, sizeof err) && strstr(err, "non-integer"));
+    const char *numbers = "{\"a\": 1.5, \"b\": -2e3, \"c\": 7}";
+    v = ffn_json_parse(numbers, strlen(numbers), err, sizeof err);
+    assert(v); double num; assert(ffn_json_get_number(v, "a", &num) && num == 1.5);
+    assert(ffn_json_get_number(v, "b", &num) && num == -2000.0 && ffn_json_get_number(v, "c", &num) && num == 7.0);
+    d = ffn_json_dump(v); assert(!strcmp(d, "{\"a\": 1.5, \"b\": -2000.0, \"c\": 7}")); free(d); ffn_json_free(v);
+    assert(!ffn_json_parse("{\"a\": 1.}", 9, err, sizeof err) && strstr(err, "digit"));
     assert(!ffn_json_parse("[1,]", 4, err, sizeof err));
     assert(!ffn_json_parse("{} x", 4, err, sizeof err) && strstr(err, "trailing"));
 }

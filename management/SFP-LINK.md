@@ -70,3 +70,17 @@ off, speed 1000 after the generic path, our MAC reported link up (the port
 syncs on the partner's idles) while the partner saw no link: our transmitter
 sent idles but no Clause 37 configuration words. Applying the 1000BASE-X mode
 with Clause 37 is what this change does for that port.
+
+## Native control (ffn-sfpctl)
+
+`octeon/native/ffn_sfp.c` is the C owner of everything above: the PCA9555
+cage controls, the SFF-8472 pages behind the cage multiplexers (eight-byte
+transfers under the bus-1 lock), the link-mode rule, the fiber recipe and
+its readback, the transmit check and the insertion watcher. `ffn-sfpctl`
+(`ffn_sfpctl.c`) exposes it as verbs: `inventory`, `set-tx <port> on|off`,
+`identity <port>`, `diagnostics <port>`, `link <port> <speed>`,
+`relink <port>`, `check` and `watch`. `management/ffn_faceplate.py` runs the
+binary where the CP image carries it and keeps `ffn_sfp_control.py` as the
+fallback; `ffn-sfp-watch.service` and `ffn_sfp_check.py status` do the same.
+`test_sfp.c` runs the whole thing against register and EEPROM pages captured
+from the PA-5220 (port 5, GLC-LH-SMD) and a fake BCM service.
