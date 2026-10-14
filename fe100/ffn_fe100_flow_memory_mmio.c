@@ -58,7 +58,7 @@ int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
             (off == command && (value == 0x02000801 || value == 0x02001001));
         if (!allowed) {
             faults++;
-            if (trace) fprintf(trace,"DENIED DIAGNOSTIC WRITE off=0x%x value=0x%x\n",off,value);
+            trace_line("DENIED DIAGNOSTIC WRITE off=0x%x value=0x%x\n",off,value);
             return 12;
         }
     }
