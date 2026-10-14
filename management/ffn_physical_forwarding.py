@@ -29,7 +29,7 @@ def execute(action,payload):
     if action!='status' and str(uuid.UUID(payload['dp_boot_id']))!=payload['dp_boot_id']:raise ValueError('DP boot identity required')
     path=Path('/etc/ffn/physical-'+str(port)+'.json')
     with Path('/run/ffn-physical-'+str(port)+'.lock').open('a') as lock,FACEPLATE_LOCK.open('a') as face:
-        acquire(lock);acquire(face);current=epoch()
+        acquire(lock);acquire(face,seconds=15);current=epoch()
         state=json.loads(path.read_text()) if path.exists() else {}
         observed=hardware(port,0)
         if action!='status':

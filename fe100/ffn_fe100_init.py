@@ -38,6 +38,11 @@ def plan():
     """The commissioned order; the same sequence the clean rebuild ran."""
     steps = [('block-' + b, ['ffn_fe100_block_init.py', '--block', b, '--apply'] + (['--parser-json'] if b == 'par' else []))
              for b in BLOCKS]
+    # Block initialisation leaves write-1-to-clear error status from before this
+    # boot latched in each pipeline's cr.mode; readiness would then block on
+    # history. Clear it once here, after the blocks and before anything that
+    # could legitimately raise a new fault, so the final readiness read is fresh.
+    steps.append(('pipeline-errors', ['ffn_fe100_pipeline_errors.py', '--clear']))
     steps += [('parser', ['ffn_fe100_parser_apply.py', 'apply']),
               ('tcam-clocks', ['ffn_fe100_clocks.py', '--apply-tcam']),
               ('archive-generation', None),
