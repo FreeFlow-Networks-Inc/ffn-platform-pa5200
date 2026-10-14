@@ -19,6 +19,12 @@ import ffn_session_feed as feed
 from ffn_session_events import subscribe,snapshot,receive,EventGap
 from session_stream import CAPACITY,Lines,canonical_uuid,send
 
+# Seconds a snapshot may take from subscription to 'synchronized': the L3 and conntrack dumps plus one
+# Python assessment per session. 1,801 sessions on the PA-5220 (2026-10-14) took longer than the former 8 s,
+# so every attempt failed and the producer re-dumped the table continuously. The relay allows 90 s of
+# emission lag (session_relay.STREAM_BACKLOG); silence between chunks stays bounded by the relay's 10 s.
+SNAPSHOT_BUDGET=60
+
 
 def policy_context(state,collector,topology=None):
     result=dict(revision=state['revision'],digest=state['digest'],nat_digest=state['nat']['digest'],
@@ -103,7 +109,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     # Subscribe before dumping, then replay interleaved changes. Never label a
     # truncated dump or a lost receive queue as a synchronized snapshot.
     with route_watch() as routes,subscribe() as source:
-        deadline=clock()+8
+        deadline=clock()+SNAPSHOT_BUDGET
         topology=feed.l3.snapshot(deadline)
         rows,changes=snapshot(source,timeout=3,capacity=CAPACITY)
         rows=replay(rows,changes);check_context();recheck()
