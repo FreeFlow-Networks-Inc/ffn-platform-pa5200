@@ -25,6 +25,13 @@ ffn-lldpd: ffn_lldpd.c ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h
 test-lldp: ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h test_lldp.c
 	$(CC) $(CFLAGS) -Wno-unused-function test_lldp.c -o $@
 
+# The CP's SFP+ cage control: expanders, SFF-8472 pages, link mode, transmit check, insertion watcher.
+ffn-sfpctl: ffn_sfpctl.c ffn_sfp.c ffn_sfp.h ffn_bcm_client.c ffn_bcm_client.h ffn_hwio.c ffn_json.c ffn_json.h
+	$(CC) $(CFLAGS) ffn_sfpctl.c ffn_sfp.c ffn_bcm_client.c ffn_hwio.c ffn_json.c -lm -o $@
+
+test-sfp: ffn_sfp.c ffn_sfp.h ffn_json.c ffn_json.h test_sfp.c
+	$(CC) $(CFLAGS) -Wno-unused-function test_sfp.c -lm -o $@
+
 test-protect-tunnel: ffn_protect_tunnel.c test_protect_tunnel.c
 	$(CC) $(CFLAGS) $(PROTECT_CFLAGS) -Wno-deprecated-declarations -Wno-unused-function test_protect_tunnel.c $(PROTECT_LDFLAGS) -o $@
 
@@ -65,7 +72,7 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp
+test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp test-sfp
 	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
@@ -74,6 +81,7 @@ test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt t
 	./test-fe100-stats-health
 	./test-portctl
 	./test-lldp
+	./test-sfp
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py

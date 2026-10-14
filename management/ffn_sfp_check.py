@@ -34,6 +34,7 @@ from pathlib import Path
 
 PORTS = tuple(range(5, 21))
 HEALTH = Path('/run/ffn-sfp-health.json')
+SFPCTL = '/usr/local/sbin/ffn-sfpctl'
 JOURNAL = Path('/etc/ffn')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
 LASER_MIN_DBM = -20.0      # any launched signal sits well above this; below it the laser is off
@@ -207,6 +208,10 @@ def main(argv=None):
     ports = tuple(int(p) for p in args.ports.split(',')) if args.ports else PORTS
     if any(p not in PORTS for p in ports):
         raise SystemExit('ports must be within 5..20')
+    if os.access(SFPCTL, os.X_OK):
+        # The native control owns the check where the image carries it; same verbs, same health record.
+        command = [SFPCTL, 'check'] + (['--ports', ','.join(str(p) for p in ports)] if args.ports else []) + (['--no-diagnostics'] if args.no_diagnostics else [])
+        os.execv(SFPCTL, command)
     results = collect(ports, diagnostics=not args.no_diagnostics)
     print(json.dumps(publish(results)))
     return 0

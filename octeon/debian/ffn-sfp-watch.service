@@ -5,7 +5,8 @@ Wants=ffn-bcmd.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -u /usr/local/sbin/ffn_sfp_watch.py
+# The native watcher (ffn-sfpctl watch) owns the cages where the image carries it; the Python watcher is the fallback.
+ExecStart=/bin/sh -c 'if [ -x /usr/local/sbin/ffn-sfpctl ]; then exec /usr/local/sbin/ffn-sfpctl watch; fi; exec /usr/bin/python3 -u /usr/local/sbin/ffn_sfp_watch.py'
 Restart=always
 RestartSec=5
 Nice=5

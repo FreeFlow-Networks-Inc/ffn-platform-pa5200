@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "ffn_json.h"
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@ static struct ffn_json *node(enum ffn_json_type type)
 struct ffn_json *ffn_json_null(void) { return node(FFN_JSON_NULL); }
 struct ffn_json *ffn_json_bool(bool value) { struct ffn_json *n = node(FFN_JSON_BOOL); if (n) n->boolean = value; return n; }
 struct ffn_json *ffn_json_int(long long value) { struct ffn_json *n = node(FFN_JSON_INT); if (n) n->integer = value; return n; }
+struct ffn_json *ffn_json_number(double value) { struct ffn_json *n = node(FFN_JSON_NUMBER); if (n) n->number = value; return n; }
 struct ffn_json *ffn_json_string(const char *value)
 {
     struct ffn_json *n = node(FFN_JSON_STRING);
@@ -114,6 +116,15 @@ bool ffn_json_get_bool(const struct ffn_json *object, const char *key, bool *out
     *out = v->boolean; return true;
 }
 
+bool ffn_json_get_number(const struct ffn_json *o, const char *key, double *out)
+{
+    const struct ffn_json *v = ffn_json_get(o, key);
+    if (!v) return false;
+    if (v->type == FFN_JSON_INT) { *out = (double)v->integer; return true; }
+    if (v->type == FFN_JSON_NUMBER) { *out = v->number; return true; }
+    return false;
+}
+
 const char *ffn_json_get_string(const struct ffn_json *object, const char *key)
 {
     const struct ffn_json *v = ffn_json_get(object, key);
@@ -128,6 +139,7 @@ struct ffn_json *ffn_json_copy(const struct ffn_json *n)
     case FFN_JSON_NULL: return ffn_json_null();
     case FFN_JSON_BOOL: return ffn_json_bool(n->boolean);
     case FFN_JSON_INT: return ffn_json_int(n->integer);
+    case FFN_JSON_NUMBER: return ffn_json_number(n->number);
     case FFN_JSON_STRING: return ffn_json_string(n->string);
     case FFN_JSON_ARRAY:
         c = ffn_json_array();
@@ -150,6 +162,7 @@ bool ffn_json_equal(const struct ffn_json *a, const struct ffn_json *b)
     case FFN_JSON_NULL: return true;
     case FFN_JSON_BOOL: return a->boolean == b->boolean;
     case FFN_JSON_INT: return a->integer == b->integer;
+    case FFN_JSON_NUMBER: return a->number == b->number;
     case FFN_JSON_STRING: return strcmp(a->string, b->string) == 0;
     case FFN_JSON_ARRAY:
         if (a->count != b->count) return false;
@@ -244,9 +257,28 @@ static struct ffn_json *parse_number(struct cursor *c)
     if (c->p >= c->end || *c->p < '0' || *c->p > '9') { json_fail(c, "digit expected"); return NULL; }
     if (*c->p == '0') c->p++;
     else while (c->p < c->end && *c->p >= '0' && *c->p <= '9') c->p++;
-    if (c->p < c->end && (*c->p == '.' || *c->p == 'e' || *c->p == 'E')) { json_fail(c, "non-integer number"); return NULL; }
+    bool fraction = false;
+    if (c->p < c->end && *c->p == '.') {
+        fraction = true; c->p++;
+        if (c->p >= c->end || *c->p < '0' || *c->p > '9') { json_fail(c, "digit expected"); return NULL; }
+        while (c->p < c->end && *c->p >= '0' && *c->p <= '9') c->p++;
+    }
+    if (c->p < c->end && (*c->p == 'e' || *c->p == 'E')) {
+        fraction = true; c->p++;
+        if (c->p < c->end && (*c->p == '+' || *c->p == '-')) c->p++;
+        if (c->p >= c->end || *c->p < '0' || *c->p > '9') { json_fail(c, "digit expected"); return NULL; }
+        while (c->p < c->end && *c->p >= '0' && *c->p <= '9') c->p++;
+    }
     errno = 0;
     char *stop;
+    if (fraction) {
+        char text[64]; size_t len = (size_t)(c->p - start);
+        if (len >= sizeof text) { json_fail(c, "number too long"); return NULL; }
+        memcpy(text, start, len); text[len] = 0;
+        double d = strtod(text, &stop);
+        if (errno || stop != text + len || !isfinite(d)) { json_fail(c, "number out of range"); return NULL; }
+        return ffn_json_number(d);
+    }
     long long v = strtoll(start, &stop, 10);
     if (errno || stop != c->p) { json_fail(c, "integer out of range"); return NULL; }
     return ffn_json_int(v);
@@ -368,6 +400,10 @@ static void dump(struct buffer *b, const struct ffn_json *n)
     case FFN_JSON_NULL: put(b, "null", 4); break;
     case FFN_JSON_BOOL: if (n->boolean) put(b, "true", 4); else put(b, "false", 5); break;
     case FFN_JSON_INT: snprintf(num, sizeof num, "%lld", n->integer); put(b, num, strlen(num)); break;
+    case FFN_JSON_NUMBER:
+        snprintf(num, sizeof num, "%.6g", n->number);
+        if (!strpbrk(num, ".eE")) { size_t l = strlen(num); if (l + 2 < sizeof num) { num[l] = '.'; num[l + 1] = '0'; num[l + 2] = 0; } }
+        put(b, num, strlen(num)); break;
     case FFN_JSON_STRING: put_string(b, n->string); break;
     case FFN_JSON_ARRAY:
         put(b, "[", 1);
