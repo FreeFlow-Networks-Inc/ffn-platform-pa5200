@@ -37,12 +37,12 @@ static int bcm_port = FFN_BCM_PORT;
 static const char *sysfs = "/sys/bus/i2c/devices";
 static char root[PATH_MAX] = "";
 
+/* root + path, durable for the life of the process (the paths table keeps the pointers). */
 static const char *rooted(const char *path)
 {
-    static char slots[8][PATH_MAX]; static unsigned next;
-    char *out = slots[next++ % 8];
     size_t rl = strlen(root), pl = strlen(path);
-    if (rl + pl >= PATH_MAX) { out[0] = 0; return out; }
+    char *out = malloc(rl + pl + 1);
+    if (!out) { fprintf(stderr, "out of memory\n"); exit(1); }
     memcpy(out, root, rl); memcpy(out + rl, path, pl + 1);
     return out;
 }
