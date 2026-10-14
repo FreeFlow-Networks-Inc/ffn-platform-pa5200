@@ -16,6 +16,9 @@ CHUNK=32768
 INVENTORY_BYTES=32*1024*1024
 
 
+# Emission-to-receipt lag budget shared with the MP relay and the CP stream bridge (session_relay.py).
+STREAM_BACKLOG=90
+
 class Observations:
     def __init__(self,withdraw,clock=time.monotonic,configuration_digest=None):
         self.withdraw,self.clock=withdraw,clock
@@ -33,7 +36,7 @@ class Observations:
             raise ValueError('observation relay nonce cannot be replayed')
         self.fence('new relay requires complete snapshot')
         self.configuration=None
-        self.receiver=Receiver(nonce,clock=self.clock)
+        self.receiver=Receiver(nonce,clock=self.clock,backlog=STREAM_BACKLOG)
         return self.status()
 
     def tick(self):

@@ -10,6 +10,9 @@ import time
 sys.path.insert(0,'/usr/local/lib/ffn')
 from session_stream import Lines,Receiver,send,local_identity,acknowledgement
 
+# The MP relay's budget for the DP emission timeline running ahead of receipt (see session_relay.py).
+STREAM_BACKLOG=90
+
 REPORT=Path('/var/lib/ffn/fe100/session-stream.json')
 
 
@@ -28,7 +31,7 @@ def serve(nonce,read,write,save=publish,bridge_factory=None,configuration=None):
     if bridge_factory is None:
         from ffn_fe100_observations import ObservationClient
         bridge_factory=ObservationClient
-    receiver=Receiver(nonce)
+    receiver=Receiver(nonce,backlog=STREAM_BACKLOG)
     bridge=bridge_factory(nonce)
     receiver.control_owner=getattr(bridge,'owner',None);receiver.owner_acknowledged=False
     try:

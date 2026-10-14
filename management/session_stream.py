@@ -114,8 +114,13 @@ def send(fd,value,timeout=10):
 
 
 class Receiver:
-    def __init__(self,nonce,clock=time.monotonic,timeout=10):
+    def __init__(self,nonce,clock=time.monotonic,timeout=10,backlog=None):
+        # timeout bounds silence between messages; backlog bounds how far the producer's emission
+        # timeline may run ahead of receipt. A whole snapshot enters the ssh channel at once while the
+        # relay acknowledges it one message at a time with a CP round trip each, so the lag grows with
+        # the session count (1,801 sessions took about 25 s on the PA-5220); the default keeps both equal.
         self.nonce=canonical_uuid(nonce);self.clock=clock;self.timeout=timeout
+        self.backlog=timeout if backlog is None else backlog
         self.producer=None;self.policy=None;self.sequence=0;self.sessions={}
         self.ready=False;self.last=None;self.reason='awaiting snapshot';self.messages=0
         self.origin=None;self.remote_origin=None;self.remote_last=None
@@ -175,7 +180,7 @@ class Receiver:
             elif p!=self.producer or seq!=self.sequence+1:
                 raise ValueError('DP stream identity or sequence changed')
             if (emitted<self.remote_last or
-                    abs((now-self.origin)-(emitted-self.remote_origin))>=self.timeout):
+                    abs((now-self.origin)-(emitted-self.remote_origin))>=self.backlog):
                 raise ValueError('DP stream backlog or producer clock changed')
             if op=='snapshot':
                 if self.ready or not isinstance(payload,list) or not 1<=len(payload)<=128:
