@@ -366,6 +366,9 @@ def reconcile_lldp(root,status,configuration_revision,rpc=None,chassis_id=None):
     except (ValueError,RuntimeError) as error:
         if intent['enabled']:status.fail('network/lldp','pa5200',str(error))
         return
+    held=(observed.get('config') or {}).get('lldp') if isinstance(observed,dict) else None
+    if not intent['enabled'] and not intent['ports'] and not (isinstance(held,dict) and held.get('enabled')):
+        return   # a configuration without LLDP and a dataplane not running it: nothing to apply
     try:
         if observed['config'].get('lldp')!=intent or observed['config'].get('configuration')!=configuration_revision:
             rpc('lldp','apply',dict(revision=observed['config']['revision'],lldp=intent,configuration=configuration_revision))
