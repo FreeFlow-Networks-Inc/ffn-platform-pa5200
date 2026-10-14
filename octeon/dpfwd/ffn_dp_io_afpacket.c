@@ -183,6 +183,9 @@ static int afp_rx(void *arg, struct dp_pkt *burst, int max)
     return n;
 }
 
+static int afp_send_raw(struct afp_ctx *c, struct afp_port *p,
+                        const uint8_t *data, uint32_t len);
+
 static int afp_tx_one(struct afp_ctx *c, struct dp_pkt *pk)
 {
     uint16_t out = pk->egress;
@@ -200,19 +203,26 @@ static int afp_tx_one(struct afp_ctx *c, struct dp_pkt *pk)
         c->stat_bad_egress++;
         return 0;
     }
-    struct afp_port *p = &c->ports[out];
+    return afp_send_raw(c, &c->ports[out], pk->data, pk->len);
+}
 
+/* One raw send on one port. Shared by the forwarded-packet path and the
+ * forwarder-built-frame path, so the two cannot drift apart on how a frame
+ * is addressed. */
+static int afp_send_raw(struct afp_ctx *c, struct afp_port *p,
+                        const uint8_t *data, uint32_t len)
+{
     struct sockaddr_ll to;
     memset(&to, 0, sizeof(to));
     to.sll_family = AF_PACKET;
     to.sll_protocol = htons(ETH_P_ALL);
     to.sll_ifindex = p->ifindex;
     to.sll_halen = ETH_ALEN;
-    memcpy(to.sll_addr, pk->data, ETH_ALEN);   /* dest mac from the frame */
+    memcpy(to.sll_addr, data, ETH_ALEN);       /* dest mac from the frame */
 
-    ssize_t sent = sendto(p->fd, pk->data, pk->len, 0,
+    ssize_t sent = sendto(p->fd, data, len, 0,
                           (struct sockaddr *)&to, sizeof(to));
-    if (sent != (ssize_t)pk->len) {
+    if (sent != (ssize_t)len) {
         c->stat_tx_err++;
         return 0;
     }
@@ -227,6 +237,19 @@ static int afp_tx(void *arg, struct dp_pkt *burst, int n)
     for (int i = 0; i < n; i++)
         ok += afp_tx_one(c, &burst[i]);
     return ok;
+}
+
+/* A frame the forwarder built (ARP). The kernel copies it on sendto(), so
+ * the caller's stack buffer is fine, and pads to the Ethernet minimum. */
+static int afp_tx_frame(void *arg, uint16_t egress, const uint8_t *frame,
+                        uint32_t len)
+{
+    struct afp_ctx *c = (struct afp_ctx *)arg;
+    if (egress >= (uint16_t)c->nports || len < ETH_HLEN) {
+        c->stat_bad_egress++;
+        return 0;
+    }
+    return afp_send_raw(c, &c->ports[egress], frame, len);
 }
 
 static void afp_to_local(void *arg, struct dp_pkt *p)
@@ -254,7 +277,8 @@ const struct dp_io_ops AFP_IO = {
     afp_tx,
     afp_to_local,
     afp_to_offload,
-    NULL                    /* buffers are owned by afp_ctx; nothing to free */
+    NULL,                   /* buffers are owned by afp_ctx; nothing to free */
+    afp_tx_frame
 };
 
 void afp_ctx_init(struct afp_ctx *c, int promisc, int poll_ms)

@@ -98,6 +98,11 @@ struct mock3_hw {
     int fail_send;
     int busy_sends, send_calls;
     int init_rc;
+    /* frames the forwarder built and the glue handed to frame_send */
+    int frames, fail_frame;
+    uint32_t frame_len;
+    uint16_t frame_port;
+    uint8_t  frame[OCT_FRAME_MAX];
 };
 
 static void aura_alloc(struct mock3_hw *m, int gaura)
@@ -233,10 +238,23 @@ static void mock3_wqe_free(struct oct_ctx *c, struct oct_wqe *w)
     b->wqe_storage_gone = 1;
 }
 
+static int mock3_frame_send(struct oct_ctx *c, uint16_t port,
+                            const uint8_t *frame, uint32_t len)
+{
+    struct mock3_hw *m = (struct mock3_hw *)c->hw_priv;
+    if (m->fail_frame) return -1;
+    m->frames++;
+    m->frame_port = port;
+    m->frame_len = len;
+    memcpy(m->frame, frame, len);
+    return 0;
+}
+
 static const struct oct_hw_ops MOCK3_HW = {
     "mock(octeon-iii pki/sso/pko3)",
     mock3_init, mock3_fini, mock3_work_get,
-    mock3_send, mock3_data_free, mock3_wqe_free
+    mock3_send, mock3_data_free, mock3_wqe_free,
+    mock3_frame_send
 };
 
 /* ---------------- frame + policy builders ---------------- */
@@ -250,6 +268,7 @@ static struct mock3_buf *push3(struct mock3_hw *m, uint32_t sip, uint32_t dip,
     p[12] = 0x08; p[13] = 0x00;
     uint8_t *ip = p + 14;
     ip[0] = 0x45; ip[9] = 6;
+    ip[2] = 0; ip[3] = 40;       /* Total Length: a header that claims 0 is now refused */
     ip[12] = (uint8_t)(sip >> 24); ip[13] = (uint8_t)(sip >> 16);
     ip[14] = (uint8_t)(sip >> 8);  ip[15] = (uint8_t)sip;
     ip[16] = (uint8_t)(dip >> 24); ip[17] = (uint8_t)(dip >> 16);
@@ -599,6 +618,47 @@ int main(void)
         chk(auras_balanced(&m), "invalid ingress buffers reclaimed");
     }
     dp_fini(&dp); free(region);
+
+    /* ---------- forwarder-built frames through the glue ---------- */
+    printf("\n[13] frames the forwarder builds (ARP) reach frame_send\n");
+    {
+        struct mock3_hw m;
+        struct oct_ctx c;
+        uint8_t arp[42];
+        memset(&m, 0, sizeof(m));
+        oct_ctx_init(&c, &MOCK3_HW, &m);
+        oct_add_port(&c, "p0", 0x800, 1, 1);
+        oct_add_port(&c, "p1", 0x801, 2, 1);
+        memset(arp, 0xab, sizeof(arp));
+
+        chk(OCT_IO.tx_frame != NULL, "the OCTEON glue implements tx_frame");
+        chk(OCT_IO.tx_frame(&c, 1, arp, 42) == 1 && m.frames == 1,
+            "a 42-byte ARP is accepted and handed to the hardware seam");
+        chk(m.frame_port == 1, "on the port the forwarder named");
+        chk(m.frame_len == OCT_FRAME_MIN, "padded to the Ethernet minimum");
+        chk(memcmp(m.frame, arp, 42) == 0, "payload intact");
+        {
+            int zero = 1;
+            for (unsigned i = 42; i < OCT_FRAME_MIN; i++) if (m.frame[i]) zero = 0;
+            chk(zero, "padding is zeros, not whatever was on the stack");
+        }
+        chk(c.stat_frame_tx == 1 && c.stat_frame_fail == 0, "counted as sent");
+
+        chk(OCT_IO.tx_frame(&c, 7, arp, 42) == 0 && c.stat_frame_fail == 1,
+            "a port that does not exist is refused and counted");
+        chk(OCT_IO.tx_frame(&c, 0, arp, 8) == 0 && c.stat_frame_fail == 2,
+            "a frame shorter than an Ethernet header is refused");
+        m.fail_frame = 1;
+        chk(OCT_IO.tx_frame(&c, 0, arp, 42) == 0 && c.stat_frame_fail == 3,
+            "a hardware refusal is reported as a failure, not a send");
+
+        /* A seam without frame_send -- the OCTEON-II mock -- must report
+         * rather than dereference NULL. */
+        oct_ctx_init(&c, &OCT_HW_CVMX, NULL);
+        oct_add_port(&c, "p0", 0x800, 1, 1);
+        chk(OCT_IO.tx_frame(&c, 0, arp, 42) == 0 && c.stat_frame_fail == 1,
+            "a seam with no frame_send reports the frame as not sent");
+    }
 
     /* ---------- generation selection ---------- */
     printf("\n[9] generation selection\n");

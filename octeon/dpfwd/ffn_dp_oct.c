@@ -45,7 +45,14 @@
 /* ------------------------------------------------------------------ */
 int dp_tables_load(struct dp_tables *t, const void *blob, size_t len)
 {
-    memset(t, 0, sizeof(*t));
+    /* Validate EVERYTHING before touching *t. This used to memset the table
+     * first and bail out on a bad header afterwards, so a bank the MP got
+     * wrong -- bad magic, too many rows, a truncated write -- left the LIVE
+     * table empty: policy_n == 0, every new flow on the default verdict, and
+     * the flows already cached still carrying the verdicts of a policy that
+     * no longer existed. The MP was told DP_EVT_ERROR, but the dataplane it
+     * was talking to had already lost its rules. A rejected bank must leave
+     * the running policy exactly as it was. */
     if (!blob || len < FP_HDR_SIZE_W)
         return DP_ERR_SHORT;
 
@@ -67,6 +74,8 @@ int dp_tables_load(struct dp_tables *t, const void *blob, size_t len)
     if (count > DP_MAX_POLICY)
         return DP_ERR_TOOMANY;
 
+    /* Nothing below can fail: row conversion is pure byte reads. */
+    memset(t, 0, sizeof(*t));
     t->version = ver;
     t->policy_n = count;
     const uint8_t *row = p + FP_HDR_SIZE_W;
@@ -113,10 +122,26 @@ int dp_classify(const struct dp_tables *t, const struct dp_tuple *k,
             continue;
         /* port ranges only apply to port-bearing protocols */
         if (k->proto == DP_IPPROTO_TCP || k->proto == DP_IPPROTO_UDP) {
-            if (k->sport < r->sport_lo || k->sport > r->sport_hi)
-                continue;
-            if (k->dport < r->dport_lo || k->dport > r->dport_hi)
-                continue;
+            if (k->flags & DP_TF_FRAG) {
+                /* A non-first fragment has no ports to compare. It may match
+                 * a rule only if that rule asks nothing of the ports; a rule
+                 * that names a port cannot be satisfied by a packet that
+                 * does not carry one. Matching it on the zeros the parser
+                 * leaves behind would let a fragment through a rule for
+                 * port 0, and -- worse -- would let a sender who understands
+                 * this pick the rule by choosing the payload bytes. Under
+                 * the usual fail-closed default this means an unmatched
+                 * fragment is dropped, which is what a firewall that does
+                 * not reassemble should do with it. */
+                if (r->sport_lo != 0 || r->sport_hi != 0xFFFFu ||
+                    r->dport_lo != 0 || r->dport_hi != 0xFFFFu)
+                    continue;
+            } else {
+                if (k->sport < r->sport_lo || k->sport > r->sport_hi)
+                    continue;
+                if (k->dport < r->dport_lo || k->dport > r->dport_hi)
+                    continue;
+            }
         }
         if (rule_id) *rule_id = r->rule_id;
         if (egress)  *egress  = r->egress;
@@ -135,14 +160,14 @@ static uint32_t dp_flow_hash(const struct dp_flow_key *k)
     /* FNV-1a over the key bytes: stable across architectures because we feed
      * it native fields in a fixed order rather than raw struct memory. */
     uint32_t h = 2166136261u;
-    const uint8_t bytes[18] = {
+    const uint8_t bytes[14] = {
         (uint8_t)(k->ip_a), (uint8_t)(k->ip_a >> 8),
         (uint8_t)(k->ip_a >> 16), (uint8_t)(k->ip_a >> 24),
         (uint8_t)(k->ip_b), (uint8_t)(k->ip_b >> 8),
         (uint8_t)(k->ip_b >> 16), (uint8_t)(k->ip_b >> 24),
         (uint8_t)(k->port_a), (uint8_t)(k->port_a >> 8),
         (uint8_t)(k->port_b), (uint8_t)(k->port_b >> 8),
-        k->proto, k->vsys, 0, 0, 0, 0
+        k->proto, k->vsys
     };
     for (int i = 0; i < 14; i++) { h ^= bytes[i]; h *= 16777619u; }
     return h;
@@ -207,11 +232,26 @@ void dp_flow_flush(struct dp_flow_table *ft)
     ft->count = 0;
 }
 
-struct dp_flow_ent *dp_flow_lookup(struct dp_flow_table *ft,
-                                   const struct dp_flow_key *k)
+/* How many probes the window allows: never more than the table holds, so a
+ * tiny test table still terminates. */
+static uint32_t dp_flow_window(const struct dp_flow_table *ft)
 {
-    uint32_t i = dp_flow_hash(k) & ft->mask;
-    for (uint32_t probe = 0; probe <= ft->mask; probe++) {
+    return ft->slots < DP_FLOW_PROBE_MAX ? ft->slots : DP_FLOW_PROBE_MAX;
+}
+
+/* The invariant every function below preserves: an entry lives within
+ * DP_FLOW_PROBE_MAX slots after its home slot, and there is no empty slot
+ * between the two. Lookup can therefore stop at the first empty slot OR at
+ * the end of the window, whichever comes first, and never walks further.
+ * Eviction overwrites in place, so it creates no hole; removal shifts the
+ * cluster back, so it closes the hole it makes. */
+static struct dp_flow_ent *flow_lookup_h(struct dp_flow_table *ft,
+                                         const struct dp_flow_key *k,
+                                         uint32_t h)
+{
+    uint32_t i = h & ft->mask;
+    uint32_t win = dp_flow_window(ft);
+    for (uint32_t probe = 0; probe < win; probe++) {
         struct dp_flow_ent *e = &ft->ent[(i + probe) & ft->mask];
         if (!e->used)
             return NULL;
@@ -221,23 +261,112 @@ struct dp_flow_ent *dp_flow_lookup(struct dp_flow_table *ft,
     return NULL;
 }
 
-struct dp_flow_ent *dp_flow_insert(struct dp_flow_table *ft,
-                                   const struct dp_flow_key *k)
+static struct dp_flow_ent *flow_insert_h(struct dp_flow_table *ft,
+                                         const struct dp_flow_key *k,
+                                         uint32_t h)
 {
-    uint32_t i = dp_flow_hash(k) & ft->mask;
-    for (uint32_t probe = 0; probe <= ft->mask; probe++) {
+    uint32_t i = h & ft->mask;
+    uint32_t win = dp_flow_window(ft);
+    struct dp_flow_ent *victim = NULL;
+    uint32_t victim_age = 0;
+
+    for (uint32_t probe = 0; probe < win; probe++) {
         struct dp_flow_ent *e = &ft->ent[(i + probe) & ft->mask];
         if (!e->used) {
             memset(e, 0, sizeof(*e));
             e->key = *k;
             e->used = 1;
+            e->last_ms = ft->now_ms;
             ft->count++;
             return e;
         }
         if (dp_key_eq(&e->key, k))
             return e;
+        /* Remember the stalest entry in the window in case there is no room.
+         * Unsigned subtraction so the comparison survives the ~49-day wrap of
+         * a millisecond counter. >= rather than >, so that with no clock
+         * (every age 0) the LAST slot of the window is chosen: the entries
+         * nearest their home are the ones most likely to be hot. */
+        uint32_t age = ft->now_ms - e->last_ms;
+        if (!victim || age >= victim_age) {
+            victim = e;
+            victim_age = age;
+        }
     }
-    return NULL;                                    /* table full */
+
+    /* No empty slot inside the window: take over the stalest live entry
+     * rather than fail. Failing here was the old behaviour, and its cost was
+     * not one lost flow -- it was that the caller re-classified every packet
+     * of every new flow for as long as the table stayed full, which with no
+     * ageing was forever. The evicted flow, if it is still alive, costs one
+     * re-classify under the same policy when its next packet arrives. */
+    ft->stat_evict++;
+    memset(victim, 0, sizeof(*victim));
+    victim->key = *k;
+    victim->used = 1;
+    victim->last_ms = ft->now_ms;
+    return victim;
+}
+
+struct dp_flow_ent *dp_flow_lookup(struct dp_flow_table *ft,
+                                   const struct dp_flow_key *k)
+{
+    return flow_lookup_h(ft, k, dp_flow_hash(k));
+}
+
+struct dp_flow_ent *dp_flow_insert(struct dp_flow_table *ft,
+                                   const struct dp_flow_key *k)
+{
+    return flow_insert_h(ft, k, dp_flow_hash(k));
+}
+
+/* Remove the entry at slot `hole` and close the gap by backward shift: every
+ * entry in the cluster behind it that is allowed to sit at the hole (its home
+ * slot is at or before the hole, cyclically) moves there, and the slot it
+ * vacated becomes the new hole. Moving an entry only ever brings it CLOSER to
+ * its home, so the probe-window invariant cannot be broken by this. The same
+ * technique as dp_l3_neigh_del(), done in place rather than by re-insertion
+ * because this runs on the packet path rather than at control-plane rate. */
+static void flow_remove_at(struct dp_flow_table *ft, uint32_t hole)
+{
+    uint32_t j = hole;
+
+    for (;;) {
+        struct dp_flow_ent *e;
+        uint32_t home, d_hole, d_j;
+
+        j = (j + 1) & ft->mask;
+        e = &ft->ent[j];
+        if (!e->used || j == hole)
+            break;
+        home = dp_flow_hash(&e->key) & ft->mask;
+        d_hole = (hole - home) & ft->mask;      /* distance home -> hole */
+        d_j    = (j - home) & ft->mask;         /* distance home -> here */
+        if (d_hole < d_j) {                     /* hole lies on e's path */
+            ft->ent[hole] = *e;
+            hole = j;
+        }
+    }
+    memset(&ft->ent[hole], 0, sizeof(ft->ent[hole]));
+    ft->count--;
+}
+
+void dp_flow_sweep(struct dp_flow_table *ft, uint32_t budget)
+{
+    if (!ft->ent || !ft->now_ms || !ft->count)
+        return;
+    while (budget--) {
+        struct dp_flow_ent *e = &ft->ent[ft->sweep_pos];
+        if (e->used && (uint32_t)(ft->now_ms - e->last_ms) >= DP_FLOW_IDLE_MS) {
+            flow_remove_at(ft, ft->sweep_pos);
+            ft->stat_expire++;
+            /* Do not advance: the shift may have moved a live entry into
+             * this slot, and it needs examining too. Each pass through the
+             * loop still spends one unit of budget, so this terminates. */
+            continue;
+        }
+        ft->sweep_pos = (ft->sweep_pos + 1) & ft->mask;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,9 +389,20 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
         return DP_ERR_NOTIP;
 
     const uint8_t *ip = pkt + off;
+    /* The ethertype said IPv4; the header must agree. A version nibble that
+     * is not 4 is a frame the ethertype misdescribes, and parsing it as IPv4
+     * would classify it on fields that are not where they appear to be. */
+    if ((ip[0] >> 4) != 4)
+        return DP_ERR_MALFORMED;
     uint8_t ihl = (uint8_t)((ip[0] & 0x0f) * 4);
     if (ihl < DP_IP4_MIN_HLEN || off + ihl > len)
         return DP_ERR_SHORT;
+    /* A Total Length shorter than the header it claims to include is not a
+     * datagram at all. (Longer than the frame is tolerated: the payload
+     * locator below already treats the frame, not the field, as truth.) */
+    uint32_t tot = ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
+    if (tot < ihl)
+        return DP_ERR_MALFORMED;
 
     memset(t, 0, sizeof(*t));
     t->proto  = ip[9];
@@ -272,6 +412,20 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
     t->dst_ip = ((uint32_t)ip[16] << 24) | ((uint32_t)ip[17] << 16) |
                 ((uint32_t)ip[18] << 8)  | (uint32_t)ip[19];
     t->vsys = vsys;
+
+    /* Fragment Offset: the low 13 bits of bytes 6-7. Non-zero means this is
+     * not the first fragment, so the bytes after the IPv4 header are PAYLOAD
+     * of some earlier packet, not an L4 header. Until this check existed they
+     * were read as one: a crafted fragment could present any "ports" it
+     * liked, and so match whichever port rule its sender preferred. The
+     * tuple keeps the addresses and protocol, carries no ports and no
+     * scannable payload, and is flagged so classify can refuse to match it
+     * against any rule that names a port. The first fragment (offset 0, MF
+     * set) does carry the L4 header and is parsed normally. */
+    if (((ip[6] & 0x1f) != 0) || ip[7] != 0) {
+        t->flags |= DP_TF_FRAG;
+        return DP_OK;
+    }
 
     if (t->proto == DP_IPPROTO_TCP || t->proto == DP_IPPROTO_UDP) {
         const uint8_t *l4 = ip + ihl;
@@ -308,8 +462,7 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
          * minimum rather than trusted -- an attacker-chosen 0 would otherwise
          * point the scanners at the TCP header itself. */
         uint32_t end = len;
-        uint32_t tot = ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
-        if (len <= 60u && tot >= ihl && off + tot < len)
+        if (len <= 60u && off + tot < len)
             end = off + tot;
 
         uint32_t hlen;
@@ -355,7 +508,7 @@ int dp_parse(const uint8_t *pkt, uint32_t len, uint8_t vsys, struct dp_tuple *t)
  *                   The packet is not lost, it is resolved and retried.
  */
 static int dp_l3_resolve(struct dp_ctx *c, const struct dp_tuple *t,
-                         struct dp_result *out)
+                         uint32_t flow_hash, struct dp_result *out)
 {
     int rc;
 
@@ -364,7 +517,12 @@ static int dp_l3_resolve(struct dp_ctx *c, const struct dp_tuple *t,
     if (out->decision != FP_FORWARD_W && out->decision != FP_INSPECT_W)
         return out->decision;
 
-    rc = dp_l3_lookup(c->l3, t->dst_ip, &out->nh);
+    /* The flow hash, not the destination, chooses the ECMP member: it is the
+     * hash of the NORMALISED key, so both directions of a conversation pick
+     * the same member -- which is what a stateful device on the far side
+     * needs -- and distinct flows to one host spread across the group
+     * instead of all taking one path. ffn_dp_l3.h asks for exactly this. */
+    rc = dp_l3_lookup_hash(c->l3, t->dst_ip, flow_hash, &out->nh);
     if (rc != DP_L3_OK) {
         c->stat_l3_noroute++;
         return FP_DROP_W;
@@ -499,11 +657,17 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         return rc;
     }
     out->tuple = t;
+    if (t.flags & DP_TF_FRAG)
+        c->stat_frag++;
 
     struct dp_flow_key key;
     dp_flow_key_from_tuple(&key, &t);
+    /* Hashed once per packet: the lookup, the insert and ECMP all use it. */
+    uint32_t fh = dp_flow_hash(&key);
 
-    struct dp_flow_ent *fe = dp_flow_lookup(&c->flows, &key);
+    struct dp_flow_ent *fe = flow_lookup_h(&c->flows, &key, fh);
+    if (fe)
+        fe->last_ms = c->flows.now_ms;
     if (fe && fe->verdict != FP_V_UNSET_W) {
         out->from_cache = 1;
         out->rule_id = fe->rule_id;
@@ -515,7 +679,7 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         fe->pkts++;
         fe->bytes += len;
         c->stat_cache_hit++;
-        out->decision = dp_l3_resolve(c, &t, out);
+        out->decision = dp_l3_resolve(c, &t, fh, out);
         /* Analyse the head of the flow, not just its first packet -- and
          * budget by packets actually SCANNED, not by packets of the flow. A
          * TCP handshake plus a few bare ACKs carry no payload at all, so
@@ -540,6 +704,11 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
         case FP_FORWARD_W: c->stat_forward++; break;
         case FP_INSPECT_W: c->stat_inspect++; break;
         case FP_DROP_W:    c->stat_drop++;    break;
+        /* Routing can turn a cached ALLOW into LOCAL (no neighbour yet).
+         * Those packets were going uncounted, so an ARP storm on a cached
+         * flow was invisible in the counters. */
+        case FP_LOCAL_W:   c->stat_local++;   break;
+        case FP_PUNT_FPGA_W: c->stat_punt++;  break;
         default: break;
         }
         return DP_OK;
@@ -554,13 +723,13 @@ int dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
     out->decision = dec;
     out->rule_id = rule_id;
     out->egress = egress;
-    out->decision = dec = dp_l3_resolve(c, &t, out);
+    out->decision = dec = dp_l3_resolve(c, &t, fh, out);
     /* Cache policy intent, not this packet's resolved next hop. Both
      * directions share a flow key; routing must still resolve each packet's
      * destination and refresh neighbour/rewrite metadata on cache hits. */
 
     if (!fe)
-        fe = dp_flow_insert(&c->flows, &key);
+        fe = flow_insert_h(&c->flows, &key, fh);
     if (fe) {
         fe->rule_id = rule_id;
         fe->egress = egress;
@@ -944,18 +1113,26 @@ void dp_fini(struct dp_ctx *c)
  * up to DP_BURST frames. CLOCK_MONOTONIC, because a wall-clock step would
  * otherwise shift every neighbour timer at once.
  */
-static void dp_l3_service(struct dp_ctx *c)
+/* One clock sample per poll, shared by neighbour ageing and the flow cache.
+ * On failure the previous value is kept rather than reset to 0, because 0 is
+ * what both consumers read as "no clock". */
+static void dp_clock_service(struct dp_ctx *c)
 {
     struct timespec ts;
-    uint32_t now;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return;
+    c->now_ms = (uint32_t)((uint64_t)ts.tv_sec * 1000u +
+                           (uint64_t)ts.tv_nsec / 1000000u);
+    c->flows.now_ms = c->now_ms;
+}
+
+static void dp_l3_service(struct dp_ctx *c)
+{
+    uint32_t now = c->now_ms;
 
     if (!c->l3)
         return;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
-        return;            /* no clock: keep the last value, do not reset to 0 */
-
-    now = (uint32_t)((uint64_t)ts.tv_sec * 1000u +
-                     (uint64_t)ts.tv_nsec / 1000000u);
     c->l3->now_ms = now;
 
     /* Ageing walks the whole table, so keep it off the per-burst path. The
@@ -967,12 +1144,29 @@ static void dp_l3_service(struct dp_ctx *c)
     }
 }
 
+/* Send a frame the forwarder built. The backend copies it; the result's
+ * buffer is on the stack. Counted either way, because a dataplane that
+ * silently loses its own ARP traffic is the bug this replaces. */
+static void dp_emit(struct dp_ctx *c, const struct dp_result *res)
+{
+    if (!res->emit_len)
+        return;
+    if (c->io && c->io->tx_frame &&
+        c->io->tx_frame(c->io_arg, res->emit_egress, res->emit,
+                        res->emit_len) == 1)
+        c->stat_emit++;
+    else
+        c->stat_emit_fail++;
+}
+
 int dp_poll_once(struct dp_ctx *c)
 {
     struct dp_pkt burst[DP_BURST];
     dp_service_commands(c);
     dp_heartbeat(c);
+    dp_clock_service(c);
     dp_l3_service(c);
+    dp_flow_sweep(&c->flows, DP_FLOW_SWEEP_SLOTS);
 
     if (!c->io || !c->io->rx)
         return 0;
@@ -981,6 +1175,7 @@ int dp_poll_once(struct dp_ctx *c)
         struct dp_result res;
         c->stat_rx++;
         dp_process(c, burst[i].data, burst[i].len, burst[i].vsys, &res);
+        dp_emit(c, &res);
         if (res.routed && (res.decision == FP_FORWARD_W || res.decision == FP_INSPECT_W) &&
             dp_l3_rewrite(c->l3, burst[i].data, burst[i].len, &res.nh) != DP_L3_OK) {
             /* TTL/rewrite failure belongs to this packet, not the session's
@@ -1031,6 +1226,10 @@ const char *dp_strerror(int rc)
     case DP_ERR_NOTIP:     return "not IPv4";
     case DP_ERR_HANDSHAKE: return "shared-region handshake failed";
     case DP_ERR_BANK:      return "invalid policy bank";
+    case DP_ERR_RANGE:     return "value out of range";
+    case DP_ERR_STATE:     return "invalid in this state";
+    case DP_ERR_UNSUPP:    return "not supported by this build";
+    case DP_ERR_MALFORMED: return "malformed IPv4 header";
     default:               return "unknown";
     }
 }

@@ -44,10 +44,39 @@ struct dp_engine_set;
 #define DP_ERR_RANGE     (-10)   /* port id / field out of range      */
 #define DP_ERR_STATE     (-11)   /* operation invalid in this state    */
 #define DP_ERR_UNSUPP    (-12)   /* build lacks the hardware accessors */
+#define DP_ERR_MALFORMED (-13)   /* IPv4 header lies about itself      */
 
 #define DP_MAX_POLICY     16384u
 #define DP_DEFAULT_FLOWS  262144u
 #define DP_BURST          32
+
+/* Flow-cache bounds. All three exist because the table used to have none.
+ *
+ * Nothing ever removed a flow entry except a policy change, so every distinct
+ * 5-tuple the box had ever seen stayed in the table. Once it was full -- a
+ * port scan fills the default table in seconds -- the linear probe had no
+ * empty slot to stop at and every cache MISS walked all 262144 entries, then
+ * the insert walked them again. Measured on x86: 67 ns per miss at half load,
+ * 436 us at full load. On a MIPS core that is milliseconds per new flow.
+ *
+ * PROBE_MAX bounds the work per lookup regardless of load. An insert that
+ * finds no empty slot inside the window evicts the stalest entry in it, which
+ * is what makes the table self-healing under a flood rather than collapsing:
+ * the cost of evicting a live flow is one re-classify, which is cheap.
+ *
+ * IDLE_MS is how long a flow may be silent before the sweeper reclaims it.
+ * Reclaiming keeps load low, which keeps probe chains short, which keeps
+ * eviction rare. It is also what lets a convicted 5-tuple be reused: an engine
+ * DROP written to a flow entry otherwise outlived the connection that earned
+ * it. Two minutes is deliberately on the short side -- a reclaimed entry costs
+ * one re-classify under the SAME policy and gets the same verdict, so the only
+ * price of expiring a live-but-quiet flow is that lookup.
+ *
+ * SWEEP_SLOTS is how many slots the sweeper examines per poll. The whole
+ * table is never walked in one go on the packet path. */
+#define DP_FLOW_PROBE_MAX    16u
+#define DP_FLOW_IDLE_MS      120000u
+#define DP_FLOW_SWEEP_SLOTS  1024u
 
 #define DP_ETH_HLEN        14u
 #define DP_IP4_MIN_HLEN    20u
@@ -58,6 +87,9 @@ struct dp_engine_set;
 
 #define DP_FF_INSPECT   0x1
 #define DP_FF_OFFLOADED 0x2
+
+/* dp_tuple.flags */
+#define DP_TF_FRAG      0x1     /* non-first IP fragment: no L4 header here */
 
 /* How many packets at the head of a flow are offered to the inline analysis
  * engines. Not one: a credential or card number rarely lands in the first
@@ -102,7 +134,12 @@ struct dp_tables {
 struct dp_tuple {
     uint32_t src_ip, dst_ip;
     uint16_t sport, dport;
-    uint8_t  proto, vsys, tcp_flags, pad;
+    uint8_t  proto, vsys, tcp_flags;
+    /* DP_TF_*. A non-first fragment carries no L4 header, so its ports are 0
+     * and MEAN NOTHING; before this flag existed the parser read them from
+     * whatever payload bytes sat where the header would be, and a crafted
+     * fragment could choose which port-based rule it matched. */
+    uint8_t  flags;
     uint32_t pay_off, pay_len;
 };
 
@@ -138,11 +175,24 @@ struct dp_flow_ent {
      * revisiting this field rather than silently truncating. */
     uint16_t scan_state[2];
     uint64_t bytes;
+    /* When this flow last saw a packet, in dp_flow_table.now_ms units. This
+     * is what the sweeper ages on and what eviction ranks by, and it is the
+     * one field that grew the entry: 40 -> 48 bytes. At the default table
+     * size that is 2 MiB more per core, which is the price of a cache that
+     * cannot be filled up and left that way. */
+    uint32_t last_ms;
 };
 
 struct dp_flow_table {
     struct dp_flow_ent *ent;
     uint32_t slots, mask, count;
+    /* The caller advances this (dp_poll_once does, once per burst). Zero
+     * means "no clock": the sweeper then does nothing, so unit tests that
+     * drive dp_process() directly see a table that never ages. */
+    uint32_t now_ms;
+    uint32_t sweep_pos;        /* where the incremental sweep resumes */
+    uint64_t stat_evict;       /* live entries overwritten by an insert */
+    uint64_t stat_expire;      /* idle entries reclaimed by the sweep   */
 };
 
 /* one packet handed between the I/O backend and the forwarder */
@@ -166,6 +216,19 @@ struct dp_io_ops {
     void (*to_local)(void *arg, struct dp_pkt *p);
     void (*to_offload)(void *arg, struct dp_pkt *p);
     void (*free_pkt)(void *arg, struct dp_pkt *p);
+    /* Transmit a frame the FORWARDER built -- an ARP request or reply from
+     * dp_result.emit -- rather than one that arrived. It is not a dp_pkt
+     * because it has no backend cookie: the backend must copy it into memory
+     * the hardware can send from. Returns 1 when accepted, 0 otherwise.
+     *
+     * Last in the struct, and optional (NULL), on purpose: every existing
+     * positional initialiser of this table leaves it NULL and keeps working.
+     * dp_poll_once counts a frame it could not hand off in stat_emit_fail,
+     * so a backend without this op is visible rather than silently
+     * discarding every ARP the dataplane generates -- which is exactly what
+     * happened before the op existed. */
+    int  (*tx_frame)(void *arg, uint16_t egress, const uint8_t *frame,
+                     uint32_t len);
 };
 
 struct dp_result {
@@ -209,15 +272,19 @@ struct dp_ctx {
      * dp_engine_attach(); dp_init() memsets the ctx, so every existing caller
      * starts with this NULL and is unaffected. */
     struct dp_engine_set *engines;
-    uint32_t l3_tick_ms;       /* last neighbour-ageing sweep, CLOCK_MONOTONIC ms */
+    uint32_t now_ms;           /* sampled once per poll, CLOCK_MONOTONIC ms */
+    uint32_t l3_tick_ms;       /* last neighbour-ageing sweep, in now_ms   */
     const struct dp_io_ops *io;
     void   *io_arg;
     /* counters */
     uint64_t stat_rx, stat_tx, stat_tx_fail, stat_forward, stat_inspect;
     uint64_t stat_drop, stat_punt, stat_local, stat_cache_hit, stat_classify;
-    uint64_t stat_parse_err, stat_flow_full;
+    uint64_t stat_parse_err, stat_flow_full, stat_frag;
     uint64_t stat_l3_routed, stat_l3_noroute, stat_l3_noneigh;
     uint64_t stat_engine_scanned, stat_engine_alert, stat_engine_block;
+    /* frames the forwarder built (ARP) and handed to the backend, or could
+     * not because the backend has no tx_frame or refused it */
+    uint64_t stat_emit, stat_emit_fail;
 };
 
 /* API */
@@ -233,6 +300,9 @@ struct dp_flow_ent *dp_flow_lookup(struct dp_flow_table *ft,
                                    const struct dp_flow_key *k);
 struct dp_flow_ent *dp_flow_insert(struct dp_flow_table *ft,
                                    const struct dp_flow_key *k);
+/* Reclaim entries idle for DP_FLOW_IDLE_MS, examining at most `budget` slots
+ * and resuming where it left off next time. Needs ft->now_ms to be running. */
+void dp_flow_sweep(struct dp_flow_table *ft, uint32_t budget);
 int  dp_process(struct dp_ctx *c, const uint8_t *pkt, uint32_t len,
                 uint8_t vsys, struct dp_result *out);
 int  dp_region_attach(struct dp_ctx *c, void *base, size_t size, int create);

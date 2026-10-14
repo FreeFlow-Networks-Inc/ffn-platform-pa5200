@@ -135,6 +135,11 @@ struct sim_io {
     struct { uint8_t buf[128]; uint32_t len; uint8_t vsys; } q[64];
     int n, head;
     int txed, localed, offloaded;
+    /* frames the FORWARDER built and handed to tx_frame (ARP) */
+    int framed;
+    uint16_t frame_egress;
+    uint8_t  frame[128];
+    uint32_t frame_len;
 };
 static int sim_rx(void *arg, struct dp_pkt *b, int max)
 {
@@ -161,8 +166,18 @@ static void sim_offload(void *arg, struct dp_pkt *p)
 {
     (void)p; ((struct sim_io *)arg)->offloaded++;
 }
+static int sim_tx_frame(void *arg, uint16_t egress, const uint8_t *f, uint32_t len)
+{
+    struct sim_io *s = (struct sim_io *)arg;
+    s->framed++;
+    s->frame_egress = egress;
+    s->frame_len = len > sizeof(s->frame) ? (uint32_t)sizeof(s->frame) : len;
+    memcpy(s->frame, f, s->frame_len);
+    return 1;
+}
 static const struct dp_io_ops SIM_IO = {
-    "sim", NULL, NULL, sim_rx, sim_tx, sim_local, sim_offload, NULL
+    "sim", NULL, NULL, sim_rx, sim_tx, sim_local, sim_offload, NULL,
+    sim_tx_frame
 };
 static void sim_push(struct sim_io *s, const uint8_t *pkt, uint32_t len, uint8_t vsys)
 {
@@ -450,6 +465,18 @@ int main(void)
     chk(dp_classify(&t, &k, &rid, NULL) == DP_DECISION_NOMATCH,
         "no rule -> NOMATCH (caller applies default)");
 
+    /* A non-first fragment has no ports. It must not match a rule that
+     * names one, whatever zeros the parser left in the tuple -- and it must
+     * still match a rule that asks nothing of the ports. */
+    memset(&k, 0, sizeof(k));
+    k.src_ip = IP(10,1,2,3); k.dst_ip = IP(93,184,216,34);
+    k.proto = DP_IPPROTO_TCP; k.vsys = 1; k.flags = DP_TF_FRAG;
+    chk(dp_classify(&t, &k, &rid, NULL) == DP_DECISION_NOMATCH,
+        "non-first fragment does not match the tcp/443 or tcp/80 rules");
+    k.dst_ip = IP(192,0,2,66);
+    chk(dp_classify(&t, &k, &rid, NULL) == FP_DROP_W && rid == 103,
+        "non-first fragment still matches a rule with no port constraint");
+
     /* ---------- 3. parse ---------- */
     printf("\n[3] packet parse\n");
     uint8_t pkt[128];
@@ -470,6 +497,32 @@ int main(void)
     arp[12] = 0x08; arp[13] = 0x06;          /* ARP */
     chk(dp_parse(arp, 60, 1, &pt) == DP_ERR_NOTIP, "non-IPv4 reported");
     chk(dp_parse(pkt, 10, 1, &pt) == DP_ERR_SHORT, "runt rejected");
+
+    /* A non-first fragment: the bytes after the IPv4 header are payload, not
+     * a TCP header. The parser used to read ports out of them, so a sender
+     * could choose which port rule a fragment matched. */
+    len = mkpkt(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                40000, 443, 0, 0);
+    pkt[14 + 6] = 0x20; pkt[14 + 7] = 0x05;      /* MF, offset 5 */
+    chk(dp_parse(pkt, len, 1, &pt) == DP_OK && (pt.flags & DP_TF_FRAG) &&
+        pt.sport == 0 && pt.dport == 0 && pt.pay_len == 0 &&
+        pt.proto == DP_IPPROTO_TCP && pt.dst_ip == IP(93,184,216,34),
+        "non-first fragment: flagged, no ports, no payload, L3 fields kept");
+    pkt[14 + 6] = 0x20; pkt[14 + 7] = 0x00;      /* MF, offset 0: FIRST */
+    chk(dp_parse(pkt, len, 1, &pt) == DP_OK && !(pt.flags & DP_TF_FRAG) &&
+        pt.dport == 443, "first fragment carries its L4 header and is parsed");
+
+    /* The ethertype says IPv4; the header must agree. */
+    len = mkpkt(pkt, IP(10,1,2,3), IP(93,184,216,34), DP_IPPROTO_TCP,
+                40000, 443, 0, 0);
+    pkt[14] = 0x65;                               /* version 6, ihl 5 */
+    chk(dp_parse(pkt, len, 1, &pt) == DP_ERR_MALFORMED,
+        "IPv4 ethertype with a non-4 version nibble is malformed");
+    pkt[14] = 0x45; pkt[14 + 2] = 0; pkt[14 + 3] = 8;   /* Total Length 8 */
+    chk(dp_parse(pkt, len, 1, &pt) == DP_ERR_MALFORMED,
+        "Total Length shorter than the header is malformed");
+    chk(strcmp(dp_strerror(DP_ERR_MALFORMED), "unknown") != 0,
+        "DP_ERR_MALFORMED has a message");
 
     /* ---------- 4. flow cache ---------- */
     printf("\n[4] flow cache (bidirectional normalization)\n");
@@ -494,6 +547,117 @@ int main(void)
     dp_flow_flush(&ft);
     chk(ft.count == 0 && dp_flow_lookup(&ft, &kf) == NULL, "flush clears");
     dp_flow_fini(&ft);
+
+    /* ---------- 4b. the cache cannot fill up and stay that way ---------- */
+    printf("\n[4b] flow cache: bounded probing, eviction, ageing\n");
+    {
+        /* A 64-slot table, 300 distinct flows. Before the probe window and
+         * eviction existed the 65th insert failed, and -- worse -- every miss
+         * after that walked all 64 slots looking for an empty one that did
+         * not exist. Now inserts never fail and the window bounds the walk. */
+        struct dp_flow_table small;
+        struct dp_tuple tt;
+        struct dp_flow_key kk;
+        int all_ok = 1;
+        chk(dp_flow_init(&small, 64) == DP_OK, "64-slot table");
+        memset(&tt, 0, sizeof(tt));
+        tt.dst_ip = IP(5,6,7,8); tt.dport = 443; tt.proto = DP_IPPROTO_TCP; tt.vsys = 1;
+        for (uint32_t i = 0; i < 300; i++) {
+            tt.src_ip = IP(10,0,0,1) + i; tt.sport = (uint16_t)(1000 + i);
+            dp_flow_key_from_tuple(&kk, &tt);
+            if (!dp_flow_insert(&small, &kk)) all_ok = 0;
+        }
+        chk(all_ok, "300 inserts into 64 slots: none refused");
+        chk(small.count <= 64, "occupancy never exceeds the table");
+        chk(small.stat_evict >= 300 - 64, "the overflow was absorbed by eviction");
+        tt.src_ip = IP(10,0,0,1) + 299; tt.sport = 1299;
+        dp_flow_key_from_tuple(&kk, &tt);
+        chk(dp_flow_lookup(&small, &kk) != NULL, "the most recent flow is present");
+        tt.src_ip = IP(99,99,99,99); tt.sport = 7;
+        dp_flow_key_from_tuple(&kk, &tt);
+        chk(dp_flow_lookup(&small, &kk) == NULL, "a miss on a full table returns");
+
+        /* Eviction prefers the stalest entry in the window. Give the table a
+         * clock, touch one flow late, flood its window, and it should be the
+         * survivor. */
+        dp_flow_flush(&small);
+        small.now_ms = 1000;
+        tt.src_ip = IP(10,0,0,1); tt.sport = 1000;
+        dp_flow_key_from_tuple(&kk, &tt);
+        struct dp_flow_key hotkey = kk;
+        for (uint32_t i = 0; i < 64; i++) {
+            tt.src_ip = IP(10,0,0,1) + i; tt.sport = (uint16_t)(1000 + i);
+            dp_flow_key_from_tuple(&kk, &tt);
+            dp_flow_insert(&small, &kk);
+        }
+        /* The fill itself may have evicted among equals (every age is 0 at
+         * this point, so a crowded window takes its last slot), so find --
+         * or restore -- the hot flow AFTER the fill rather than trusting a
+         * pointer from before it. */
+        struct dp_flow_ent *hot = dp_flow_lookup(&small, &hotkey);
+        if (!hot) hot = dp_flow_insert(&small, &hotkey);
+        small.now_ms = 5000;
+        hot->last_ms = small.now_ms;            /* "a packet just arrived" */
+        uint64_t ev0 = small.stat_evict;
+        /* Eight new flows: each either takes an empty slot or evicts one
+         * entry from its 16-slot window, and with at most 8 fresh entries
+         * in any window there is always a stale one to take instead of the
+         * hot flow. More than that and the guarantee becomes probabilistic
+         * -- every evicted slot is itself fresh afterwards, so a flood large
+         * enough churns everything, hot or not, which is intended. */
+        for (uint32_t i = 64; i < 72; i++) {
+            tt.src_ip = IP(10,0,0,1) + i; tt.sport = (uint16_t)(1000 + i);
+            dp_flow_key_from_tuple(&kk, &tt);
+            dp_flow_insert(&small, &kk);
+        }
+        chk(small.stat_evict - ev0 <= 8, "at most one eviction per insert");
+        chk(dp_flow_lookup(&small, &hotkey) == hot,
+            "a recently active flow is never the victim while stale ones exist");
+
+        /* Ageing. Everything inserted at t=5000 goes idle; the hot flow is
+         * touched again and must survive the sweep. The sweep is incremental,
+         * so give it enough budget for one full pass plus the re-examinations
+         * a removal costs. */
+        small.now_ms = 5000 + DP_FLOW_IDLE_MS + 1;
+        hot->last_ms = small.now_ms;
+        uint32_t before = small.count;
+        dp_flow_sweep(&small, 64 * 4);
+        chk(small.count == 1 && dp_flow_lookup(&small, &hotkey) == hot,
+            "idle flows are reclaimed; the active one is kept");
+        chk(small.stat_expire == before - 1, "reclaims are counted");
+
+        /* Backward-shift removal must leave every survivor findable. Fill a
+         * table whose entries collide heavily (16 slots, 12 flows), expire
+         * every other one by hand, sweep, and look the rest up. */
+        struct dp_flow_table tiny;
+        struct dp_flow_key keys[12];
+        dp_flow_init(&tiny, 16);
+        tiny.now_ms = 10;
+        for (uint32_t i = 0; i < 12; i++) {
+            tt.src_ip = IP(10,0,0,1) + i * 7919u; tt.sport = (uint16_t)(i * 31u);
+            dp_flow_key_from_tuple(&keys[i], &tt);
+            struct dp_flow_ent *e2 = dp_flow_insert(&tiny, &keys[i]);
+            e2->last_ms = (i & 1) ? 10 : 10 - DP_FLOW_IDLE_MS;  /* even: stale */
+        }
+        tiny.now_ms = 10 + DP_FLOW_IDLE_MS - 1; /* evens idle; odds one ms short of it */
+        dp_flow_sweep(&tiny, 16 * 4);
+        int found_odd = 1, found_even = 0;
+        for (uint32_t i = 0; i < 12; i++) {
+            struct dp_flow_ent *e2 = dp_flow_lookup(&tiny, &keys[i]);
+            if (i & 1) { if (!e2) found_odd = 0; }
+            else       { if (e2) found_even = 1; }
+        }
+        chk(found_odd && !found_even && tiny.count == 6,
+            "after removals inside clusters every survivor is still found");
+        dp_flow_fini(&tiny);
+
+        /* No clock, no ageing: a test driving dp_process() directly must not
+         * have its flows vanish underneath it. */
+        small.now_ms = 0;
+        dp_flow_sweep(&small, 1000);
+        chk(small.count == 1, "with now_ms == 0 the sweeper is inert");
+        dp_flow_fini(&small);
+    }
 
     /* ---------- 5. shared region + rings ---------- */
     printf("\n[5] shared region, bank activation, command ring\n");
@@ -537,6 +701,21 @@ int main(void)
 
     /* bad bank index must be refused */
     chk(dp_activate_bank(&ctx, 5) == DP_ERR_BANK, "invalid bank refused");
+
+    /* A bank that fails to load must leave the running policy untouched.
+     * Bank 1 lies outside this small region, so it is refused as SHORT;
+     * also stage a bad-magic blob over bank 0 and ask for that. Either way
+     * the rules the DP is forwarding on must be the ones it had. */
+    {
+        uint8_t keep[36];
+        memcpy(keep, region + FFN_DP_OFF_BANK0, 36);
+        memcpy(region + FFN_DP_OFF_BANK0, "JUNK", 4);
+        chk(dp_activate_bank(&ctx, 0) == DP_ERR_MAGIC, "bad bank refused");
+        chk(ctx.tables.policy_n == nrows,
+            "a refused bank leaves the live policy exactly as it was");
+        memcpy(region + FFN_DP_OFF_BANK0, keep, 36);
+        while (ffn_dp_ring_pop(evt, &op, &a0, &a1, &a2)) { }
+    }
 
     /* ---------- 6. end-to-end forwarding ---------- */
     printf("\n[6] end-to-end packet processing\n");
@@ -607,6 +786,109 @@ int main(void)
     chk(sim.localed == 1, "1 delivered locally");
     chk(ctx.stat_drop >= 1, "drop counted");
     chk(ctx.stat_rx == 4, "rx counter");
+
+    /* ---------- 8b. frames the forwarder builds reach the wire ---------- */
+    printf("\n[8b] ARP built by the forwarder is transmitted; ECMP is symmetric\n");
+    {
+        /* Before dp_io_ops.tx_frame existed, dp_result.emit had no reader:
+         * every ARP reply and request the L3 path built was discarded, so
+         * routing only ever worked with statically configured neighbours. */
+        static const uint8_t ourmac[6]  = { 0x02, 0xff, 0x00, 0x00, 0x00, 0x01 };
+        static const uint8_t peermac[6] = { 0x02, 0xaa, 0x00, 0x00, 0x00, 0x02 };
+        struct dp_l3 l3;
+        uint8_t req[64];
+
+        chk(dp_l3_init(&l3, 64, 64) == DP_L3_OK, "l3 init");
+        dp_l3_iface_set_mac(&l3, 0, ourmac);
+        dp_l3_iface_set_ip(&l3, 0, IP(10,0,0,1));
+        ctx.l3 = &l3;
+
+        /* ARP request for 10.0.0.1 from 10.0.0.2 */
+        memset(req, 0, sizeof(req));
+        memset(req, 0xff, 6); memcpy(req + 6, peermac, 6);
+        req[12] = 0x08; req[13] = 0x06;
+        req[14] = 0; req[15] = 1; req[16] = 0x08; req[17] = 0x00;
+        req[18] = 6; req[19] = 4; req[20] = 0; req[21] = 1;   /* request */
+        memcpy(req + 22, peermac, 6);
+        st_be32(req + 28, IP(10,0,0,2));
+        st_be32(req + 38, IP(10,0,0,1));
+
+        memset(&sim, 0, sizeof(sim));
+        sim_push(&sim, req, 60, 1);
+        n = dp_poll_once(&ctx);
+        chk(n == 1 && sim.txed == 0, "the ARP request itself is not forwarded");
+        chk(sim.framed == 1 && ctx.stat_emit == 1,
+            "the forwarder's ARP reply was handed to tx_frame once");
+        chk(sim.frame_egress == 0, "the reply leaves by the interface that owns the address");
+        chk(sim.frame_len == 42 && sim.frame[12] == 0x08 && sim.frame[13] == 0x06 &&
+            sim.frame[20] == 0 && sim.frame[21] == 2 &&
+            memcmp(sim.frame, peermac, 6) == 0 && memcmp(sim.frame + 6, ourmac, 6) == 0,
+            "the frame is an ARP reply, unicast to the asker, from our MAC");
+
+        /* The other half: a routed packet to an unresolved next hop makes
+         * the forwarder build a REQUEST, and that must go out too. */
+        dp_l3_route_add(&l3, IP(172,16,0,0), 16, IP(10,0,0,9), 0);
+        {
+            struct trow any[] = {
+              { 0, 0, 0, 0, 0,65535, 0,65535, 0, 1, FP_FORWARD_W, 0,
+                DP_EGRESS_NONE, 301 },
+            };
+            polsz = build_policy_bin(polbin, sizeof(polbin), any, 1);
+            memcpy(region + FFN_DP_OFF_BANK0, polbin, polsz);
+            dp_activate_bank(&ctx, 0);
+        }
+        memset(&sim, 0, sizeof(sim));
+        len = mkpkt(pkt, IP(10,0,0,2), IP(172,16,5,5), DP_IPPROTO_TCP, 4000, 22, 0, 0);
+        sim_push(&sim, pkt, len, 1);
+        n = dp_poll_once(&ctx);
+        chk(sim.txed == 0 && sim.localed == 1,
+            "unresolved next hop: packet punted, not forwarded unrewritten");
+        chk(sim.framed == 1 && sim.frame[20] == 0 && sim.frame[21] == 1 &&
+            ld_be32(sim.frame + 38) == IP(10,0,0,9),
+            "an ARP request for the next hop was transmitted");
+        chk(ctx.stat_local == 1 || ctx.stat_local > 0,
+            "the punt on the cache path is counted");
+
+        /* ECMP: the member is chosen by the hash of the NORMALISED flow key,
+         * so when both directions of a flow cross the same group -- as they
+         * do here, with both prefixes pointed at it -- they pick the same
+         * member, and distinct flows to one destination still spread. */
+        {
+            uint32_t nhs[2] = { IP(10,0,0,9), IP(10,0,1,9) };
+            uint16_t egs[2] = { 0, 1 };
+            static const uint8_t m9[6]  = { 0x02, 0x09, 0, 0, 0, 9 };
+            static const uint8_t m19[6] = { 0x02, 0x19, 0, 0, 0, 9 };
+            int grp = dp_l3_ecmp_add(&l3, nhs, egs, 2);
+            dp_l3_iface_set_mac(&l3, 1, ourmac);
+            dp_l3_neigh_add(&l3, IP(10,0,0,9), m9);
+            dp_l3_neigh_add(&l3, IP(10,0,1,9), m19);
+            chk(grp > 0 &&
+                dp_l3_route_add_ecmp(&l3, IP(172,16,0,0), 16, (uint16_t)grp) == DP_L3_OK &&
+                dp_l3_route_add_ecmp(&l3, IP(10,0,0,0), 24, (uint16_t)grp) == DP_L3_OK,
+                "ECMP group installed for both prefixes");
+            dp_activate_bank(&ctx, 0);               /* flush flows */
+            int same = 1, spread = 0;
+            uint16_t first_member = 0xffff;
+            for (uint16_t sp = 4000; sp < 4016; sp++) {
+                struct dp_result r1, r2;
+                len = mkpkt(pkt, IP(10,0,0,2), IP(172,16,5,5), DP_IPPROTO_TCP, sp, 22, 0, 0);
+                dp_process(&ctx, pkt, len, 1, &r1);
+                len = mkpkt(pkt, IP(172,16,5,5), IP(10,0,0,2), DP_IPPROTO_TCP, 22, sp, 0, 0);
+                dp_process(&ctx, pkt, len, 1, &r2);
+                if (!r1.routed || !r2.routed || r1.nh.egress != r2.nh.egress) same = 0;
+                if (first_member == 0xffff) first_member = r1.nh.egress;
+                else if (r1.nh.egress != first_member) spread = 1;
+            }
+            chk(same, "both directions of a flow take the same ECMP member");
+            chk(spread, "different flows to one destination spread across members");
+        }
+
+        ctx.l3 = NULL;
+        dp_l3_fini(&l3);
+        polsz = build_policy_bin(polbin, sizeof(polbin), rows, nrows);
+        memcpy(region + FFN_DP_OFF_BANK0, polbin, polsz);
+        dp_activate_bank(&ctx, 0);
+    }
 
     /* ---------- 9. inline analysis engines on the inspect path ---------- */
     printf("\n[9] inline analysis engines on the FP_INSPECT path\n");
