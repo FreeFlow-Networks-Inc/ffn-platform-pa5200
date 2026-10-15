@@ -74,6 +74,7 @@ def preflight(cfg):
         if sha(path.read_bytes()) != item['sha256']: raise ValueError('Pinned file changed: '+name)
     if cfg.get('provision') and not cfg.get('rootfs'): raise ValueError('Provisioning requires a staged RAM root')
     rootfs_plan(cfg)   # layout and image format; a bad entry fails here, not mid-reset
+    if cfg.get('rootfs') and 'bootcmd' not in cfg['tools']: raise ValueError('A RAM root needs the pinned bootcmd tool (u-boot namedalloc)')
     data = Path(cfg['kernel']['path']).read_bytes()
     if kernel_notes(data) != cfg['kernel']['notes_sha256']: raise ValueError('Kernel identity mismatch')
     versions = re.findall(rb'Linux version (\d+)\.(\d+)\.(\d+)',data)
@@ -85,15 +86,17 @@ def preflight(cfg):
             'notes_sha256':cfg['kernel']['notes_sha256'],'pci':cfg['pci']}
 
 
-# DP DRAM inside u-boot's own load area. Measured on the PA-5220 (2026-10-15,
-# bootmem walk with the DP halted in u-boot): named block __tmp_load covers
-# 0x20000000-0x30000000 (the kernel is staged at 0x21000000 inside it),
-# __tmp_reserved_linux covers 0x100000-0xf100000, and the first big free block
-# starts at 0x30000000 with its list header stored in place. A root staged at
-# 0x28000000 ran past 0x30000000, overwrote that header, and bootoctlinux could
-# not allocate the kernel's segments any more: command consumed, no kernel.
-ROOTFS_ADDR = 0x24000000     # 64 MiB above __tmp_load's start, clear of the staged kernel
-ROOTFS_END = 0x30000000      # __tmp_load's end: the first free-block header lives here
+# DP DRAM, carved out of u-boot's bootmem as a NAMED BLOCK before anything is
+# loaded into it. Measured on the PA-5220 (2026-10-15, bootmem walks with the DP
+# halted in u-boot): the first free block starts at 0x30000000 with its list
+# header stored in place, and cvmx bootmem writes new headers into free memory
+# whenever u-boot or Linux carves it (u-boot frees its load area at boot; Linux
+# then takes memory in 4 MiB chunks). A root staged in plain free memory was
+# therefore either corrupted (headers every 4 MiB through the image) or, when
+# it reached a header, stopped the boot. A named block is never carved by
+# either side, is not handed to Linux, and the kernel's phram maps it as is.
+ROOTFS_ADDR = 0x30000000     # the first free block at u-boot time: namedalloc takes it from there
+ROOTFS_END = 0x70000000      # one GiB of that block; larger roots need a new measurement
 ROOTFS_HEADER = 4096         # the staged header block
 MIB = 1 << 20
 
@@ -240,6 +243,10 @@ def stage_rootfs(cfg,tool,reenable):
     though the bytes landed, and the kernel's own staging area is separate."""
     plan=rootfs_plan(cfg)
     if plan is None:return None
+    # u-boot carves the named block first; the loads then fill memory nobody
+    # else owns. The bootloader reports errors only on its console, so the
+    # init's digest checks remain the authority on whether the bytes survived.
+    tool('bootcmd','namedalloc %s 0x%x 0x%x'%(plan['name'],plan['reserve_mib']*MIB,plan['address']))
     header=Path('/run/ffn-dp-rootfs-header')
     header.write_bytes(plan['header']);header.chmod(0o600)
     for offset,path in ((0,header),(plan['image_offset'],plan['image']),(plan['provision_offset'],plan['provision'])):

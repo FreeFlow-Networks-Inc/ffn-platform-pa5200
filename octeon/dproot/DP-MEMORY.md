@@ -462,9 +462,13 @@ free                         0x000f100000  size 0xef55e0
 free                         0x0030000000  size 0x7df000000 (header stored at 0x30000000)
 ```
 
-cvmx bootmem keeps each free block's header inside the block. A RAM root staged at
-0x28000000 with 134 MiB reached 0x30600000 and overwrote the header at 0x30000000; from
-then on bootoctlinux could not allocate the kernel's segments and the boot command was
-consumed without a kernel ever running. The root is therefore staged at 0x24000000, inside
-`__tmp_load` above the staged kernel, and `rootfs_plan` refuses anything reaching 0x30000000.
-Larger roots need a u-boot named block (`namedalloc`) carved out before the load.
+cvmx bootmem keeps each free block's header inside the block, and both u-boot and Linux write
+new headers whenever they carve free memory: bootoctlinux frees `__tmp_load` at boot, and Linux
+then takes its memory in 4 MiB chunks. A root staged at 0x28000000 reached the header at
+0x30000000 and stopped the boot (command consumed, no kernel); a root staged at 0x24000000
+inside `__tmp_load` booted but came up with a free-block header every 4 MiB through the image
+(`next=0x24400000 size=0x5bff8f70` at its first bytes) and failed its digests. Measured on
+2026-10-15. The executor therefore has u-boot carve a named block first
+(`oct-remote-bootcmd "namedalloc dproot <size> 0x30000000"`, the first free block at
+u-boot time) and loads into that: neither side carves a named block, Linux is not handed it,
+and phram maps it as is. Verified live: the DP booted from the RAM root into systemd.

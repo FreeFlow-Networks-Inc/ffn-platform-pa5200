@@ -47,7 +47,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertEqual(plan['image_offset'],boot.MIB)
         self.assertEqual(plan['provision_offset'],5*boot.MIB)       # 1 MiB header + 4 MiB rounded image
         self.assertEqual(plan['reserve_mib'],5)
-        self.assertEqual(plan['arguments'],'ffn_reserve=0x28000000,5M phram.phram=dproot,0x28000000,5Mi ffn.rootfs=dproot')
+        self.assertEqual(plan['arguments'],'ffn_reserve=0x30000000,5M phram.phram=dproot,0x30000000,5Mi ffn.rootfs=dproot')
         self.assertEqual(len(plan['header']),4096)
         self.assertEqual(plan['header'].rstrip(b'\0'),('FFN-ROOTFS 1 %d %s\n'%(3*boot.MIB+5,cfg['rootfs']['sha256'])).encode())
         self.assertTrue(boot.command(cfg).endswith(' rw mem=30G ffn_reserve=0x400000,4M '+plan['arguments']))
@@ -74,7 +74,7 @@ class NativeBootTests(unittest.TestCase):
         cfg=self.staged(provision_size=100)
         cfg.update(pci='0003:03:00.0',devnum=3,kernel={'path':'/images/vmlinux','sha256':'k'*64,'notes_sha256':'n'*64},
                    bootloader={'path':'/images/u-boot.bin','sha256':'b'*64},transport={'unit':'transport.service'},
-                   tools={name:{'path':'/native/'+name} for name in ('reset','boot','csr','load','stage')})
+                   tools={name:{'path':'/native/'+name} for name in ('reset','boot','csr','load','stage','bootcmd')})
         before={'boot_id':'old','notes_sha256':'n'*64};after={'boot_id':'new','notes_sha256':'n'*64}
         with tempfile.TemporaryDirectory() as run_dir, \
                 patch.object(boot,'preflight'),patch.object(boot,'exclusive',return_value=nullcontext()), \
@@ -88,15 +88,17 @@ class NativeBootTests(unittest.TestCase):
         calls=[c.args[0] for c in run.call_args_list]
         loads=[c for c in calls if c[0]=='/native/load']
         self.assertEqual(loads,[
-            ['/native/load','--devnum=3','0x28000000',str(Path(run_dir)/'run/ffn-dp-rootfs-header')],
-            ['/native/load','--devnum=3','0x28100000',cfg['rootfs']['path']],
-            ['/native/load','--devnum=3','0x28500000',cfg['provision']['path']],
+            ['/native/load','--devnum=3','0x30000000',str(Path(run_dir)/'run/ffn-dp-rootfs-header')],
+            ['/native/load','--devnum=3','0x30100000',cfg['rootfs']['path']],
+            ['/native/load','--devnum=3','0x30500000',cfg['provision']['path']],
             ['/native/load','--devnum=3','0x21000000','/images/vmlinux']])
         self.assertEqual(len(header),4096)
+        carve=['/native/bootcmd','--devnum=3','namedalloc dproot 0x600000 0x30000000']
+        self.assertIn(carve,calls);self.assertLess(calls.index(carve),calls.index(loads[0]))   # u-boot owns the block before anything lands in it
         self.assertIn(b'FFN-ROOTFS 1 ',header)
         dispatch=[c for c in calls if c[0]=='/usr/bin/python3' and c[1]=='/native/stage'][0]
-        self.assertIn('ffn.rootfs=dproot',dispatch[-1]);self.assertIn('ffn_reserve=0x28000000,6M',dispatch[-1])
-        self.assertIn('phram.phram=dproot,0x28000000,6Mi',dispatch[-1])
+        self.assertIn('ffn.rootfs=dproot',dispatch[-1]);self.assertIn('ffn_reserve=0x30000000,6M',dispatch[-1])
+        self.assertIn('phram.phram=dproot,0x30000000,6Mi',dispatch[-1])
 
     def report(self,pid1='/init',osline=''):
         return '\nBEGIN-test\n11111111-1111-1111-1111-111111111111\n6.18.49-ffn\n'+'a'*64+'  /sys/kernel/notes\n'+pid1+'\n'+osline+'\nEND-test\n'

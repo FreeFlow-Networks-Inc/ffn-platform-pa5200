@@ -82,6 +82,11 @@ DP boot ID and kernel notes and performs no DP reset in this reconnect path.
 Provision root-owned, non-group/world-writable JSON boot profiles at
 `/etc/ffn/plane-boot/cp.json` on MP and `/etc/ffn/plane-boot/dp.json` on CP.
 
+A DP profile with a `rootfs` entry (a squashfs staged into DP DRAM) needs the pinned
+`bootcmd` tool (`oct-remote-bootcmd`): the executor has u-boot carve a bootmem named block
+before loading the root, which keeps both u-boot and Linux from writing free-list headers
+through it (DP-MEMORY.md).
+
 For a DP image using a Debian NFS root exported by CP, the protected DP profile
 also selects `root_server_unit`, normally `ffn-cp-nfs.service`. Provision the
 native Debian NFS packages, export, and persistent unit before selecting this
