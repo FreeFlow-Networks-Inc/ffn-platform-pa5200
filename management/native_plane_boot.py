@@ -85,7 +85,15 @@ def preflight(cfg):
             'notes_sha256':cfg['kernel']['notes_sha256'],'pci':cfg['pci']}
 
 
-ROOTFS_ADDR = 0x28000000     # DP DRAM; below everything mem= hands to Linux (DP-MEMORY.md)
+# DP DRAM inside u-boot's own load area. Measured on the PA-5220 (2026-10-15,
+# bootmem walk with the DP halted in u-boot): named block __tmp_load covers
+# 0x20000000-0x30000000 (the kernel is staged at 0x21000000 inside it),
+# __tmp_reserved_linux covers 0x100000-0xf100000, and the first big free block
+# starts at 0x30000000 with its list header stored in place. A root staged at
+# 0x28000000 ran past 0x30000000, overwrote that header, and bootoctlinux could
+# not allocate the kernel's segments any more: command consumed, no kernel.
+ROOTFS_ADDR = 0x24000000     # 64 MiB above __tmp_load's start, clear of the staged kernel
+ROOTFS_END = 0x30000000      # __tmp_load's end: the first free-block header lives here
 ROOTFS_HEADER = 4096         # the staged header block
 MIB = 1 << 20
 
@@ -133,6 +141,7 @@ def rootfs_plan(cfg):
         plan.update(provision=archive, provision_size=psize, provision_sha256=extra['sha256'])
         end += mib_up(psize) * MIB
     plan['reserve_mib'] = end // MIB
+    if ROOTFS_ADDR + end > ROOTFS_END: raise ValueError('RAM root does not fit under u-boot load area end 0x%x' % ROOTFS_END)
     plan['header'] = ('FFN-ROOTFS 1 %d %s%s\n' % (size, item['sha256'],
                       ' %d %s' % (plan['provision_size'], plan['provision_sha256']) if plan['provision'] else '')
                       ).encode().ljust(ROOTFS_HEADER, b'\0')

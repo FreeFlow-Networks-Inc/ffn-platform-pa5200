@@ -450,3 +450,21 @@ risk".
 
 Then confirm the transports still work — `ffn-dpsh -c uname -a` and a ping across
 `ffndp0` — because those are what the reservation exists to protect.
+
+## Where the RAM root may be staged (measured 2026-10-15)
+
+With the DP halted in u-boot (pciboot u-boot, PA-5220), the bootmem map reads:
+
+```
+named __tmp_reserved_linux   0x0000100000  size 0xf000000   (the kernel's ELF segments go here)
+named __tmp_load             0x0020000000  size 0x10000000  (u-boot's load area; kernel staged at 0x21000000)
+free                         0x000f100000  size 0xef55e0
+free                         0x0030000000  size 0x7df000000 (header stored at 0x30000000)
+```
+
+cvmx bootmem keeps each free block's header inside the block. A RAM root staged at
+0x28000000 with 134 MiB reached 0x30600000 and overwrote the header at 0x30000000; from
+then on bootoctlinux could not allocate the kernel's segments and the boot command was
+consumed without a kernel ever running. The root is therefore staged at 0x24000000, inside
+`__tmp_load` above the staged kernel, and `rootfs_plan` refuses anything reaching 0x30000000.
+Larger roots need a u-boot named block (`namedalloc`) carved out before the load.
