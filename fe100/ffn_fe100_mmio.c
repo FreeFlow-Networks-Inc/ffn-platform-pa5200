@@ -6,6 +6,7 @@
 #include <endian.h>
 #include <fcntl.h>
 #include <glob.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -25,6 +26,32 @@ static unsigned char known[0x100000 / 4];
 static int writable;
 static unsigned faults;
 static FILE *trace;
+/* Every register access appends a line to the trace. For a commissioning run
+ * that is the evidence and it is bounded by the run. For the long-lived
+ * session endpoint it is not bounded by anything: the native insert/fetch
+ * calls poll indirect-access registers, so one session installation is a few
+ * hundred lines, and a box admitting sessions at any useful rate would fill
+ * its storage in a day. A caller that lives long sets a limit; after it the
+ * trace records that it stopped and nothing more. 0 means unlimited. */
+static uint64_t trace_limit, trace_bytes;
+static int trace_stopped;
+int ffn_fe100_trace_limit(uint64_t bytes) { trace_limit = bytes; return 0; }
+static void trace_line(const char *fmt, ...)
+{
+    va_list args;
+    int n;
+    if (!trace || trace_stopped) return;
+    if (trace_limit && trace_bytes >= trace_limit) {
+        fprintf(trace, "TRACE LIMIT %llu bytes reached; further accesses are not recorded\n",
+                (unsigned long long)trace_limit);
+        trace_stopped = 1;
+        return;
+    }
+    va_start(args, fmt);
+    n = vfprintf(trace, fmt, args);
+    va_end(args);
+    if (n > 0) trace_bytes += (uint64_t)n;
+}
 static pthread_mutex_t ia_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* The inspected owner ABI returns void; table helpers use these around IA. */
 void fe100_lock(uint32_t dev) { if (dev == 0) pthread_mutex_lock(&ia_mutex); }
@@ -90,22 +117,27 @@ int ffn_fe100_open(uint64_t base, const char *log_path, int enable_writes)
     trace = fopen(log_path, "w");
     if (!trace) return -1;
     setvbuf(trace, NULL, _IOLBF, 0);
+    trace_bytes = 0;
+    trace_stopped = 0;
     fd = open_bound_bar(base, enable_writes);
-    if (fd < 0) return -1;
+    if (fd < 0) { fclose(trace); trace = NULL; return -1; }
     regs = mmap(NULL, 0x100000, PROT_READ | (enable_writes ? PROT_WRITE : 0), MAP_SHARED, fd, 0);
     close(fd);
-    if (regs == MAP_FAILED) { regs = NULL; return -1; }
+    if (regs == MAP_FAILED) { regs = NULL; fclose(trace); trace = NULL; return -1; }
     {
         uint32_t probe = regs[FFN_PROBE_OFFSET / 4];
         if (probe == FFN_PROBE_VALUE) swap = 0;
         else if (le32toh(probe) == FFN_PROBE_VALUE) swap = 1;
         else {
+            /* The one failure worth leaving a trace file behind for: the
+             * value it saw is the diagnosis. The handle is still unusable. */
             fprintf(trace, "FE100 BAR byte order unrecognised: prom_chip_rev_num 0x%08x\n", probe);
             munmap((void *)regs, 0x100000);
             regs = NULL;
+            fclose(trace); trace = NULL;
             return -1;
         }
-        fprintf(trace, "BAR byte order: %s\n", swap ? "reversed" : "cpu");
+        trace_line("BAR byte order: %s\n", swap ? "reversed" : "cpu");
     }
     writable = enable_writes;
     return 0;
@@ -162,11 +194,11 @@ int fe100_reg_rd(uint32_t dev, uint32_t off, uint32_t *value)
     if (!value || !(valid(dev, off) || external_ia(dev, off) || (regs && dev == 0 && !(off & 3) &&
                                       off < 0x100000 && known[off / 4] == 2))) {
         faults++;
-        if (trace) fprintf(trace, "DENIED READ dev=%u off=0x%x\n", dev, off);
+        trace_line("DENIED READ dev=%u off=0x%x\n", dev, off);
         return 12;
     }
     *value = from_bar(regs[off / 4]);
-    fprintf(trace, "R 0x%05x 0x%08x\n", off, *value);
+    trace_line("R 0x%05x 0x%08x\n", off, *value);
     return 0;
 }
 int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
@@ -175,10 +207,10 @@ int fe100_reg_wr(uint32_t dev, uint32_t off, uint32_t value)
         (external_ia(dev, off) && off != 0x80508 &&
          (off != 0x80500 || external_command(value))))) {
         faults++;
-        if (trace) fprintf(trace, "DENIED WRITE dev=%u off=0x%x value=0x%x\n", dev, off, value);
+        trace_line("DENIED WRITE dev=%u off=0x%x value=0x%x\n", dev, off, value);
         return 12;
     }
-    fprintf(trace, "W 0x%05x 0x%08x\n", off, value);
+    trace_line("W 0x%05x 0x%08x\n", off, value);
     regs[off / 4] = to_bar(value);
     __sync_synchronize();
     return 0;

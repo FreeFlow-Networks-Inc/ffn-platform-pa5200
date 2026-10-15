@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 from ffn_fe100_clocks import SHA
-from ffn_fe100_live_sessions import prerequisites, calibration_journals, action_prerequisites, pipeline_prerequisites
+from ffn_fe100_live_sessions import (prerequisites, calibration_journals, action_prerequisites,
+                                     pipeline_prerequisites, action_journals, load_journals)
 
 
 class SessionPrerequisites(unittest.TestCase):
@@ -52,6 +53,39 @@ class SessionPrerequisites(unittest.TestCase):
                         json.dumps(dict(self.journals[3],faults=1))):
                 path.write_text(raw)
                 self.assertTrue(action_prerequisites(values,root,'boot'))
+
+    def test_action_journals_read_once_give_the_same_answer(self):
+        """A handle reads the records once; the check must not care which
+        way it got them, and a missing or damaged record must still block."""
+        values={0x98008:3,0x98174:1,0x98128:0x4d1,0x98148:0x4d1,
+                0x98130:1,0x98150:1,0x78804:0x1000e0,0x406a4:0x700070}
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            for stage in ('fcm-clocks','fcm-train-0','fcm-train-1','sem-init'):
+                (root/(stage+'-boot.json')).write_text(json.dumps(self.journals[3]))
+            records=action_journals(root,'boot')
+            self.assertEqual(set(records),{'fcm-clocks','fcm-train-0','fcm-train-1','sem-init'})
+            self.assertEqual(action_prerequisites(values,root,'boot',records),[])
+            self.assertEqual(action_prerequisites(values,root,'boot',records),
+                             action_prerequisites(values,root,'boot'))
+            # Records read before a file went bad still describe the good
+            # state -- which is exactly why the cache is only sound under the
+            # table lock -- and a fresh read sees the damage.
+            (root/'sem-init-boot.json').write_text('{')
+            self.assertEqual(action_prerequisites(values,root,'boot',records),[])
+            fresh=action_journals(root,'boot')
+            self.assertIsNone(fresh['sem-init'])
+            self.assertIn('sem-init lacks successful initialization in this boot',
+                          action_prerequisites(values,root,'boot',fresh))
+            (root/'sem-init-boot.json').write_text('[]')
+            self.assertIsNone(action_journals(root,'boot')['sem-init'])
+            (root/'sem-init-boot.json').unlink()
+            self.assertIsNone(action_journals(root,'boot')['sem-init'])
+            loaded=load_journals(root,'boot')
+            self.assertEqual(set(loaded),{'calibration','flu','actions'})
+            self.assertIsNone(loaded['flu'])
+            self.assertEqual(loaded['calibration'],{})
+            self.assertEqual(set(loaded['actions']),set(records))
 
     def test_failed_calibration_overrides_good_csr(self):
         # Actual FDT1 failure still reported DPHY=0x3cd1 and normal UMCTL.

@@ -154,6 +154,11 @@
       "core",
       "opt/ffn_interface_services.py",
       "usr/local/lib/ffn/ffn_interface_services.py"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-loopback-scope.service",
+      "etc/systemd/system/ffn-loopback-scope.service"
     ]
   ],
   "cp": [
@@ -1168,6 +1173,11 @@
       "platform",
       "octeon/debian/journald-ffn-volatile.conf",
       "etc/systemd/journald.conf.d/60-ffn-volatile.conf"
+    ],
+    [
+      "platform",
+      "octeon/debian/ffn-service-routes.service.d/10-loopback-scope.conf",
+      "etc/systemd/system/ffn-service-routes.service.d/10-loopback-scope.conf"
     ]
   ]
 }

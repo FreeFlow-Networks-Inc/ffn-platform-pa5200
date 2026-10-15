@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""MP orchestration for independent native CP/DP reset services."""
+"""MP orchestration for independent native CP/DP reset services.
+
+Two operations share one path: a restart boots the running image again and
+refuses a profile whose kernel differs; an image activation requires that
+difference, boots the processor from the newly selected profile and waits for
+it to return with that kernel's identity. Everything between (pausing the MP
+reconcilers, preparing and restoring the node, the other processor's boot
+identity staying unchanged) is the same, and so is the journal.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -24,12 +32,15 @@ def remote(program,*args,timeout=35):
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 
-def inspect(role):
+def inspect(role,activation=False):
     selected=preflight(profile('cp')) if role=='cp' else remote('native_plane_boot.py','dp','preflight')
     before={r:remote('plane_restart_node.py','observe',r) for r in ('cp','dp')}
-    if selected['notes_sha256']!=before[role]['notes_sha256']:
+    differs=selected['notes_sha256']!=before[role]['notes_sha256']
+    if differs and not activation:
         raise ValueError('Selected kernel differs from the running image; use image activation instead')
-    return {'role':role,'selected':selected,'before':before}
+    if activation and not differs:
+        raise ValueError('The selected image is already running; use restart instead')
+    return {'role':role,'selected':selected,'before':before,'image_activation':activation}
 
 
 def active_owners():
@@ -39,9 +50,9 @@ def active_owners():
     return [line.split()[0] for line in p.stdout.splitlines() if line.strip()]
 
 
-def execute(role):
+def execute(role,activation=False):
     with exclusive('/run/ffn-pa5200-restart-owner.lock'):
-        state=inspect(role);state.update(phase='preflight',units=active_owners(),started_at=time.time())
+        state=inspect(role,activation);state.update(phase='preflight',units=active_owners(),started_at=time.time())
         save(role,state)
         try:
             for unit in state['units']:subprocess.run(['systemctl','stop',unit],check=True,timeout=90)
@@ -87,6 +98,8 @@ def execute(role):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('role',choices=['cp','dp']);p.add_argument('action',choices=['preflight','restart']);a=p.parse_args()
-    try:print(json.dumps(inspect(a.role) if a.action=='preflight' else execute(a.role)))
+    p=argparse.ArgumentParser();p.add_argument('role',choices=['cp','dp']);p.add_argument('action',choices=['preflight','restart','activate'])
+    p.add_argument('--activation',action='store_true',help='preflight for an image activation: the selected kernel must differ from the running one')
+    a=p.parse_args();activation=a.action=='activate' or a.activation
+    try:print(json.dumps(inspect(a.role,activation) if a.action=='preflight' else execute(a.role,activation)))
     except Exception as e:p.exit(1,str(e)+'\n')

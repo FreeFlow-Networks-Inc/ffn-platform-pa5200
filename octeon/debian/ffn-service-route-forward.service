@@ -4,6 +4,14 @@ Documentation=file:/usr/local/sbin/ffn_service_route_forward.sh
 After=ffn-dpnet.service network.target
 Wants=ffn-dpnet.service
 
+# A policy rule in this namespace moves every 127/8 lookup into the local table,
+# where lo's 127.0.0.0/8 claims the MP (127.1.1.1): NFS root frozen, MP packets
+# dropped as martian sources (PA-5220, 2026-10-15 01:27). Nothing may add a rule
+# here before ffn-loopback-scope.service has narrowed lo's local scope and
+# written the marker.
+After=ffn-loopback-scope.service
+ConditionPathExists=/run/ffn-loopback-scope
+
 [Service]
 Type=oneshot
 RemainAfterExit=yes

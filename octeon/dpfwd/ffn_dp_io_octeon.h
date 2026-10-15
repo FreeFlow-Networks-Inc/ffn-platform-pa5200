@@ -138,7 +138,20 @@ struct oct_hw_ops {
     void (*data_free)(struct oct_ctx *c, struct oct_wqe *w);
     /* release the WQE itself */
     void (*wqe_free)(struct oct_ctx *c, struct oct_wqe *w);
+    /* Transmit a frame that did NOT arrive on the wire -- an ARP the
+     * forwarder built. The backend must copy it into a buffer the output
+     * block can DMA from and hand that buffer to the hardware, which frees
+     * it after the wire. 0: sent, hardware owns the copy. Negative: not
+     * sent, nothing allocated remains. Optional (NULL): the mocks leave it
+     * unset and the glue reports the frame as not sendable. */
+    int  (*frame_send)(struct oct_ctx *c, uint16_t port,
+                       const uint8_t *frame, uint32_t len);
 };
+
+/* Largest forwarder-built frame the glue will stage. dp_result.emit is 64
+ * bytes; this leaves room for padding to the 60-byte Ethernet minimum. */
+#define OCT_FRAME_MAX   128u
+#define OCT_FRAME_MIN   60u
 
 struct oct_port {
     uint16_t port_id;       /* index used by the policy `egress` field */
@@ -179,6 +192,19 @@ struct oct_ctx {
 
     struct oct_wqe inflight[OCT_BURST];     /* current burst */
     int      n_inflight;
+
+    /* Where the most recently received packet's data buffer came from: a
+     * global aura on OCTEON-III, an FPA pool number on OCTEON-II. A frame
+     * the forwarder builds has to be sent from hardware-owned memory, and
+     * the one allocator guaranteed to hand out buffers PKO can DMA from and
+     * free afterwards is the one PKI/IPD fills packets from. Learned from
+     * traffic rather than configured, because the SDK's packet-pool choice
+     * is made inside its helper and is not exposed by name. A core that has
+     * never received a packet has no source and cannot send one -- which is
+     * fine, since every frame the forwarder builds is a reply to one. */
+    uint32_t rx_bufsrc;
+    int      have_bufsrc;
+    uint64_t stat_frame_tx, stat_frame_fail;
 
     /* Core-local FIFOs. Payloads stay in their original FPA DMA buffers;
      * only ownership metadata is copied. Drained at the end of every poll,

@@ -634,10 +634,63 @@ static void cvmx3_hw_wqe_free(struct oct_ctx *c, struct oct_wqe *w)
     cvmx_fpa3_free(w->hw, aura, 0);
 }
 
+/*
+ * A frame the forwarder built (ARP), sent from a buffer this core allocates.
+ *
+ * The buffer comes from the aura PKI filled the last received packet from
+ * (oct_ctx.rx_bufsrc): it is the one allocator known to hand out memory
+ * PKO3 can DMA from and return to, and its global aura number is already in
+ * the 12-bit form SEND_HDR_S[AURA] takes. The descriptor is built with the
+ * SDK's pdesc API rather than oct3_build_desc(), because that path describes
+ * a chain PKI already linked (SEND_LINK) and this is a single buffer we
+ * own (SEND_GATHER). set_free(true) clears DF so PKO3 frees the buffer to
+ * the aura after the wire -- the same ownership transfer as a forwarded
+ * packet. On any failure after the alloc the buffer is returned by hand.
+ *
+ * Compile-checked against the SDK; not yet exercised on silicon, like the
+ * rest of this file.
+ */
+static int cvmx3_hw_frame_send(struct oct_ctx *c, uint16_t port,
+                               const uint8_t *frame, uint32_t len)
+{
+    const struct oct_port *p = &c->ports[port];
+    cvmx_fpa3_gaura_t aura;
+    cvmx_pko3_pdesc_t pd;
+    unsigned gaura;
+    uint8_t *buf;
+
+    if (!c->have_bufsrc)
+        return -1;
+    gaura = c->rx_bufsrc;
+    aura = __cvmx_fpa3_gaura((int)(gaura >> 10), (int)(gaura & 0x3ff));
+    {
+        int bufsz = cvmx_fpa3_get_aura_buf_size(aura);
+        if (bufsz <= 0 || len > (uint32_t)bufsz)
+            return -1;
+    }
+    buf = (uint8_t *)cvmx_fpa3_alloc(aura);
+    if (!buf)
+        return -1;
+    memcpy(buf, frame, len);
+
+    cvmx_pko3_pdesc_init(&pd);
+    if (cvmx_pko3_pdesc_buf_append(&pd, buf, len, gaura) < 0) {
+        cvmx_fpa3_free(buf, aura, 0);
+        return -1;
+    }
+    cvmx_pko3_pdesc_set_free(&pd, true);
+    if (cvmx_pko3_pdesc_transmit(&pd, (uint16_t)p->pko_queue, NULL) != 0) {
+        cvmx_fpa3_free(buf, aura, 0);   /* DQ refused it: still ours */
+        return -1;
+    }
+    return 0;
+}
+
 const struct oct_hw_ops OCT_HW_CVMX3 = {
     "cvmx(octeon-iii pki/sso/pko3)",
     cvmx3_hw_init, cvmx3_hw_fini, cvmx3_hw_work_get,
-    cvmx3_hw_pkt_send, cvmx3_hw_data_free, cvmx3_hw_wqe_free
+    cvmx3_hw_pkt_send, cvmx3_hw_data_free, cvmx3_hw_wqe_free,
+    cvmx3_hw_frame_send
 };
 
 /* With the SDK present we can ask the chip itself, which beats any inference
@@ -754,7 +807,8 @@ static void stub3_wqe_free(struct oct_ctx *c, struct oct_wqe *w) { (void)c; (voi
 const struct oct_hw_ops OCT_HW_CVMX3 = {
     "octeon-iii (unavailable: no SDK at build time)",
     stub3_init, stub3_fini, stub3_work_get,
-    stub3_send, stub3_data_free, stub3_wqe_free
+    stub3_send, stub3_data_free, stub3_wqe_free,
+    NULL
 };
 
 /* Without CVMX we cannot ask the chip, so we read the answer the management

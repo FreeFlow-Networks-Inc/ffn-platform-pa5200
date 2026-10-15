@@ -52,6 +52,28 @@ exit status, so a failed copy reports success unless the status is checked
 directly. `STAGING_DIR not defined` from the OpenWrt gcc is a warning about
 its own sysroot search and does not affect a static build.
 
+## Bounds the forwarder keeps
+
+Three properties of the per-packet path are worth knowing before changing it:
+
+* **The flow cache cannot fill up and stay that way.** Lookups probe at most
+  `DP_FLOW_PROBE_MAX` slots; an insert that finds no room in its window
+  evicts the stalest entry there; and an incremental sweep reclaims flows idle
+  for `DP_FLOW_IDLE_MS`. The table used to have none of these, so every
+  distinct 5-tuple ever seen stayed forever and, once it was full, each miss
+  walked all 262144 slots (measured: 67 ns per miss at half load, 436 µs at
+  full). A policy change still flushes everything, as before.
+* **Fragments do not carry ports.** A non-first IP fragment is flagged
+  `DP_TF_FRAG`, has no L4 fields and no scannable payload, and matches only
+  rules that put no constraint on ports. Under the fail-closed default that
+  drops it, which is the right thing for a box that does not reassemble.
+* **Frames the forwarder builds are sent.** ARP replies and requests land in
+  `dp_result.emit`, and `dp_poll_once` hands them to the backend's
+  `tx_frame`. AF_PACKET sends them directly; the OCTEON backends copy them
+  into a buffer from the aura (or pool) the last received packet came from
+  and let PKO free it after the wire. A backend without `tx_frame` is
+  counted in `stat_emit_fail` rather than silently losing them.
+
 ## Building
 
     make            native build (x86-64)

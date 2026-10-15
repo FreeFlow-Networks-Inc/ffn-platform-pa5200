@@ -171,20 +171,29 @@ def safe_install(source, root, destination):
             raise ValueError('Image overlay crosses symlink: ' + destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-    target.chmod(0o755 if destination.endswith(('.py', '.sh')) else 0o644)
+    # Native tools come out of the cross build without an extension; the
+    # 2026.10.15.1 images shipped ffn-lldpd, ffn-sfpctl and ffn-portctl as
+    # 0644 and the DP's LLDP unit died at EXEC. An ELF artifact or an
+    # executable source keeps its execute bit.
+    with open(source, 'rb') as stream:
+        elf_magic = stream.read(4) == b'ELF'
+    executable = destination.endswith(('.py', '.sh')) or elf_magic or bool(Path(source).stat().st_mode & 0o111)
+    target.chmod(0o755 if executable else 0o644)
 
 
 def enable_runtime_units(root, role, owners):
     # Only infrastructure starts automatically. Packet owners still require
     # MP intent and current CP/DP qualification before attaching interfaces.
-    units = {'cp': [('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
+    units = {'cp': [('sysinit.target', 'ffn-loopback-scope.service'),
+                    ('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
                     ('multi-user.target', 'ffn-port-led-enable.service'),
                     ('multi-user.target', 'ffn-fe100-control.service'),
                     ('multi-user.target', 'ffn-sfp-watch.service'),
                     ('timers.target', 'ffn-fe100-recovery.timer'),
                     ('timers.target', 'ffn-aggregate-watchdog.timer'),
                     ('multi-user.target', 'ffn-service-route-forward.service')],
-             'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
+             'dp': [('sysinit.target', 'ffn-loopback-scope.service'),
+                    ('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('multi-user.target', 'ffn-dhcp-server.service'),
                     ('multi-user.target', 'ffn-protect-gateway.service'),
@@ -232,6 +241,12 @@ def check_host():
 DP_POLICY_BUILTINS = ('NF_CONNTRACK', 'NF_CONNTRACK_EVENTS', 'NF_CONNTRACK_LABELS', 'NF_CONNTRACK_MARK',
                       'NF_CT_NETLINK', 'NF_NAT', 'NF_TABLES', 'NFT_CT')
 DP_POLICY_MODULES = ('NFT_FIB_IPV4', 'NFT_FIB_IPV6', 'NFT_FIB_INET', 'NFT_NUMGEN', 'NFT_HASH')
+# The DP roots from an image the CP stages into its DRAM, not from NFS: a
+# phram block device over the staged range, squashfs read-only beneath a tmpfs
+# overlay. All built in, because the initramfs that mounts it carries no
+# modules. BLK_DEV_LOOP is for the 1 MiB header that precedes the image.
+DP_ROOT_IMAGE_BUILTINS = ('SQUASHFS', 'SQUASHFS_XZ', 'OVERLAY_FS', 'MTD', 'MTD_BLOCK', 'MTD_PHRAM', 'BLK_DEV_LOOP')
+ROOT_IMAGE_LIMIT = 1024**3
 
 def check_kernel_config(conf, role):
     values = dict(re.findall(r'^(CONFIG_[A-Za-z0-9_]+)=([ym])$', conf, re.M))
@@ -250,11 +265,53 @@ def check_kernel_config(conf, role):
         # sleeps into 10ms pauses, even when forwarding cores are otherwise idle.
         if values.get('CONFIG_HIGH_RES_TIMERS') != 'y':
             raise ValueError('Missing DP timing kernel requirement: HIGH_RES_TIMERS')
+        for symbol in DP_ROOT_IMAGE_BUILTINS:
+            if values.get('CONFIG_' + symbol) != 'y':
+                raise ValueError('Missing DP RAM-root kernel requirement: ' + symbol)
     if role == 'cp':
         for symbol in ('I2C', 'I2C_OCTEON', 'I2C_CHARDEV', 'I2C_MUX', 'I2C_MUX_PCA954x', 'DEVMEM'):
             value = values.get('CONFIG_' + symbol)
             if value not in ('y', 'm') or (value == 'm' and values.get('CONFIG_MODULES') != 'y'):
                 raise ValueError('Missing CP cooling kernel requirement: ' + symbol)
+
+
+def squash_root(root, owners, dest):
+    """Pack the audited root as an xz squashfs for staging into DP DRAM.
+
+    The tree was extracted by an unprivileged builder, so on disk every file
+    belongs to the runner. Ownership comes from the same seed map the tar
+    packaging uses: root unless the seed said otherwise. Every entry in the
+    tree is written as a mksquashfs pseudo-file modification, root ones
+    included, because -all-root and -force-uid override pseudo definitions
+    rather than yielding to them (measured with squashfs-tools 4.5), and an
+    entry left out would carry the runner's uid into the image.
+    """
+    pseudo = []
+    for directory, subdirs, files in os.walk(root):
+        for entry in sorted(subdirs + files):
+            item = Path(directory) / entry
+            name = item.relative_to(root).as_posix()
+            if '"' in name or '\n' in name:
+                raise ValueError('Image path cannot be expressed to mksquashfs: ' + name)
+            uid, gid = owners.get(name, (0, 0))
+            mode = 0o777 if item.is_symlink() else item.lstat().st_mode & 0o7777
+            pseudo.append('"%s" m %o %d %d\n' % (name, mode, uid, gid))
+    definitions = dest.with_suffix('.pseudo')
+    definitions.write_text(''.join(pseudo))
+    try:
+        run(['mksquashfs', root, dest, '-comp', 'xz', '-noappend', '-no-xattrs',
+             '-no-progress', '-quiet', '-pf', definitions])
+    finally:
+        definitions.unlink(missing_ok=True)
+    with dest.open('rb') as stream:
+        magic = stream.read(4)
+    if magic != b'hsqs':
+        raise ValueError('mksquashfs did not produce a squashfs 4 image')
+    size = dest.stat().st_size
+    if size > ROOT_IMAGE_LIMIT:
+        raise ValueError('Root image exceeds the staging limit')
+    return {'name': dest.name, 'size': size, 'sha256': sha(dest), 'compression': 'xz',
+            'staging': 'CP stages it into DP DRAM at boot; see management/PLANE-RESTARTS.md'}
 
 
 def check_mdio_source(tree):
@@ -453,6 +510,10 @@ def build(config, platform, core, out):
                        'kernel_config_sha256': sha(bundle / 'kernel.config'),
                        'hardware_boot_verified': False, 'runtime_abi': 1,
                        'platform_commit': platform_rev, 'core_commit': core_rev}
+            if role == 'dp':
+                # The same tree, packed for the RAM root. The rootfs/ directory
+                # still ships for inspection and for an NFS-rooted profile.
+                details['root_image'] = squash_root(root, owners, bundle / 'rootfs.squashfs')
             (bundle / 'image.json').write_text(json.dumps(details, indent=2) + '\n')
             name = 'ffn-pa5200-' + role + '.tar.xz'
             with tarfile.open(out / name, 'w:xz') as tar:
