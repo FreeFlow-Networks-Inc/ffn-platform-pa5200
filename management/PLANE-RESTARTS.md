@@ -157,3 +157,16 @@ when the DP uses the recovery mailbox. Installation itself performs no processor
 restart. A first live restart must still be checked for service restoration,
 LACP acknowledgements, policy reconciliation and forwarding before considering
 that hardware/image combination qualified.
+
+## Policy routing and the 127/8 transport
+
+Every plane and the MP address the PCIe transports from 127/8 (`127.1.1.x`, `127.1.2.x`) while `lo`
+keeps `127.0.0.1/8`. Without policy rules the kernel resolves through the merged main trie by longest
+prefix, so the transport /24 wins over the local /8. The first `ip rule` in that namespace switches
+lookups to table order: the local table claims the peer, traffic to it goes to `lo`, and its packets
+fail reverse-path validation as local sources. The transport goes silent with no drop counters,
+and an NFS-rooted plane freezes. Measured on the PA-5220 on 2026-10-15 (CP at 01:27 after the
+service-route forwarder was restarted, DP twice after the new root ran its service-routes unit).
+Until the transport bring-up shrinks the loopback scope (`local 127.0.0.0/24` instead of `/8`) and
+records it in `/run/ffn-loopback-scope-127.0.0.0-24`, no unit may add a rule in a plane's root
+namespace; the CP forwarder is gated on that file.
