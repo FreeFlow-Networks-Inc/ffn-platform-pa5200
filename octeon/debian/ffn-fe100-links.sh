@@ -11,6 +11,10 @@ for device in 0002:00:00.0 0002:01:00.0; do
     node=/sys/bus/pci/devices/$device/enable
     test "$(cat "$node")" != 0 || echo 1 > "$node"
 done
+# A CP-only reboot leaves the FE100 running with its previous commissioning
+# (TCAM go, DDR trained); the per-boot init only knows the reset state. The
+# owner's fe100_reset sequence (core pulse) is what the vendor runs first.
+python3 /usr/local/sbin/ffn_fe100_reset.py --apply
 timeout -k 5 300 python3 /usr/local/sbin/ffn_gearbox_probe.py --apply \
     --trace /var/lib/ffn/fe100/boot-gearbox.txt
 timeout -k 5 120 python3 /usr/local/sbin/ffn_fe100_nif_probe.py --apply \

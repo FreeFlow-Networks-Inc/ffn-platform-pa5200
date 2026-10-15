@@ -254,13 +254,22 @@ def boot(cfg):
     with exclusive(lock):
         reset=False
         try:
+            # The DP's initramfs mounts its NFS root as soon as the CP answers a
+            # ping, so the export must exist before the transport comes back.
+            if cfg['role']=='dp': start_root_server(cfg)
             stop_transport(cfg)
             reenable();reset=True
             tool('reset','nowait');time.sleep(2);reenable()
             tool('boot','--loadcache',cfg['bootloader']['path']);time.sleep(20);reenable()
+            if cfg['role']=='cp' and cfg.get('fpga_step'):
+                # Any OCTEON reset leaves the CA1/CE40 socket on the a101 image; only
+                # u-boot's fpga_program can load ce40.bin, so it happens here, in the
+                # session that goes on to boot Linux. Never fatal: the step exits 0 and
+                # records the personality in /run/ffn-ce40-personality.
+                run(['/bin/bash',cfg['fpga_step']],env=env,timeout=960,hardware=True)
             if cfg['role']=='cp':
                 run(['/usr/bin/python3',cfg['tools']['stage']['path'],'--kernel',cfg['kernel']['path'],
-                     '--cores',str(cfg['cores']),'--fdt',cfg['fdt'],'--extra',cfg['extra'],'--watch','90'],env=env,hardware=True)
+                     '--cores',str(cfg['cores']),'--fdt',cfg['fdt'],'--extra',cfg['extra'],'--watch','15'],env=env,hardware=True)
                 tool('csr','SPEM0_BAR1_INDEX1','0xa43')
             else:
                 stage_rootfs(cfg,tool,reenable)
