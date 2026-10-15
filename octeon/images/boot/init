@@ -40,8 +40,13 @@ server=${root%%:*}; export_path=${root#*:}
 case "$export_path/" in */../*|*/./*|*//*) fallback 'unsafe export path' ;; esac
 $BB mkdir -p /newroot
 i=0
+# The MP starts its side of the PCIe transport only after it has dispatched
+# the boot command and waited for the acknowledgement, and a small kernel
+# reaches this loop within seconds: a one-minute budget lost the 2026.10.14.2
+# CP activation to that race. Ten minutes covers every transport start the
+# boot owners perform; a server that never appears still ends in the console.
 until $BB ping -c1 -W1 "$server" >/dev/null 2>&1; do
-    i=$((i+1)); [ "$i" -lt 60 ] || fallback 'root server unreachable'
+    i=$((i+1)); [ "$i" -lt 600 ] || fallback 'root server unreachable'
     $BB sleep 1
 done
 /sbin/ffn_nfsmount "$root" /newroot "nolock,vers=3,addr=$server,proto=tcp,mountproto=tcp,hard" || fallback 'NFS mount failed'
