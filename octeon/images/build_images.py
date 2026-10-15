@@ -184,14 +184,16 @@ def safe_install(source, root, destination):
 def enable_runtime_units(root, role, owners):
     # Only infrastructure starts automatically. Packet owners still require
     # MP intent and current CP/DP qualification before attaching interfaces.
-    units = {'cp': [('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
+    units = {'cp': [('sysinit.target', 'ffn-loopback-scope.service'),
+                    ('multi-user.target', 'ffn-port-events.service'), ('timers.target', 'ffn-copper-link.timer'),
                     ('multi-user.target', 'ffn-port-led-enable.service'),
                     ('multi-user.target', 'ffn-fe100-control.service'),
                     ('multi-user.target', 'ffn-sfp-watch.service'),
                     ('timers.target', 'ffn-fe100-recovery.timer'),
                     ('timers.target', 'ffn-aggregate-watchdog.timer'),
                     ('multi-user.target', 'ffn-service-route-forward.service')],
-             'dp': [('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
+             'dp': [('sysinit.target', 'ffn-loopback-scope.service'),
+                    ('multi-user.target', 'ffn-network.service'), ('multi-user.target', 'ffn-interface-services.service'), ('multi-user.target', 'ffn-static-routes.service'),
                     ('multi-user.target', 'ffn-security-runtime.service'),
                     ('multi-user.target', 'ffn-dhcp-server.service'),
                     ('multi-user.target', 'ffn-protect-gateway.service'),

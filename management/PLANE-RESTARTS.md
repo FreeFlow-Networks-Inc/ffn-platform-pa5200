@@ -167,6 +167,7 @@ lookups to table order: the local table claims the peer, traffic to it goes to `
 fail reverse-path validation as local sources. The transport goes silent with no drop counters,
 and an NFS-rooted plane freezes. Measured on the PA-5220 on 2026-10-15 (CP at 01:27 after the
 service-route forwarder was restarted, DP twice after the new root ran its service-routes unit).
-Until the transport bring-up shrinks the loopback scope (`local 127.0.0.0/24` instead of `/8`) and
-records it in `/run/ffn-loopback-scope-127.0.0.0-24`, no unit may add a rule in a plane's root
-namespace; the CP forwarder is gated on that file.
+`ffn-loopback-scope.service` (both images, sysinit) installs `local 127.0.0.0/16` in place of the `/8`
+and writes `/run/ffn-loopback-scope`; the CP forwarder and the DP service-routes unit are gated on
+that marker. Validated live on both planes on 2026-10-15: with the `/16` scope, table-order lookups
+still reach the transport peers and the installers' rules are harmless.
