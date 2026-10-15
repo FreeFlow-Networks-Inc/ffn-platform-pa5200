@@ -171,7 +171,14 @@ def safe_install(source, root, destination):
             raise ValueError('Image overlay crosses symlink: ' + destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-    target.chmod(0o755 if destination.endswith(('.py', '.sh')) else 0o644)
+    # Native tools come out of the cross build without an extension; the
+    # 2026.10.15.1 images shipped ffn-lldpd, ffn-sfpctl and ffn-portctl as
+    # 0644 and the DP's LLDP unit died at EXEC. An ELF artifact or an
+    # executable source keeps its execute bit.
+    with open(source, 'rb') as stream:
+        elf_magic = stream.read(4) == b'ELF'
+    executable = destination.endswith(('.py', '.sh')) or elf_magic or bool(Path(source).stat().st_mode & 0o111)
+    target.chmod(0o755 if executable else 0o644)
 
 
 def enable_runtime_units(root, role, owners):
