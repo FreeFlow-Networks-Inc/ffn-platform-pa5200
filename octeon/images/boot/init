@@ -108,6 +108,13 @@ else
     done
     /sbin/ffn_nfsmount "$root" /newroot "nolock,vers=3,addr=$server,proto=tcp,mountproto=tcp,hard" || fallback 'NFS mount failed'
 fi
+# The runtime checks run inside the root, so its /dev, /proc and /sys must be
+# there first: an image ships an empty /dev, and sshd -t dies on a missing
+# /dev/null without saying so on the console (it logs to syslog).
+for dir in proc sys dev; do
+    $BB mkdir -p "/newroot/$dir"
+    $BB mount -o bind "/$dir" "/newroot/$dir" || fallback "bind $dir failed"
+done
 $BB grep -Eq '^ID="?debian"?$' /newroot/usr/lib/os-release || fallback 'Debian root required'
 [ "$($BB cat /newroot/etc/ffn-image-role)" = "$role" ] || fallback 'root role mismatch'
 for foreign in /newroot/etc/openwrt_release /newroot/etc/centos-release /newroot/opt/ffn-compat; do
@@ -115,10 +122,6 @@ for foreign in /newroot/etc/openwrt_release /newroot/etc/centos-release /newroot
 done
 $BB chroot /newroot /usr/lib/systemd/systemd --version || fallback 'systemd runtime failed'
 $BB chroot /newroot /usr/sbin/sshd -t || fallback 'MP must provision SSH identity before boot'
-for dir in proc sys dev; do
-    $BB mkdir -p "/newroot/$dir"
-    $BB mount -o bind "/$dir" "/newroot/$dir" || fallback "bind $dir failed"
-done
 $BB mkdir -p /newroot/run /newroot/oldroot
 $BB mount -t tmpfs -o mode=755 tmpfs /newroot/run || fallback 'run mount failed'
 $BB mount -o bind / /newroot/oldroot || fallback 'preserve RAM runtime failed'
