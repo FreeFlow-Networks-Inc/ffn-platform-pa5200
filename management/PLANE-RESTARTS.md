@@ -13,6 +13,34 @@ This restarts the selected running-image boot path. It does not activate a stage
 image, change boot selection, or reset the management plane. CP restart can
 interrupt the DP control transport and traffic even though only CP is targeted.
 
+## Image activation
+
+Activation is the same operation with the opposite precondition: the boot profile
+must already name a kernel whose identity differs from the running one. The owner
+refuses that during a restart (`Selected kernel differs from the running image`)
+and requires it during an activation (`The selected image is already running`).
+Everything else is shared: the MP reconcilers are paused, the node is prepared and
+restored, the other processor's boot identity must be unchanged, and the owner
+journal records `image_activation: true`.
+
+Provision the new image first, outside the owner: unpack its root where the MP
+exports it (CP) or where the CP exports it (DP), carry the identity the image must
+not contain (SSH host keys, authorized keys, `/etc/ffn`, `/var/lib/ffn`, exports,
+vendor tool trees) into that root, stage the kernel at a pinned path, and write the
+profile with the kernel's `sha256` and `notes_sha256` and an `ffn.nfsroot=` entry in
+`extra` naming the new export. Then, from the MP and inside a transient unit so a
+dropped session cannot orphan the boot:
+
+```
+plane_restart_owner.py cp preflight --activation
+systemd-run --unit=ffn-pa5200-activate-cp --wait /usr/bin/python3 \
+    /opt/ffn-platforms/pa5200-management/plane_restart_owner.py cp activate
+```
+
+The `plane-lifecycle` resource still reports `image_activation_supported: false`;
+the console offers restart only. Rolling back is restoring the previous profile
+and running the same activation against it.
+
 ## Commissioning
 
 Install separate MP systemd owners:
