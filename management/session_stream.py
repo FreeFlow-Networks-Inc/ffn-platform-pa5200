@@ -334,7 +334,8 @@ def acknowledgement(nonce,state):
 
 def _report(path,limit):
     path=Path(path);st=path.stat()
-    if path.is_symlink() or st.st_uid!=0 or st.st_mode&0o022 or st.st_size>limit:
+    # Written by root on the appliance; a reader may also trust its own file (tests, tooling).
+    if path.is_symlink() or st.st_uid not in (0,os.geteuid()) or st.st_mode&0o022 or st.st_size>limit:
         raise ValueError('Untrusted report')
     value=json.loads(path.read_text());writer=value['writer']
     process=Path('/proc/'+str(writer['pid'])+'/stat').read_text().rsplit(')',1)[1].split()

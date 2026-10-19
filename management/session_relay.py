@@ -60,7 +60,7 @@ class InventoryPublisher:
     and at least every `heartbeat` seconds so readers can tell a quiet table from a dead relay."""
     def __init__(self,receiver,path=INVENTORY,interval=2,heartbeat=5,clock=time.monotonic,write=write_report):
         self.receiver,self.path,self.interval,self.heartbeat,self.clock,self.write=receiver,path,interval,heartbeat,clock,write
-        self.last=None;self.changes=None
+        self.last=None;self.changes=None;self.error=None
 
     def publish(self,extra=None,force=False):
         now=self.clock();receiver=self.receiver
@@ -83,7 +83,13 @@ class InventoryPublisher:
                                  nat_destination=sum(r['nat']['destination'] for r in rows),
                                  blockers=dict(sorted(blockers.items(),key=lambda item:(-item[1],item[0])))),
                    sessions=rows,**(extra or {}))
-        self.write(self.path,value);self.last=now;self.changes=receiver.changes
+        # The inventory is a report for the session views; failing to write it
+        # must never stop the relay keeping the CP synchronized.
+        self.last=now;self.changes=receiver.changes
+        try:self.write(self.path,value)
+        except OSError as error:
+            self.error=str(error)[:256];return False
+        self.error=None
         return True
 
 

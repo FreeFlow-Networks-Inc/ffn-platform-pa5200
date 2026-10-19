@@ -79,7 +79,8 @@ class L3ReceiverTests(unittest.TestCase):
         for change in ({'snapshot_digest':'f'*64},{'candidates':99},{'observed':True}):
             frames=iter([message(1,'begin',policy)]);r=self.receiver(policy);reports=[]
             ack=protocol.acknowledgement(NONCE,r.status());ack['l3'].update(change)
-            with self.assertRaises(ValueError):relay(NONCE,lambda:next(frames),lambda m:None,lambda:ack,reports.append)
+            with self.assertRaises(ValueError):
+            relay(NONCE,lambda:next(frames),lambda m:None,lambda:ack,reports.append,inventory=dict(path='/nonexistent',write=lambda path,value:None))
             self.assertFalse(reports[-1]['ready']);self.assertFalse(reports[-1]['cp_acknowledged'])
 
     def test_legacy_observations_cannot_claim_l3_readiness(self):

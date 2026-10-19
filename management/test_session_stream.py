@@ -225,11 +225,12 @@ class RelayTests(unittest.TestCase):
             state=last[-1]
             return dict(schema=1,nonce=NONCE,producer=state['producer'],sequence=state['sequence'],
                         ready=state['ready'],sessions=state['sessions'],hardware_admission=False)
-        with self.assertRaises(StopIteration):relay(NONCE,lambda:next(frames),write,read,out.append)
+        quiet=dict(path='/nonexistent',write=lambda path,value:None)
+        with self.assertRaises(StopIteration):relay(NONCE,lambda:next(frames),write,read,out.append,inventory=quiet)
         self.assertTrue(any(r.get('cp_acknowledged') and r['ready'] and r['sessions']==1 for r in out))
         self.assertFalse(out[-1]['ready']);self.assertFalse(out[-1]['cp_acknowledged'])
         frames=iter(self.frames());out=[]
-        with self.assertRaises(ValueError):relay(NONCE,lambda:next(frames),lambda m:None,lambda:{},out.append)
+        with self.assertRaises(ValueError):relay(NONCE,lambda:next(frames),lambda m:None,lambda:{},out.append,inventory=quiet)
         self.assertFalse(out[-1]['ready'])
 
     def test_relay_publishes_a_rate_limited_inventory_beside_its_status(self):
@@ -253,6 +254,10 @@ class RelayTests(unittest.TestCase):
         clock[0]=8;receiver.accept(message(5,'close',{'identity':ROW['identity']}))
         self.assertFalse(publisher.publish());clock[0]=10;self.assertTrue(publisher.publish())
         self.assertEqual(writes[-1]['sessions'],[])
+        # An unwritable report path is recorded, not raised: the relay keeps the CP synchronized.
+        def refuse(path,value):raise PermissionError('read-only /run')
+        failing=InventoryPublisher(receiver,path='/nonexistent',clock=lambda:clock[0],write=refuse)
+        self.assertFalse(failing.publish(force=True));self.assertIn('read-only',failing.error)
 
     def test_mp_relay_writes_inventory_through_its_loop(self):
         frames=iter(self.frames());receiver=protocol.Receiver(NONCE);out=[];last=[];inventories=[]
