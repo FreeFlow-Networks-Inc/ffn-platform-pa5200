@@ -2,6 +2,12 @@
 
 This module cannot program hardware. Its transport must authenticate both
 endpoints; nonce/sequence checks supply continuity, not authentication.
+
+Stream operations: `begin` (policy context, optional `l3` topology generation and
+optional `limits`), `snapshot` chunks, `synchronized`, then live `changes` batches
+(ordered upserts and closes from one conntrack burst), the per-event `upsert` and
+`close` forms a legacy producer still emits, and `heartbeat`. A batch costs the
+relay one CP round trip, which is what lets the MP keep up with a busy table.
 """
 import copy
 import ipaddress
@@ -15,6 +21,14 @@ import uuid
 
 MAX_FRAME=524288
 CAPACITY=8192
+# The MP relay's reports (session_relay.py writes them; the session views read them).
+RELAY_REPORT=Path('/run/ffn-fe100-session-relay.json')
+RELAY_INVENTORY=Path('/run/ffn-fe100-session-inventory.json')
+# Entries one `changes` message may carry; a snapshot chunk has the same bound.
+BATCH=128
+# The MP inventory report holds every compact row; a full table is a few MiB.
+INVENTORY_BYTES=32*1024*1024
+INVENTORY_FRESH_SECONDS=15
 
 
 def canonical_uuid(value):
@@ -77,6 +91,13 @@ def validate_l3(row,policy):
             if len(raw)!=6 or not any(raw) or raw[0]&1:raise ValueError('Invalid L3 unicast address')
 
 
+def validate_limits(value):
+    """The producer's table bounds: the kernel's conntrack maximum and this stream's capacity."""
+    if (not isinstance(value,dict) or set(value)!={'conntrack_max','stream_capacity'} or
+            any(type(value[k]) is not int or not 0<=value[k]<2**31 for k in value)):
+        raise ValueError('Invalid session table limits')
+
+
 class Lines:
     """Unbuffered, bounded framing; partial lines cannot extend the deadline."""
     def __init__(self,fd):self.fd=fd;self.buffer=bytearray()
@@ -121,12 +142,16 @@ class Receiver:
         # the session count (1,801 sessions took about 25 s on the PA-5220); the default keeps both equal.
         self.nonce=canonical_uuid(nonce);self.clock=clock;self.timeout=timeout
         self.backlog=timeout if backlog is None else backlog
-        self.producer=None;self.policy=None;self.sequence=0;self.sessions={}
+        self.producer=None;self.policy=None;self.limits=None;self.sequence=0;self.sessions={}
+        # since: receiver clock at which each identity entered the inventory (its age for readers).
+        # candidates/l3_candidates are maintained incrementally so status() stays O(1) per message.
+        self.since={};self.candidates=0;self.l3_candidates=0;self.changes=0
         self.ready=False;self.last=None;self.reason='awaiting snapshot';self.messages=0
         self.origin=None;self.remote_origin=None;self.remote_last=None
 
     def fence(self,reason):
-        self.ready=False;self.sessions.clear();self.reason=str(reason)[:256]
+        self.ready=False;self.sessions.clear();self.since.clear();self.candidates=self.l3_candidates=0
+        self.changes+=1;self.reason=str(reason)[:256]
 
     def tick(self):
         now=self.clock()
@@ -136,6 +161,28 @@ class Receiver:
             raise TimeoutError(self.reason)
         return now
 
+    def _store(self,row,now):
+        identity=row['identity'];previous=self.sessions.get(identity)
+        if previous is not None:
+            self.candidates-=previous['software_candidate'];self.l3_candidates-=(previous.get('l3') or {}).get('available') is True
+        self.sessions[identity]=copy.deepcopy(row);self.since.setdefault(identity,now)
+        self.candidates+=row['software_candidate'];self.l3_candidates+=(row.get('l3') or {}).get('available') is True
+        self.changes+=1
+
+    def _drop(self,identity):
+        previous=self.sessions.pop(identity,None);self.since.pop(identity,None)
+        if previous is not None:
+            self.candidates-=previous['software_candidate'];self.l3_candidates-=(previous.get('l3') or {}).get('available') is True
+            self.changes+=1
+
+    def _apply(self,op,payload,now):
+        if op=='upsert':
+            self.validate_row(payload);validate_l3(payload,self.policy);self._store(payload,now)
+        elif op=='close':
+            if not isinstance(payload,dict) or set(payload)!={'identity'}:raise ValueError('Invalid session close')
+            sha(payload['identity']);self._drop(payload['identity'])
+        else:raise ValueError('Unknown session change')
+
     def accept(self,message):
         try:
             now=self.tick()
@@ -143,7 +190,7 @@ class Receiver:
                 if (type(message['schema']) is not int or message['schema']!=1 or message['nonce']!=self.nonce or
                         not isinstance(message['unavailable'],str) or not 1<=len(message['unavailable'])<=512):
                     raise ValueError('Invalid unavailable acknowledgement')
-                self.fence(message['unavailable']);self.producer=None;self.policy=None;self.sequence=0
+                self.fence(message['unavailable']);self.producer=None;self.policy=None;self.limits=None;self.sequence=0
                 self.origin=None;self.remote_origin=None;self.remote_last=None
                 self.last=now;self.messages+=1
                 return self.status()
@@ -165,7 +212,7 @@ class Receiver:
                 if seq!=1 or p==self.producer:raise ValueError('Replayed snapshot start')
                 self.fence('receiving snapshot')
                 required={'revision','digest','nat_digest','bindings','collector'}
-                if (not isinstance(payload,dict) or set(payload) not in (required,required|{'l3'}) or
+                if (not isinstance(payload,dict) or not required<=set(payload) or set(payload)-required-{'l3','limits'} or
                         type(payload['revision']) is not int or not 0<=payload['revision']<2**63 or
                         not isinstance(payload['bindings'],dict) or not isinstance(payload['collector'],dict)):
                     raise ValueError('Invalid acknowledged policy context')
@@ -175,7 +222,10 @@ class Receiver:
                     if (not isinstance(context,dict) or set(context)!={'snapshot_digest','hardware_admission'} or
                             context['hardware_admission'] is not False):raise ValueError('Invalid L3 context')
                     sha(context['snapshot_digest'])
-                self.producer=copy.deepcopy(p);self.policy=copy.deepcopy(payload);self.sequence=0
+                if 'limits' in payload:validate_limits(payload['limits'])
+                self.producer=copy.deepcopy(p);self.sequence=0
+                self.policy={k:copy.deepcopy(v) for k,v in payload.items() if k!='limits'}
+                self.limits=copy.deepcopy(payload.get('limits'))
                 self.origin=now;self.remote_origin=emitted;self.remote_last=emitted
             elif p!=self.producer or seq!=self.sequence+1:
                 raise ValueError('DP stream identity or sequence changed')
@@ -183,24 +233,33 @@ class Receiver:
                     abs((now-self.origin)-(emitted-self.remote_origin))>=self.backlog):
                 raise ValueError('DP stream backlog or producer clock changed')
             if op=='snapshot':
-                if self.ready or not isinstance(payload,list) or not 1<=len(payload)<=128:
+                if self.ready or not isinstance(payload,list) or not 1<=len(payload)<=BATCH:
                     raise ValueError('Invalid snapshot chunk')
                 for row in payload:
                     self.validate_row(row);validate_l3(row,self.policy)
                     if row['identity'] in self.sessions:raise ValueError('Duplicate snapshot identity')
-                    self.sessions[row['identity']]=copy.deepcopy(row)
+                    self._store(row,now)
             elif op=='synchronized':
                 if self.ready or payload!={}:raise ValueError('Invalid snapshot completion')
-                self.ready=True;self.reason=None
+                self.ready=True;self.reason=None;self.changes+=1
             elif op in ('upsert','close','heartbeat'):
                 if not self.ready:raise ValueError('Snapshot is not complete')
-                if op=='upsert':
-                    self.validate_row(payload);validate_l3(payload,self.policy)
-                    self.sessions[payload['identity']]=copy.deepcopy(payload)
-                elif op=='close':
-                    if not isinstance(payload,dict) or set(payload)!={'identity'}:raise ValueError('Invalid session close')
-                    sha(payload['identity']);self.sessions.pop(payload['identity'],None)
-                elif payload!={}:raise ValueError('Invalid heartbeat')
+                if op=='heartbeat':
+                    if payload!={}:raise ValueError('Invalid heartbeat')
+                else:self._apply(op,payload,now)
+            elif op=='changes':
+                # One conntrack burst: ordered upserts and closes, applied as a unit.
+                if not self.ready:raise ValueError('Snapshot is not complete')
+                if not isinstance(payload,list) or not 1<=len(payload)<=BATCH:raise ValueError('Invalid change batch')
+                for entry in payload:
+                    if not isinstance(entry,dict) or not isinstance(entry.get('op'),str):raise ValueError('Invalid session change')
+                    if entry['op']=='upsert':
+                        if set(entry)!={'op','row'}:raise ValueError('Invalid session change')
+                        self._apply('upsert',entry['row'],now)
+                    elif entry['op']=='close':
+                        if set(entry)!={'op','identity'}:raise ValueError('Invalid session change')
+                        self._apply('close',{'identity':entry['identity']},now)
+                    else:raise ValueError('Unknown session change')
             elif op!='begin':raise ValueError('Unknown session operation')
             if len(self.sessions)>CAPACITY:raise ValueError('Session inventory capacity exceeded')
             self.sequence=seq;self.last=now;self.remote_last=emitted;self.messages+=1
@@ -221,10 +280,41 @@ class Receiver:
     def status(self):
         return dict(schema=1,mode='observation-only',hardware_admission=False,ready=self.ready,
                     producer=copy.deepcopy(self.producer),policy=copy.deepcopy(self.policy),
+                    limits=copy.deepcopy(self.limits),
                     sequence=self.sequence,messages=self.messages,sessions=len(self.sessions),
                     l3_observed=self.ready and 'l3' in (self.policy or {}),
-                    l3_candidates=sum(r.get('l3',{}).get('available') is True for r in self.sessions.values()),
-                    software_candidates=sum(r['software_candidate'] for r in self.sessions.values()),reason=self.reason)
+                    l3_candidates=self.l3_candidates,software_candidates=self.candidates,reason=self.reason)
+
+    def inventory(self):
+        """Compact rows for readers; an inventory that is not ready is empty, never partial."""
+        if not self.ready:return []
+        return [compact(row,self.since.get(identity)) for identity,row in self.sessions.items()]
+
+
+def compact(row,since=None):
+    """The browser's view of one assessed session: tuples, rule, state, counters and offload verdicts."""
+    original=row.get('original') or {};translated=row.get('translated') or {};nat=row.get('nat') or {}
+    counters=row.get('counters') or {};rule=row.get('rule') or {};l3=row.get('l3')
+    def counter(direction,field):
+        value=(counters.get(direction) or {}).get(field)
+        return value if type(value) is int else None
+    value=dict(id=row['identity'],ct=row.get('conntrack_id'),proto=original.get('protocol'),
+               src=original.get('source'),sport=original.get('source_port'),
+               dst=original.get('destination'),dport=original.get('destination_port'),
+               nat=dict(source=nat.get('source') is True,destination=nat.get('destination') is True),
+               rule=rule.get('name') if isinstance(rule,dict) else None,
+               vsys=rule.get('scope') if isinstance(rule,dict) else None,
+               state=row.get('tcp_state'),ttl=row.get('remaining_seconds'),
+               bytes=dict(c2s=counter('original','bytes'),s2c=counter('reply','bytes')),
+               packets=dict(c2s=counter('original','packets'),s2c=counter('reply','packets')),
+               candidate=row.get('software_candidate') is True,blockers=list(row.get('blockers') or []),
+               l3=(dict(available=l3.get('available') is True,pair=l3.get('pair'),
+                        blockers=list(l3.get('blockers') or [])) if isinstance(l3,dict) else None),
+               since=since)
+    if value['nat']['source'] or value['nat']['destination']:
+        value.update(xsrc=translated.get('source'),xsport=translated.get('source_port'),
+                     xdst=translated.get('destination'),xdport=translated.get('destination_port'))
+    return value
 
 
 def local_identity():
@@ -242,20 +332,40 @@ def acknowledgement(nonce,state):
     return value
 
 
+def _report(path,limit):
+    path=Path(path);st=path.stat()
+    # Written by root on the appliance; a reader may also trust its own file (tests, tooling).
+    if path.is_symlink() or st.st_uid not in (0,os.geteuid()) or st.st_mode&0o022 or st.st_size>limit:
+        raise ValueError('Untrusted report')
+    value=json.loads(path.read_text());writer=value['writer']
+    process=Path('/proc/'+str(writer['pid'])+'/stat').read_text().rsplit(')',1)[1].split()
+    alive=(writer['boot_id']==local_identity()['boot_id'] and process[19]==writer['process_start'] and process[0]!='Z')
+    return value,alive
+
+
 def read_status(path):
     """Never report a dead/restarted writer or stale snapshot as synchronized."""
     unavailable=dict(available=False,fresh=False,ready=False,hardware_admission=False)
     try:
-        path=Path(path);st=path.stat()
-        if path.is_symlink() or st.st_uid!=0 or st.st_mode&0o022 or st.st_size>MAX_FRAME:
-            return unavailable
-        value=json.loads(path.read_text());writer=value['writer']
-        process=Path('/proc/'+str(writer['pid'])+'/stat').read_text().rsplit(')',1)[1].split()
+        value,alive=_report(path,MAX_FRAME)
         fresh=(value['schema']==1 and value['hardware_admission'] is False and
-               0<=time.monotonic()-value['monotonic_time']<10 and
-               writer['boot_id']==local_identity()['boot_id'] and
-               process[19]==writer['process_start'] and process[0]!='Z')
+               0<=time.monotonic()-value['monotonic_time']<10 and alive)
         return dict(value,available=True,fresh=fresh,ready=fresh and value['ready'],
                     l3_observed=fresh and value['ready'] and value.get('l3_observed',False),
                     hardware_admission=False)
+    except (OSError,ValueError,KeyError,TypeError,IndexError):return unavailable
+
+
+def read_inventory(path):
+    """The relay's compact inventory; rows are reported only from a live writer's recent, ready report."""
+    unavailable=dict(available=False,fresh=False,ready=False,hardware_admission=False,sessions=[])
+    try:
+        value,alive=_report(path,INVENTORY_BYTES)
+        if value['schema']!=1 or value['hardware_admission'] is not False or not isinstance(value['sessions'],list):
+            raise ValueError('Invalid inventory report')
+        age=time.monotonic()-value['monotonic_time']
+        fresh=0<=age<INVENTORY_FRESH_SECONDS and alive
+        ready=fresh and value['ready'] is True
+        return dict(value,available=True,fresh=fresh,ready=ready,age_seconds=round(max(age,0),3),
+                    sessions=value['sessions'] if ready else [],hardware_admission=False)
     except (OSError,ValueError,KeyError,TypeError,IndexError):return unavailable

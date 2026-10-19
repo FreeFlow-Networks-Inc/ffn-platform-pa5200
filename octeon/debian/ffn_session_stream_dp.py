@@ -17,21 +17,43 @@ import uuid
 sys.path.insert(0,'/usr/local/lib/ffn')
 import ffn_session_feed as feed
 from ffn_session_events import subscribe,snapshot,receive,EventGap
-from session_stream import CAPACITY,Lines,canonical_uuid,send
+from session_stream import BATCH,CAPACITY,Lines,canonical_uuid,send
 
 # Seconds a snapshot may take from subscription to 'synchronized': the L3 and conntrack dumps plus one
 # Python assessment per session. 1,801 sessions on the PA-5220 (2026-10-14) took longer than the former 8 s,
 # so every attempt failed and the producer re-dumped the table continuously. The relay allows 90 s of
 # emission lag (session_relay.STREAM_BACKLOG); silence between chunks stays bounded by the relay's 10 s.
 SNAPSHOT_BUDGET=60
+# Rows per snapshot chunk: each chunk is one relay round trip through the CP.
+CHUNK=64
+CONNTRACK_MAX=Path('/proc/sys/net/netfilter/nf_conntrack_max')
 
 
-def policy_context(state,collector,topology=None):
+def policy_context(state,collector,topology=None,limits=None):
     result=dict(revision=state['revision'],digest=state['digest'],nat_digest=state['nat']['digest'],
                 bindings=state['bindings'],collector=collector)
     if topology is not None:
         result['l3']=dict(snapshot_digest=feed.l3.fingerprint(topology),hardware_admission=False)
+    if limits is not None:result['limits']=limits
     return result
+
+
+def table_limits(path=None):
+    """The kernel's session-table bound beside this stream's own capacity; omitted when unreadable."""
+    try:maximum=int(Path(CONNTRACK_MAX if path is None else path).read_text().strip())
+    except (OSError,ValueError):return None
+    if not 0<=maximum<2**31:return None
+    return dict(conntrack_max=maximum,stream_capacity=CAPACITY)
+
+
+def coalesce(changes):
+    """One entry per identity, the latest winning, in first-appearance order: a burst that creates,
+    confirms and establishes the same flow costs the receivers one upsert."""
+    ordered={}
+    for entry in changes:
+        identity=entry['identity'] if entry['op']=='close' else entry['row']['identity']
+        ordered[identity]=entry
+    return list(ordered.values())
 
 
 def replay(rows,changes):
@@ -117,12 +139,12 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
             value=feed.assess(row,rules,producer['boot_id'])
             value['l3']=feed.l3.plan(value,state['bindings'],topology)
             return value
-        event('begin',policy_context(state,collector,topology))
+        event('begin',policy_context(state,collector,topology,table_limits()))
         chunk=[]
         for row in rows:
             if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
             assessed=assess(row);known.add(assessed['identity']);chunk.append(assessed)
-            if len(chunk)==32:event('snapshot',chunk);chunk=[]
+            if len(chunk)==CHUNK:event('snapshot',chunk);chunk=[]
         if chunk:event('snapshot',chunk)
         if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
         check_context();recheck();event('synchronized',{})
@@ -134,8 +156,14 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
             readable=select.select([source,routes],[],[],.1)[0]
             if routes in readable:recheck()
             if source not in readable:continue
-            # Bound each burst so traffic cannot starve context checks.
-            deadline=clock()+.05;count=0
+            # Bound each burst so traffic cannot starve context checks. The burst
+            # leaves as one ordered `changes` batch: the relay forwards it to the
+            # CP in a single round trip, which is what keeps receipt within the
+            # backlog budget under hundreds of conntrack events per second.
+            deadline=clock()+.05;count=0;changes=[]
+            def flush():
+                nonlocal changes
+                if changes:event('changes',coalesce(changes));changes=[]
             while count<2048 and clock()<deadline:
                 try:batch=receive(source)
                 except BlockingIOError:break
@@ -145,12 +173,14 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                     # not resolve next hops on the withdrawal path.
                     assessed=feed.assess(row,rules,producer['boot_id']);ident=assessed['identity']
                     if row['event']=='end' or row['token'] is None:
-                        if ident in known:event('close',{'identity':ident});known.remove(ident)
+                        if ident in known:changes.append({'op':'close','identity':ident});known.remove(ident)
                     else:
                         assessed['l3']=feed.l3.plan(assessed,state['bindings'],topology)
                         known.add(ident)
                         if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
-                        event('upsert',assessed)
+                        changes.append({'op':'upsert','row':assessed})
+                    if len(changes)>=BATCH:flush()
+            flush()
 
 
 if __name__=='__main__':
