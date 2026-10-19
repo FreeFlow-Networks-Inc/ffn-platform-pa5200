@@ -24,7 +24,7 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
      * that key and retain the original Ethernet packet (before NAT/TTL edits).
      * Never interpret control/status or rewritten forwarding messages as data.
      */
-    if(cmh[0]!=0x10 || cmh[1] || (cmh[3]!=1 && cmh[22]))return 0;
+    if(cmh[0]!=0x10 || cmh[1] || (cmh[3]!=1 && cmh[3]!=2 && cmh[22]))return 0;
     if(cmh[3]==8 && !cmh[23]) {
         key=cmh+24;
         if(key[0]!=0x40 && key[0]!=0x80)return 0;
@@ -35,11 +35,17 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     /* NOTFLOW's eight-byte message info ends in a zone, not an exception
      * code. Confirmed against condor_notflow_msg_t and physical LACP returns. */
     else if(cmh[3]==1 && !be32(cmh+16) && !be16(cmh+20))overhead=40;
+    /* A session the chip carries hands its TCP control segments (FIN, RST) to
+     * the CPU as type 2: flow ID, then a zone in place of an exception code,
+     * and the ORIGINAL packet before any rewrite (PA-5220 run 9, 2026-10-19:
+     * DMAC still the appliance's, source still the LAN host). The kernel path
+     * must see them so conntrack leaves ESTABLISHED and the lease is withdrawn. */
+    else if(cmh[3]==2 && be32(cmh+16) && !be16(cmh+20))overhead=40;
     else return 0;
     if(size<overhead+34)return 0;
     info=wire+overhead-8;frame=wire+overhead;
     port=(be16(info)>>6)&63;lif=be16(info+4);
-    zone=key ? be16(key+2) : cmh[3]==1 ? be16(cmh+22) : scope->zone;
+    zone=key ? be16(key+2) : (cmh[3]==1 || cmh[3]==2) ? be16(cmh+22) : scope->zone;
     length=be16(info+2)&0x3fff;
     packet_type=be16(info+2)>>14;
     if(be16(info)>>12 || port!=scope->front ||
@@ -67,6 +73,9 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
         return 2; /* Dedicated control receiver only; never a data TAP. */
     }
     if(cmh[3]==1)return 0;
+    /* Type 2 carries the TCP segments of a known IPv4 flow; it has no key, so
+     * the IPv6 view (which needs one) and everything else stay rejected. */
+    if(cmh[3]==2 && ether_type!=0x0800)return 0;
     if(ether_type==0x0806) {
         if(packet_type || key || cmh[3]!=4 || cmh[23]!=32 || length<l3+28 ||
            ((be16(info+6)>>7)&0xff) || be16(frame+l3)!=1 || be16(frame+l3+2)!=0x0800 ||
@@ -95,8 +104,9 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     protocol=ip[9];
     if(ip[0]!=0x45 || (protocol!=6 && protocol!=17 && protocol!=1))return 0;
     ip_length=be16(ip+2);l4=l3+20;
+    /* A padded minimum frame is 60 bytes untagged, 64 with its VLAN tag. */
     if(ip_length<24 || ip_length>length-l3 ||
-       (ip_length!=length-l3 && length!=60) || ((be16(info+6)>>7)&0xff)!=20)return 0;
+       (ip_length!=length-l3 && length!=(l3==18?64:60)) || ((be16(info+6)>>7)&0xff)!=20)return 0;
     if(cmh[3]==4 && cmh[23]==30) {
         /* Reassembly and policy remain the software dataplane's responsibility.
          * First and later fragments retain the original IP header and payload. */
@@ -106,6 +116,7 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     transport=frame+l4;
     if(key && (key[0]!=0x40 || key[1]!=ip[9] || memcmp(key+8,ip+12,8) ||
                memcmp(key+4,transport,4)))return 0;
+    if(cmh[3]==2 && protocol!=6)return 0;
     if(protocol==1) {
         if(key || cmh[3]!=4 || cmh[23]!=32 || ip_length<28)return 0;
     } else if(!(cmh[3]==4 && cmh[23]==30) && ip[9]==6) {

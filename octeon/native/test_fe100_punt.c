@@ -83,7 +83,49 @@ static const char control_lldp_sample[]=
 "0018001401000f0010000004811c00b80000000000000000000000000000002005c000610017000e0180c200000e02ff0000"
 "000188cc02070402ff000000010405076c6f6f70060200780a3b46464e2d46453130302d6f7cf22b0cc94cd583b493f21db2"
 "df2d00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000";
+/* Real PA-5220 captures, 2026-10-19: the chip carried a NAT'd TCP download and
+ * handed the client's close to the CPU as type 2 -- flow ID, zone, original
+ * tagged frame. First the RST/ACK that aborted it, then a padded bare RST. */
+static const char session_rst_ack_sample[]=
+"00180014"
+"0100080010000002811c003809df0627000000000000600000000ffe03404046000d8a12"
+"028b77fb05f93cecef1f56c081000045080045000034506c40004006462f0a01003f97650284"
+"da460050b41f2ffcff71bb0f8014043a1dc500000101080a126b9e7a16df6f98";
+static const char session_rst_sample[]=
+"00180014"
+"0100080010000002811c003809df0627000000000000600000000ffe03404040000d8a12"
+"028b77fb05f93cecef1f56c08100004508004510002800004000400696970a01003f97650284"
+"da460050b41f2ffc00000000500400004d050000000000000000";
+static void session_punts(void) {
+    uint8_t wire[256]={0},copy[256];
+    struct ffn_fe100_punt_scope scope={24,20,13,13,4094};
+    struct ffn_fe100_punt result;
+    const char *samples[]={session_rst_ack_sample,session_rst_sample};
+    const size_t lengths[]={70,64};
+    for(unsigned k=0;k<2;k++) {
+        size_t n=strlen(samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+        assert(result.frame==wire+40 && result.length==lengths[k] && result.flow_id==0x6000);
+        assert(result.front==13 && result.in_lif==13 && result.zone==4094 && result.message==2);
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+        assert(!ffn_fe100_punt_decode(wire,n+1,&scope,&result));
+        /* the zone travels in the message, and must match the attachment */
+        scope.zone=4093;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.zone=4094;
+        scope.front=5;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.front=13;
+        /* no flow ID, or zone bits above sixteen, is not a session punt */
+        memcpy(copy,wire,n);memset(copy+24,0,4);assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[28]=1;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        /* only TCP segments of an IPv4 flow; the tag metadata must agree */
+        memcpy(copy,wire,n);copy[40+18+9]=17;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[40+18+9]=1;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[38]^=0x80;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        /* a rewritten forwarding message (type 3) with this payload is never data */
+        memcpy(copy,wire,n);copy[11]=3;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+    }
+}
 int main(void) {
+    session_punts();
     uint8_t wire[256]={0},copy[256];size_t n=strlen(sample)/2;
     struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
     struct ffn_fe100_punt result;
@@ -152,6 +194,6 @@ int main(void) {
         if(k==2) {wire[30]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
         if(k==3) {wire[45]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
     }
-    puts("FE100 native punt decoder: real wire fixture, truncation, scope and type rejection passed");
+    puts("FE100 native punt decoder: real wire fixtures (miss, exceptions, control, session close), truncation, scope and type rejection passed");
     return 0;
 }

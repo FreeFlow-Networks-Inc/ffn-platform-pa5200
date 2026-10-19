@@ -50,6 +50,13 @@ or forty-byte IPv6 FLOWUNKNOWN key, eight-byte packet information, then Ethernet
 the key; type5/code2 (TTL), type5/code13 (MTU) and type4/code30 (first fragment)
 omit it. Exception messages lack a zone field, so the attachment's current
 front/LIF binding supplies the zone. A packet cannot select another binding.
+A session the chip carries hands its TCP control segments to the CPU as
+type 2 (measured 2026-10-19 with a real NAT session: the client's FIN and its
+retransmissions, later its RSTs): the message information holds the flow ID
+and, like NOTFLOW, a zone in place of an exception code; the packet is the
+original, unrewritten frame with its VLAN tag. Data segments of the same flow
+keep forwarding in hardware. The native decoder delivers type 2 to the
+ingress data TAP so conntrack sees the close.
 Type4/code32 carries the qualified ARP/ICMP original-packet exceptions.
 It also carries ICMPv6 and LLDP. LACP uses NOTFLOW/type1, whose message-info
 field contains a zone rather than an exception code. The decoder verifies
