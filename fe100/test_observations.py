@@ -49,6 +49,14 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(final['ack']['sessions'],1)
         self.assertFalse(final['ack']['hardware_admission'])
 
+    def test_change_batches_advance_the_acknowledged_inventory_and_sizes(self):
+        self.ready();other=ROW | {'identity':'d'*64}
+        result=self.send(message(4,'changes',[{'op':'upsert','row':other},{'op':'close','identity':ROW['identity']}]))
+        self.assertTrue(result['complete']);self.assertEqual(result['ack']['sequence'],4);self.assertEqual(result['ack']['sessions'],1)
+        self.assertEqual(set(self.owner.sizes),{'d'*64});self.assertFalse(result['ack']['hardware_admission'])
+        with self.assertRaises(ValueError):self.send(message(5,'changes',[{'op':'drop','identity':'d'*64}]))
+        self.assertFalse(self.owner.status()['ready']);self.assertEqual(self.owner.sizes,{})
+
     def test_duplicate_fragment_fences_without_advancing(self):
         part=fragments(message(2,'snapshot',[ROW|{'padding':'x'*100000}]))[0]
         self.owner.chunk(part);count=len(self.withdrawals)

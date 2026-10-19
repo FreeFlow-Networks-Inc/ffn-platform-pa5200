@@ -22,6 +22,30 @@ also clear readiness. A new complete snapshot is required to recover. Missing
 policy acknowledgement is continuously reported as unavailable; the authenticated
 transport stays alive and retries without claiming any sessions are ready.
 
+## Batched changes and the MP inventory
+
+After `synchronized`, the DP producer no longer emits one message per conntrack
+event. Each burst it reads (bounded at 50 ms / 2048 events) leaves as one
+ordered `changes` message of at most 128 entries, `{"op":"upsert","row":...}`
+or `{"op":"close","identity":...}`, coalesced to the latest entry per identity.
+The relay forwards a batch to the CP in a single round trip, which is what lets
+receipt stay inside the 90 s backlog budget under hundreds of events per second;
+the per-event `upsert`/`close` forms remain accepted from a legacy producer.
+`begin` may carry `limits` (`conntrack_max`, `stream_capacity`) so the MP can
+state the table's capacity; receivers keep it out of the policy context.
+
+Beside its status report the relay publishes `/run/ffn-fe100-session-inventory.json`
+(root-only, rewritten at most every 2 s while the table changes and at least
+every 5 s): the synchronized inventory as compact rows (tuples, NAT, rule, vsys,
+TCP state, TTL, byte/packet counters, software/L3 offload verdicts and blockers,
+first-seen time) plus counters. `management/session_inventory.py` is the reader
+the core manager imports through `platform_mod('session_inventory')`: it feeds
+`/api/dashboard/sessions`, `/api/monitor/sessions` (the WebUI Session Browser)
+and the CLI's `show session info | all | id`, so every view counts the same
+table. A report from a dead or restarted relay, or older than 15 s, is reported
+as unavailable, never as an empty table; a not-ready report carries its reason.
+Hardware admission is always reported false: this is observation data.
+
 ## Installation and status
 
 The image overlay installs the shared protocol on both planes, the receiver on

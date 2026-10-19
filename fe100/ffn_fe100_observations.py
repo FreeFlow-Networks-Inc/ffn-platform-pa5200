@@ -105,6 +105,11 @@ class Observations:
                 for row in (body if op=='snapshot' else [body]):
                     self.sizes[row['identity']]=len(json.dumps(row,separators=(',',':'),allow_nan=False).encode())
             elif op=='close':self.sizes.pop(body['identity'],None)
+            elif op=='changes':
+                for entry in body:
+                    if entry['op']=='upsert':
+                        self.sizes[entry['row']['identity']]=len(json.dumps(entry['row'],separators=(',',':'),allow_nan=False).encode())
+                    else:self.sizes.pop(entry['identity'],None)
             if sum(self.sizes.values())>INVENTORY_BYTES:raise ValueError('observation inventory memory limit exceeded')
             self.reason=self.receiver.reason
             return dict(result,complete=True,ack=acknowledgement(self.receiver.nonce,state))
