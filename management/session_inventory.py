@@ -88,6 +88,7 @@ def entries(limit=100,offset=0,query=None,vsys=None,offload_filter=None,protocol
     return dict(source=SOURCE,mode='observation-only',hardware_admission=False,
                 available=table['available'],fresh=table['fresh'],ready=table['ready'],
                 age_seconds=table.get('age_seconds'),sequence=table.get('sequence') if table['fresh'] else None,
+                policy_revision=table.get('policy_revision') if table['fresh'] else None,
                 counters=(table.get('counters') or {}) if table['ready'] else {},
                 limits=(table.get('limits') or {}) if table['available'] else {},
                 reason=None if table['ready'] else (table.get('reason') if table['available'] else 'session relay report unavailable'),

@@ -66,6 +66,7 @@ class InventoryViewTests(unittest.TestCase):
         self.assertEqual(page['entries'][2]['state_name'],'ACTIVE');self.assertEqual(page['entries'][2]['offload'],'blocked')
         self.assertEqual(page['entries'][1]['offload'],'l3-ready')
         self.assertEqual((page['total'],page['matched'],page['counters']['sessions']),(3,3,3))
+        self.assertEqual((page['sequence'],page['policy_revision']),(9,12))
         self.assertEqual([e['id'][0] for e in views.entries(vsys='vsys2',inventory=self.inventory)['entries']],['c'])
         self.assertEqual([e['id'][0] for e in views.entries(vsys=2,inventory=self.inventory)['entries']],['c'])
         self.assertEqual([e['id'][0] for e in views.entries(offload_filter='blocked',inventory=self.inventory)['entries']],['b'])
