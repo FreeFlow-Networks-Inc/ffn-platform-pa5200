@@ -258,6 +258,31 @@ def main():
             m = re.fullmatch(r'(FFN_RETURN(?:_BEFORE)?) (.*)', s)
             if m: rows[m.group(1)] = dict(kv.split('=') for kv in m.group(2).split())
         reply = dict(state=rows, done='FFN_DONE' in result.get('markers', []))
+    elif op == 'steer-get':
+        # Read-only: force-forward of the production ingress ports.
+        NL = chr(92) + 'n'
+        ports = [int(x) for x in request.get('ports', [16, 32, 33])]
+        body = ''.join(' {int dst=0;int en=0;int rv=bcm_port_force_forward_get(0,%d,&dst,&en); printf("FFN_STEER port=%d destination=%%d enabled=%%d rv=%%d%s",dst,en,rv);}' % (p, p, NL) for p in ports)
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute('{' + body + ' printf("FFN_DONE' + NL + '");}', call)
+        reply = dict(ports={int(m.group(1)): dict(kv.split('=') for kv in m.group(2).split()) for m in
+                            (re.fullmatch(r'FFN_STEER port=(\d+) (.*)', s) for s in result.get('markers', [])) if m})
+    elif op == 'steer-set':
+        # The ingress switch: a production port's force-forward to the FE100 (3) or back to the DP (24).
+        NL = chr(92) + 'n'
+        port = int(request['port']); destination = int(request['destination'])
+        if port not in (16, 32, 33) or destination not in (3, 24): raise ValueError('steering is confined to ports 16/32/33 and destinations 3/24')
+        source = ('{int rv=0;int dst=0;int en=0; rv=bcm_port_force_forward_get(0,%d,&dst,&en);'
+                  ' printf("FFN_STEER_BEFORE port=%d destination=%%d enabled=%%d rv=%%d%s",dst,en,rv);'
+                  ' if(rv==0)rv=bcm_port_force_forward_set(0,%d,%d,1);'
+                  ' if(rv==0)rv=bcm_port_force_forward_get(0,%d,&dst,&en);'
+                  ' printf("FFN_STEER port=%d destination=%%d enabled=%%d rv=%%d%s",dst,en,rv); if(rv==0)printf("FFN_DONE%s");}'
+                  % (port, port, NL, port, destination, port, port, NL, NL))
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        reply = dict(markers=[s for s in result.get('markers', []) if s.startswith('FFN_STEER')], done='FFN_DONE' in result.get('markers', []))
     elif op == 'cpu-capture-begin':
         # The lab's IL-output capture (template modes 7/8): FE100 CPU messages leave on switch port 20;
         # make it RAW and force-forward it to the MP capture port 8. Returns the previous header type.
