@@ -35,7 +35,10 @@ FORWARD_LOCK=Path('/run/ffn-forward-test.lock')
 @contextmanager
 def locked(path):
     with path.open('a') as lock:
-        deadline=time.monotonic()+2
+        # The port owners (aggregate stream, SFP watch, copper link, port events) hold the
+        # faceplate lock per SDK call; a 4.7 s wait was measured on the PA-5220 on 2026-10-19.
+        # A lab readback can wait for them; it holds the lock for one recipe only.
+        deadline=time.monotonic()+30
         while True:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);break
             except BlockingIOError:

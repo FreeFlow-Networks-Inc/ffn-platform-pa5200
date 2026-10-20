@@ -56,12 +56,26 @@ def coalesce(changes):
     return list(ordered.values())
 
 
+def with_known_owner(row,ident,known):
+    """The owner an event speaks for.
+
+    Conntrack labels travel in dumps and in the events that changed them; a later
+    update (TCP state, assured, counters) carries none, which the decoder reports as
+    token None. That is silence about ownership, not a withdrawal: the owner already
+    known for the identity stands. An unknown identity without labels stays unowned.
+    """
+    if row['event']=='end' or row['token'] is not None or ident not in known:return row
+    return dict(row,token=known[ident])
+
+
 def replay(rows,changes):
     def key(row):return (row.get('zone',0),row['id'],json.dumps(row['original'],sort_keys=True))
     live={key(row):row for row in rows if row['token'] is not None}
     for row in changes:
         ident=key(row)
-        if row['event']=='end' or row['token'] is None:live.pop(ident,None)
+        if row['event']=='end':live.pop(ident,None)
+        elif row['token'] is None:
+            if ident in live:live[ident]=dict(row,token=live[ident]['token'])
         else:live[ident]=row
     if len(live)>CAPACITY:raise ValueError('Session inventory exceeds stream capacity')
     return list(live.values())
@@ -113,7 +127,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     state,collector,rules=feed.context()
     producer=dict(boot_id=collector['boot_id'],pid=os.getpid(),
         process_start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19],stream_id=str(uuid.uuid4()))
-    sequence=0;known=set();topology=None
+    sequence=0;known={};topology=None
     def recheck():
         # Do not publish a row/heartbeat computed across a topology change,
         # including changes arriving during a conntrack burst. Notifications
@@ -143,7 +157,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
         chunk=[]
         for row in rows:
             if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
-            assessed=assess(row);known.add(assessed['identity']);chunk.append(assessed)
+            assessed=assess(row);known[assessed['identity']]=assessed['token'];chunk.append(assessed)
             if len(chunk)==CHUNK:event('snapshot',chunk);chunk=[]
         if chunk:event('snapshot',chunk)
         if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
@@ -172,11 +186,13 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                     # Closed/unowned sessions need only their identity; do
                     # not resolve next hops on the withdrawal path.
                     assessed=feed.assess(row,rules,producer['boot_id']);ident=assessed['identity']
+                    if row['event']!='end' and row['token'] is None and ident in known:
+                        row=with_known_owner(row,ident,known);assessed=feed.assess(row,rules,producer['boot_id'])
                     if row['event']=='end' or row['token'] is None:
-                        if ident in known:changes.append({'op':'close','identity':ident});known.remove(ident)
+                        if ident in known:changes.append({'op':'close','identity':ident});known.pop(ident)
                     else:
                         assessed['l3']=feed.l3.plan(assessed,state['bindings'],topology)
-                        known.add(ident)
+                        known[ident]=assessed['token']
                         if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
                         changes.append({'op':'upsert','row':assessed})
                     if len(changes)>=BATCH:flush()

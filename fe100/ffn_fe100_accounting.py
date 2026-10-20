@@ -1,4 +1,4 @@
-"""Coordinate native FE100 counters with an existing native UDP CT lease.
+"""Coordinate native FE100 counters with an existing native UDP or TCP CT lease.
 
 This is control orchestration, not a packet path or admission authority.
 Caller owns serialization, connection identity, policy/path generation checks,
@@ -23,9 +23,11 @@ class AccountedSession:
     def __init__(self, stream, entries, lease, withdraw):
         if len(entries)!=2:raise ValueError('both directions required')
         self.entries=tuple(validate_entry4(e) for e in entries)
-        if any(e[1]!=17 for e in self.entries):raise ValueError('only UDP accounting is qualified')
+        protocols={e[1] for e in self.entries}
+        if protocols-{6,17}:raise ValueError('only UDP and TCP accounting are qualified')
+        if len(protocols)!=1:raise ValueError('both directions must carry one protocol')
         if len({flow_id_of(e) for e in self.entries})!=2:raise ValueError('distinct directional flow IDs required')
-        if (lease.protocol!=17 or tuple(flow_tuple(e) for e in self.entries)!=(lease.original,lease.reply) or
+        if (lease.protocol not in protocols or tuple(flow_tuple(e) for e in self.entries)!=(lease.original,lease.reply) or
                 tuple(flow_tuple(output_key4(e)) for e in self.entries)!=(reverse(lease.reply),reverse(lease.original))):
             raise ValueError('hardware NAT directions do not match the bound conntrack object')
         if not callable(withdraw):raise ValueError('acknowledged withdrawal callback required')
