@@ -98,7 +98,10 @@ MTU and first-fragment exceptions. It validates envelope lengths, message type,
 ingress identity and available tuple metadata. Unsupported formats are rejected.
 The original Ethernet packet goes through the existing member collection,
 VLAN/network, inspection and kernel policy path. It is never delivered through
-Python. Separate counters report decoded, rejected and expired returns.
+Python. Separate counters report decoded, rejected and expired returns. The owner's kernel filter hands it only the returns whose packet info names one of its own
+front ports (after the IPv4 or IPv6 key of a FLOWUNKNOWN message, or directly for exceptions and control), so a
+shared return port costs one copy per message and a rejected return is a malformed message for a front the owner
+holds, never another owner's traffic. `ffn_packet_filter_attach` installs that filter on any datagram socket.
 
 `ffn-fe100-punt-probe` is a bounded, receive-only commissioning consumer using
 the same native owner and real AF_PACKET filter. Its TAP/TX endpoints are local
