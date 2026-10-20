@@ -72,7 +72,12 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
             .front=port,.in_lif=lif,.zone=zone,.message=cmh[3],.code=cmh[3]==1?0:cmh[23]};
         return 2; /* Dedicated control receiver only; never a data TAP. */
     }
-    if(cmh[3]==1)return 0;
+    /* NOTFLOW for anything but LACP/LLDP is an original frame the chip could not
+     * classify as a flow (GRE, ESP, IGMP, PPPoE, MPLS, 802.1X ...): the inline
+     * ingress must hand it to the kernel path like any other frame, or steering
+     * the production ports into the chip would silently drop those protocols.
+     * Envelope, scope, length and tag agreement were verified above. */
+    if(cmh[3]==1)goto accepted;
     /* Type 2 carries the TCP segments of a known IPv4 flow; it has no key, so
      * the IPv6 view (which needs one) and everything else stay rejected. */
     if(cmh[3]==2 && ether_type!=0x0800)return 0;
@@ -90,7 +95,13 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
             if(key || cmh[3]!=4 || cmh[23]!=32)return 0;
             goto accepted;
         }
-        if(!key || key[0]!=0x80 || (protocol!=6 && protocol!=17) ||
+        if(!key) {
+            /* An exception without a key carries the original packet of any
+             * next header; the kernel path decides what it is. */
+            if(cmh[3]!=4 && cmh[3]!=5)return 0;
+            goto accepted;
+        }
+        if(key[0]!=0x80 || (protocol!=6 && protocol!=17) ||
            key[1]!=protocol || memcmp(key+8,ip+8,32))return 0;
         transport=frame+l4;
         if(memcmp(key+4,transport,4))return 0;
@@ -102,11 +113,20 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     if(ether_type!=0x0800 || packet_type!=1 || (key && key[0]!=0x40))return 0;
     ip=frame+l3;
     protocol=ip[9];
-    if(ip[0]!=0x45 || (protocol!=6 && protocol!=17 && protocol!=1))return 0;
-    ip_length=be16(ip+2);l4=l3+20;
-    /* A padded minimum frame is 60 bytes untagged, 64 with its VLAN tag. */
-    if(ip_length<24 || ip_length>length-l3 ||
-       (ip_length!=length-l3 && length!=(l3==18?64:60)) || ((be16(info+6)>>7)&0xff)!=20)return 0;
+    /* Every IPv4 protocol is data once the envelope, scope and lengths agree:
+     * GRE, ESP, IGMP, OSPF, SCTP and the rest belong to the kernel's policy,
+     * not to this decoder. Options are allowed; the header length must agree
+     * with the chip's metadata. A padded minimum frame is 60 bytes untagged,
+     * 64 with its VLAN tag. */
+    if(ip[0]>>4!=4 || (ip[0]&15)<5)return 0;
+    ip_length=be16(ip+2);l4=l3+(ip[0]&15)*4;
+    if(ip_length<(unsigned)((ip[0]&15)*4+4) || ip_length>length-l3 ||
+       (ip_length!=length-l3 && length!=(l3==18?64:60)) || ((be16(info+6)>>7)&0xff)!=(unsigned)((ip[0]&15)*4))return 0;
+    if(protocol!=6 && protocol!=17 && protocol!=1) {
+        /* keys and session punts are TCP/UDP by construction; exceptions are not */
+        if(key || cmh[3]==2 || (cmh[3]!=4 && cmh[3]!=5))return 0;
+        goto accepted;
+    }
     if(cmh[3]==4 && cmh[23]==30) {
         /* Reassembly and policy remain the software dataplane's responsibility.
          * First and later fragments retain the original IP header and payload. */

@@ -124,8 +124,41 @@ static void session_punts(void) {
         memcpy(copy,wire,n);copy[11]=3;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
     }
 }
+static size_t unhex(const char *s,uint8_t *out) {
+    size_t n=strlen(s)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(s+2*i,"%2x",&v)==1);out[i]=(uint8_t)v;}
+    return n;
+}
+/* The inline ingress hands back every protocol the chip cannot classify. A GRE
+ * frame arrives as NOTFLOW (zone, no key) and as a TTL exception; both are data. */
+static void other_protocols(void) {
+    uint8_t wire[256]={0};
+    struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
+    struct ffn_fe100_punt result;
+    static const uint8_t gre[60]={0x02,0xff,0,0,0,2, 0x02,0xff,0,0,0,1, 0x08,0x00,
+        0x45,0,0,0x2e,0,1,0x40,0,0x40,0x2f,0,0, 0xc6,0x12,0,1, 0xc6,0x12,0,2, 0,0,0x65,0x58};
+    /* NOTFLOW envelope from the LACP capture, carrying the GRE frame instead */
+    size_t n=unhex(control_lacp_sample,wire);
+    memcpy(wire+40,gre,sizeof(gre));n=40+sizeof(gre);
+    wire[34]=0x40;wire[35]=sizeof(gre);            /* packet type 1 (IPv4), length 60 */
+    wire[38]=0x0a;wire[39]=0x0e;                   /* L3 header 20, Ethernet 14 */
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.message==1 && result.length==sizeof(gre) && result.frame==wire+40 && result.zone==4094);
+    for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    /* the same GRE frame as a TTL-expired exception (type 5 code 2) */
+    n=unhex(ttl_sample,wire);
+    memcpy(wire+40,gre,sizeof(gre));n=40+sizeof(gre);
+    wire[34]=0x40;wire[35]=sizeof(gre);wire[38]=0x0a;wire[39]=0x0e;
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.message==5 && result.code==2 && result.length==sizeof(gre));
+    /* a FLOWUNKNOWN key can only describe TCP/UDP: a GRE packet under one is malformed */
+    n=unhex(sample,wire);
+    wire[56+23]=47;
+    assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+}
 int main(void) {
     session_punts();
+    other_protocols();
     uint8_t wire[256]={0},copy[256];size_t n=strlen(sample)/2;
     struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
     struct ffn_fe100_punt result;
