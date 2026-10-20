@@ -2,11 +2,14 @@
 /* PA-5220 CN78XX raw internal trunk. Included after ffn_dp_dma.h.
  * Register layouts and command formats checked against the operator's SDK 5.1
  * cvmx-pki, cvmx-pko3 and octeon3-ethernet driver. No SDK allocator is used.
- * This is a commissioning driver: one PKND, one SSO group, one PKO DQ.
+ * One PKND and one PKO DQ. Receive runs on up to eight SSO groups, one pinned
+ * thread each: the classifier hashes every frame to a flow tag whose low bits
+ * pick the group, so a flow stays in order on one core while flows spread.
  * Linux AF_PACKET carries the FE100/BCM envelope without interpreting it.
  */
 #include <linux/etherdevice.h>
 #include <linux/kthread.h>
+#include <linux/log2.h>
 #include <linux/rtnetlink.h>
 #include <asm/octeon/cvmx-scratch.h>
 #include <asm/octeon/cvmx-bgxx-defs.h>
@@ -14,19 +17,45 @@
 #define FFN_TRUNK_MAX 3584
 #define FFN_TX_SLOTS 64
 #define FFN_PHYS_MASK ((1ULL << 42) - 1)
+#define FFN_RX_GROUPS_MAX 8
+/* Receive groups and threads: a power of two, 1..8. The classifier adds that
+ * many low tag bits to the SSO group. Read once, at trunk registration. */
+static unsigned rx_groups = 8;
+module_param(rx_groups, uint, 0444);
+MODULE_PARM_DESC(rx_groups, "SSO receive groups and threads, a power of two 1..8");
+/* PKI_TAG_INC()_MASK bit order: 0 = bit i names byte i of the window, 1 = bit 63
+ * does. Applied at every trunk open, so it can be settled on the box by watching
+ * one flow stay in one group. */
+static unsigned tag_mask_msb;
+module_param(tag_mask_msb, uint, 0644);
+MODULE_PARM_DESC(tag_mask_msb, "tag mask bit 63 names the first byte of the window");
 static struct net_device *trunk;
-static struct task_struct *trunk_worker;
+static struct task_struct *trunk_workers[FFN_RX_GROUPS_MAX];
+static unsigned trunk_groups; /* in use after registration */
 static DEFINE_SPINLOCK(trunk_tx_lock);
 static bool trunk_running, trunk_accepting, trunk_configured, trunk_dq_open;
 static int trunk_error;
 static const char *trunk_stage = "unprepared";
-static u64 trunk_rx, trunk_rx_bytes, trunk_rx_drop, trunk_bad_dma;
+/* Per-group receive counters: each group has one writer, its own thread. */
+static u64 trunk_rx_group[FFN_RX_GROUPS_MAX], trunk_rx_bytes_group[FFN_RX_GROUPS_MAX],
+           trunk_rx_drop_group[FFN_RX_GROUPS_MAX], trunk_mismatch_group[FFN_RX_GROUPS_MAX];
+static u64 trunk_bad_dma;
+static unsigned trunk_cpu_group[FFN_RX_GROUPS_MAX]; /* the CPU each group's thread runs on */
 static u64 trunk_tx, trunk_tx_bytes, trunk_tx_done, trunk_tx_drop;
 static u64 trunk_last_ack;
 static struct {
     int index;
     unsigned long submitted;
 } trunk_pending[FFN_TX_SLOTS];
+
+static u64 trunk_sum(const u64 *values)
+{
+    u64 total = 0;
+    unsigned g;
+    for (g = 0; g < FFN_RX_GROUPS_MAX; g++)
+        total += READ_ONCE(values[g]);
+    return total;
+}
 
 /* Exact allocation membership, including range overflow, before any DMA
  * pointer is dereferenced or returned to FPA. FPA start/end alone is not enough
@@ -76,47 +105,148 @@ static u64 trunk_pko_command(unsigned op, const u64 *words, unsigned count)
     return result;
 }
 
+#define TRUNK_CSR(r, v) do { rc = csr_checked((r), (v)); if (rc) return rc; } while (0)
+
+static u64 trunk_tag_bytes(unsigned first, unsigned last)
+{
+    u64 mask = 0;
+    unsigned i;
+    for (i = first; i <= last; i++)
+        mask |= 1ULL << (tag_mask_msb ? 63 - i : i);
+    return mask;
+}
+
+/* Flow tags, applied at every open so tag_mask_msb can be settled on the box.
+ * Byte windows are relative to the start of L2 parsing, after the four-byte
+ * envelope: an untagged IPv4 frame has addresses and ports at 26..37, a
+ * VLAN-tagged one at 30..41, and a return message's FLOWUNKNOWN key (protocol,
+ * zone, ports, addresses) at 28..43. An IPv6 address or an exception's packet
+ * info falls in the same windows and still hashes one flow to one group. */
+static int trunk_tag_configure(void)
+{
+    static const struct { unsigned style, entry, first, last; } tags[] = {
+        {8, 0, 26, 37}, {9, 4, 30, 41}, {10, 8, 28, 43}, {11, 8, 28, 43},
+    };
+    union cvmx_pki_tag_incx_ctl ctl = {.u64 = 0};
+    union cvmx_pki_stylex_tag_sel sel = {.u64 = 0};
+    unsigned i;
+    int rc;
+    ctl.s.ptr_sel = 8; /* relative to PKI_WQE_S[LAPTR] */
+    for (i = 0; i < ARRAY_SIZE(tags); i++) {
+        TRUNK_CSR(CVMX_PKI_TAG_INCX_CTL(tags[i].entry), ctl.u64);
+        TRUNK_CSR(CVMX_PKI_TAG_INCX_MASK(tags[i].entry), trunk_tag_bytes(tags[i].first, tags[i].last));
+        sel.s.tag_idx0 = tags[i].entry / 4;
+        TRUNK_CSR(CVMX_PKI_STYLEX_TAG_SEL(tags[i].style), sel.u64);
+    }
+    return 0;
+}
+
+/* One parser CAM entry on every cluster, ternary fields as the SDK encodes them. */
+static int trunk_pcam_entry(unsigned bank, unsigned index, unsigned term, unsigned style,
+                            unsigned style_mask, u32 data, u32 data_mask, unsigned style_add, unsigned pmc)
+{
+    union cvmx_pki_clx_pcamx_termx t = {.u64 = 0};
+    union cvmx_pki_clx_pcamx_matchx m = {.u64 = 0};
+    union cvmx_pki_clx_pcamx_actionx a = {.u64 = 0};
+    unsigned c;
+    int rc;
+    m.s.data1 = data & data_mask;
+    m.s.data0 = ~data & data_mask;
+    a.s.style_add = style_add;
+    a.s.pmc = pmc;
+    t.s.term1 = term & 0xff;
+    t.s.term0 = ~term & 0xff;
+    t.s.style1 = style & style_mask;
+    t.s.style0 = ~style & style_mask;
+    t.s.valid = 1;
+    for (c = 0; c < 4; c++) {
+        TRUNK_CSR(CVMX_PKI_CLX_PCAMX_MATCHX(c, bank, index), m.u64);
+        TRUNK_CSR(CVMX_PKI_CLX_PCAMX_ACTIONX(c, bank, index), a.u64);
+        TRUNK_CSR(CVMX_PKI_CLX_PCAMX_TERMX(c, bank, index), t.u64);
+    }
+    return 0;
+}
+
 static int trunk_pki_configure(void)
 {
     union cvmx_pki_icgx_cfg cluster;
     union cvmx_pki_clx_pkindx_style ps = {.u64 = 0};
     union cvmx_pki_clx_pkindx_cfg pc = {.u64 = 0};
+    union cvmx_pki_clx_pkindx_skip skip = {.u64 = 0};
     union cvmx_pki_clx_stylex_cfg sc = {.u64 = 0};
+    union cvmx_pki_clx_stylex_cfg2 cfg2 = {.u64 = 0};
     union cvmx_pki_clx_stylex_alg alg = {.u64 = 0};
     union cvmx_pki_stylex_buf buf = {.u64 = 0};
     union cvmx_pki_qpg_tblx qpg = {.u64 = 0};
+    union cvmx_pki_clx_pcamx_termx term;
     union cvmx_bgxx_cmrx_rx_id_map map;
-    unsigned c;
+    unsigned c, style, bank, index;
     int rc;
-#define TRUNK_CSR(r, v) do { rc = csr_checked((r), (v)); if (rc) return rc; } while (0)
     cluster.u64 = cvmx_read_csr_node(0, CVMX_PKI_ICGX_CFG(0));
     /* CN78XX on this board has four clusters (reset mask 0xf). Some SDK
      * generated comments say 0x3; preserve the actual four-cluster mask. */
     if (cluster.s.clusters != 15 || cluster.s.maxipe_use != 0x14)
         return -ENODEV;
-    ps.s.pm = 0x7f; /* PARSE_NOTHING: preserve the proprietary header */
+    /* The parser CAM must be ours alone: an entry beyond the three written
+     * below could steer frames to a style this driver never configured. */
+    for (c = 0; c < 4; c++)
+        for (bank = 0; bank < 2; bank++)
+            for (index = 0; index < 192; index++) {
+                term.u64 = cvmx_read_csr_node(0, CVMX_PKI_CLX_PCAMX_TERMX(c, bank, index));
+                if (term.s.valid && index >= (bank ? 1 : 2))
+                    return -EBUSY;
+            }
+    /* L2 parsing of the Ethernet frame behind the four-byte envelope, addresses
+     * and ethertype only: three CAM entries end parsing there and sort frames
+     * into four styles, 8 untagged, 9 VLAN-tagged, 10 and 11 FE100 returns
+     * (a return's DMAC-low word is ITMH bytes 2-3 then CMH bytes 0-1, always
+     * xx 00 10 00). No L3/L4 parse means no L3/L4 error opcodes, which the
+     * receive path treats as drops. */
+    ps.s.pm = 0;
     ps.s.style = 8;
     pc.s.fcs_pres = 1;
+    skip.s.inst_skip = 4;
     sc.s.qpg_base = 8;
     sc.s.fcs_chk = 1;
     sc.s.fcs_strip = 1;
-    alg.s.tt = 2; /* UNTAGGED; no atomic/ordered tag locks to leak */
+    cfg2.s.tag_inc = 1; /* PKI_STYLE()_TAG_SEL[TAG_IDX0] names the byte mask */
+    alg.s.tt = 2; /* UNTAGGED: the group, not a tag lock, keeps a flow in order */
     buf.s.mb_size = FFN_DMA_BLOCK / 8;
     buf.s.first_skip = 5; /* WQE words 0..4, link word, then packet */
     buf.s.later_skip = 0;
     qpg.s.laura = dma_pools[0].aura;
+    qpg.s.grp_ok = 0;
+    qpg.s.grp_bad = 0;
+    qpg.s.grptag_ok = ilog2(trunk_groups);
+    qpg.s.grptag_bad = ilog2(trunk_groups);
     TRUNK_CSR(CVMX_PKI_PKINDX_ICGSEL(8), 0);
     TRUNK_CSR(CVMX_PKI_QPG_TBLX(8), qpg.u64);
     TRUNK_CSR(CVMX_PKI_QPG_TBLBX(8), 0);
-    TRUNK_CSR(CVMX_PKI_STYLEX_BUF(8), buf.u64);
+    for (style = 8; style < 12; style++)
+        TRUNK_CSR(CVMX_PKI_STYLEX_BUF(style), buf.u64);
     for (c = 0; c < 4; c++) {
         TRUNK_CSR(CVMX_PKI_CLX_PKINDX_STYLE(8, c), ps.u64);
         TRUNK_CSR(CVMX_PKI_CLX_PKINDX_CFG(8, c), pc.u64);
-        TRUNK_CSR(CVMX_PKI_CLX_PKINDX_SKIP(8, c), 0);
-        TRUNK_CSR(CVMX_PKI_CLX_STYLEX_CFG(8, c), sc.u64);
-        TRUNK_CSR(CVMX_PKI_CLX_STYLEX_CFG2(8, c), 0);
-        TRUNK_CSR(CVMX_PKI_CLX_STYLEX_ALG(8, c), alg.u64);
+        TRUNK_CSR(CVMX_PKI_CLX_PKINDX_SKIP(8, c), skip.u64);
+        for (style = 8; style < 12; style++) {
+            TRUNK_CSR(CVMX_PKI_CLX_STYLEX_CFG(style, c), sc.u64);
+            TRUNK_CSR(CVMX_PKI_CLX_STYLEX_CFG2(style, c), cfg2.u64);
+            TRUNK_CSR(CVMX_PKI_CLX_STYLEX_ALG(style, c), alg.u64);
+        }
     }
+    /* DMACL, bank 1: a return's fixed ITMH/CMH bytes send it to style 10. */
+    rc = trunk_pcam_entry(1, 0, 0x0b, 8, 0xff, 0x00001000, 0x00ffffff, 2, 0);
+    if (rc)
+        return rc;
+    /* ETHTYPE0, bank 0: 0x8100 adds one and stops parsing; anything else just
+     * stops. Both match styles 8 and 10 (mask 0xfd), so a return whose garbage
+     * ethertype happens to read 0x8100 lands on style 11, configured like 10. */
+    rc = trunk_pcam_entry(0, 0, 0x18, 8, 0xfd, 0x81000000, 0xffff0000, 1, 0x7f);
+    if (rc)
+        return rc;
+    rc = trunk_pcam_entry(0, 1, 0x18, 8, 0xfd, 0, 0, 0, 0x7f);
+    if (rc)
+        return rc;
     cluster.s.pena = 1;
     TRUNK_CSR(CVMX_PKI_ICGX_CFG(0), cluster.u64);
     map.u64 = cvmx_read_csr_node(0, CVMX_BGXX_CMRX_RX_ID_MAP(0, 2));
@@ -293,12 +423,12 @@ drop:
     return NETDEV_TX_OK;
 }
 
-static int trunk_receive(void)
+static int trunk_receive(unsigned g)
 {
-    /* SSO GET_WORK: node0, grouped, return group, group0, NOWAIT. */
+    /* SSO GET_WORK: node 0, grouped, return group, group g, NOWAIT. */
     u64 result = cvmx_read_csr((2ULL << 62) | (1ULL << 48) |
                               ((u64)CVMX_OCT_DID_TAG_SWTAG << 40) |
-                              (1ULL << 30) | (1ULL << 29));
+                              (1ULL << 30) | (1ULL << 29) | ((u64)g << 4));
     struct ffn_dma_pool *p = &dma_pools[0];
     struct sk_buff *skb = NULL;
     int wi, indices[64];
@@ -315,8 +445,12 @@ static int trunk_receive(void)
     n = (word0 >> 24) & 255;
     len = word1 >> 48;
     if (((word0 >> 48) & 4095) != p->aura || (word0 & 63) != 8 ||
-        ((word1 >> 34) & 1023) != 0 || n == 0 || n > ARRAY_SIZE(indices))
+        n == 0 || n > ARRAY_SIZE(indices))
         goto corrupt;
+    /* The classifier's group must be the one this thread drains; anything
+     * else is a programming fault worth counting, not a corrupt buffer. */
+    if (((word1 >> 34) & 1023) != g)
+        trunk_mismatch_group[g]++;
     if (len >= 14 && len <= FFN_TRUNK_MAX && !(word2 & 0x7ff))
         skb = netdev_alloc_skb_ip_align(trunk, len);
     for (i = 0; i < n; i++) {
@@ -351,10 +485,11 @@ static int trunk_receive(void)
         skb_reset_mac_header(skb);
         skb->protocol = htons(ETH_P_802_2);
         skb->pkt_type = PACKET_OTHERHOST; /* AF_PACKET only; no host IP parse */
-        trunk_rx++; trunk_rx_bytes += len;
+        skb_record_rx_queue(skb, g); /* fanout by queue keeps a flow on one owner lane */
+        trunk_rx_group[g]++; trunk_rx_bytes_group[g] += len;
         netif_rx(skb);
     } else {
-        trunk_rx_drop++;
+        trunk_rx_drop_group[g]++;
     }
     return 1;
 corrupt_skb:
@@ -365,34 +500,43 @@ corrupt:
     return -EFAULT; /* no speculative frees */
 }
 
-static int trunk_poll(void *unused)
+static int trunk_poll(void *argument)
 {
+    unsigned g = (unsigned long)argument, idle_us = 0;
     while (!kthread_should_stop()) {
         unsigned n = 0, pending;
         unsigned long flags;
         if (READ_ONCE(trunk_running) && !READ_ONCE(trunk_error))
-            for (n = 0; n < 64 && trunk_receive() > 0; n++)
+            for (; n < 64 && trunk_receive(g) > 0; n++)
                 ;
-        spin_lock_irqsave(&trunk_tx_lock, flags);
-        pending = trunk_reap();
-        if (trunk_accepting && !trunk_error && pending < FFN_TX_SLOTS)
-            netif_wake_queue(trunk);
-        spin_unlock_irqrestore(&trunk_tx_lock, flags);
-        if (READ_ONCE(trunk_error)) {
-            union cvmx_pki_buf_ctl ctl;
-            ctl.u64 = cvmx_read_csr_node(0, CVMX_PKI_BUF_CTL);
-            ctl.s.pki_en = 0;
-            cvmx_write_csr_node(0, CVMX_PKI_BUF_CTL, ctl.u64);
-            netif_carrier_off(trunk);
-            netif_stop_queue(trunk);
+        if (!g) {
+            /* Completions, the transmit queue and the fault path belong to
+             * the first thread; the others only drain their groups. */
+            spin_lock_irqsave(&trunk_tx_lock, flags);
+            pending = trunk_reap();
+            if (trunk_accepting && !trunk_error && pending < FFN_TX_SLOTS)
+                netif_wake_queue(trunk);
+            spin_unlock_irqrestore(&trunk_tx_lock, flags);
+            if (READ_ONCE(trunk_error)) {
+                union cvmx_pki_buf_ctl ctl;
+                ctl.u64 = cvmx_read_csr_node(0, CVMX_PKI_BUF_CTL);
+                ctl.s.pki_en = 0;
+                cvmx_write_csr_node(0, CVMX_PKI_BUF_CTL, ctl.u64);
+                netif_carrier_off(trunk);
+                netif_stop_queue(trunk);
+            }
         }
-        /* A full receive budget means there may still be queued work. Yield
-         * to runnable tasks, then drain another bounded burst without the
-         * fixed idle delay. Reap TX and check stop/error on every pass. */
-        if (n == 64 && !READ_ONCE(trunk_error))
+        /* Anything received means more may be queued: go straight back.
+         * Otherwise back off from 50 us towards 500 us while the group stays
+         * empty, so idle threads cost little and the first packet of a burst
+         * waits half a millisecond at most. */
+        if (n) {
+            idle_us = 0;
             cond_resched();
-        else
-            usleep_range(500, 1000);
+            continue;
+        }
+        idle_us = idle_us ? min(idle_us * 2, 500u) : 50;
+        usleep_range(idle_us, idle_us + idle_us / 2);
     }
     return 0;
 }
@@ -428,6 +572,10 @@ static int trunk_open(struct net_device *dev)
             goto failed;
         trunk_configured = true;
     }
+    trunk_stage = "tag-configure";
+    rc = trunk_tag_configure();
+    if (rc)
+        goto failed;
     trunk_stage = "pko-enable";
     rc = csr_checked(CVMX_PKO_ENABLE, 1);
     if (rc)
@@ -487,8 +635,13 @@ static int trunk_stop(struct net_device *dev)
         spin_lock_irqsave(&trunk_tx_lock, flags);
         pending = trunk_reap();
         spin_unlock_irqrestore(&trunk_tx_lock, flags);
-        if (!pending && !(cvmx_read_csr_node(0, CVMX_SSO_GRPX_AQ_CNT(0))))
-            break;
+        if (!pending) {
+            unsigned g, queued = 0;
+            for (g = 0; g < trunk_groups; g++)
+                queued += cvmx_read_csr_node(0, CVMX_SSO_GRPX_AQ_CNT(g));
+            if (!queued)
+                break;
+        }
         usleep_range(1000, 2000);
     }
     WRITE_ONCE(trunk_running, false);
@@ -511,8 +664,8 @@ static int trunk_stop(struct net_device *dev)
 
 static void trunk_stats(struct net_device *dev, struct rtnl_link_stats64 *s)
 {
-    s->rx_packets = READ_ONCE(trunk_rx); s->rx_bytes = READ_ONCE(trunk_rx_bytes);
-    s->rx_dropped = READ_ONCE(trunk_rx_drop); s->rx_errors = READ_ONCE(trunk_bad_dma);
+    s->rx_packets = trunk_sum(trunk_rx_group); s->rx_bytes = trunk_sum(trunk_rx_bytes_group);
+    s->rx_dropped = trunk_sum(trunk_rx_drop_group); s->rx_errors = READ_ONCE(trunk_bad_dma);
     s->tx_packets = READ_ONCE(trunk_tx); s->tx_bytes = READ_ONCE(trunk_tx_bytes);
     s->tx_dropped = READ_ONCE(trunk_tx_drop);
 }
@@ -523,7 +676,7 @@ static const struct net_device_ops trunk_ops = {
 
 static int trunk_register(void)
 {
-    unsigned i;
+    unsigned i, g, cpu;
     int rc;
     if (trunk)
         return 0;
@@ -549,15 +702,33 @@ static int trunk_register(void)
     rc = register_netdevice(trunk);
     if (rc)
         goto fail;
-    trunk_worker = kthread_create(trunk_poll, NULL, "ffn-packet-rx");
-    if (IS_ERR(trunk_worker)) {
-        rc = PTR_ERR(trunk_worker);
-        unregister_netdevice(trunk);
-        goto fail;
+    trunk_groups = rx_groups >= 1 && rx_groups <= FFN_RX_GROUPS_MAX && is_power_of_2(rx_groups) ?
+                   rx_groups : FFN_RX_GROUPS_MAX;
+    /* SSO core state must remain on the same core between work requests: one
+     * thread per group, each pinned, leaving the boot CPU alone when there are
+     * enough others. */
+    cpu = cpumask_first(cpu_online_mask);
+    if (num_online_cpus() > trunk_groups)
+        cpu = cpumask_next(cpu, cpu_online_mask);
+    for (g = 0; g < trunk_groups; g++) {
+        struct task_struct *worker = kthread_create(trunk_poll, (void *)(unsigned long)g,
+                                                   "ffn-packet-rx%u", g);
+        if (IS_ERR(worker)) {
+            rc = PTR_ERR(worker);
+            while (g--)
+                kthread_stop(trunk_workers[g]);
+            unregister_netdevice(trunk);
+            goto fail;
+        }
+        kthread_bind(worker, cpu);
+        trunk_workers[g] = worker;
+        trunk_cpu_group[g] = cpu;
+        cpu = cpumask_next(cpu, cpu_online_mask);
+        if (cpu >= nr_cpu_ids)
+            cpu = cpumask_first(cpu_online_mask);
     }
-    /* SSO core state must remain on the same core between work requests. */
-    kthread_bind(trunk_worker, cpumask_first(cpu_online_mask));
-    wake_up_process(trunk_worker);
+    for (g = 0; g < trunk_groups; g++)
+        wake_up_process(trunk_workers[g]);
     trunk_stage = "registered";
     return 0;
 fail:
@@ -568,14 +739,30 @@ fail:
 
 static void trunk_status(struct seq_file *m)
 {
+    unsigned g;
     seq_printf(m, "\"trunk\":{\"interface\":\"%s\",\"running\":%s,"
         "\"error\":%d,\"stage\":\"%s\",\"dq_open\":%s,\"last_ack\":\"0x%016llx\","
         "\"rx\":%llu,\"tx_accepted\":%llu,\"tx_completed\":%llu,"
         "\"wire_tx\":%llu,\"wire_rx\":%llu,\"tx_rejected\":%llu,"
-        "\"bad_dma\":%llu,\"physical_forwarding_verified\":false},",
+        "\"bad_dma\":%llu,\"physical_forwarding_verified\":false,"
+        "\"rx_groups\":%u,\"tag_mask_msb\":%u,\"group_mismatch\":%llu,\"rx_per_group\":[",
         trunk ? trunk->name : "", trunk_running ? "true" : "false", trunk_error,
         trunk_stage, trunk_dq_open ? "true" : "false", trunk_last_ack,
-        trunk_rx, trunk_tx, trunk_tx_done,
+        trunk_sum(trunk_rx_group), trunk_tx, trunk_tx_done,
         cvmx_read_csr_node(0, CVMX_BGXX_CMRX_TX_STAT5(0,2)),
-        cvmx_read_csr_node(0, CVMX_BGXX_CMRX_RX_STAT0(0,2)), trunk_tx_drop, trunk_bad_dma);
+        cvmx_read_csr_node(0, CVMX_BGXX_CMRX_RX_STAT0(0,2)), trunk_tx_drop, trunk_bad_dma,
+        trunk_groups, tag_mask_msb, trunk_sum(trunk_mismatch_group));
+    for (g = 0; g < trunk_groups; g++)
+        seq_printf(m, "%s%llu", g ? "," : "", READ_ONCE(trunk_rx_group[g]));
+    seq_puts(m, "],\"rx_drop_per_group\":[");
+    for (g = 0; g < trunk_groups; g++)
+        seq_printf(m, "%s%llu", g ? "," : "", READ_ONCE(trunk_rx_drop_group[g]));
+    seq_puts(m, "],\"rx_cpus\":[");
+    for (g = 0; g < trunk_groups; g++)
+        seq_printf(m, "%s%u", g ? "," : "", trunk_cpu_group[g]);
+    seq_puts(m, "],\"sso_backlog\":[");
+    for (g = 0; g < trunk_groups; g++)
+        seq_printf(m, "%s%llu", g ? "," : "",
+                   (unsigned long long)cvmx_read_csr_node(0, CVMX_SSO_GRPX_AQ_CNT(g)));
+    seq_puts(m, "]},");
 }
