@@ -187,21 +187,26 @@ static int trunk_pki_configure(void)
      * generated comments say 0x3; preserve the actual four-cluster mask. */
     if (cluster.s.clusters != 15 || cluster.s.maxipe_use != 0x14)
         return -ENODEV;
-    /* The parser CAM must be ours alone: an entry beyond the three written
-     * below could steer frames to a style this driver never configured. */
+    /* The parser CAM must be ours alone: an entry beyond the two written
+     * below could steer frames to a style this driver never configured, and
+     * two entries of one bank matching one frame is a CAM conflict, after
+     * which the parser's state is unpredictable and the frame is lost. */
     for (c = 0; c < 4; c++)
         for (bank = 0; bank < 2; bank++)
             for (index = 0; index < 192; index++) {
                 term.u64 = cvmx_read_csr_node(0, CVMX_PKI_CLX_PCAMX_TERMX(c, bank, index));
-                if (term.s.valid && index >= (bank ? 1 : 2))
+                if (term.s.valid && index >= 1)
                     return -EBUSY;
             }
-    /* L2 parsing of the Ethernet frame behind the four-byte envelope, addresses
-     * and ethertype only: three CAM entries end parsing there and sort frames
-     * into four styles, 8 untagged, 9 VLAN-tagged, 10 and 11 FE100 returns
-     * (a return's DMAC-low word is ITMH bytes 2-3 then CMH bytes 0-1, always
-     * xx 00 10 00). No L3/L4 parse means no L3/L4 error opcodes, which the
-     * receive path treats as drops. */
+    /* L2 parsing of the Ethernet frame behind the four-byte envelope: two CAM
+     * entries, one per bank so no frame can match both, sort frames into four
+     * styles, 8 untagged, 9 VLAN-tagged, 10 and 11 FE100 returns (a return's
+     * DMAC-low word is ITMH bytes 2-3 then CMH bytes 0-1, always xx 00 10 00).
+     * No ethertype entry names IP, so the parser never identifies an L3 or L4
+     * layer and can raise no L3/L4 error opcode, which the receive path would
+     * treat as a drop. A catch-all ethertype entry beside the VLAN entry did
+     * exactly that conflict on the PA-5220 (2026-10-20): every tagged frame
+     * matched both and vanished without a work entry. */
     ps.s.pm = 0;
     ps.s.style = 8;
     pc.s.fcs_pres = 1;
@@ -238,13 +243,10 @@ static int trunk_pki_configure(void)
     rc = trunk_pcam_entry(1, 0, 0x0b, 8, 0xff, 0x00001000, 0x00ffffff, 2, 0);
     if (rc)
         return rc;
-    /* ETHTYPE0, bank 0: 0x8100 adds one and stops parsing; anything else just
-     * stops. Both match styles 8 and 10 (mask 0xfd), so a return whose garbage
-     * ethertype happens to read 0x8100 lands on style 11, configured like 10. */
-    rc = trunk_pcam_entry(0, 0, 0x18, 8, 0xfd, 0x81000000, 0xffff0000, 1, 0x7f);
-    if (rc)
-        return rc;
-    rc = trunk_pcam_entry(0, 1, 0x18, 8, 0xfd, 0, 0, 0, 0x7f);
+    /* ETHTYPE0, bank 0: 0x8100 adds one. It matches styles 8 and 10 (mask
+     * 0xfd), so a return whose garbage ethertype happens to read 0x8100 lands
+     * on style 11, configured like 10. */
+    rc = trunk_pcam_entry(0, 0, 0x18, 8, 0xfd, 0x81000000, 0xffff0000, 1, 0);
     if (rc)
         return rc;
     cluster.s.pena = 1;
