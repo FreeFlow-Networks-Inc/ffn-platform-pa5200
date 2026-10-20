@@ -46,6 +46,15 @@ class PuntTests(NativePacketTests):
             self.assertEqual(self.peer.recv(4096),wire[offset:]);self.empty(self.peer)
         self.assertEqual(self.stats(),[14,0,0])
 
+    def test_appliance_captures_reach_the_tap(self):
+        """What the PA-5220 rejected on the inline WAN path, re-addressed to the harness's scope."""
+        self.assertEqual(self.attach(),0)
+        for name,at,zone_at in (('exception39_sample',32,None),('gre_miss_sample',48,34)):
+            raw=bytearray(sample(name));raw[at:at+2]=(23<<6).to_bytes(2,'big');raw[at+4:at+6]=(23).to_bytes(2,'big')
+            if zone_at is not None:raw[zone_at:zone_at+2]=(4094).to_bytes(2,'big')
+            self.inject.send(raw);self.poll();self.assertEqual(self.peer.recv(4096),bytes(raw[40 if at==32 else 56:]),name);self.empty(self.peer)
+        self.assertEqual(self.stats(),[2,0,0])
+
     def test_link_control_never_enters_data_tap(self):
         self.assertEqual(self.attach(),0)
         for name in ('control_lacp_sample','control_lldp_sample'):
