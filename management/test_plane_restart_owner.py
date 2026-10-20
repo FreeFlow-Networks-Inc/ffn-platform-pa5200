@@ -31,5 +31,19 @@ class Inspect(unittest.TestCase):
                          (True, 'new', 'old'))
 
 
+class RebootFlag(unittest.TestCase):
+    def test_the_flag_names_the_identity_being_replaced(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        flags = Path(tempfile.mkdtemp())
+        path = owner.write_reboot_flag('dp', observe('dp', 'notes', boot='boot-1'), {'notes_sha256': 'notes'}, flags=flags)
+        flag = json.loads(path.read_text())
+        self.assertEqual(path, flags / 'dp.json')
+        self.assertEqual((flag['plane'], flag['boot_id_before'], flag['notes_sha256'], flag['by']),
+                         ('dp', 'boot-1', 'notes', 'plane_restart_owner'))
+        self.assertEqual(oct(path.stat().st_mode & 0o777), '0o600')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -16,11 +16,23 @@ import time
 from native_plane_boot import profile, preflight, boot, exclusive
 
 STATE=Path('/var/lib/ffn-ngfw/pa5200-restart-owner')
+# Beside the MP plane daemon's journal: a write bound to the boot identity named
+# here is superseded, not unknown, once the processor returns with another.
+REBOOT_FLAGS=Path('/var/lib/ffn-plane/mp/reboots')
 
 
 def save(role,state):
     STATE.mkdir(parents=True,exist_ok=True)
     p=STATE/(role+'.json');tmp=p.with_suffix('.tmp');tmp.write_text(json.dumps(state,indent=2));tmp.chmod(0o600);tmp.replace(p)
+
+
+def write_reboot_flag(role,before,selected,flags=REBOOT_FLAGS):
+    """Tell the plane daemon this processor is being rebooted on purpose."""
+    flags.mkdir(parents=True,exist_ok=True)
+    p=flags/(role+'.json');tmp=p.with_suffix('.tmp')
+    tmp.write_text(json.dumps(dict(plane=role,boot_id_before=before['boot_id'],notes_sha256=selected['notes_sha256'],
+                                   requested_at=time.time(),by='plane_restart_owner'),indent=2))
+    tmp.chmod(0o600);tmp.replace(p);return p
 
 
 def remote(program,*args,timeout=35):
@@ -58,6 +70,7 @@ def execute(role,activation=False):
             for unit in state['units']:subprocess.run(['systemctl','stop',unit],check=True,timeout=90)
             state['phase']='preparing';save(role,state)
             remote('plane_restart_node.py','prepare',role,timeout=360)
+            write_reboot_flag(role,state['before'][role],state['selected'])
             state['phase']='booting';save(role,state)
             if role=='cp':boot(profile('cp'))
             else:
