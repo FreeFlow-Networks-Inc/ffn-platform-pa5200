@@ -7,6 +7,17 @@ from pathlib import Path
 import uuid
 
 
+DRIVER_STATUS=Path('/sys/kernel/debug/ffn_dp_packet_init/status')
+
+
+def driver_cpus(status=DRIVER_STATUS):
+    """The CPUs the trunk driver pinned its receive threads to (its status names them), or none."""
+    try:
+        cpus=json.loads(Path(status).read_text()).get('trunk',{}).get('rx_cpus',[])
+        return {c for c in cpus if type(c) is int and c>=0}
+    except (OSError,ValueError,AttributeError,TypeError):return set()
+
+
 def process_start(pid, proc=Path('/proc')):
     fields=(proc/str(pid)/'stat').read_text().rsplit(') ',1)[1].split()
     if fields[0]=='Z':raise ProcessLookupError(pid)
@@ -34,12 +45,18 @@ class CpuReservations:
                 row.get(k)==v for k,v in self.identity(row['pid']).items())
         except (OSError,ValueError,KeyError,IndexError,TypeError):return False
 
-    def reserve(self,allowed=None):
+    def reserve(self,allowed=None,count=2,driver=None):
+        """`count` CPUs (two per lane), least used first, never the trunk driver's receive cores
+        while enough others remain."""
         allowed=sorted(set(os.sched_getaffinity(0) if allowed is None else allowed))
         if not allowed or any(type(c) is not int or c<0 for c in allowed):
             raise ValueError('No valid packet worker CPU affinity')
+        if type(count) is not int or not 1<=count<=16:raise ValueError('Invalid worker CPU count')
         # Preserve a control/driver CPU when the allowed mask has spare cores.
         candidates=allowed[1:] if len(allowed)>2 else allowed
+        driver=driver_cpus() if driver is None else set(driver)
+        spared=[c for c in candidates if c not in driver]
+        if len(spared)>=count:candidates=spared
         with self.locked():
             usage={cpu:0 for cpu in candidates};claimed=set()
             for path in self.root.glob('*.json'):
@@ -69,7 +86,7 @@ class CpuReservations:
                             if cpu in usage:usage[cpu]+=1
                 except (OSError,ValueError,KeyError,IndexError,TypeError):continue
             cpus=[]
-            for _ in range(2):
+            for _ in range(count):
                 cpu=min(candidates,key=lambda c:(usage[c],c))
                 cpus.append(cpu);usage[cpu]+=1
             token=uuid.uuid4().hex

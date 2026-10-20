@@ -39,13 +39,19 @@ int ffn_packet_fe100(struct ffn_packet *p, const struct ffn_packet_fe100_binding
         returns[i] = b->scope.return_port; fronts[i] = b->scope.front;
     }
     pthread_mutex_lock(&p->control);
-    if (p->stopped || (p->started && (!p->pause_requested || !p->paused[0] || !p->paused[1]))) {
+    if (p->stopped || (p->started && (!p->pause_requested || !all_paused(p)))) {
         pthread_mutex_unlock(&p->control); errno = EBUSY; return -1;
     }
-    if (getsockname(p->rx, (struct sockaddr *)&address, &size) ||
-        (address.ss_family == AF_PACKET && packet_filter(p->rx, sources, used,
-            p->aggregate ? 3 : 1, returns, count, fronts, count))) {
-        int error = errno; pthread_mutex_unlock(&p->control); errno = error; return -1;
+    /* Every lane's receive socket carries the same filter: the fanout group
+     * picks the lane before the filter runs. */
+    for (unsigned i = 0; i < p->lane_count; i++) {
+        int fd = p->lanes[i]->rx;
+        size = sizeof(address);
+        if (getsockname(fd, (struct sockaddr *)&address, &size) ||
+            (address.ss_family == AF_PACKET && packet_filter(fd, sources, used,
+                p->aggregate ? 3 : 1, returns, count, fronts, count))) {
+            int error = errno; pthread_mutex_unlock(&p->control); errno = error; return -1;
+        }
     }
     if (count) memcpy(p->fe100, bindings, count * sizeof(*bindings));
     p->fe100_count = count; p->fe100_deadline = deadline;

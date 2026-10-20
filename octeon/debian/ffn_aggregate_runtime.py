@@ -220,7 +220,7 @@ def serve(intent):
                     # crashing/restarting the owner on ordinary contention.
                     fcntl.flock(lock,fcntl.LOCK_EX)
                     if any(n['ifname']==name for n in json.loads(ip('-j','link'))):raise ValueError('Aggregate netdevice already exists; refusing adoption')
-                    ip('tuntap','add','dev',name,'mode','tap');created=True
+                    ip('tuntap','add','dev',name,'mode','tap','multi_queue');created=True
                     ip('link','set',name,'alias','ffn-aggregate:'+intent['token'])
                     ip('link','set',name,'address',intent['system'],'mtu',str(network['mtu']))
                     # Default-deny transit until the policy compiler supplies an

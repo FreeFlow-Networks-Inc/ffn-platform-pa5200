@@ -2,13 +2,27 @@
 """Control-only ABI for the C packet owner; no packet bytes cross Python."""
 import ctypes as C
 import ipaddress
+import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 from ffn_packet_cpus import CpuReservations
 import ffn_tap_steering
 
 LIBRARY='/usr/local/lib/libffn-packet.so'
+# Lanes per owner: {"default": 2, "p5": 4, "ae1": 4}. Absent file: one lane, the owner as it always was.
+LANES_POLICY=Path('/etc/ffn/packet-lanes.json')
+LANES_MAX=8
+
+
+def lanes_for(device,policy=LANES_POLICY):
+    """How many lanes the owner of `device` runs: the policy's entry for it, else its default, else one."""
+    try:value=json.loads(Path(policy).read_text())
+    except (OSError,ValueError):return 1
+    if not isinstance(value,dict):return 1
+    lanes=value.get(device,value.get('default',1))
+    return lanes if type(lanes) is int and 1<=lanes<=LANES_MAX else 1
 COUNTERS=('rx','tx','envelope_rejected','length_drop','backpressure_drop',
           'admin_down_drop','local_input','inspection_drop','bypassed',
           'unsupported_pass','malformed_pass','no_match','alert','block',
@@ -54,6 +68,13 @@ def library(path=LIBRARY):
         lib.ffn_packet_fe100.restype=C.c_int
         lib.ffn_packet_fe100_stats.argtypes=[C.c_void_p,C.POINTER(C.c_uint64),C.c_uint]
         lib.ffn_packet_fe100_stats.restype=C.c_int
+    if hasattr(lib,'ffn_packet_lanes'):
+        lib.ffn_packet_lanes.argtypes=[C.c_void_p,C.c_uint];lib.ffn_packet_lanes.restype=C.c_int
+        lib.ffn_packet_lane_count.argtypes=[C.c_void_p];lib.ffn_packet_lane_count.restype=C.c_uint
+        lib.ffn_packet_start_lanes.argtypes=[C.c_void_p,C.POINTER(C.c_int),C.POINTER(C.c_int),C.c_uint]
+        lib.ffn_packet_start_lanes.restype=C.c_int
+        lib.ffn_packet_lane_workers.argtypes=[C.c_void_p,C.c_uint,C.POINTER(C.c_int),C.c_uint]
+        lib.ffn_packet_lane_workers.restype=C.c_int
     lib.ffn_packet_close.argtypes=[C.c_void_p]
     lib.ffn_packet_close.restype=None
     return lib
@@ -116,9 +137,19 @@ class PacketOwner:
 
     def resume(self):
         if not self.started:
+            lanes=1
+            if hasattr(self.lib,'ffn_packet_lanes'):
+                # The library answers with the count it could open: one when the TAP was
+                # not made with multi_queue, so an old device keeps the old single worker pair.
+                device=getattr(self,'tap',None) or getattr(self,'parent','') or ''
+                lanes=checked(self.lib.ffn_packet_lanes(self.handle,lanes_for(device)))
             if self.cpu_reservations is None:self.cpu_reservations=CpuReservations()
-            self.cpu_token,cpus=self.cpu_reservations.reserve()
-            try:checked(self.lib.ffn_packet_start(self.handle,*cpus))
+            self.cpu_token,cpus=self.cpu_reservations.reserve(count=2*lanes)
+            try:
+                if hasattr(self.lib,'ffn_packet_start_lanes'):
+                    rx=(C.c_int*lanes)(*cpus[0::2]);tx=(C.c_int*lanes)(*cpus[1::2])
+                    checked(self.lib.ffn_packet_start_lanes(self.handle,rx,tx,lanes))
+                else:checked(self.lib.ffn_packet_start(self.handle,*cpus))
             except BaseException:
                 # start may have created one worker; join it before releasing CPUs.
                 self.close()
@@ -148,9 +179,15 @@ class PacketOwner:
         if hasattr(self.lib,'ffn_packet_fe100_stats'):
             punts=(C.c_uint64*3)();checked(self.lib.ffn_packet_fe100_stats(self.handle,punts,3))
             tx['fe100_return']=dict(zip(('decoded','rejected','lease_expired'),punts))
+        lanes=[]
+        if hasattr(self.lib,'ffn_packet_lane_count'):
+            for lane in range(self.lib.ffn_packet_lane_count(self.handle)):
+                row=(C.c_int*5)();checked(self.lib.ffn_packet_lane_workers(self.handle,lane,row,5))
+                lanes.append(dict(workers=row[0],rx_cpu=row[1],tx_cpu=row[2],rx_tid=row[3],tx_tid=row[4]))
         return dict(count=out[0],rx_cpu=out[1],tx_cpu=out[2],rx_tid=out[3],tx_tid=out[4],
                     paused=bool(out[5]),stopped=bool(out[6]),error=out[7],
-                    scheduling='ordered-rx-tx',flow_parallelism=False,
+                    scheduling='ordered-rx-tx-per-lane' if len(lanes)>1 else 'ordered-rx-tx',
+                    flow_parallelism=len(lanes)>1,lanes=lanes,
                     cpu_allocation='shared-reservations',receive_syscalls=batches[0],
                     receive_frames=batches[1],receive_max_batch=batches[2],**tx)
 

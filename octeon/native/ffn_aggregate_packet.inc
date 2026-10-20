@@ -57,8 +57,10 @@ struct ffn_packet *ffn_aggregate_open(const char *wire, const char *ns, const ch
         sources[used++] = m[i].source;
         if (m[i].alias) sources[used++] = m[i].alias;
     }
-    close(p->rx); p->rx = packet_socket_many(wire, sources, used, 3);
-    if (p->rx < 0) goto fail;
+    /* Lane 0 listens to every member; more lanes copy this socket's sources and mode. */
+    close(p->lanes[0]->rx); p->lanes[0]->rx = packet_socket_many(wire, sources, used, 3);
+    if (p->lanes[0]->rx < 0) goto fail;
+    memcpy(p->sources, sources, used * sizeof(sources[0])); p->source_count = used; p->mode = 3;
     return p;
 fail: {
     int error = errno; ffn_packet_close(p); errno = error; return NULL;
@@ -73,7 +75,7 @@ static int aggregate_config_lock(struct ffn_packet *p)
 {
     if (!p || !p->aggregate) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&p->control);
-    if (p->stopped || (p->started && (!p->pause_requested || !p->paused[0] || !p->paused[1]))) {
+    if (p->stopped || (p->started && (!p->pause_requested || !all_paused(p)))) {
         pthread_mutex_unlock(&p->control); errno = EBUSY; return -1;
     }
     return 0;
@@ -170,7 +172,7 @@ static int aggregate_allow(struct ffn_packet *p, unsigned member, unsigned unit,
     return 1;
 local: AG_ADD(p->counters[LOCAL_INPUT], 1); return 1;
 }
-static int aggregate_receive(struct ffn_packet *p, const uint8_t *packet, ssize_t size)
+static int aggregate_receive(struct ffn_packet *p, struct ffn_lane *l, const uint8_t *packet, ssize_t size)
 {
     struct ffn_aggregate *a = p->aggregate;
     if (size < 18 || size > MAX_FRAME + 4 || be16(packet) != 24) { AG_ADD(p->counters[ENVELOPE_DROP], 1); return 0; }
@@ -186,7 +188,7 @@ static int aggregate_receive(struct ffn_packet *p, const uint8_t *packet, ssize_
     if (unit < 0) { AG_ADD(a->stats[AG_VLAN], 1); return 0; }
     int accepted = aggregate_allow(p, member, (unsigned)unit, plain, plain_size);
     if (accepted <= 0) return accepted < 0 ? -1 : 0;
-    ssize_t written = write(p->tap, packet + 4, (size_t)size - 4);
+    ssize_t written = write(l->tap, packet + 4, (size_t)size - 4);
     if (written < 0) { AG_ADD(a->stats[AG_RX_PRESSURE], 1); return io_error(p); }
     if (written != size - 4) { errno = EIO; return -1; }
     AG_ADD(p->counters[RX], 1); AG_ADD(a->member_stats[member][0], 1);
@@ -246,7 +248,7 @@ static uint8_t aggregate_lb_key(const uint8_t *frame, size_t size)
     uint32_t crc = aggregate_hash(frame, size, 0);
     return (uint8_t)(crc ^ (crc >> 8) ^ (crc >> 16) ^ (crc >> 24));
 }
-static int aggregate_transmit(struct ffn_packet *p, const uint8_t *frame, ssize_t size)
+static int aggregate_transmit(struct ffn_packet *p, struct ffn_lane *l, const uint8_t *frame, ssize_t size)
 {
     struct ffn_aggregate *a = p->aggregate;
     if (!a->ready) { AG_ADD(a->stats[AG_NETWORK], 1); return 0; }
@@ -269,7 +271,7 @@ static int aggregate_transmit(struct ffn_packet *p, const uint8_t *frame, ssize_
     memcpy(packet + 4, frame, 12); memcpy(packet + 24, frame + 12, (size_t)size - 12);
     if (offloaded) memset(packet + 17, key, 3);
     size_t length = (size_t)(size < 60 ? 60 : size) + 12;
-    ssize_t sent = send(p->tx, packet, length, MSG_NOSIGNAL);
+    ssize_t sent = send(l->tx, packet, length, MSG_NOSIGNAL);
     if (sent < 0) { AG_ADD(a->stats[AG_TX_PRESSURE], 1); return io_error(p); }
     if ((size_t)sent != length) { errno = EIO; return -1; }
     AG_ADD(p->counters[TX], 1);
