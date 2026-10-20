@@ -94,7 +94,11 @@ monotonic lease must be renewed by the trusted attachment controller. Expiry
 drops returned envelopes; it does not authorize or withdraw hardware flows.
 
 The C decoder accepts physically verified IPv4 TCP/UDP FLOWUNKNOWN, TTL-one,
-MTU and first-fragment exceptions. It validates envelope lengths, message type,
+MTU and first-fragment exceptions, and the type-2 session punt: the TCP control
+segments (FIN, RST) of a flow the chip carries, handed up as the original
+packet with the flow ID and the ingress zone (PA-5220, 2026-10-19). Those must
+reach the kernel path so conntrack leaves ESTABLISHED and the session lease is
+withdrawn; they are never rewritten forwarding messages. It validates envelope lengths, message type,
 ingress identity and available tuple metadata. Unsupported formats are rejected.
 The original Ethernet packet goes through the existing member collection,
 VLAN/network, inspection and kernel policy path. It is never delivered through

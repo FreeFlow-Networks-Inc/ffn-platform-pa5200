@@ -15,7 +15,6 @@ import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from validate_physical_sessions import DMAC, qualifies, checksum
@@ -228,7 +227,9 @@ def main():
             raise RuntimeError('BCM route failed')
         return r
     ld='/usr/local/lib64:/usr/local/lib64/3p:/usr/local/lib/ffn/owner-deps'
-    err=tempfile.TemporaryFile(mode='w+')
+    # The CP controller's and MAC supervisor's stderr is the only record of why a
+    # run was refused before any phase; keep it beside the report.
+    err=open('/var/log/ffn-front-session-'+str(time.time_ns())+'.err','w+')
     cp=subprocess.Popen(['/usr/local/sbin/ffn-cp','env '+('FFN_FE100_NAT_REVERSE=1 ' if a.reverse_nat else '')+('FFN_FE100_SMAC_LAB=1 ' if a.rewrite_source_mac else '')+('FFN_FE100_MAC_LOOPBACK=1 ' if a.mac_loopback else '')+('FFN_FE100_MAC_SINGLE=1 ' if a.single_port else '')+'LD_LIBRARY_PATH='+ld+
         ' LD_PRELOAD=/usr/lib/mips64-linux-gnuabi64/libsqlite3.so.0 python3 /usr/local/sbin/ffn_fe100_packet_lab.py --serve '+('--front5' if a.front5 else '--front13')+(' --cross' if a.cross else '')+(' --vlan-return' if a.vlan_return else '')+(' --nat '+a.nat if a.nat else '')+' --protocol '+a.protocol],
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=err,text=True)

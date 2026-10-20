@@ -152,6 +152,8 @@ jobs:
         run: cd octeon/cp-6.18 && python3 test_boot_script.py
       - name: fabric codec
         run: cd octeon/debian && python3 test_fabric_codec.py
+      - name: DP session stream producer (route watch, owner tokens across label-less updates)
+        run: cd octeon/debian && PYTHONPATH=../../management:$PYTHONPATH python3 -m unittest test_session_stream_dp
       - name: FE100 return bindings (what the DP accepts from the chip, leased)
         run: cd octeon/debian && python3 -m unittest test_fe100_return
       - name: LACP wire codec, negotiation and OCTEON member transport
