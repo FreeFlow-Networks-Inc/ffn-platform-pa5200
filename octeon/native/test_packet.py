@@ -168,4 +168,47 @@ class NativePacketTests(unittest.TestCase):
         out=(C.c_int*8)();checked(self.lib.ffn_packet_workers(self.ctx,out,8))
         self.assertEqual(out[0],0)
 
+    def test_lanes_keep_their_own_queues_and_one_barrier(self):
+        """A lane adopted from its own descriptors receives on its own socket, writes its own
+        TAP queue and transmits on its own socket; lanes pause and resume as one owner and
+        share the owner's counters."""
+        lib=self.lib
+        lib.ffn_packet_adopt_lane.argtypes=[C.c_void_p,C.c_int,C.c_int,C.c_int];lib.ffn_packet_adopt_lane.restype=C.c_int
+        lib.ffn_packet_start_lanes.argtypes=[C.c_void_p,C.POINTER(C.c_int),C.POINTER(C.c_int),C.c_uint];lib.ffn_packet_start_lanes.restype=C.c_int
+        lib.ffn_packet_lane_workers.argtypes=[C.c_void_p,C.c_uint,C.POINTER(C.c_int),C.c_uint];lib.ffn_packet_lane_workers.restype=C.c_int
+        lib.ffn_packet_lane_count.argtypes=[C.c_void_p];lib.ffn_packet_lane_count.restype=C.c_uint
+        extra=[]
+        for _ in range(3):extra.extend(socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM))
+        for s in extra:s.setblocking(False)
+        self.addCleanup(lambda:[s.close() for s in extra])
+        rx1,inject1,tx1,collect1,tap1,peer1=extra
+        self.assertEqual(lib.ffn_packet_lane_count(self.ctx),1)
+        checked(lib.ffn_packet_adopt_lane(self.ctx,rx1.fileno(),tx1.fileno(),tap1.fileno()))
+        self.assertEqual(lib.ffn_packet_lane_count(self.ctx),2)
+        self.assertEqual(lib.ffn_packet_start(self.ctx,0,0),-1)       # one lane's start no longer fits
+        cpus=sorted(os.sched_getaffinity(0))
+        rx=(C.c_int*2)(cpus[0],cpus[0]);tx=(C.c_int*2)(cpus[-1],cpus[-1])
+        self.assertEqual(lib.ffn_packet_start_lanes(self.ctx,rx,tx,1),-1)   # every lane or none
+        checked(lib.ffn_packet_start_lanes(self.ctx,rx,tx,2))
+        out=(C.c_int*8)();checked(lib.ffn_packet_workers(self.ctx,out,8))
+        self.assertEqual((out[0],out[5]),(4,1))
+        lane=(C.c_int*5)();checked(lib.ffn_packet_lane_workers(self.ctx,1,lane,5))
+        self.assertEqual(list(lane)[:3],[2,cpus[0],cpus[-1]]);self.assertTrue(lane[3]>0 and lane[4]>0 and lane[3]!=lane[4])
+        self.assertEqual(lib.ffn_packet_lane_workers(self.ctx,2,lane,5),-1)
+        checked(lib.ffn_packet_resume(self.ctx))
+        frames=[bytes(12)+b'\x88\xb5'+bytes(45)+bytes([i]) for i in range(20)]
+        for s in (peer1,collect1):s.settimeout(2)
+        for f in frames:inject1.send(b'\0\x18\0\x1c'+f)             # lane 1 receives on its socket ...
+        self.assertEqual([peer1.recv(4096) for _ in frames],frames)   # ... into its own TAP queue, in order
+        time.sleep(.03);self.empty(self.peer)
+        for f in frames:peer1.send(f)                                 # lane 1's queue transmits on lane 1's socket
+        self.assertEqual([collect1.recv(4096)[24:] for _ in frames],[f[12:] for f in frames])
+        time.sleep(.03);self.empty(self.collect)
+        self.peer.settimeout(2);self.receive(frames[0]);self.assertEqual(self.peer.recv(4096),frames[0])   # lane 0 as before
+        checked(lib.ffn_packet_pause(self.ctx))
+        checked(lib.ffn_packet_workers(self.ctx,out,8));self.assertEqual(out[5],1)
+        self.assertEqual(lib.ffn_packet_configure(self.ctx,b'',0,b'',0,None,None),0)   # the barrier holds all four
+        counts=self.counts();self.assertEqual((counts['rx'],counts['tx']),(21,20))
+        self.assertEqual(lib.ffn_packet_adopt_lane(self.ctx,rx1.fileno(),tx1.fileno(),tap1.fileno()),-1)  # not after start
+
 if __name__=='__main__':unittest.main()

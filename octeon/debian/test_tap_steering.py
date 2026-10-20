@@ -19,6 +19,8 @@ class SteeringCpus(unittest.TestCase):
         self.assertEqual(steering.steering_cpus(range(8)), [])          # 7 eligible
         self.assertEqual(steering.steering_cpus(range(9)), [5, 6, 7, 8])  # 8 eligible
         self.assertEqual(steering.steering_cpus(range(12), set(range(1, 6))), [])
+        self.assertEqual(steering.steering_cpus(range(40), steering.reserved_cpus(root='/nonexistent', driver={1, 2})),
+                         [i for i in range(21, 40)])
 
     def test_mask_is_the_kernel_bitmap_text(self):
         self.assertEqual(steering.mask([]), '00000000')

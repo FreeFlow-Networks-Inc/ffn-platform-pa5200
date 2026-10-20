@@ -35,8 +35,7 @@ engine-handle replacement require both workers to acknowledge a pause barrier.
 Close joins the workers before releasing descriptors or the inspection engine.
 A three-second monotonic control lease stops both workers if control disappears;
 fatal worker errors also stop the pair. Telemetry exposes actual worker thread
-IDs, selected CPUs and faults. These are parallel directions, not multiple RX
-flow queues; no multi-flow scaling or hardware acceleration is implied. Ownership locks,
+IDs, selected CPUs and faults. Ownership locks,
 boot identities, stateful policies and interface management permissions remain
 mandatory. Unsupported/malformed inspection verdicts retain the existing engine
 semantics and separate counters; this is not a claim of full IPS coverage.
@@ -53,6 +52,30 @@ within the process affinity mask. It reserves the first allowed core for control
 when at least three cores are available, balances oversubscription, and respects
 live legacy workers during rolling upgrades. Reservations expire on process
 death, PID reuse or reboot and are released only after native workers join.
+
+### Lanes
+
+An owner may run lanes. Each lane is one receive socket in the trunk's fanout
+group, one queue of the TAP and one transmit socket, with a receive worker and a
+transmit worker of its own; lane 0 is the owner as described above, and the owner
+still pauses, resumes, configures and closes as one unit. The kernel's fanout is
+by receive queue (`PACKET_FANOUT_QM`): the trunk driver records the SSO group a
+flow hashed to as the frame's receive queue, so a flow stays on one lane, in
+order, while flows spread over lanes. Each lane writes its own TAP queue, so no
+lock serializes the lanes in the kernel either. `ffn_packet_lanes` grows an opened
+owner before its workers start and answers with the count reached: one when the
+TAP was not made with `multi_queue`, or when the owner was adopted from caller
+descriptors. `ffn_packet_start_lanes` pins lane i to `rx_cpus[i]` and
+`tx_cpus[i]`; `ffn_packet_lane_workers` reports a lane's workers. The FE100
+return filter is applied to every lane's socket. With a trunk driver that records
+no queue, every frame reaches lane 0 alone, which is merely the old behaviour.
+
+The Python owner takes its lane count from `/etc/ffn/packet-lanes.json`, for
+example `{"default": 2, "p5": 4, "ae1": 4}`; no file means one lane. Two CPUs
+are reserved per lane, never the trunk driver's receive cores (its status names
+them) while enough others remain, and the receive steering of the forwarding
+path keeps off those cores too. The runtimes make their TAPs with `multi_queue`;
+the VIF runtime makes a device again when it finds one made without it.
 
 ## Validation
 

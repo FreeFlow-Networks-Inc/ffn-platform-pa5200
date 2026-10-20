@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from ffn_packet_cpus import driver_cpus
 
 DEVICE = re.compile(r'^(p[1-9][0-9]{0,2}|ae[1-9][0-9]{0,2})$')
 NAMESPACE_NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,31}$')
@@ -33,9 +34,10 @@ RESERVATIONS = Path('/run/ffn-packet-cpus')
 MINIMUM = 8
 
 
-def reserved_cpus(root=RESERVATIONS):
-    """Every CPU a native owner's reservation record names, live or stale."""
-    cpus = set()
+def reserved_cpus(root=RESERVATIONS, driver=None):
+    """Every CPU a native owner's reservation record names, live or stale, and the
+    trunk driver's receive cores."""
+    cpus = set(driver_cpus() if driver is None else driver)
     for path in Path(root).glob('*.json'):
         try:
             for cpu in json.loads(path.read_text()).get('cpus', []):

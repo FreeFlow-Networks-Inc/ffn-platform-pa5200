@@ -64,6 +64,14 @@ class PacketCpuTests(unittest.TestCase):
                 if child.is_alive():child.terminate();child.join()
                 self.assertEqual(child.exitcode,0)
 
+    def test_lanes_take_two_cpus_each_and_avoid_the_driver(self):
+        token,cpus=self.a.reserve(range(9),count=4,driver=set());self.assertEqual(cpus,(1,2,3,4));self.a.release(token)
+        token,cpus=self.a.reserve(range(9),count=4,driver={1,2,3,4});self.assertEqual(cpus,(5,6,7,8));self.a.release(token)
+        # too few cores left after the driver's: the driver's are used after all, least loaded first
+        token,cpus=self.a.reserve(range(5),count=4,driver={1,2,3});self.assertEqual(cpus,(1,2,3,4));self.a.release(token)
+        with self.assertRaises(ValueError):self.a.reserve(range(9),count=0)
+        with self.assertRaises(ValueError):self.a.reserve(range(9),count=17)
+
     def test_invalid_affinity_and_token(self):
         with self.assertRaises(ValueError):self.a.reserve([])
         with self.assertRaises(ValueError):self.a.reserve([-1])

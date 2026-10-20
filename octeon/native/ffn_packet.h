@@ -7,6 +7,7 @@
 #define FFN_PACKET_ABI 2
 #define FFN_PACKET_COUNTERS 16
 #define FFN_PACKET_LOCAL_MAX 64
+#define FFN_PACKET_LANES_MAX 8
 struct ffn_packet;
 typedef int (*ffn_scan_fn)(void *, const char *, unsigned);
 unsigned ffn_packet_abi(void);
@@ -18,6 +19,20 @@ int ffn_packet_configure(struct ffn_packet *, const uint8_t *, unsigned,
 int ffn_packet_poll(struct ffn_packet *, unsigned);
 /* RX and TX keep ordered, independent workers. Start returns paused. */
 int ffn_packet_start(struct ffn_packet *, int, int);
+/* Additive: lanes. Each lane is one receive socket in the trunk's fanout group
+ * (demultiplexed by the receive queue the trunk driver records, the flow's SSO
+ * group), one TAP queue and one transmit socket, with its own two workers, so
+ * flows spread over lanes and stay in order within one. ffn_packet_lanes grows
+ * an opened owner before it starts and returns the count reached (1 when the
+ * TAP was not made with multi_queue); ffn_packet_adopt_lane adds a lane from
+ * caller-owned descriptors; ffn_packet_start_lanes pins lane i's workers to
+ * rx_cpus[i] and tx_cpus[i]; ffn_packet_lane_workers reports one lane
+ * (started, rx cpu, tx cpu, rx tid, tx tid). */
+int ffn_packet_lanes(struct ffn_packet *, unsigned);
+int ffn_packet_adopt_lane(struct ffn_packet *, int, int, int);
+unsigned ffn_packet_lane_count(const struct ffn_packet *);
+int ffn_packet_start_lanes(struct ffn_packet *, const int *, const int *, unsigned);
+int ffn_packet_lane_workers(struct ffn_packet *, unsigned, int *, unsigned);
 int ffn_packet_pause(struct ffn_packet *);
 int ffn_packet_resume(struct ffn_packet *);
 int ffn_packet_workers(struct ffn_packet *, int *, unsigned);

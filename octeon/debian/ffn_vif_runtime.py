@@ -112,12 +112,14 @@ class Linux:
         links=self.links()
         for name in set(old['vifs'])|set(new['vifs']):
             before,after=old['vifs'].get(name),new['vifs'].get(name)
-            if before==after and name in links:continue
+            # A TAP made before owners ran lanes has one queue; only a device made with
+            # multi_queue takes one queue per lane, so such a device is made again.
+            if before==after and name in links and multiqueue(links[name]):continue
             if name in links:
                 if links[name].get('ifalias')!='ffn:vif:'+name:raise RuntimeError('lost VIF ownership')
                 network.ip('link','delete',name)
             if after:
-                network.run('ip','netns','exec',network.NS,'ip','tuntap','add','dev',name,'mode','tap')
+                network.run('ip','netns','exec',network.NS,'ip','tuntap','add','dev',name,'mode','tap','multi_queue')
                 network.ip('link','set',name,'alias','ffn:vif:'+name)
                 settings=after['network'] if after['enabled'] else {'mode':'disabled','mtu':after['network'].get('mtu',1500)}
                 network.configure_port(name,settings)
@@ -418,3 +420,9 @@ def main():
 
 
 if __name__=='__main__':main()
+
+
+def multiqueue(link):
+    """Whether `ip -d -j link` shows the TAP was made with multi_queue."""
+    data=(link.get('linkinfo') or {}).get('info_data') or {}
+    return bool(data.get('multi_queue'))
