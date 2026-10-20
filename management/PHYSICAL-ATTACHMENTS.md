@@ -50,6 +50,64 @@ port's PHY, MAC and data path up at one speed; the MP's `ffn-port-links.timer`
 (`management/port-link-poll.py`) makes that delivery from the `faceplate`
 resource. A port with policy `always` keeps carrier as the Python owner did.
 
+## Link-tracked routes: the observation, its two writers, the check
+
+A static route committed on a physical or aggregate interface is link-tracked:
+the core's route tracker on the DP (`ffn_static_routes.py`, one tick per
+second) installs it only while this platform's adapter
+(`octeon/debian/ffn_network.py` `route_link`) says the port is up, and the
+adapter reads `/run/ffn-route-links.json`: `{boot_id, revision, links: {pN:
+bool}, observed}`. An observation from another DP boot or older than 60 s
+withdraws every tracked route with `hardware-link-observation-stale`.
+
+That file now has two writers, and the tracker depends on neither alone:
+
+* `ffn-portd links` on the DP (`octeon/native/ffn_portd.c`,
+  `route_links_record`) writes it from the faceplate rows the MP's
+  `ffn-port-links.timer` delivers every three seconds for the owners' carrier
+  lease; a port is up when its row says `available`, `enabled` and `link`.
+  The delivery's reply carries `route_links: true` when the record was
+  written, so `journalctl -u ffn-port-links` shows it.
+* `ffn-route-link-feed.service` on the MP (`route_link_feed.py`, every five
+  seconds) asks the control daemon for `route-links refresh`
+  (`daemon_backend.py`), which reads the same faceplate rows and sends them
+  through the network owner's `health` verb, which writes the same record.
+
+Until 2026-10-20 the MP feed was the only writer. A core patch install stopped
+`ffn-controld`; `PartOf=` propagated the stop to the feed, nothing started it
+again (`Restart=` does not apply to an explicit stop, and the feed's
+`WantedBy=ffn-controld.service` was only declared, never linked), the
+observation went stale and the DP withdrew both default routes for fifteen
+minutes. Nothing reported it. The fixes, in order of what they remove:
+
+1. the DP writer above, so a dead MP feed no longer withdraws routes;
+2. `install-control-channel.py` makes the `ffn-controld.service.wants` links
+   for every unit that declares `WantedBy=ffn-controld.service` (the route
+   feed, the session feed, the interface-service tunnel), so the daemon pulls
+   them back in when it starts; the core installer also starts the units its
+   stop propagated to;
+3. the `tracked-routes status` daemon resource (`daemon_backend.py`,
+   `tracked_routes_report`): one ssh round trip reads the tracker's state, the
+   observation, the network journal and the DP's clock and boot, and reports
+   each tracked route's installed/reason. The core's convergence report carries
+   it as the `tracked-routes` subsystem: `failed` when a route is withdrawn for
+   a stale or missing observation, when the tracker has stopped ticking (30 s)
+   or when a route cannot be installed as committed; `pending` while a route
+   waits for its link, path or aggregate member, or the tracker has not yet
+   reported for this DP boot or the current network revision; `converged` when
+   every tracked route is installed. `failed` pages through ffn-alerts; the
+   report's details carry the observation's age and the MP feed unit's state,
+   and the console's reapply restarts that feed.
+
+Retirement of the MP feed: once the DP writer has been seen keeping the
+observation fresh on the appliance through a control-daemon stop (stop
+`ffn-route-link-feed.service` by hand, watch `tracked-routes status` stay
+converged and the observation age stay under four seconds for a few minutes),
+the feed unit, `route_link_feed.py`, the `route-links refresh` command and the
+network owner's `health` verb can go; the check and its `feed` field stay. Not
+done yet: the DP writer has been proven on x86 (`test_portd_links.py`,
+`test-portd-linux.py`), not on the box.
+
 ## Native CP owner: ffn-portctl
 
 `octeon/native/ffn_portctl.c` is the C implementation of the CP side of this

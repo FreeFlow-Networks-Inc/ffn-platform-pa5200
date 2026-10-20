@@ -83,6 +83,8 @@ static const char *DHCP_HOOK = "/usr/local/sbin/ffn_aggregate_dhcp.py", *STEERIN
 static const char *CPUS = "/usr/local/sbin/ffn_packet_cpus.py", *CPU_RESERVATIONS = "/run/ffn-packet-cpus";
 static const char *INSPECTION_POLICY = "/etc/ffn/inspection.json", *INLINE_LIBRARY = "/usr/local/lib/libffn-inline.so";
 static const char *FE100_RETURN = "/etc/ffn/fe100-return.json", *LANES_POLICY = "/etc/ffn/packet-lanes.json";
+static const char *NETWORK_JOURNAL = "/etc/ffn/network.json";   /* the network owner's applied intent: revision, ports, routes */
+static const char *ROUTE_LINKS = "/run/ffn-route-links.json";    /* the route tracker's hardware link observation (see links_tool) */
 static bool unchecked;
 
 static volatile sig_atomic_t stop_signal;
@@ -2336,7 +2338,7 @@ static void physical_carrier(struct daemon *d, struct physical *p, uint64_t now)
 /* The parent's static addresses from the network owner's journal, for local-service classification. */
 static void physical_addresses(struct daemon *d, struct physical *p)
 {
-    struct ffn_json *doc = read_json("/etc/ffn/network.json"), *ports, *port, *addresses;
+    struct ffn_json *doc = read_json(NETWORK_JOURNAL), *ports, *port, *addresses;
     uint8_t v4[FFN_PACKET_LOCAL_MAX][4], v6[FFN_PACKET_LOCAL_MAX][16];
     unsigned n4 = 0, n6 = 0;
     bool inspect = inspection_port(&d->insp, p->port);
@@ -2488,11 +2490,52 @@ failed:
     return 1;
 }
 
+/* The same delivery in the form the route tracker reads: {"boot_id": this DP
+ * boot, "revision": the network journal's, "links": {"pN": up}, "observed":
+ * CLOCK_MONOTONIC seconds}. octeon/debian/ffn_network.py route_link judges a
+ * link-tracked route by it and the core tracker (ffn_static_routes.py)
+ * withdraws the route once it is older than 60 s or from another DP boot. A
+ * port is up for a route when its row says available, enabled and link: the
+ * rule the MP feed applies (management/daemon_backend.py, route-links
+ * refresh, through the network owner's `health`). That feed alone wrote this
+ * file until 2026-10-20, when a core patch install stopped it with the control
+ * daemon, nothing started it again, and the tracker withdrew both default
+ * routes for fifteen minutes. The observation the owners receive every three
+ * seconds anyway now carries it, so the tracker no longer depends on the MP
+ * feed; the feed remains a second writer of the same record. */
+static int route_links_record(const struct ffn_json *byport)
+{
+    struct ffn_json *out, *links, *network;
+    char boot[40];
+    long long revision;
+    int rc;
+    if (boot_id(boot, sizeof boot)) return -1;
+    out = ffn_json_object(); links = ffn_json_object();
+    for (size_t i = 0; i < byport->count; i++) {
+        const struct ffn_json *row = byport->items[i];
+        bool available = false, enabled = false, link = false;
+        char key[12];
+        ffn_json_get_bool(row, "available", &available); ffn_json_get_bool(row, "enabled", &enabled); ffn_json_get_bool(row, "link", &link);
+        snprintf(key, sizeof key, "p%s", byport->keys[i]);
+        ffn_json_set(links, key, ffn_json_bool(available && enabled && link));
+    }
+    network = read_json(NETWORK_JOURNAL);
+    ffn_json_set(out, "boot_id", ffn_json_string(boot));
+    ffn_json_set(out, "revision", network && ffn_json_get_int(network, "revision", &revision) ? ffn_json_int(revision) : ffn_json_null());
+    ffn_json_set(out, "links", links);
+    ffn_json_set(out, "observed", ffn_json_number((double)now_us() / 1e6));
+    rc = write_json(ROUTE_LINKS, out);
+    ffn_json_free(network); ffn_json_free(out);
+    return rc;
+}
+
 /* `links`: the MP timer's faceplate observation for every physical owner.
  * {"mp_boot_id", "sequence", "age_seconds", "lease_seconds"?, "ports": [rows]}
  * becomes /run/ffn-port-links.json with the receipt time; an observation
  * that is not newer than the recorded one is refused, so a delayed or
- * replayed delivery cannot revive a carrier. */
+ * replayed delivery cannot revive a carrier. The accepted rows are also
+ * recorded for the route tracker (route_links_record); the reply says
+ * whether that record was written, so the MP's journal shows it. */
 static int links_tool(void)
 {
     struct text t = { 0 };
@@ -2503,6 +2546,7 @@ static int links_tool(void)
     long long sequence, lease = LINKS_LEASE_DEFAULT, previous_sequence = -1;
     double age;
     unsigned count = 0;
+    bool route_links;
     while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
     doc = ffn_json_parse(t.s ? t.s : "", t.len, perr, sizeof perr);
     free(t.s);
@@ -2539,7 +2583,9 @@ static int links_tool(void)
     ffn_json_set(out, "lease_seconds", ffn_json_int(lease));
     ffn_json_set(out, "ports", byport);
     if (write_json(path, out)) { printf("{\"error\": \"cannot record the link observation\"}\n"); ffn_json_free(out); ffn_json_free(doc); return 1; }
-    printf("{\"accepted\": true, \"ports\": %u, \"lease_seconds\": %lld, \"sequence\": %lld}\n", count, lease, sequence);
+    route_links = route_links_record(byport) == 0;
+    printf("{\"accepted\": true, \"ports\": %u, \"lease_seconds\": %lld, \"sequence\": %lld, \"route_links\": %s}\n",
+           count, lease, sequence, route_links ? "true" : "false");
     ffn_json_free(out); ffn_json_free(doc);
     return 0;
 }
@@ -2765,6 +2811,8 @@ int main(int argc, char **argv)
     if ((v = getenv("FFN_PORTD_INLINE"))) INLINE_LIBRARY = v;
     if ((v = getenv("FFN_PORTD_FE100_RETURN"))) FE100_RETURN = v;
     if ((v = getenv("FFN_PORTD_LANES"))) LANES_POLICY = v;
+    if ((v = getenv("FFN_PORTD_NETWORK"))) NETWORK_JOURNAL = v;
+    if ((v = getenv("FFN_PORTD_ROUTE_LINKS"))) ROUTE_LINKS = v;
     unchecked = (v = getenv("FFN_PORTD_UNCHECKED")) && !strcmp(v, "1");
     if ((v = getenv("FFN_PORTD_COPPER_PROFILE"))) COPPER_PROFILE = v;
     if ((v = getenv("FFN_PORTD_CARRIER_POLICY"))) CARRIER_POLICY = v;
@@ -2791,6 +2839,6 @@ int main(int argc, char **argv)
     if (argc == 2 && !strcmp(argv[1], "links")) return links_tool();
     fprintf(stderr, "usage: ffn-portd aggregate serve|sweep|recover|revision\n"
                     "       ffn-portd physical serve|status|start|stop --port N\n"
-                    "       ffn-portd links   (the MP's faceplate observation on stdin)\n");
+                    "       ffn-portd links   (the MP's faceplate observation on stdin: the carrier lease and the route tracker's link observation)\n");
     return 2;
 }

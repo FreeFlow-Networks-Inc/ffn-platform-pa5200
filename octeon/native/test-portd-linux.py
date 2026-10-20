@@ -190,6 +190,7 @@ def test():
                    FFN_PORTD_INSPECTION=str(directory / 'absent-inspection.json'),
                    FFN_PORTD_FE100_RETURN=str(directory / 'absent-fe100.json'),
                    FFN_PORTD_LANES=str(directory / 'absent-lanes.json'),
+                   FFN_PORTD_NETWORK=str(directory / 'network.json'), FFN_PORTD_ROUTE_LINKS=str(directory / 'route-links.json'),
                    LD_LIBRARY_PATH=str(HERE), FAKE_LOG=str(log), FAKE_NS=data_ns)
         try:
             for ns in (trunk_ns, data_ns):
@@ -324,7 +325,15 @@ def test():
                 payload = dict(mp_boot_id='mp-boot-test', sequence=use, age_seconds=0.2, lease_seconds=lease, ports=[row3, dict(port=5, media='sfp', available=True, enabled=True, link=True)])
                 return subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'links'], env=env, input=json.dumps(payload),
                                       capture_output=True, text=True, timeout=20)
-            assert deliver(True).returncode == 0
+            (directory / 'network.json').write_text(json.dumps(dict(revision=7, ports={}, routes=[])))
+            accepted = deliver(True)
+            assert accepted.returncode == 0 and json.loads(accepted.stdout)['route_links'] is True, accepted.stdout
+            # The same delivery is the route tracker's link observation (ffn_network.py route_link reads this form).
+            observation = json.loads((directory / 'route-links.json').read_text())
+            assert set(observation) == {'boot_id', 'revision', 'links', 'observed'}, observation
+            assert observation['boot_id'] == Path('/proc/sys/kernel/random/boot_id').read_text().strip() and observation['revision'] == 7
+            assert observation['links'] == {'p3': True, 'p5': True} and 0 <= time.monotonic() - observation['observed'] < 5, observation
+            results['route_links'] = observation
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline and not carrier(3): time.sleep(0.2)
             assert carrier(3), 'carrier did not follow the link-up observation'
@@ -336,6 +345,10 @@ def test():
             while time.monotonic() < deadline and carrier(3): time.sleep(0.2)
             assert not carrier(3), 'carrier survived a speed mismatch'
             assert 'speeds' in json.loads(status_path.read_text())['carrier']['reason']
+            # A speed mismatch is a carrier matter; for a route the port is still available, enabled and linked.
+            assert json.loads((directory / 'route-links.json').read_text())['links']['p3'] is True
+            assert deliver(False).returncode == 0
+            assert json.loads((directory / 'route-links.json').read_text())['links'] == {'p3': False, 'p5': True}
             assert deliver(True).returncode == 0
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline and not carrier(3): time.sleep(0.2)

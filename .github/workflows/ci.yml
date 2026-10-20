@@ -166,6 +166,8 @@ jobs:
         run: cd octeon/debian && python3 -m unittest test_dp_packet_transport test_trunk_io test_tap_steering
       - name: MP copper forwarding and configuration ordering
         run: cd management && python3 -m unittest test_copper_forwarding test_daemon_backend
+      - name: route-link feed recovery and the tracked-routes check (2026-10-20 outage)
+        run: cd management && python3 -m unittest test_route_link_feed test_tracked_routes
       - name: aggregate control lock contention
         run: cd management && python3 -m unittest test_aggregate_heartbeat
       - name: WAN qualification lifecycle and DHCP wire validation

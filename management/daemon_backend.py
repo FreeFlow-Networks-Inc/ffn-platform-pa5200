@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from hardware_backend import Controller, COMMANDS, HTTPException
@@ -23,8 +24,128 @@ def require_front_mode(port,config=Path('/var/lib/ffn-ngfw/config/running-config
         raise ValueError('Front interface is None/disabled; select and commit an interface mode before enabling its link')
 
 
-async def execute(resource, action, payload, backend=None):
+# ---- tracked routes: the convergence check for the dataplane's link-tracked routes ----
+# The core's ffn_convergence.py asks the daemon for `tracked-routes status` and reports it
+# as the `tracked-routes` subsystem; ffn-alerts pages on `failed`. One ssh round trip to the
+# DP, read-only: the tracker's state (core ffn_static_routes.py, every second), the link
+# observation it judges by (octeon/debian/ffn_network.py route_link: 60 s lease, this DP
+# boot), the network journal (which routes are tracked), and the DP's clock and boot to
+# judge the ages. 2026-10-20: both default routes were withdrawn for fifteen minutes with
+# `hardware-link-observation-stale` and nothing reported it.
+TRACKED_ROUTES_SPLIT='FFN_TRACKED_ROUTES_SPLIT'
+TRACKED_ROUTES_COLLECT=('cat /run/ffn-static-routes.json 2>/dev/null; echo %s; cat /run/ffn-route-links.json 2>/dev/null; echo %s; '
+                        'cat /etc/ffn/network.json 2>/dev/null; echo %s; cat /proc/uptime; cat /proc/sys/kernel/random/boot_id')%((TRACKED_ROUTES_SPLIT,)*3)
+TRACKER_FRESH_SECONDS=30       # the tracker ticks every second; its stop hook withdraws every tracked route
+OBSERVATION_LEASE_SECONDS=60   # ffn_network.py route_link: older than this and every tracked route is withdrawn
+FEED_REASONS={'hardware-link-observation-stale','hardware-link-observation-unavailable'}   # the observation, not the link
+WAITING_REASONS={'hardware-link-down','link-down','aggregate-no-live-member','hardware-link-unavailable','path-down','monitor-stale'}
+FEED_UNIT='ffn-route-link-feed.service'   # the MP writer of the observation; ffn-portd links is the other
+DP_ARGV=['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=5',
+         '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
+         '-o','ProxyCommand=ssh -F /etc/ffn-ngfw/ssh-cp.conf -W %h:%p ffn-cp','root@127.1.2.2']
+
+
+def dp_collect(script=TRACKED_ROUTES_COLLECT,argv=DP_ARGV):
+    result=subprocess.run(argv+[script],text=True,capture_output=True,timeout=25)
+    if result.returncode: raise RuntimeError('Dataplane collection failed: '+result.stderr[-300:])
+    return result.stdout
+
+
+def feed_unit_state(run=subprocess.run,unit=FEED_UNIT):
+    """systemd's word for the MP feed (active, inactive, failed, ...), or None when it cannot say."""
+    try: result=run(['systemctl','is-active',unit],capture_output=True,text=True,timeout=10)
+    except (OSError,subprocess.SubprocessError): return None
+    return (result.stdout or '').strip() or None
+
+
+def parse_tracked_routes(output):
+    """(tracker state, link observation, network journal, DP uptime, DP boot id) from one collection."""
+    parts=output.split(TRACKED_ROUTES_SPLIT+'\n')
+    if len(parts)!=4: raise ValueError('Dataplane collection is incomplete')
+    def document(text):
+        try: value=json.loads(text)
+        except ValueError: return None
+        return value if isinstance(value,dict) else None
+    tail=parts[3].split()
+    if len(tail)<3: raise ValueError('Dataplane clock or boot identity missing')
+    return document(parts[0]),document(parts[1]),document(parts[2]),float(tail[0]),tail[-1]
+
+
+def route_text(route):
+    text=str(route.get('dst','?'))
+    if route.get('via'): text+=' via '+str(route['via'])
+    if route.get('dev'): text+=' dev '+str(route['dev'])
+    return text
+
+
+def tracked_routes_report(state,observation,network,uptime,dp_boot,feed_state=None):
+    """Each link-tracked route's installed/reason on the dataplane, judged as a convergence subsystem.
+
+    failed     a route is withdrawn because the hardware link observation is stale or missing
+               (the feed, not the link), the tracker itself has stopped ticking, or a route
+               cannot be installed as committed;
+    pending    a route waits for its link, path or aggregate member, or the tracker has not yet
+               reported for this DP boot or the current network revision;
+    converged  every tracked route is installed (or none is tracked)."""
+    tracked=[r for r in (network or {}).get('routes',[]) if isinstance(r,dict) and r.get('track_link')]
+    revision=(network or {}).get('revision')
+    notes=[]
+    present=isinstance(observation,dict)
+    obs_age=obs_boot=None
+    if present:
+        try: obs_age=uptime-float(observation['observed']);obs_boot=observation.get('boot_id')==dp_boot
+        except (KeyError,TypeError,ValueError): present=False
+    if present:
+        fresh=obs_boot and 0<=obs_age<=OBSERVATION_LEASE_SECONDS
+        notes.append('link observation %d s old%s%s'%(max(0,round(obs_age)),'' if obs_boot else ' from another DP boot',
+                                                     '' if fresh else ' (stale: tracked routes withdrawn)'))
+    else: notes.append('no link observation on the dataplane')
+    if feed_state is not None: notes.append('MP feed %s %s'%(FEED_UNIT,feed_state))
+    summary_of=lambda n:'%d tracked route(s)'%n
+    def report(verdict,summary,rows,routes):
+        return dict(state=verdict,summary=summary,details=(rows+notes)[:8],routes=routes,
+                    tracker=dict(reported=isinstance(state,dict) and state.get('boot')==dp_boot,
+                                 age_seconds=None if not isinstance(state,dict) or state.get('boot')!=dp_boot else state.get('age_seconds'),
+                                 revision=None if not isinstance(state,dict) else state.get('revision')),
+                    observation=dict(present=present,age_seconds=None if not present else round(obs_age,1),boot_matches=obs_boot),
+                    feed=dict(unit=FEED_UNIT,state=feed_state))
+    if not isinstance(state,dict) or state.get('boot')!=dp_boot or not isinstance(state.get('routes'),dict):
+        if not tracked: return report('converged','No link-tracked routes on the dataplane',[],[])
+        rows=[route_text(r)+': not yet judged' for r in tracked]
+        return report('pending','Route tracker has not reported on this dataplane boot',rows,
+                      [dict(dst=r.get('dst'),dev=r.get('dev'),via=r.get('via'),metric=r.get('metric'),installed=None,reason='tracker-not-reported') for r in tracked])
+    routes=[];rows=[]
+    for record in state['routes'].values():
+        route=record.get('route') if isinstance(record,dict) and isinstance(record.get('route'),dict) else {}
+        installed=record.get('installed') is True if isinstance(record,dict) else False
+        reason=str((record or {}).get('reason','unknown'))[:64] if isinstance(record,dict) else 'unknown'
+        routes.append(dict(dst=route.get('dst'),dev=route.get('dev'),via=route.get('via'),metric=route.get('metric'),installed=installed,reason=reason))
+        rows.append(route_text(route)+(': installed' if installed else ': withdrawn (%s)'%reason))
+    try: age=uptime-float(state['observed'])
+    except (KeyError,TypeError,ValueError): age=None
+    state['age_seconds']=None if age is None else round(age,1)
+    if age is None or not 0<=age<=TRACKER_FRESH_SECONDS:
+        return report('failed','Route tracker stalled: last tick %s s ago'%('?' if age is None else int(age)),rows,routes)
+    if network is not None and state.get('revision')!=revision:
+        return report('pending','Route tracker has not applied network revision %s'%revision,rows,routes)
+    withdrawn=[r for r in routes if not r['installed']]
+    feed=[r for r in withdrawn if r['reason'] in FEED_REASONS]
+    waiting=[r for r in withdrawn if r['reason'] in WAITING_REASONS]
+    other=[r for r in withdrawn if r not in feed and r not in waiting]
+    if feed: return report('failed','%s withdrawn: hardware link observation stale on the dataplane'%summary_of(len(feed)),rows,routes)
+    if other: return report('failed','%s cannot be installed as committed'%summary_of(len(other)),rows,routes)
+    if waiting: return report('pending','%d of %s waiting for a link'%(len(waiting),summary_of(len(routes))),rows,routes)
+    if not routes: return report('converged','No link-tracked routes on the dataplane',rows,routes)
+    return report('converged','%s installed'%summary_of(len(routes)),rows,routes)
+
+
+async def execute(resource, action, payload, backend=None, collect=None, unit_state=None):
     backend=backend or Controller()
+    if resource=='tracked-routes' and action=='status':
+        if payload: raise ValueError('status takes no payload')
+        collected=await asyncio.to_thread(collect or dp_collect)
+        feed_state=await asyncio.to_thread(unit_state or feed_unit_state)
+        return tracked_routes_report(*parse_tracked_routes(collected),feed_state=feed_state)
     if resource=='route-links' and action=='refresh':
         if payload: raise ValueError('Observation refresh takes no payload')
         observed=await backend.run('network','status')

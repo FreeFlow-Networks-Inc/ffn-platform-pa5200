@@ -24,7 +24,14 @@ Implemented here:
   delivery that follow the CP's faceplate observation under a lease. The MP's
   `ffn-port-links.timer` delivers that observation through `ffn-portd links`;
   what the copper VIF driver did for those ports is this lease, and the VIF
-  owner is gone. `aggregate` owns one aggregate: the
+  owner is gone. The same delivery is written a second time as the route
+  tracker's link observation, `/run/ffn-route-links.json` (`{boot_id,
+  revision, links: {pN: bool}, observed}`, a port up when its row says
+  available, enabled and link), so the tracked default routes no longer
+  depend on the MP's separate `ffn-route-link-feed` (2026-10-20: that feed
+  stayed stopped after a patch install and the routes were withdrawn for
+  fifteen minutes); `test_portd_links.py` proves the record without hardware
+  and `test-portd-linux.py` against real owners. `aggregate` owns one aggregate: the
   LACP engine, the member gates, the trunk control socket and the aggregate
   TAP's native workers in one process, under the MP supervisor's JSON-line
   contract (`ffn_aggregate_runtime.py serve` execs it). Its life is bound to
