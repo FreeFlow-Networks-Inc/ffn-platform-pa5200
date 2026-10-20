@@ -42,6 +42,10 @@ RECORD = ROOT / 'production-attachments.json'
 # zones of the committed policy, one number per Security zone, stable across runs.
 ZONES = {'WAN': 10, 'LAN': 20, 'GUEST-VLAN': 30, 'VOICE-VLAN': 40, 'OSP-INTERNAl-ZONE': 50, 'OSP-WAN-ZONE': 60,
          'LAB': 99}    # the lab front port, for return-path proofs; never a policy zone
+# Every VLAN the LAG carries gets a LIF in the LAN chip-zone (20): the chip's zone only scopes its own
+# lookups, one binding per member port then covers all of them, and the kernel keeps enforcing the real
+# zone policy on the software path while admission checks interface pairs itself.
+LAG_VLANS = (0, 17, 69, 101, 375, 444, 447)
 
 DEFAULT_PLAN = {
     'schema': 1,
@@ -49,15 +53,13 @@ DEFAULT_PLAN = {
     # what the DP decoder expects in the retained ITMH; BCM port 20's force-forward decides delivery (-> 24).
     'miss_sysport': 8,
     'miss_dmac': '02:52:20:ab:cd:ee',
-    'pools': {'lif': list(range(2, 10)), 'lef': list(range(2, 10)), 'nexthop': list(range(2, 16)),
+    'pools': {'lif': list(range(2, 28)), 'lef': list(range(2, 28)), 'nexthop': list(range(2, 16)),
               'smac': list(range(2, 8)), 'qm': list(range(2, 20)), 'acl': list(range(2, 16)),
               'rxport': [5, 21, 22], 'txport': [5, 21, 22]},
     # FE100 logical port -> BCM physical port (FRONT in ffn_dp_packet_transport).
     'rxport_physical': {'5': 16, '21': 32, '22': 33},
-    'attachments': [
-        {'interface': 'ethernet1/5', 'zone_name': 'WAN', 'vlan': 0, 'ports': [5]},
-        {'interface': 'ae1.69', 'zone_name': 'LAN', 'vlan': 69, 'ports': [21, 22]},
-    ],
+    'attachments': [{'interface': 'ethernet1/5', 'zone_name': 'WAN', 'vlan': 0, 'ports': [5]}] +
+                   [{'interface': 'ae1' if v == 0 else 'ae1.%d' % v, 'zone_name': 'LAN', 'vlan': v, 'ports': [21, 22]} for v in LAG_VLANS],
 }
 
 
