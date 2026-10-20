@@ -136,6 +136,8 @@ static int write_atomic(const char *path, const char *text)
     return 0;
 }
 
+/* NULL with errno ENOENT when the file is absent: callers decide by reading,
+ * never by checking first and reading afterwards. */
 static struct ffn_json *read_json(const char *path)
 {
     char *text; size_t len; char err[64];
@@ -143,6 +145,7 @@ static struct ffn_json *read_json(const char *path)
     if (read_file(path, &text, &len)) return NULL;
     doc = ffn_json_parse(text, len, err, sizeof err);
     free(text);
+    if (!doc) errno = EINVAL;
     return doc;
 }
 
@@ -1075,16 +1078,15 @@ static void inspection_tick(struct inspector *in, uint64_t now)
     char err[128];
     if (now < in->next_poll) return;
     in->next_poll = now + SECOND;
-    if (access(INSPECTION_POLICY, F_OK) == 0) {
-        cfg = read_json(INSPECTION_POLICY);
-        if (!cfg || inspection_validate(cfg, err, sizeof err)) {
-            if (!cfg) snprintf(err, sizeof err, "inspection policy unreadable");
-            ffn_json_free(cfg); cfg = NULL;
-            in->has_error = true; snprintf(in->error, sizeof in->error, "%s", err);
-            inspection_publish(in);
-            return;
-        }
-    } else cfg = inspection_default();
+    cfg = read_json(INSPECTION_POLICY);
+    if (!cfg && errno == ENOENT) cfg = inspection_default();
+    else if (!cfg || inspection_validate(cfg, err, sizeof err)) {
+        if (!cfg) snprintf(err, sizeof err, "inspection policy unreadable");
+        ffn_json_free(cfg); cfg = NULL;
+        in->has_error = true; snprintf(in->error, sizeof in->error, "%s", err);
+        inspection_publish(in);
+        return;
+    }
     if (!ffn_json_equal(cfg, in->cfg)) {
         void *handle = NULL;
         if (strcmp(ffn_json_get_string(cfg, "mode"), "off")) {
@@ -1999,7 +2001,7 @@ static int serve(void)
         if (network_current && !d.in.control_only && network_dhcp(d.network) && ffn_lacp_distributing(d.engine, NULL, 0) && d.dhcp <= 0) dhcp_start(&d);
         if (d.dhcp > 0 && d.dhcp_exited) { snprintf(d.network_error, sizeof d.network_error, "Aggregate DHCP client exited"); d.has_network_error = true; }
         network_current = network_current && !d.has_network_error;
-        if (now >= d.next_status) { ffn_json_free(d.lease); d.lease = access(d.lease_path, F_OK) == 0 ? read_json(d.lease_path) : NULL; }
+        if (now >= d.next_status) { ffn_json_free(d.lease); d.lease = read_json(d.lease_path); }
         local_addresses(&d);
         if (d.native) { native_snapshot(&d); datapath_sync(&d, now, network_current); }
         if (d.failed) break;
@@ -2049,26 +2051,35 @@ static int try_lock(const char *path)
     return fd;
 }
 
-/* Whether an argument of the process's command line ends with `tail` (the
- * owner binaries) or, basename_only, is exactly `tail` (udhcpc). */
-static bool cmdline_has(pid_t pid, const char *tail, bool basename_only)
+/* The process's command line, NUL separated; -1 when the process is gone. */
+static int cmdline_read(pid_t pid, char **text, size_t *len)
 {
-    char path[64], *text; size_t len, want = strlen(tail);
-    bool found = false;
+    char path[64];
     snprintf(path, sizeof path, "/proc/%d/cmdline", (int)pid);
-    if (read_file(path, &text, &len)) return false;
+    return read_file(path, text, len);
+}
+
+/* Whether an argument ends with `tail` (the owner binaries) or, basename_only,
+ * is exactly `tail` (udhcpc). */
+static bool args_have(const char *text, size_t len, const char *tail, bool basename_only)
+{
+    size_t want = strlen(tail);
     for (size_t i = 0; i < len; i += strlen(text + i) + 1) {
         const char *arg = text + i, *base = strrchr(arg, '/');
         size_t n = strlen(arg);
-        if (basename_only ? !strcmp(base ? base + 1 : arg, tail) : (n >= want && !strcmp(arg + n - want, tail))) found = true;
+        if (basename_only ? !strcmp(base ? base + 1 : arg, tail) : (n >= want && !strcmp(arg + n - want, tail))) return true;
     }
-    free(text);
-    return found;
+    return false;
 }
 
 static bool owner_cmdline(pid_t pid)
 {
-    return cmdline_has(pid, "ffn-aggregated", false) || cmdline_has(pid, "/ffn_aggregate_runtime.py", false);
+    char *text; size_t len;
+    bool found;
+    if (cmdline_read(pid, &text, &len)) return false;
+    found = args_have(text, len, "ffn-aggregated", false) || args_have(text, len, "/ffn_aggregate_runtime.py", false);
+    free(text);
+    return found;
 }
 
 /* 0 when the group is recovered or there is nothing to do; -1 with err when
@@ -2084,9 +2095,11 @@ static int recover_group(const char *group, const char *token, char *err, size_t
     snprintf(status_path, sizeof status_path, "%s/ffn-aggregate-%s-status.json", RUN, group);
     snprintf(lock_path, sizeof lock_path, "%s/ffn-aggregate-%s.lock", RUN, group);
     snprintf(dhcp_path, sizeof dhcp_path, "%s/ffn-aggregate-%s-dhcp.pid", RUN, group);
-    if (access(intent_path, F_OK)) return 0;
     intent = read_json(intent_path);
-    if (!intent) { snprintf(err, errsz, "intent unreadable"); return -1; }
+    if (!intent) {
+        if (errno == ENOENT) return 0; /* nothing journaled: nothing to recover */
+        snprintf(err, errsz, "intent unreadable"); return -1;
+    }
     intent_token = ffn_json_get_string(intent, "token"); intent_boot = ffn_json_get_string(intent, "boot_id");
     if (!intent_token || !intent_boot || boot_id(current_boot, sizeof current_boot) || strcmp(intent_boot, current_boot) ||
         (token && strcmp(token, intent_token))) {
@@ -2123,22 +2136,23 @@ static int recover_group(const char *group, const char *token, char *err, size_t
         }
         ffn_json_free(status);
     }
-    if (access(intent_path, F_OK)) { close(lock); ffn_json_free(intent); return 0; }
+    /* Re-read under the lock: the owner may have finished its own cleanup meanwhile. */
     again = read_json(intent_path);
+    if (!again && errno == ENOENT) { close(lock); ffn_json_free(intent); return 0; }
     if (!again || !ffn_json_get_string(again, "token") || strcmp(ffn_json_get_string(again, "token"), intent_token)) {
         snprintf(err, errsz, "Recovery token changed"); goto out;
     }
-    if (access(dhcp_path, F_OK) == 0) {
+    {
         char *text; size_t len;
         if (read_file(dhcp_path, &text, &len) == 0) {
             pid_t dhcp = (pid_t)atoi(text);
-            char proc[64];
+            char *args; size_t args_len;
             free(text);
-            snprintf(proc, sizeof proc, "/proc/%d", (int)dhcp);
-            if (dhcp > 0 && access(proc, F_OK) == 0) {
-                if (!cmdline_has(dhcp, "udhcpc", true) || !cmdline_has(dhcp, group, false) || !cmdline_has(dhcp, DHCP_HOOK, false)) {
-                    snprintf(err, errsz, "DHCP process ownership changed"); goto out;
-                }
+            if (dhcp > 0 && cmdline_read(dhcp, &args, &args_len) == 0) {
+                bool ours = args_have(args, args_len, "udhcpc", true) && args_have(args, args_len, group, false) &&
+                            args_have(args, args_len, DHCP_HOOK, false);
+                free(args);
+                if (!ours) { snprintf(err, errsz, "DHCP process ownership changed"); goto out; }
                 /* The interface is still withdrawn if an unresponsive client
                  * survives; subsequent hook calls reject the missing intent. */
                 kill(dhcp, SIGTERM);
