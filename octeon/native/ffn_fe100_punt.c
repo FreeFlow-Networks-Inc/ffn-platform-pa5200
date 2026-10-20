@@ -30,8 +30,10 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
         if(key[0]!=0x40 && key[0]!=0x80)return 0;
         overhead=key[0]==0x40 ? 56 : 80;
     }
-    else if((cmh[3]==5 && (cmh[23]==2 || cmh[23]==13)) ||
-            (cmh[3]==4 && (cmh[23]==30 || cmh[23]==32))) overhead=40;
+    /* Exceptions (types 4 and 5) carry the original packet whatever their code:
+     * the PA-5220 answered bare TCP SYNs with code 39 (2026-10-20), and a code
+     * this decoder has not met must not cost the packet on the inline path. */
+    else if(cmh[3]==4 || cmh[3]==5) overhead=40;
     /* NOTFLOW's eight-byte message info ends in a zone, not an exception
      * code. Confirmed against condor_notflow_msg_t and physical LACP returns. */
     else if(cmh[3]==1 && !be32(cmh+16) && !be16(cmh+20))overhead=40;
@@ -91,18 +93,16 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
         if(packet_type!=2 || length<l3+48)return 0;
         ip=frame+l3;protocol=ip[6];ip_length=40+be16(ip+4);l4=l3+40;
         if(ip[0]>>4!=6 || ip_length!=length-l3 || ((be16(info+6)>>7)&0xff)!=40)return 0;
-        if(protocol==58) {
-            if(key || cmh[3]!=4 || cmh[23]!=32)return 0;
-            goto accepted;
-        }
         if(!key) {
             /* An exception without a key carries the original packet of any
              * next header; the kernel path decides what it is. */
             if(cmh[3]!=4 && cmh[3]!=5)return 0;
             goto accepted;
         }
-        if(key[0]!=0x80 || (protocol!=6 && protocol!=17) ||
-           key[1]!=protocol || memcmp(key+8,ip+8,32))return 0;
+        /* A keyed miss must name this packet's next header and addresses; its
+         * port words only mean something for TCP and UDP. */
+        if(key[0]!=0x80 || key[1]!=protocol || memcmp(key+8,ip+8,32))return 0;
+        if(protocol!=6 && protocol!=17)goto accepted;
         transport=frame+l4;
         if(memcmp(key+4,transport,4))return 0;
         if(protocol==6) {
@@ -123,25 +123,33 @@ int ffn_fe100_punt_decode(const uint8_t *wire,size_t size,
     if(ip_length<(unsigned)((ip[0]&15)*4+4) || ip_length>length-l3 ||
        (ip_length!=length-l3 && length!=(l3==18?64:60)) || ((be16(info+6)>>7)&0xff)!=(unsigned)((ip[0]&15)*4))return 0;
     if(protocol!=6 && protocol!=17 && protocol!=1) {
-        /* keys and session punts are TCP/UDP by construction; exceptions are not */
-        if(key || cmh[3]==2 || (cmh[3]!=4 && cmh[3]!=5))return 0;
+        /* The chip keys any IPv4 protocol it cannot match, with zero port words
+         * (GRE tunnels into the WAN, PA-5220 2026-10-20): the key must name this
+         * packet's protocol and addresses. Session punts are TCP by construction. */
+        if(cmh[3]==2 || (!key && cmh[3]!=4 && cmh[3]!=5))return 0;
+        if(key && (key[0]!=0x40 || key[1]!=ip[9] || memcmp(key+8,ip+12,8)))return 0;
         goto accepted;
     }
-    if(cmh[3]==4 && cmh[23]==30) {
-        /* Reassembly and policy remain the software dataplane's responsibility.
-         * First and later fragments retain the original IP header and payload. */
-        if(!(be16(ip+6)&0x3fff))return 0;
-    } else if(be16(ip+6)&0x3fff)return 0;
+    /* Reassembly and policy remain the software dataplane's responsibility:
+     * a fragment is data under any message (the chip keys first fragments and
+     * may report them under other exception codes); the fragment code itself
+     * must name a fragment. Transport headers exist only in first fragments. */
+    unsigned fragment=be16(ip+6)&0x3fff,first=!(be16(ip+6)&0x1fff);
+    if(cmh[3]==4 && cmh[23]==30 && !fragment)return 0;
     if(cmh[3]==5 && cmh[23]==2 && ip[8]!=1)return 0;
     transport=frame+l4;
+    /* A key names this packet's protocol and addresses; its port words are
+     * ports only for TCP and UDP (the chip keys ICMP too, with other content). */
     if(key && (key[0]!=0x40 || key[1]!=ip[9] || memcmp(key+8,ip+12,8) ||
-               memcmp(key+4,transport,4)))return 0;
-    if(cmh[3]==2 && protocol!=6)return 0;
+               (protocol!=1 && first && memcmp(key+4,transport,4))))return 0;
+    if(cmh[3]==2 && (protocol!=6 || fragment))return 0;
     if(protocol==1) {
-        if(key || cmh[3]!=4 || cmh[23]!=32 || ip_length<28)return 0;
-    } else if(!(cmh[3]==4 && cmh[23]==30) && ip[9]==6) {
+        /* ICMP arrives as an exception of any code, or keyed like any other
+         * protocol the chip cannot match. */
+        if((!key && cmh[3]!=4 && cmh[3]!=5) || (first && ip_length<28))return 0;
+    } else if(!fragment && ip[9]==6) {
         if(ip_length<40 || transport[12]>>4<5 || (size_t)(transport[12]>>4)*4>ip_length-20)return 0;
-    } else if(!(cmh[3]==4 && cmh[23]==30) && (ip_length<28 || be16(transport+4)!=ip_length-20))return 0;
+    } else if(!fragment && (ip_length<28 || be16(transport+4)!=ip_length-20))return 0;
 accepted:
     *out=(struct ffn_fe100_punt){.frame=frame,.length=length,.flow_id=be32(cmh+16),
         .front=port,.in_lif=lif,.zone=zone,.message=cmh[3],.code=cmh[23]};
