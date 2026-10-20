@@ -25,6 +25,19 @@ ffn-lldpd: ffn_lldpd.c ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h
 test-lldp: ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h test_lldp.c
 	$(CC) $(CFLAGS) -Wno-unused-function test_lldp.c -o $@
 
+# The LACP engine and codec (own code). The shared object exists for the Python
+# conformance shim; ffn-aggregated compiles the engine in directly.
+libffn-lacp.so: ffn_lacp.c ffn_lacp.h
+	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_lacp.c -o $@
+
+test-lacp: ffn_lacp.c ffn_lacp.h test_lacp.c
+	$(CC) $(CFLAGS) ffn_lacp.c test_lacp.c -o $@
+
+# The dataplane owner of one aggregate: LACP engine, member gates, trunk control
+# socket and the TAP's native workers, under the MP supervisor's JSON-line contract.
+ffn-aggregated: ffn_aggregated.c ffn_lacp.c ffn_lacp.h ffn_json.c ffn_json.h ffn_packet.h libffn-packet.so
+	$(CC) $(CFLAGS) ffn_aggregated.c ffn_lacp.c ffn_json.c -L. -lffn-packet -ldl -o $@
+
 # The CP's SFP+ cage control: expanders, SFF-8472 pages, link mode, transmit check, insertion watcher.
 ffn-sfpctl: ffn_sfpctl.c ffn_sfp.c ffn_sfp.h ffn_bcm_client.c ffn_bcm_client.h ffn_hwio.c ffn_json.c ffn_json.h
 	$(CC) $(CFLAGS) ffn_sfpctl.c ffn_sfp.c ffn_bcm_client.c ffn_hwio.c ffn_json.c -lm -o $@
@@ -72,7 +85,7 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp test-sfp
+test: libffn-packet.so libffn-inline.so libffn-lacp.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp test-sfp test-lacp
 	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
@@ -82,6 +95,8 @@ test: libffn-packet.so libffn-inline.so test-scan.so test-hwio test-fe100-punt t
 	./test-portctl
 	./test-lldp
 	./test-sfp
+	./test-lacp
+	cd ../debian && FFN_LACP_ENGINE=native FFN_LACP_LIB=$(CURDIR)/libffn-lacp.so python3 -m unittest test_lacp_native test_lacp_engine
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_packet.py
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py

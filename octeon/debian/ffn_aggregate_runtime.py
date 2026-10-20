@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""MP-supervised OCTEON aggregate owner. A lost control pipe withdraws gates."""
-import collections
-import contextlib
+"""The aggregate owner's kernel-interface transactions and watchdog on the DP.
+
+The owner itself is ffn-aggregated (octeon/native/ffn_aggregated.c): the LACP
+engine, the member gates, the trunk control socket and the TAP's native packet
+workers live there, bound to the MP supervisor's control pipe. `serve` hands
+that pipe straight to it. What stays here is the configuration work it
+delegates to bounded one-shot helpers, under the shared network lock:
+
+  validate          the full intent validation (profiles, VLAN units, addresses)
+  network-setup     create the TAP, its guard, addresses and VLAN units
+  network-update    apply a committed address/profile/unit change
+  network-teardown  remove what setup created
+  status            what the MP reads; `recover` and `sweep` (the dataplane
+                    watchdog) are the daemon's own verbs and exec it
+"""
 import fcntl
 import hashlib
 import ipaddress
@@ -10,23 +22,17 @@ import json
 import os
 from pathlib import Path
 import re
-import select
-import signal
-import socket
-import struct
 import subprocess
 import sys
 import time
 sys.path.insert(0,'/usr/local/lib/ffn')
 from ffn_aggregate_datapath import Gates
 from ffn_lacp_engine import Engine
-from ffn_lacp_trunk import TrunkLACP
 import ffn_aggregate_vlan as vlan
-from ffn_dp_packet_transport import FRONT,validate_trunk,encode
-from ffn_native_aggregate import AggregateOwner,control_socket
-import ffn_fe100_return as fe100_return
+from ffn_dp_packet_transport import FRONT
 
 NS='ffn-data'
+DAEMON=os.environ.get('FFN_AGGREGATED','/usr/local/sbin/ffn-aggregated')
 
 
 def boot():return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -56,55 +62,20 @@ def status():
     return dict(boot_id=boot(),groups=groups,hardware_offload=False)
 
 
-def recover(name,token=None):
-    if not re.fullmatch(r'ae(?:[1-9]|1[0-2])',name):raise ValueError('Invalid aggregate name')
-    intent_path=Path('/run/ffn-aggregate-'+name+'-intent.json')
-    if not intent_path.exists():return
-    intent=json.loads(intent_path.read_text())
-    if intent['boot_id']!=boot() or token is not None and intent['token']!=token:raise ValueError('Aggregate recovery identity changed')
-    with open('/run/ffn-aggregate-'+name+'.lock','a') as owner:
-        # An alive owner must be stopped through MP first. The watchdog may
-        # terminate a stale process only after verifying PID start and command.
-        try:fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:
-            row=json.loads(Path('/run/ffn-aggregate-'+name+'-status.json').read_text())
-            if time.monotonic()-row['updated_monotonic']<8:return
-            proc=Path('/proc',str(row['pid']))
-            start=(proc/'stat').read_text().rsplit(') ',1)[1].split()[19]
-            args=(proc/'cmdline').read_bytes().split(b'\0')
-            if row['token']!=intent['token'] or start!=row['process_start'] or not any(a.endswith(b'/ffn_aggregate_runtime.py') for a in args):raise ValueError('Stale owner process identity changed')
-            os.kill(row['pid'],signal.SIGTERM);time.sleep(.5)
-            try:fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            except BlockingIOError:
-                if (proc/'stat').read_text().rsplit(') ',1)[1].split()[19]!=start:raise ValueError('Owner PID changed')
-                os.kill(row['pid'],signal.SIGKILL);time.sleep(.2)
-                fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        if not intent_path.exists():return
-        if json.loads(intent_path.read_text())['token']!=intent['token']:raise ValueError('Recovery token changed')
-        pidfile=Path('/run/ffn-aggregate-'+name+'-dhcp.pid')
-        if pidfile.exists():
-            pid=int(pidfile.read_text());proc=Path('/proc',str(pid))
-            if proc.exists():
-                args=(proc/'cmdline').read_bytes().split(b'\0')
-                if b'udhcpc' not in [Path(a.decode()).name.encode() for a in args if a] or name.encode() not in args or b'/usr/local/sbin/ffn_aggregate_dhcp.py' not in args:
-                    raise ValueError('DHCP process ownership changed')
-                os.kill(pid,signal.SIGTERM)
-                # The interface is still withdrawn if an unresponsive client
-                # survives; subsequent hook calls reject the missing intent.
-        with open('/run/ffn-network.lock','a') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX)
-            links={p['ifname']:p for p in json.loads(ip('-j','link'))}
-            if name in links:
-                if links[name].get('ifalias')!='ffn-aggregate:'+intent['token']:raise ValueError('Refusing to delete an unowned aggregate interface')
-                ip('link','set',name,'down')
-                vlan.cleanup(NS,name,intent['token'],ip)
-                from ffn_interface_management import apply
-                apply(NS,name,dict(mode='l3',addresses=[],management=intent['network']['management']),remove=True)
-                ip('link','delete',name)
-            tables=json.loads(run('ip','netns','exec',NS,'nft','-j','list','tables'))['nftables']
-            if any(t.get('table',{}).get('name')=='ffn_aggregate_'+name for t in tables):run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
-        for suffix in ('status.json','lease.json','network-pending.json','dhcp.pid','intent.json'):
-            Path('/run/ffn-aggregate-'+name+'-'+suffix).unlink(missing_ok=True)
+def teardown(name,token,management):
+    """Remove the owned aggregate interface, its units, guard and run files. Network lock held."""
+    links={p['ifname']:p for p in json.loads(ip('-j','link'))}
+    if name in links:
+        if links[name].get('ifalias')!='ffn-aggregate:'+token:raise ValueError('Refusing to delete an unowned aggregate interface')
+        ip('link','set',name,'down')
+        vlan.cleanup(NS,name,token,ip)
+        from ffn_interface_management import apply
+        apply(NS,name,dict(mode='l3',addresses=[],management=management),remove=True)
+        ip('link','delete',name)
+    tables=json.loads(run('ip','netns','exec',NS,'nft','-j','list','tables'))['nftables']
+    if any(t.get('table',{}).get('name')=='ffn_aggregate_'+name for t in tables):run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
+    for suffix in ('lease.json','network-pending.json','dhcp.pid'):
+        Path('/run/ffn-aggregate-'+name+'-'+suffix).unlink(missing_ok=True)
 
 
 def validate(intent):
@@ -139,6 +110,56 @@ def validate(intent):
 
 def network_revision(intent):
     return hashlib.sha256(json.dumps({key:intent[key] for key in ('network','lldp')},sort_keys=True).encode()).hexdigest()
+
+
+def network_setup(request):
+    """Create the aggregate TAP and everything attached to it. Undone on failure."""
+    intent=validate(request['intent']);name=intent['group'];network=intent['network'];token=intent['token']
+    created=guarded=False
+    with open('/run/ffn-network.lock','a') as lock:
+        # This is a shared configuration transaction lock, not aggregate
+        # ownership. Wait for a policy apply instead of failing the owner on
+        # ordinary contention; the owner bounds the wait.
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        try:
+            if any(n['ifname']==name for n in json.loads(ip('-j','link'))):raise ValueError('Aggregate netdevice already exists; refusing adoption')
+            ip('tuntap','add','dev',name,'mode','tap','multi_queue');created=True
+            ip('link','set',name,'alias','ffn-aggregate:'+token)
+            ip('link','set',name,'address',intent['system'],'mtu',str(network['mtu']))
+            # Default-deny transit until the policy compiler supplies an
+            # aggregate binding. Interface-local management still works.
+            run('ip','netns','exec',NS,'nft','-f','-',input=vlan.guard(name));guarded=True
+            from ffn_interface_management import apply
+            apply(NS,name,dict(mode='l3',addresses=network['addresses'],management=network['management']))
+            for address in network['addresses']:ip('address','add',address,'dev',name)
+            units=vlan.reconcile(NS,name,token,network,ip,run)
+            if vlan.carrying(network):ip('link','set',name,'up')
+        except BaseException as error:
+            problems=[]
+            try:
+                if created:teardown(name,token,network['management'])
+                elif guarded:run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
+            except Exception as cleanup:problems.append(str(cleanup))
+            if problems:raise RuntimeError('%s; cleanup errors: %s'%(error,problems)) from error
+            raise
+    return dict(ok=True,subinterfaces=units)
+
+
+def network_teardown(request):
+    """Remove what network-setup created; waits a bounded time for the lock."""
+    name=request['group'];token=request['token'];management=request['management']
+    if not re.fullmatch(r'ae(?:[1-9]|1[0-2])',str(name)):raise ValueError('Invalid aggregate name')
+    import uuid
+    if str(uuid.UUID(str(token)))!=token:raise ValueError('Invalid owner token')
+    with open('/run/ffn-network.lock','a') as lock:
+        deadline=time.monotonic()+20
+        while True:
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise RuntimeError('network lock busy; aggregate cleanup left for the watchdog')
+                time.sleep(.05)
+        teardown(name,token,management)
+    return {'ok':True}
 
 
 def apply_network_update(request):
@@ -179,252 +200,26 @@ def apply_network_update(request):
     return dict(revision=network_revision(intent),ok=True,subinterfaces=units)
 
 
-def lldp(system,group,port):
-    mac=bytes.fromhex(system.replace(':',''))
-    def tlv(kind,value):return struct.pack('!H',(kind<<9)|len(value))+value
-    return (bytes.fromhex('0180c200000e')+mac+b'\x88\xcc'+tlv(1,b'\x04'+mac)+
-        tlv(2,b'\x05'+('ethernet1/'+str(port)).encode())+tlv(3,struct.pack('!H',120))+
-        tlv(4,('FFN aggregate '+group).encode())+tlv(5,b'FFN-NGFW')+b'\0\0')
-
-
-def serve(intent):
-    intent=validate(intent);name=intent['group'];members=intent['members'];network=intent['network']
-    if 'octeon' not in Path('/proc/cpuinfo').read_text().lower():raise ValueError('OCTEON dataplane required')
-    validate_trunk('ffnpkt0')
-    run('systemctl','is-active','--quiet','ffn-aggregate-dp-watchdog.timer')
-    state_path=Path('/run/ffn-aggregate-'+name+'-status.json')
-    intent_path=Path('/run/ffn-aggregate-'+name+'-intent.json')
-    gates=Gates(members);engine=Engine(intent['system'],int(name[2:]),{p:intent['system'] for p in members},gates,
-        collecting=not intent['control_only'],**intent['lacp'])
-    from ffn_aggregate_offload import Offload
-    offload=Offload(int(name[2:]),members) if intent['offload'] else None
-    native=None;wire=None;inspector=None;dhcp=None;created=False;guarded=False;counts=collections.Counter()
-    worker=None;worker_intent=None;network_error=None;retired_clients=[];unit_status=[];unit_counts={}
-    applied_revision=network_revision(intent);attempted_revision=applied_revision;lease_generation=applied_revision
-    requested=dict(revision=applied_revision,network=network,lldp=intent['lldp'])
-    def halt(*_):raise KeyboardInterrupt()
-    signal.signal(signal.SIGTERM,halt)
-    with contextlib.ExitStack() as stack:
-        # Legacy fabric owners take EX; scoped WAN/aggregate owners take SH and
-        # individual port EX locks, allowing coexistence without overlapping RX.
-        fabric=stack.enter_context(open('/run/ffn-fabric.lock','a'));fcntl.flock(fabric,fcntl.LOCK_SH|fcntl.LOCK_NB)
-        for key in [name]+['port-'+str(p) for p in sorted(members)]:
-            lock=stack.enter_context(open('/run/ffn-aggregate-'+key+'.lock','a'));fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        try:
-            # Persist ownership before any netdevice mutation so the watchdog
-            # can recover a crash during initialization as well as normal work.
-            atomic(intent_path,dict(intent,network_generation=applied_revision))
-            if not intent['control_only']:
-                with open('/run/ffn-network.lock','a') as lock:
-                    # This is a shared configuration transaction lock, not
-                    # aggregate ownership. Wait for a policy apply instead of
-                    # crashing/restarting the owner on ordinary contention.
-                    fcntl.flock(lock,fcntl.LOCK_EX)
-                    if any(n['ifname']==name for n in json.loads(ip('-j','link'))):raise ValueError('Aggregate netdevice already exists; refusing adoption')
-                    ip('tuntap','add','dev',name,'mode','tap','multi_queue');created=True
-                    ip('link','set',name,'alias','ffn-aggregate:'+intent['token'])
-                    ip('link','set',name,'address',intent['system'],'mtu',str(network['mtu']))
-                    # Default-deny transit until the policy compiler supplies an
-                    # aggregate binding. Interface-local management still works.
-                    script=vlan.guard(name)
-                    run('ip','netns','exec',NS,'nft','-f','-',input=script);guarded=True
-                    from ffn_interface_management import apply
-                    settings=dict(mode='l3',addresses=network['addresses'],management=network['management'])
-                    apply(NS,name,settings)
-                    for address in network['addresses']:ip('address','add',address,'dev',name)
-                    unit_status=vlan.reconcile(NS,name,intent['token'],network,ip,run)
-                    aliases={p:0x8000|(i<<8)|int(name[2:]) for i,p in enumerate(sorted(members))} if offload else {}
-                    native=AggregateOwner(name,{p:FRONT[p] for p in members},aliases)
-                    if vlan.carrying(network):ip('link','set',name,'up')
-                from ffn_inspection import Inspector
-                inspector=Inspector(status_path=Path('/run/ffn-inspection-'+name+'.json'))
-                if inspector.error:raise RuntimeError('Initial inspection configuration failed: '+inspector.error)
-            control_aliases={p:alias for alias,source in (offload.aliases.items() if offload else []) for p in members if FRONT[p]==source}
-            wire=control_socket([FRONT[p] for p in members]+(list(offload.aliases) if offload else []),
-                                mapping={p:FRONT[p] for p in members},aliases=control_aliases)
-            adapter=TrunkLACP(engine,wire)
-            started=time.monotonic();next_status=0;next_lldp=0;last_input=started;sequence=-1;buffer=b''
-            returns=None;control_returns=None
-            local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
-            while True:
-                # The previous control read quiesced both native workers.
-                # On the first iteration they have not been started yet.
-                now=time.monotonic()
-                if now-last_input>(60 if sequence<0 else 8):raise RuntimeError('MP/CP observation lease expired')
-                engine.tick(now)
-                adapter.service(now)
-                if engine.fault:raise RuntimeError(engine.fault)
-                if worker is not None and worker.poll() is not None:
-                    output=worker.stdout.read(65536);error=worker.stderr.read(4096)
-                    try:
-                        ack=json.loads(output)
-                        if worker.returncode or not ack.get('ok') or ack.get('revision')!=network_revision(worker_intent):raise RuntimeError(error.decode(errors='replace')[-512:] or 'Network update failed')
-                        intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network']
-                        applied_revision=ack['revision'];network_error=None
-                        unit_status=ack.get('subinterfaces',[])
-                        local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
-                    except Exception as error:network_error=str(error)
-                    worker.stdout.close();worker.stderr.close();worker=None
-                if worker is None and requested['revision']!=attempted_revision:
-                    retry_network=network_error is not None
-                    attempted_revision=requested['revision'];network_error=None
-                    worker_intent=dict(intent,network=requested['network'],lldp=requested['lldp'])
-                    if intent['control_only'] or worker_intent['network']==network and not retry_network:
-                        intent.update(network=worker_intent['network'],lldp=worker_intent['lldp']);network=intent['network'];applied_revision=attempted_revision
-                        atomic(intent_path,dict(intent,network_generation=lease_generation))
-                    else:
-                        try:
-                            # Reject old DHCP hooks before signaling the previous client.
-                            atomic(intent_path,dict(worker_intent,network_generation=attempted_revision))
-                            lease_generation=attempted_revision
-                            if dhcp is not None:
-                                if dhcp.poll() is None:
-                                    try:os.killpg(dhcp.pid,signal.SIGTERM)
-                                    except ProcessLookupError:pass
-                                retired_clients.append((dhcp,time.monotonic()));dhcp=None
-                            worker_started=time.monotonic()
-                            worker=subprocess.Popen([sys.executable,__file__,'network-update'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-                            worker.stdin.write((json.dumps(dict(intent=worker_intent,previous=network))+'\n').encode());worker.stdin.close()
-                        except (OSError,ValueError) as error:
-                            network_error='Could not start network update: '+str(error)
-                            if worker is not None:
-                                if worker.poll() is None:worker.kill()
-                                if worker.stdin and not worker.stdin.closed:worker.stdin.close()
-                if worker is not None and time.monotonic()-worker_started>30:
-                    worker.kill();network_error='Network update timed out; LACP retained, data delivery blocked'
-                for process,retired_at in list(retired_clients):
-                    if process.poll() is not None:retired_clients.remove((process,retired_at))
-                    elif time.monotonic()-retired_at>2:
-                        try:os.killpg(process.pid,signal.SIGKILL)
-                        except ProcessLookupError:pass
-                if inspector:inspector.tick()
-                if now>=next_lldp and intent['lldp']:
-                    for p,m in engine.members.items():
-                        if m['link']:
-                            packet=encode(p,lldp(intent['system'],name,p))
-                            if wire.send(packet)!=len(packet):raise OSError('Short LLDP write')
-                    next_lldp=now+30
-                result=engine.status(now)
-                network_current=applied_revision==requested['revision'] and worker is None and network_error is None
-                if network_current and not intent['control_only'] and network['dhcp'] and result['distributing'] and dhcp is None:
-                    try:dhcp=subprocess.Popen(['ip','netns','exec',NS,'udhcpc','-f','-i',name,'-s','/usr/local/sbin/ffn_aggregate_dhcp.py','-p','/run/ffn-aggregate-'+name+'-dhcp.pid'],stdout=sys.stderr,stderr=sys.stderr,start_new_session=True,env=dict(os.environ,FFN_AGGREGATE_NETWORK_REVISION=lease_generation))
-                    except OSError as error:network_error='Aggregate DHCP client could not start: '+str(error)
-                if dhcp is not None and dhcp.poll() is not None:network_error='Aggregate DHCP client exited'
-                network_current=network_current and network_error is None
-                if now>=next_status:
-                    lease=Path('/run/ffn-aggregate-'+name+'-lease.json')
-                    lease_data=json.loads(lease.read_text()) if lease.exists() else {}
-                    if network['dhcp']:
-                        local={ipaddress.ip_interface(lease_data['address']).ip.packed} if lease_data.get('token')==intent['token'] and lease_data.get('address') else set()
-                if native:
-                    counts,unit_counts=native.snapshot(gates,offload,inspector)
-                    native.configure(network,local,gates,engine,offload,network_current and vlan.carrying(network),inspector,now)
-                    # The chip's return bindings for the members: data returns on the paused packet
-                    # owner, control returns (NOTFLOW LACP/LLDP) on the control socket, one lease.
-                    return_config=fe100_return.load()
-                    returns=fe100_return.renew(native,return_config,members,FRONT,int(now*1000),returns)
-                    if hasattr(wire,'fe100'):
-                        control_returns=fe100_return.renew(wire,return_config,members,FRONT,int(now*1000),control_returns)
-                    native.resume()
-                if now>=next_status:
-                    next_status=now+1
-                    row=dict(result,group=name,token=intent['token'],boot_id=boot(),pid=os.getpid(),
-                        process_start=Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19],updated_monotonic=now,
-                        packet_execution='native-c' if native else 'control-only',workers=native.workers() if native else None,
-                        control_only=intent['control_only'],attachment_ready=native is not None and vlan.carrying(network) and network_current,
-                        configuration_ready=network_current and not intent['control_only'],
-                        configuration_revision=applied_revision,network_error=network_error,network_update_pending=not network_current,
-                        subinterfaces=[dict(u,applied=network_current,state='active' if network_current and result['distributing'] else 'configured' if network_current else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
-                        network=network,ports=members,hardware_offload=bool(offload and offload.ready(gates,now)),
-                        offload_requested=intent['offload'],offload_tx=offload.transmitted if offload else 0,
-                        offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),fe100_return=returns,
-                        data_rx=dict(gates.rx),data_tx=dict(gates.tx),gate_drops=gates.dropped,
-                        network_ready=network_current and (not network['dhcp'] or bool(local) and not lease_data.get('error')),lease=lease_data)
-                    atomic(state_path,row);print(json.dumps(row),flush=True)
-                ready,_,_=select.select([sys.stdin.fileno(),wire],[],[],.05)
-                if native:native.pause()
-                # Drain control before packets so a withdrawal closes gates first.
-                if sys.stdin.fileno() in ready:
-                    data=os.read(sys.stdin.fileno(),65536)
-                    if not data:raise RuntimeError('MP control pipe closed')
-                    buffer+=data
-                    if len(buffer)>262144:raise ValueError('Control input exceeds limit')
-                    while b'\n' in buffer:
-                        line,buffer=buffer.split(b'\n',1);msg=json.loads(line)
-                        if msg.get('token')!=intent['token'] or type(msg.get('sequence')) is not int or msg['sequence']<=sequence:raise ValueError('Stale aggregate observation')
-                        sequence=msg['sequence'];age=msg.get('age_seconds')
-                        if type(age) not in (int,float) or not 0<=age<5:raise ValueError('Expired CP observation')
-                        links=msg.get('links',[])
-                        if len(links)!=len(members) or {p['port'] for p in links}!=set(members):raise ValueError('Incomplete member observation')
-                        stamp=time.monotonic()
-                        for p in links:engine.link(p['port'],p['up'],p['speed_mbps'] if p['up'] else 0,stamp,lease_seconds=6-age)
-                        if offload:offload.acknowledge(msg.get('offload'),stamp,age)
-                        last_input=stamp
-                        if 'config' in msg:
-                            config=msg['config']
-                            if not isinstance(config,dict) or set(config)!={'revision','network','lldp'}:raise ValueError('Invalid network update')
-                            updated=validate(dict(intent,network=config['network'],lldp=config['lldp']))
-                            if config['revision']!=network_revision(updated):raise ValueError('Network revision mismatch')
-                            requested=config
-                if wire in ready:
-                    for _ in range(128):
-                        try:
-                            if hasattr(wire,'receive'):raw=wire.receive()
-                            else:
-                                raw,address=wire.recvfrom(16384)
-                                if address[2]==socket.PACKET_OUTGOING:continue
-                        except BlockingIOError:break
-                        if offload:raw=offload.ingress(raw)
-                        if adapter.receive(raw,time.monotonic()):continue
-        finally:
-            if native:native.close()
-            engine.stop(time.monotonic())
-            if worker is not None:
-                if worker.poll() is None:worker.kill()
-                worker.wait(timeout=5)
-            for process,_ in retired_clients:
-                if process.poll() is None:os.killpg(process.pid,signal.SIGKILL)
-                process.wait(timeout=5)
-            if dhcp is not None:
-                if dhcp.poll() is None:
-                    os.killpg(dhcp.pid,signal.SIGTERM)
-                    try:dhcp.wait(timeout=3)
-                    except subprocess.TimeoutExpired:os.killpg(dhcp.pid,signal.SIGKILL);dhcp.wait()
-            if inspector:inspector.close()
-            if wire:wire.close()
-            if created:
-                with open('/run/ffn-network.lock','a') as lock:
-                    fcntl.flock(lock,fcntl.LOCK_EX)
-                    ip('link','set',name,'down')
-                    vlan.cleanup(NS,name,intent['token'],ip)
-                    from ffn_interface_management import apply
-                    apply(NS,name,dict(mode='l3',addresses=[],management=network['management']),remove=True)
-                    ip('link','delete',name)
-            if guarded:run('ip','netns','exec',NS,'nft','delete','table','inet','ffn_aggregate_'+name)
-            for suffix in ('lease.json','network-pending.json','dhcp.pid'):
-                Path('/run/ffn-aggregate-'+name+'-'+suffix).unlink(missing_ok=True)
-            state_path.unlink(missing_ok=True);intent_path.unlink(missing_ok=True)
+def main(argv):
+    verb=argv[1] if len(argv)>1 else ''
+    if verb=='status':print(json.dumps(status()))
+    elif verb=='validate':
+        intent=validate(json.load(sys.stdin));print(json.dumps(dict(ok=True,revision=network_revision(intent))))
+    elif verb=='network-setup':print(json.dumps(network_setup(json.load(sys.stdin))))
+    elif verb=='network-update':print(json.dumps(apply_network_update(json.load(sys.stdin))))
+    elif verb=='network-teardown':print(json.dumps(network_teardown(json.load(sys.stdin))))
+    elif verb in ('serve','recover','sweep'):
+        # The MP's pipe becomes the daemon's pipe unread: it reads the intent
+        # (or the recovery identity) itself and keeps the contract from there.
+        if not os.access(DAEMON,os.X_OK):
+            print(json.dumps({'error':'ffn-aggregated is not installed on this dataplane'}),flush=True);raise SystemExit(1)
+        os.execv(DAEMON,[DAEMON,verb])
+    else:raise ValueError('Unknown aggregate owner operation')
 
 
 if __name__=='__main__':
-    if sys.argv[1]=='status':print(json.dumps(status()))
-    elif sys.argv[1]=='network-update':print(json.dumps(apply_network_update(json.load(sys.stdin))))
-    elif sys.argv[1]=='recover':
-        request=json.load(sys.stdin)
-        if set(request)!={'group','token','boot_id'} or request['boot_id']!=boot():raise ValueError('Fresh DP recovery identity required')
-        recover(request['group'],request['token']);print(json.dumps({'recovered':True}))
-    elif sys.argv[1]=='sweep':
-        for path in Path('/run').glob('ffn-aggregate-ae*-intent.json'):
-            intent=json.loads(path.read_text())
-            try:recover(intent['group'],intent['token'])
-            except (FileNotFoundError,BlockingIOError):pass
-    elif sys.argv[1]=='serve':
-        # Read exactly the initial line; do not let a buffered wrapper consume
-        # subsequent control frames ahead of the select loop's os.read().
-        raw=b''
-        while not raw.endswith(b'\n'):
-            byte=os.read(0,1)
-            if not byte or len(raw)>65536:raise ValueError('Invalid initial intent')
-            raw+=byte
-        serve(json.loads(raw))
-    else:raise ValueError('Unknown aggregate owner operation')
+    try:main(sys.argv)
+    except Exception as error:
+        if len(sys.argv)>1 and sys.argv[1] in ('validate','network-setup','network-update','network-teardown'):
+            print(json.dumps({'error':str(error)}),flush=True);raise SystemExit(1)
+        raise

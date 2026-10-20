@@ -14,11 +14,30 @@ Implemented here:
 * `ffn_native_packet.py` is a control ABI. Two pinned native workers process
   receive and transmit independently. Python sees settings and counters only,
   never forwarded packet buffers. CPU selection uses the process affinity mask.
-* `ffn_native_aggregate.py` uses the same workers for aggregate data frames.
-  Native C owns member/SPA admission, VLAN classification, local-address
-  inspection exceptions, per-unit counters and the existing CRC32 rendezvous
-  member selection. A separate native socket filter delivers only LACP frames
-  to the Python control loop. Python retains negotiation and configuration.
+* `ffn-aggregated` (`ffn_aggregated.c`) is the owner of one aggregate: the
+  LACP engine, the member gates, the trunk control socket and the aggregate
+  TAP's native workers in one process, under the MP supervisor's JSON-line
+  contract (`ffn_aggregate_runtime.py serve` execs it). Its life is bound to
+  that pipe: EOF, a controller silent for eight seconds, SIGTERM or the death
+  of its parent all withdraw the gates, release every lock and remove the TAP
+  within seconds, and a cleanup that hangs is cut off after a minute for the
+  watchdog to finish. The kernel interface transactions (TAP, nftables guard,
+  addresses, VLAN units, DHCP hooks) stay with the Python helpers in
+  `ffn_aggregate_runtime.py`, run as bounded one-shot processes (`validate`,
+  `network-setup`, `network-update`, `network-teardown`); so does the shared
+  worker-CPU allocator (`ffn_packet_cpus.py reserve --pid`), which records the
+  daemon as the owner. `ffn_native_aggregate.py` remains the control ABI the
+  tests exercise; no production owner imports it.
+* `ffn_lacp.c` is the LACP engine and LACPDU codec, transport independent and
+  state for state the C form of `ffn_lacp_engine.py` / `ffn_lacp_packets.py`.
+  The Python suites are its conformance tests: `make test` runs
+  `test_lacp_engine.py` against it through `ffn_lacp_native.py`
+  (`FFN_LACP_ENGINE=native`), and `test-lacp-engine-linux.py` negotiates it
+  against the Linux bonding driver the same way. The native data path owns
+  member/SPA admission, VLAN classification, local-address inspection
+  exceptions, per-unit counters and the existing CRC32 rendezvous member
+  selection; a separate native socket filter delivers only LACP frames to the
+  owner's control loop.
 * Aggregate gates expire in C at the earliest active member's carrier or LACP
   deadline, even while Python is stalled. The conservative group withdrawal
   also preserves minimum-link requirements. A leased BCM egress acknowledgement
@@ -82,7 +101,16 @@ the VIF runtime makes a device again when it finds one made without it.
 ```sh
 make all test
 sudo python3 test_kernel_packet.py
+sudo python3 test-aggregated-linux.py
 ```
+
+`test-aggregated-linux.py` runs `ffn-aggregated` under the MP contract in two
+disposable namespaces: a veth as the trunk, the real native library on a real
+multi-queue TAP, the Python reference engine as the LACP peer, and the
+kernel-interface helpers faked. It proves the first status row, LACPDUs in the
+trunk envelopes both ways, both members distributing against the reference
+engine, and that a closed control pipe, a silent controller and SIGTERM each
+end the owner within seconds with its TAP and run files gone.
 
 Fourteen physical packet tests, ten aggregate tests, six CPU allocation tests, a C hardware-transaction
 test, and private network/mount

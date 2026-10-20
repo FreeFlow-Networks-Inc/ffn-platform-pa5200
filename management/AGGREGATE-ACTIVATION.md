@@ -46,7 +46,16 @@ aggregate state to determine negotiation and address readiness.
 ## Ownership and withdrawal
 
 `aggregate_activation.py` runs one MP supervisor per group. It starts the DP
-owner with closed gates, then prepares the CP redirects and physical links.
+owner, `ffn-aggregated` (`octeon/native/ffn_aggregated.c`, reached through
+`ffn_aggregate_runtime.py serve`), with closed gates, then prepares the CP
+redirects and physical links. The owner's life is bound to the supervisor's
+pipe: when the pipe closes, when no observation arrives for eight seconds, on
+SIGTERM or when its parent dies, it withdraws its gates, releases the CP-facing
+locks and removes its TAP within seconds, and reports the reason as a final
+`error` row. A DP owner that outlives its controller, as seen on 2026-10-20
+(platform issue #86), is therefore no longer possible by construction; the DP
+watchdog additionally retires an owner whose status admits a controller silent
+for ten seconds.
 The CP installs ingress redirects to the existing BCM24/OCTEON trunk before
 enabling any member. It verifies queues, trunk header format and redirect
 readback without allocating SDK resources or restarting BCM.
@@ -70,8 +79,10 @@ owner owns port 1 separately, so aggregate activation never attaches that port.
 The first installation requires restarting the WAN packet process to load this
 locking change; routine aggregate activation does not restart it.
 
-`ffn_aggregate_datapath.Gates` uses the same permission map for readback and every
-packet. Egress uses stable layer-2/3 rendezvous hashing across distributing
+The owner's gate driver records what the engine asked for and reads it back
+exactly; the native data path is programmed from that record together with
+the member deadlines, the inspection mask and the readiness flag, pausing the
+workers only when something changed. Egress uses stable layer-2/3 rendezvous hashing across distributing
 members. Fragmented packets retain the same member selection. LACP and LLDP
 are sent to their physical member, never through the aggregate hash. Packet
 inspection retains the physical ingress member and uses separate owner statistics.

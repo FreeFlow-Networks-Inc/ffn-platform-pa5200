@@ -393,6 +393,47 @@ static void put_string(struct buffer *b, const char *s)
     put(b, "\"", 1);
 }
 
+/* Python's repr of a float: the shortest digits that read back as the same
+ * double, in fixed notation while the exponent is in [-4, 16), else d.ddde+XX.
+ * A monotonic clock in seconds or an epoch time must survive the trip ("%.6g"
+ * lost whole seconds of either after a few days of uptime), and the owners'
+ * hashes of configuration text must match what json.dumps produces. */
+void ffn_json_number_text(double value, char *out, size_t outsz)
+{
+    char sci[48], digits[24], *p;
+    int precision, exponent, n = 0;
+    bool negative = value < 0 || (value == 0 && signbit(value));
+    if (isnan(value) || isinf(value)) { snprintf(out, outsz, "%s", isnan(value) ? "NaN" : value > 0 ? "Infinity" : "-Infinity"); return; }
+    for (precision = 0; precision <= 16; precision++) {
+        snprintf(sci, sizeof sci, "%.*e", precision, value);
+        if (strtod(sci, NULL) == value) break;
+    }
+    p = sci + (sci[0] == '-');
+    for (; *p && *p != 'e'; p++) if (*p != '.') digits[n++] = *p;
+    digits[n] = 0;
+    exponent = atoi(p + 1);
+    while (n > 1 && digits[n - 1] == '0') digits[--n] = 0;
+    if (exponent >= -4 && exponent < 16) {
+        char text[64]; int k = 0;
+        if (negative) text[k++] = '-';
+        if (exponent < 0) {
+            text[k++] = '0'; text[k++] = '.';
+            for (int i = 0; i < -exponent - 1; i++) text[k++] = '0';
+            for (int i = 0; i < n; i++) text[k++] = digits[i];
+        } else {
+            for (int i = 0; i <= exponent; i++) text[k++] = i < n ? digits[i] : '0';
+            text[k++] = '.';
+            if (exponent + 1 < n) for (int i = exponent + 1; i < n; i++) text[k++] = digits[i];
+            else text[k++] = '0';
+        }
+        text[k] = 0;
+        snprintf(out, outsz, "%s", text);
+    } else {
+        snprintf(out, outsz, "%s%c%s%s%se%c%02d", negative ? "-" : "", digits[0], n > 1 ? "." : "", n > 1 ? digits + 1 : "", "",
+                 exponent < 0 ? '-' : '+', exponent < 0 ? -exponent : exponent);
+    }
+}
+
 static void dump(struct buffer *b, const struct ffn_json *n)
 {
     char num[32];
@@ -400,10 +441,7 @@ static void dump(struct buffer *b, const struct ffn_json *n)
     case FFN_JSON_NULL: put(b, "null", 4); break;
     case FFN_JSON_BOOL: if (n->boolean) put(b, "true", 4); else put(b, "false", 5); break;
     case FFN_JSON_INT: snprintf(num, sizeof num, "%lld", n->integer); put(b, num, strlen(num)); break;
-    case FFN_JSON_NUMBER:
-        snprintf(num, sizeof num, "%.6g", n->number);
-        if (!strpbrk(num, ".eE")) { size_t l = strlen(num); if (l + 2 < sizeof num) { num[l] = '.'; num[l + 1] = '0'; num[l + 2] = 0; } }
-        put(b, num, strlen(num)); break;
+    case FFN_JSON_NUMBER: ffn_json_number_text(n->number, num, sizeof num); put(b, num, strlen(num)); break;
     case FFN_JSON_STRING: put_string(b, n->string); break;
     case FFN_JSON_ARRAY:
         put(b, "[", 1);

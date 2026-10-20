@@ -29,7 +29,8 @@ def atomic(path,value):
 
 def worker(directory,activity):
     import fcntl,select,socket,struct
-    from ffn_lacp_engine import Engine
+    if os.environ.get('FFN_LACP_ENGINE')=='native':from ffn_lacp_native import Engine
+    else:from ffn_lacp_engine import Engine
     from ffn_aggregate_datapath import Gates
     driver=Gates((1,2));sockets={};tap=None;counts={'rx':0,'tx':0,'dropped':0,'lacp_rx':0,'lacp_tx':0}
     def stop(*_):raise KeyboardInterrupt()
