@@ -24,6 +24,7 @@ from ffn_lacp_trunk import TrunkLACP
 import ffn_aggregate_vlan as vlan
 from ffn_dp_packet_transport import FRONT,validate_trunk,encode
 from ffn_native_aggregate import AggregateOwner,control_socket
+import ffn_fe100_return as fe100_return
 
 NS='ffn-data'
 
@@ -243,6 +244,7 @@ def serve(intent):
                                 mapping={p:FRONT[p] for p in members},aliases=control_aliases)
             adapter=TrunkLACP(engine,wire)
             started=time.monotonic();next_status=0;next_lldp=0;last_input=started;sequence=-1;buffer=b''
+            returns=None;control_returns=None
             local={ipaddress.ip_interface(a).ip.packed for a in network['addresses']}
             while True:
                 # The previous control read quiesced both native workers.
@@ -317,6 +319,12 @@ def serve(intent):
                 if native:
                     counts,unit_counts=native.snapshot(gates,offload,inspector)
                     native.configure(network,local,gates,engine,offload,network_current and vlan.carrying(network),inspector,now)
+                    # The chip's return bindings for the members: data returns on the paused packet
+                    # owner, control returns (NOTFLOW LACP/LLDP) on the control socket, one lease.
+                    return_config=fe100_return.load()
+                    returns=fe100_return.renew(native,return_config,members,FRONT,int(now*1000),returns)
+                    if hasattr(wire,'fe100'):
+                        control_returns=fe100_return.renew(wire,return_config,members,FRONT,int(now*1000),control_returns)
                     native.resume()
                 if now>=next_status:
                     next_status=now+1
@@ -329,7 +337,7 @@ def serve(intent):
                         subinterfaces=[dict(u,applied=network_current,state='active' if network_current and result['distributing'] else 'configured' if network_current else 'pending',counters=dict(unit_counts.get(u['name'],{}))) for u in unit_status],
                         network=network,ports=members,hardware_offload=bool(offload and offload.ready(gates,now)),
                         offload_requested=intent['offload'],offload_tx=offload.transmitted if offload else 0,
-                        offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),
+                        offload_scope='BCM egress member selection only',transit_policy='default-deny',counters=dict(counts),fe100_return=returns,
                         data_rx=dict(gates.rx),data_tx=dict(gates.tx),gate_drops=gates.dropped,
                         network_ready=network_current and (not network['dhcp'] or bool(local) and not lease_data.get('error')),lease=lease_data)
                     atomic(state_path,row);print(json.dumps(row),flush=True)

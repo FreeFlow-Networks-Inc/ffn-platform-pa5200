@@ -15,6 +15,7 @@ import time
 from ffn_dp_packet_transport import validate_trunk
 import ffn_dp_packet_transport as transport
 from ffn_native_packet import PacketOwner
+import ffn_fe100_return as fe100_return
 
 INTENT=Path('/run/ffn-wan-attachment.json')
 STATE=Path('/run/ffn-fabric.json')
@@ -80,7 +81,7 @@ def serve():
             from ffn_inspection import Inspector
             inspector=Inspector(status_path=None if PORT==1 else Path('/run/ffn-inspection-physical-'+str(PORT)+'.json'))
             if inspector.error:raise RuntimeError('Initial inspection configuration failed: '+inspector.error)
-            next_poll=0
+            next_poll=0;returns=None
             while True:
                 if time.monotonic()>=next_poll:
                     next_poll=time.monotonic()+1
@@ -91,6 +92,10 @@ def serve():
                     inspector.tick()
                     cfg=json.loads(Path('/etc/ffn/network.json').read_text())
                     native.configure(cfg['ports'].get('p'+str(PORT),{}).get('addresses',[]),inspector)
+                    # The chip's return bindings for this port, renewed under their lease while
+                    # paused; absent file = no returns accepted, the ordinary path untouched.
+                    returns=fe100_return.renew(native,fe100_return.load(),[PORT],FRONT,int(time.monotonic()*1000),returns)
+                    value['fe100_return']=returns
                     native.resume()
                     value['workers']=native.workers()
                     value['updated_at']=time.time()
