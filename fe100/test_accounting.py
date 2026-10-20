@@ -131,4 +131,31 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(self.lease.updates,[])
 
 
+class TcpAccountingTests(AccountingTests):
+    """The same coordination on an established TCP lease (TCP leases exist since the kernel endpoint
+    learned liberal windows and FIN/RST invalidation)."""
+    def setUp(self):
+        super().setUp()
+        self.entries=[nat_entry4(key4(*value,6,4094),ident,31,dict(zip(
+            ('source','destination','source_port','destination_port'),out))) for value,out,ident in
+            [(Lease.original,('203.0.113.30','198.51.100.20',52001,443),1001),
+             (Lease.reply,('198.51.100.20','192.0.2.10',443,42001),1003)]]
+        self.stream=NativeCounterStream('owner/table',clock=lambda:self.time,receiver_timeout=2)
+        self.heartbeat()
+        for entry in self.entries:self.stream.register(entry)
+        self.lease=Lease();self.lease.protocol=6
+        self.owner=AccountedSession(self.stream,self.entries,self.lease,self.withdraw)
+
+    def test_lease_protocol_must_match_the_entries(self):
+        lease=Lease();lease.protocol=17
+        with self.assertRaisesRegex(ValueError,'do not match'):
+            AccountedSession(self.stream,self.entries,lease,self.withdraw)
+
+    def test_mixed_protocols_rejected(self):
+        udp=nat_entry4(key4(*Lease.reply,17,4094),1005,31,dict(zip(('source','destination','source_port','destination_port'),
+            ('198.51.100.20','192.0.2.10',443,42001))))
+        with self.assertRaisesRegex(ValueError,'one protocol'):
+            AccountedSession(self.stream,[self.entries[0],udp],self.lease,self.withdraw)
+
+
 if __name__=='__main__':unittest.main()
