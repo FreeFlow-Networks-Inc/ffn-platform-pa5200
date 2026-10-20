@@ -6,6 +6,7 @@ import sys
 import time
 import uuid
 from session_stream import read_status
+from session_inventory import summary as inventory_summary
 
 DP=['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=5',
     '-o','UserKnownHostsFile=/etc/ffn-ngfw/plane_boot_known_hosts',
@@ -34,7 +35,7 @@ def execute(action,payload):
         observation=call(DP,{'nonce':nonce})
     except (ValueError,OSError,subprocess.TimeoutExpired) as error:
         return dict(available=False,hardware_admission=False,reason=str(error)[:512],
-                    continuous_stream=read_status('/run/ffn-fe100-session-relay.json'))
+                    continuous_stream=read_status('/run/ffn-fe100-session-relay.json'),inventory=inventory_summary())
     if observation.get('nonce')!=nonce or observation.get('available') is not True:
         raise ValueError('Unacknowledged session observation')
     result=call(CP,dict(nonce=nonce,observation=observation))
@@ -43,7 +44,7 @@ def execute(action,payload):
         result.get('producer')!=observation.get('producer') or result.get('policy')!=observation.get('policy')):
         raise ValueError('Session plan is stale or has mismatched identities')
     return dict(result,round_trip_seconds=round(elapsed,3),
-                continuous_stream=read_status('/run/ffn-fe100-session-relay.json'))
+                continuous_stream=read_status('/run/ffn-fe100-session-relay.json'),inventory=inventory_summary())
 
 
 if __name__=='__main__':

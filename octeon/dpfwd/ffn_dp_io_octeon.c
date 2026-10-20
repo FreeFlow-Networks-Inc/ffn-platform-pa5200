@@ -84,13 +84,29 @@ static int cvmx_hw_work_get(struct oct_ctx *c, struct oct_wqe *w)
      * explicitly instead of relying on that. */
     w->sso_group = -1;
     w->hw = wqe;
+    w->disp = OCT_DISP_HELD;
+    w->segs = (uint8_t)cvmx_wqe_get_bufs(wqe);
+    /* The FPA pool the data came from, kept in the field OCTEON-III uses for
+     * its aura: it is what frame_send allocates from. */
+    w->data_aura = (uint16_t)cvmx_wqe_get_packet_ptr(wqe).s.pool;
+
+    /* IPD flagged a receive error -- bad FCS, runt, that class of fault.
+     * The OCTEON-III path already refused these; this one handed them to
+     * the forwarder, which parsed and forwarded a frame the MAC had marked
+     * as damaged. Zero length routes it through the ordinary disposal path
+     * with the buffers released exactly once. The comment that used to sit
+     * here said the caller drops such packets; the caller only ever checked
+     * the segment count. */
+    if (cvmx_wqe_get_rcv_err(wqe)) {
+        c->stat_rx_err++;
+        return 1;
+    }
+
     w->len = (uint32_t)cvmx_wqe_get_len(wqe);
     w->in_port = (uint16_t)cvmx_wqe_get_port(wqe);
-    w->segs = (uint8_t)cvmx_wqe_get_bufs(wqe);
     w->data = (uint8_t *)cvmx_phys_to_ptr(cvmx_wqe_get_packet_ptr(wqe).s.addr);
-    w->disp = OCT_DISP_HELD;
-    /* A packet with an IPD error, or scattered across buffers, is not something
-     * this bring-up path parses: the caller drops it and we free normally. */
+    /* A packet scattered across buffers is not something this bring-up path
+     * parses: the caller drops it and we free normally. */
     return 1;
 }
 
@@ -129,10 +145,53 @@ static void cvmx_hw_wqe_free(struct oct_ctx *c, struct oct_wqe *w)
     cvmx_fpa_free(w->hw, CVMX_FPA_WQE_POOL, 0);
 }
 
+/* A frame the forwarder built, sent from a fresh packet-pool buffer that PKO
+ * returns to the pool after the wire (dontfree = 0), exactly as a forwarded
+ * packet's buffer is. The pool is the one IPD filled the last received
+ * packet from; see oct_ctx.rx_bufsrc. */
+static int cvmx_hw_frame_send(struct oct_ctx *c, uint16_t port,
+                              const uint8_t *frame, uint32_t len)
+{
+    const struct oct_port *p = &c->ports[port];
+    uint64_t pool;
+    uint8_t *buf;
+    cvmx_buf_ptr_t pkt;
+    cvmx_pko_command_word0_t cmd;
+
+    if (!c->have_bufsrc)
+        return -1;
+    pool = c->rx_bufsrc;
+    buf = (uint8_t *)cvmx_fpa_alloc(pool);
+    if (!buf)
+        return -1;
+    memcpy(buf, frame, len);
+
+    pkt.u64 = 0;
+    pkt.s.addr = cvmx_ptr_to_phys(buf);
+    pkt.s.size = len;
+    pkt.s.pool = pool;
+    pkt.s.back = 0;             /* data starts at the buffer start */
+    pkt.s.i = 0;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.s.total_bytes = len;
+    cmd.s.segs = 1;
+    cmd.s.dontfree = 0;         /* PKO frees it to `pool` after the wire */
+
+    cvmx_pko_send_packet_prepare(p->ipd_port, p->pko_queue, CVMX_PKO_LOCK_ATOMIC_TAG);
+    if (cvmx_pko_send_packet_finish(p->ipd_port, p->pko_queue, cmd, pkt,
+                                    CVMX_PKO_LOCK_ATOMIC_TAG) != CVMX_PKO_SUCCESS) {
+        cvmx_fpa_free(buf, pool, 0);    /* not queued: still ours */
+        return -1;
+    }
+    return 0;
+}
+
 const struct oct_hw_ops OCT_HW_CVMX = {
     "cvmx(octeon-ii ipd/pow/pko)",
     cvmx_hw_init, cvmx_hw_fini, cvmx_hw_work_get,
-    cvmx_hw_pkt_send, cvmx_hw_data_free, cvmx_hw_wqe_free
+    cvmx_hw_pkt_send, cvmx_hw_data_free, cvmx_hw_wqe_free,
+    cvmx_hw_frame_send
 };
 
 int oct_backend_available(void) { return 1; }
@@ -163,7 +222,8 @@ static void noop_free(struct oct_ctx *c, struct oct_wqe *w) { (void)c; (void)w; 
 
 const struct oct_hw_ops OCT_HW_CVMX = {
     "unavailable(no-cvmx)",
-    noop_init, noop_fini, noop_work_get, noop_send, noop_free, noop_free
+    noop_init, noop_fini, noop_work_get, noop_send, noop_free, noop_free,
+    NULL
 };
 
 int oct_backend_available(void) { return 0; }
@@ -307,6 +367,10 @@ static int oct_io_rx(void *arg, struct dp_pkt *burst, int max)
             continue;
         }
 
+        /* Remember where receive buffers come from, for frame_send. */
+        c->rx_bufsrc = w->data_aura;
+        c->have_bufsrc = 1;
+
         burst[n].data = w->data;
         burst[n].len = w->len;
         /* Prefer what the CHIP decided. With a vsys plan applied, PKI steered
@@ -421,10 +485,39 @@ static void oct_io_free_pkt(void *arg, struct dp_pkt *p)
     }
 }
 
+/* A frame the forwarder built: stage it padded to the Ethernet minimum and
+ * hand it to the hardware seam, which copies it into DMA-able memory. The
+ * forwarder's buffer is on its stack and is not touched after this returns. */
+static int oct_io_tx_frame(void *arg, uint16_t egress, const uint8_t *frame,
+                           uint32_t len)
+{
+    struct oct_ctx *c = (struct oct_ctx *)arg;
+    uint8_t staged[OCT_FRAME_MAX];
+    uint32_t n = len;
+
+    if (!c->hw->frame_send || egress >= (uint16_t)c->nports ||
+        len < 14u || len > OCT_FRAME_MAX) {
+        c->stat_frame_fail++;
+        return 0;
+    }
+    memcpy(staged, frame, len);
+    if (n < OCT_FRAME_MIN) {
+        memset(staged + n, 0, OCT_FRAME_MIN - n);
+        n = OCT_FRAME_MIN;
+    }
+    if (c->hw->frame_send(c, egress, staged, n) != 0) {
+        c->stat_frame_fail++;
+        return 0;
+    }
+    c->stat_frame_tx++;
+    return 1;
+}
+
 const struct dp_io_ops OCT_IO = {
     "octeon(ipd/pow/pko or pki/sso/pko3)",
     oct_io_init, oct_io_fini, oct_io_rx, oct_io_tx,
-    oct_io_to_local, oct_io_to_offload, oct_io_free_pkt
+    oct_io_to_local, oct_io_to_offload, oct_io_free_pkt,
+    oct_io_tx_frame
 };
 
 /* ================================================================== *
@@ -478,6 +571,9 @@ void oct_dump_stats(const struct oct_ctx *c, FILE *f)
     fprintf(f, "  offload adapter: unavailable=%llu rejected=%llu\n",
             (unsigned long long)c->stat_offload_unavailable,
             (unsigned long long)c->stat_offload_rejected);
+    fprintf(f, "  built frames (arp): tx=%llu fail=%llu\n",
+            (unsigned long long)c->stat_frame_tx,
+            (unsigned long long)c->stat_frame_fail);
     fprintf(f, "  fpa accounting: wqe_freed=%llu data_freed=%llu "
                "double_dispose_bugs=%llu%s\n",
             (unsigned long long)c->stat_wqe_freed,

@@ -82,12 +82,31 @@ DP boot ID and kernel notes and performs no DP reset in this reconnect path.
 Provision root-owned, non-group/world-writable JSON boot profiles at
 `/etc/ffn/plane-boot/cp.json` on MP and `/etc/ffn/plane-boot/dp.json` on CP.
 
+A DP profile with a `rootfs` entry (a squashfs staged into DP DRAM) needs the pinned
+`bootcmd` tool (`oct-remote-bootcmd`): the executor has u-boot carve a bootmem named block
+before loading the root, which keeps both u-boot and Linux from writing free-list headers
+through it (DP-MEMORY.md).
+
 For a DP image using a Debian NFS root exported by CP, the protected DP profile
 also selects `root_server_unit`, normally `ffn-cp-nfs.service`. Provision the
 native Debian NFS packages, export, and persistent unit before selecting this
 profile. The boot executor validates the unit before reset and starts it after
 the DP transport. CP restart restoration starts it again after reconnecting the
 unchanged DP. Do not enable the NFS server before its transport address exists.
+
+For a DP rooted from its own DRAM instead, the profile carries `rootfs`
+(absolute `path` and `sha256` of the image's `rootfs.squashfs`, optional
+`name`, default `dproot`) and optionally `provision` (a plain tar of
+root-relative files the image must not contain: SSH host keys, machine-id,
+plane credentials). The boot executor stages a 4 KiB header, the image at
++1 MiB and the archive after it, all at DP physical `0x28000000`, while u-boot
+is still up and before the kernel is loaded; it then boots with
+`ffn_reserve=`, `phram.phram=` and `ffn.rootfs=` added to the command line.
+The DP initramfs mounts nothing until the bytes in DRAM match the digests in
+the header, then overlays a tmpfs on the read-only squashfs and extracts the
+archive into it. No NFS server is involved and `root_server_unit` is not
+needed. The whole command line must still fit the 247-byte mailbox, which
+preflight checks. A DP software update is a DP reboot with a new profile.
 
 Once the native DP root is active, install and enable `ffn-dp-agent.service` and
 select the native DP SSH stream with `install-control-channel.py`. Pin the
@@ -143,3 +162,17 @@ when the DP uses the recovery mailbox. Installation itself performs no processor
 restart. A first live restart must still be checked for service restoration,
 LACP acknowledgements, policy reconciliation and forwarding before considering
 that hardware/image combination qualified.
+
+## Policy routing and the 127/8 transport
+
+Every plane and the MP address the PCIe transports from 127/8 (`127.1.1.x`, `127.1.2.x`) while `lo`
+keeps `127.0.0.1/8`. Without policy rules the kernel resolves through the merged main trie by longest
+prefix, so the transport /24 wins over the local /8. The first `ip rule` in that namespace switches
+lookups to table order: the local table claims the peer, traffic to it goes to `lo`, and its packets
+fail reverse-path validation as local sources. The transport goes silent with no drop counters,
+and an NFS-rooted plane freezes. Measured on the PA-5220 on 2026-10-15 (CP at 01:27 after the
+service-route forwarder was restarted, DP twice after the new root ran its service-routes unit).
+`ffn-loopback-scope.service` (both images, sysinit) installs `local 127.0.0.0/16` in place of the `/8`
+and writes `/run/ffn-loopback-scope`; the CP forwarder and the DP service-routes unit are gated on
+that marker. Validated live on both planes on 2026-10-15: with the `/16` scope, table-order lookups
+still reach the transport peers and the installers' rules are harmless.

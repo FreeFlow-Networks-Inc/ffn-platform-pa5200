@@ -27,6 +27,8 @@ def inside():
     lib=library(str(Path(__file__).with_name('libffn-packet.so')))
     ctx=lib.ffn_packet_open(b'testa',b'ffnlab',b'lab0',28)
     if not ctx:checked(-1)
+    depth=int(subprocess.check_output(['ip','netns','exec','ffnlab','cat','/sys/class/net/lab0/tx_queue_len'],text=True))
+    if depth!=10000:raise SystemExit('TAP transmit queue depth not set at attach: %d'%depth)
     original=os.open('/proc/self/ns/net',os.O_RDONLY)
     target=os.open('/run/netns/ffnlab',os.O_RDONLY)
     libc=C.CDLL(None,use_errno=True);libc.setns.argtypes=[C.c_int,C.c_int]

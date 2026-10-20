@@ -60,6 +60,28 @@ digests and candidate counts. These are observations, not permission to install
 flows. A commissioned hardware attachment resolver, accounting/exception path
 and admission adapter are still required before production flow installation.
 
+## Per-call cost of the session endpoint
+
+Two things the long-lived endpoint used to do on every native call are now
+done once per handle:
+
+* **Commissioning records are read once.** `LiveSessions.status()` runs
+  before every fetch, insert, update and delete. It re-reads the live
+  registers each time, which is the point, but it also re-read the boot id
+  and parsed up to a dozen JSON journals. Those journals are written only by
+  tools that take the exclusive FE100 table lock, which the handle holds for
+  its lifetime, so they cannot change underneath it; `load_journals()` reads
+  them once and `forget_journals()` exists for a caller that gives up that
+  guarantee.
+* **The register trace is bounded.** The C adapter logs every register
+  access, including the indirect-access polling inside each native call.
+  Commissioning runs are short and keep the full trace as evidence; the
+  production handle sets `ffn_fe100_trace_limit()` (64 MiB), after which the
+  trace records one marker line and stops. Without that bound a box admitting
+  sessions at any useful rate fills its storage in about a day. The adapter
+  library must be rebuilt alongside this module; an old library without the
+  symbol is refused rather than run untraced-unbounded.
+
 ## Verification
 
 Host and MIPS64 CP tests cover persistent ownership, restart, lost responses,

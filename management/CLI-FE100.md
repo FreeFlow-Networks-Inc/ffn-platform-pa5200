@@ -40,6 +40,18 @@ Append `json` to a specific view for structured output, for example
 `show platform fe100 recovery json`. The original bare `show platform fe100`
 continues to return the complete JSON observation for compatibility.
 
+## Session views
+
+`show platform fe100 sessions` now carries `inventory`, the summary of the
+relay's published session inventory (counts by protocol, offload candidates,
+L3-ready and hardware-admitted sessions, blocker histogram, table capacity).
+The same inventory backs the core CLI's `show session info`, `show session all
+[filter source|destination|protocol|rule|vsys|offload|count ...]` and
+`show session id <identity-prefix>`, and the WebUI's dashboard tile and
+Session Browser, through `/api/dashboard/sessions` and `/api/monitor/sessions`.
+When the stream is not ready those views say so and fall back to the
+management plane's own connection counters rather than showing an empty table.
+
 ## Installation
 
 Deploy `cli_extension.py` into the selected PA5200 management extension, then

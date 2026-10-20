@@ -113,7 +113,8 @@ static void mock_wqe_free(struct oct_ctx *c, struct oct_wqe *w)
 }
 static const struct oct_hw_ops MOCK_HW = {
     "mock", mock_init, mock_fini, mock_work_get,
-    mock_send, mock_data_free, mock_wqe_free
+    mock_send, mock_data_free, mock_wqe_free,
+    NULL                    /* no frame_send: the glue must report, not crash */
 };
 
 /* build an IPv4/TCP frame into a mock buffer and queue it */
@@ -127,6 +128,7 @@ static struct mock_buf *push(struct mock_hw *m, uint32_t sip, uint32_t dip,
     p[12] = 0x08; p[13] = 0x00;
     uint8_t *ip = p + 14;
     ip[0] = 0x45; ip[9] = 6;
+    ip[2] = 0; ip[3] = 40;       /* Total Length: a header that claims 0 is now refused */
     ip[12] = (uint8_t)(sip >> 24); ip[13] = (uint8_t)(sip >> 16);
     ip[14] = (uint8_t)(sip >> 8);  ip[15] = (uint8_t)sip;
     ip[16] = (uint8_t)(dip >> 24); ip[17] = (uint8_t)(dip >> 16);

@@ -204,9 +204,16 @@ oct-qemu: $(SRC) $(OCT_SRC) $(OCT_TEST) $(OCT_HDRS)
 #   make oct3-cvmx SDK=/path/to/OCTEON-SDK [MODEL=OCTEON_CN78XX]
 #
 # It compiles only; linking needs the SDK's libcvmx built for the same model.
+#
+# SDK_CC may be overridden. An SDK tree that carries the executive headers
+# but not Cavium's toolchain (the sdk51 import on the build server is one)
+# still compile-checks cleanly with the Debian cross compiler:
+#   make oct3-cvmx SDK=... SDK_CC=mips64-linux-gnuabi64-gcc
+# That compiler ignores the SDK's `cvmx_shared` section attribute and says
+# so once per header; those warnings are noise, anything else is not.
 SDK   ?=
 MODEL ?= OCTEON_CN78XX
-SDK_CC      = $(SDK)/tools/bin/mips64-octeon-linux-gnu-gcc
+SDK_CC     ?= $(SDK)/tools/bin/mips64-octeon-linux-gnu-gcc
 SDK_CFLAGS  = -c -march=octeon3 -mabi=64 -EB -O2 -g -std=gnu99 -Wall -Wextra \
               -Wno-unused-parameter -DFFN_HAVE_CVMX=1 \
               -DUSE_RUNTIME_MODEL_CHECKS=1 -DCVMX_ENABLE_POW_CHECKS=0 \
@@ -217,7 +224,7 @@ CVMX_SRCS   = $(SRC) $(L3_SRC) $(ENG_SRC) $(VSYS_SRC) $(OCT_SRC) $(OCT3_SRC) ffn
 
 oct3-cvmx:
 	@test -n "$(SDK)" || { echo "set SDK=/path/to/OCTEON-SDK"; exit 1; }
-	@test -x $(SDK_CC) || { echo "MISSING $(SDK_CC)"; exit 1; }
+	@command -v $(SDK_CC) >/dev/null 2>&1 || { echo "MISSING $(SDK_CC)"; exit 1; }
 	@mkdir -p cvmx-obj
 	@for f in $(CVMX_SRCS); do \
 	    echo "  CVMX-CC $$f"; \
@@ -261,6 +268,7 @@ clean:
 	      ffn_dp_oct_io_test ffn_dp_oct_io_test.mips64 \
 	      ffn_dp_oct3_io_test ffn_dp_oct3_io_test.mips64 \
 	      ffn_dp_l3_test ffn_dp_l3_test.mips64 \
+	      ffn_dp_l3_v6_test ffn_dp_l3_v6_test.mips64 \
 	      ffn_dp_arp_test ffn_dp_arp_test.mips64 \
 	      ffn_dp_engine_test ffn_dp_engine_test.mips \
       ffn_dp_vsys_test ffn_dp_vsys_test.mips \

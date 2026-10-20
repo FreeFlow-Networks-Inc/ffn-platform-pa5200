@@ -48,20 +48,35 @@ def pipeline_prerequisites(values):
     return reasons
 
 
-def action_prerequisites(values, root, boot):
+ACTION_STAGES = ('fcm-clocks','fcm-train-0','fcm-train-1','sem-init')
+
+
+def action_journals(root, boot):
+    """This boot's counter-memory commissioning records, or None where a
+    record is missing or unreadable. Read separately from the check so a
+    long-lived handle can read them once; see LiveSessions.journals()."""
+    records = {}
+    for stage in ACTION_STAGES:
+        try:
+            record = json.loads((root/(stage+'-'+boot+'.json')).read_text())
+            records[stage] = record if isinstance(record, dict) else None
+        except (OSError, ValueError):
+            records[stage] = None
+    return records
+
+
+def action_prerequisites(values, root, boot, records=None):
     """FLOWUPDATE needs trained counter memory, beyond hash-table readiness.
 
     Native completion alone does not report CFP FCM allocation failure.
     Require this boot's commissioning records and current hardware state.
     """
     reasons = []
-    for stage in ('fcm-clocks','fcm-train-0','fcm-train-1','sem-init'):
-        try:
-            record = json.loads((root/(stage+'-'+boot+'.json')).read_text())
-            valid = (record.get('cp_boot_id') == boot and record.get('stage') == 'completed'
-                     and record.get('owner_sha256') == SHA and record.get('faults') == 0)
-        except (OSError, ValueError, AttributeError):
-            valid = False
+    if records is None: records = action_journals(root, boot)
+    for stage in ACTION_STAGES:
+        record = records.get(stage)
+        valid = (record is not None and record.get('cp_boot_id') == boot and record.get('stage') == 'completed'
+                 and record.get('owner_sha256') == SHA and record.get('faults') == 0)
         if not valid: reasons.append(stage+' lacks successful initialization in this boot')
     if values.get(0x98008,0)&3 != 3 or values.get(0x98174,0)&1 != 1:
         reasons.append('FCM clocks are not ready')
@@ -143,6 +158,27 @@ def flu_record(root, boot):
     return None
 
 
+def load_journals(root, boot):
+    """Every commissioning record status() consults, read in one pass.
+
+    Three families: the FHM/FDT calibration journals, the FLU verification
+    record and the counter-memory (FCM/SEM) records. All of them are written
+    only by commissioning tools that hold the exclusive FE100 table lock --
+    the same lock a LiveSessions handle holds for its whole lifetime -- so
+    while a handle exists none of them can change. That is what makes it
+    sound for the handle to read them once rather than on every native call.
+    """
+    return {'calibration': calibration_journals(root, boot),
+            'flu': flu_record(root, boot),
+            'actions': action_journals(root, boot)}
+
+# The production endpoint lives as long as the supervised control worker and
+# traces every register access, including the indirect-access polling inside
+# each native call. Bounded here; commissioning handles keep the full trace
+# because their runs are short and the trace is their evidence.
+TRACE_LIMIT_BYTES = 64 << 20
+
+
 class LiveSessions:
     def __init__(self, writable=False, lock_fd=None, commissioning=False):
         from ffn_fe100 import bar0_base_and_size, memory_decode_on
@@ -168,6 +204,13 @@ class LiveSessions:
         self.shim.ffn_fe100_open.argtypes = [C.c_uint64,C.c_char_p,C.c_int]
         if self.shim.ffn_fe100_open(base,self.trace.encode(),writable):
             raise RuntimeError('session mapping failed')
+        if not commissioning:
+            limit = getattr(self.shim, 'ffn_fe100_trace_limit', None)
+            if limit is None:
+                raise RuntimeError('libffn-fe100-flow-memory.so predates the trace limit; rebuild the adapters')
+            limit.argtypes = [C.c_uint64]
+            if limit(TRACE_LIMIT_BYTES):
+                raise RuntimeError('session trace limit was not applied')
         # Only session IA windows and CPU start control can be written.
         for r in (*range(0x40800,0x40890,4),0x48014,*range(0x486c0,0x486f4,4)):
             if r not in (0x4080c,0x486c8): self.shim.ffn_fe100_allow(r)
@@ -176,6 +219,10 @@ class LiveSessions:
         self.writable = writable
         self.commissioning = commissioning
         self.endpoint = None
+        # Fixed for the life of the process; status() used to re-read it from
+        # /proc on every native call along with every commissioning journal.
+        self.boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        self._journals = None
         if writable:
             state = self.status()
             reasons=state['commissioning_blockers'] if commissioning else state['blockers']
@@ -195,16 +242,37 @@ class LiveSessions:
             raise RuntimeError('session register read failed: '+hex(r))
         return value.value
 
+    def journals(self):
+        """Commissioning records, read once per handle. Sound because the
+        handle holds the exclusive table lock every writer of these records
+        needs; see load_journals(). forget_journals() drops the cache for a
+        caller that releases and re-takes that guarantee."""
+        if self._journals is None:
+            self._journals = load_journals(ROOT, self.boot)
+        return self._journals
+
+    def forget_journals(self):
+        self._journals = None
+
     def status(self):
-        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        journals = calibration_journals(ROOT, boot)
+        """Live register state against this boot's commissioning records.
+
+        The registers are read afresh every time -- that is the point of the
+        call, and call() relies on it before each native operation. The
+        records are not: this ran on every fetch, insert, update and delete,
+        and each run re-read the boot id and parsed up to a dozen JSON files
+        that cannot change while this handle exists.
+        """
+        boot = self.boot
+        records = self.journals()
+        journals = records['calibration']
         values = {r:self.read(r) for r in (*HEALTH,*ACTION_HEALTH,*PIPELINE_HEALTH)}
         blockers = prerequisites(values,boot,journals)
         pipeline = pipeline_prerequisites(values)
         blockers.extend(pipeline)
-        if flu_record(ROOT,boot) is None:
+        if records['flu'] is None:
             blockers.append('FLU lacks verified initialization in this boot')
-        actions=action_prerequisites(values,ROOT,boot)
+        actions=action_prerequisites(values,ROOT,boot,records['actions'])
         warm=False
         if self.commissioning:
             from ffn_fe100_warm import grant_valid

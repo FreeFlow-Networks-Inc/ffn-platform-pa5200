@@ -7,6 +7,7 @@
 #include <linux/filter.h>
 #include <linux/if_packet.h>
 #include <linux/if_tun.h>
+#include <linux/sockios.h>
 #include <net/if.h>
 #include <arpa/inet.h>
 #include <poll.h>
@@ -199,6 +200,26 @@ static int packet_socket(const char *name, unsigned source, int receive)
     uint32_t sources[] = {source};
     return packet_socket_many(name, sources, 1, receive);
 }
+/* The kernel drops a frame it cannot queue on the TAP (tx_dropped) when the
+ * backlog toward this reader reaches the device's transmit queue length. The
+ * default of 1000 lost 630..960 frames per 15 s under a 700 Mbit/s download on
+ * the PA-5220 (0.1 %, enough to hold parallel TCP streams back) although the
+ * reader idled on average: it is microbursts, not throughput. 10000 held zero.
+ * Set it where the reader attaches, so every owner gets it whoever created the
+ * device; the TAP is already in the target namespace at that point. */
+#define FFN_PACKET_TAP_QUEUE 10000
+static int tap_queue_depth(const char *tap, unsigned depth)
+{
+    struct ifreq request; int sock, result, error;
+    sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (sock < 0) return -1;
+    memset(&request, 0, sizeof(request));
+    memcpy(request.ifr_name, tap, strlen(tap) + 1);
+    request.ifr_qlen = (int)depth;
+    result = ioctl(sock, SIOCSIFTXQLEN, &request); error = errno;
+    close(sock); errno = error;
+    return result;
+}
 struct ffn_packet *ffn_packet_open(const char *wire, const char *namespace,
                                     const char *tap, unsigned source)
 {
@@ -225,6 +246,7 @@ struct ffn_packet *ffn_packet_open(const char *wire, const char *namespace,
     memcpy(request.ifr_name, tap, strlen(tap) + 1);
     request.ifr_flags = IFF_TAP | IFF_NO_PI;
     if (ioctl(p->tap, TUNSETIFF, &request)) goto fail;
+    if (tap_queue_depth(tap, FFN_PACKET_TAP_QUEUE)) goto fail;
     if (setns(original, CLONE_NEWNET)) goto fail;
     close(original); close(target); return p;
 fail:

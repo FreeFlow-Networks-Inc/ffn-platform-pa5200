@@ -77,7 +77,7 @@ Linux managed only 512 MB, so they sat outside it:
 | `ffn-dpsh` control mailbox | `0x400000` | 64 KB (`RING_SIZE`) | CP writes, continuously, Linux up | yes |
 | dpnet staging scratch | `0x500000` | 1 MB | CP writes at bring-up | yes |
 | dpnet rings (`FFN_DPNET_DP_PHYS`) | `0x600000` | 2 MB | CP + DP, continuously, Linux up | yes |
-| staged rootfs squashfs | `0x28000000` | ~19 MB | `ffn-dproot` **reads it from userspace**, Linux up | yes |
+| staged rootfs: 4 KiB header, squashfs at +1 MiB, optional provisioning tar | `0x28000000` | image size, MiB-rounded | the DP initramfs mounts it in place through `phram`, Linux up (`native_plane_boot.py`); the legacy `ffn-dproot` copied it out of `/dev/mem` | yes |
 | staged kernel image | `0x21000000` | ~11 MB | `bootoctlinux` consumes it in u-boot, **before Linux** | **no** |
 | bootloader mailbox | `0x6C000` | <256 B | u-boot only, **before Linux** | **no** |
 
@@ -450,3 +450,25 @@ risk".
 
 Then confirm the transports still work — `ffn-dpsh -c uname -a` and a ping across
 `ffndp0` — because those are what the reservation exists to protect.
+
+## Where the RAM root may be staged (measured 2026-10-15)
+
+With the DP halted in u-boot (pciboot u-boot, PA-5220), the bootmem map reads:
+
+```
+named __tmp_reserved_linux   0x0000100000  size 0xf000000   (the kernel's ELF segments go here)
+named __tmp_load             0x0020000000  size 0x10000000  (u-boot's load area; kernel staged at 0x21000000)
+free                         0x000f100000  size 0xef55e0
+free                         0x0030000000  size 0x7df000000 (header stored at 0x30000000)
+```
+
+cvmx bootmem keeps each free block's header inside the block, and both u-boot and Linux write
+new headers whenever they carve free memory: bootoctlinux frees `__tmp_load` at boot, and Linux
+then takes its memory in 4 MiB chunks. A root staged at 0x28000000 reached the header at
+0x30000000 and stopped the boot (command consumed, no kernel); a root staged at 0x24000000
+inside `__tmp_load` booted but came up with a free-block header every 4 MiB through the image
+(`next=0x24400000 size=0x5bff8f70` at its first bytes) and failed its digests. Measured on
+2026-10-15. The executor therefore has u-boot carve a named block first
+(`oct-remote-bootcmd "namedalloc dproot <size> 0x30000000"`, the first free block at
+u-boot time) and loads into that: neither side carves a named block, Linux is not handed it,
+and phram maps it as is. Verified live: the DP booted from the RAM root into systemd.

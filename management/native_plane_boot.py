@@ -61,11 +61,20 @@ def preflight(cfg):
            if line.split()[1].startswith('177d') and int(line.split()[0],16) & 7 == 0]
     if ids.count(expected) != 1 or ids.index(expected) != cfg['devnum']:
         raise ValueError('OCTEON enumeration changed; refusing a guessed reset target')
-    for name, item in dict(cfg['tools'],kernel=cfg['kernel'],bootloader=cfg['bootloader']).items():
+    pinned = dict(cfg['tools'],kernel=cfg['kernel'],bootloader=cfg['bootloader'])
+    for name in ('rootfs','provision'):
+        if cfg.get(name):
+            if cfg['role'] != 'dp': raise ValueError('A staged RAM root is a DP profile entry')
+            pinned[name] = cfg[name]
+    for name, item in pinned.items():
         path = Path(item['path'])
-        if not path.is_absolute() or not path.is_file() or path.stat().st_size > 512*1024**2:
+        limit = 1024**3 if name == 'rootfs' else 512*1024**2
+        if not path.is_absolute() or not path.is_file() or path.stat().st_size > limit:
             raise ValueError('Missing or oversized pinned '+name)
         if sha(path.read_bytes()) != item['sha256']: raise ValueError('Pinned file changed: '+name)
+    if cfg.get('provision') and not cfg.get('rootfs'): raise ValueError('Provisioning requires a staged RAM root')
+    rootfs_plan(cfg)   # layout and image format; a bad entry fails here, not mid-reset
+    if cfg.get('rootfs') and 'bootcmd' not in cfg['tools']: raise ValueError('A RAM root needs the pinned bootcmd tool (u-boot namedalloc)')
     data = Path(cfg['kernel']['path']).read_bytes()
     if kernel_notes(data) != cfg['kernel']['notes_sha256']: raise ValueError('Kernel identity mismatch')
     versions = re.findall(rb'Linux version (\d+)\.(\d+)\.(\d+)',data)
@@ -77,9 +86,78 @@ def preflight(cfg):
             'notes_sha256':cfg['kernel']['notes_sha256'],'pci':cfg['pci']}
 
 
+# DP DRAM, carved out of u-boot's bootmem as a NAMED BLOCK before anything is
+# loaded into it. Measured on the PA-5220 (2026-10-15, bootmem walks with the DP
+# halted in u-boot): the first free block starts at 0x30000000 with its list
+# header stored in place, and cvmx bootmem writes new headers into free memory
+# whenever u-boot or Linux carves it (u-boot frees its load area at boot; Linux
+# then takes memory in 4 MiB chunks). A root staged in plain free memory was
+# therefore either corrupted (headers every 4 MiB through the image) or, when
+# it reached a header, stopped the boot. A named block is never carved by
+# either side, is not handed to Linux, and the kernel's phram maps it as is.
+ROOTFS_ADDR = 0x30000000     # the first free block at u-boot time: namedalloc takes it from there
+ROOTFS_END = 0x70000000      # one GiB of that block; larger roots need a new measurement
+ROOTFS_HEADER = 4096         # the staged header block
+MIB = 1 << 20
+
+
+def mib_up(size): return (size + MIB - 1) // MIB
+
+
+def rootfs_plan(cfg):
+    """Where the DP's RAM root goes in its DRAM, and the boot arguments that
+    describe it. None for a profile with no `rootfs` entry (NFS root).
+
+    Layout, all 1 MiB aligned so one ffn_reserve covers it and one phram
+    device exposes it: header at +0, the squashfs at +1 MiB, an optional
+    provisioning tar after the image rounded up to the next MiB. The header
+    is a text line with the sizes and SHA-256 of both payloads; the DP's
+    initramfs refuses to mount anything that does not match it, which is what
+    turns a bad PCIe transfer into a recovery console rather than a boot.
+    """
+    if not cfg.get('rootfs'): return None
+    item = cfg['rootfs']
+    name = item.get('name', 'dproot')
+    if not re.fullmatch(r'[a-z][a-z0-9]{0,15}', name): raise ValueError('Invalid RAM root device name')
+    image = Path(item['path'])
+    if not image.is_absolute() or not image.is_file(): raise ValueError('Missing pinned rootfs image')
+    with image.open('rb') as stream:
+        if stream.read(4) != b'hsqs': raise ValueError('Pinned rootfs is not a squashfs image')
+    if not re.fullmatch(r'[0-9a-f]{64}', item['sha256']): raise ValueError('Rootfs digest required')
+    size = image.stat().st_size
+    if not 0 < size <= 1024**3: raise ValueError('Rootfs image size out of range')
+    plan = {'name': name, 'address': ROOTFS_ADDR, 'image': image, 'image_size': size,
+            'image_sha256': item['sha256'], 'image_offset': MIB,
+            'provision': None, 'provision_size': 0, 'provision_sha256': '',
+            'provision_offset': MIB + mib_up(size) * MIB}
+    end = plan['provision_offset']
+    if cfg.get('provision'):
+        extra = cfg['provision']
+        archive = Path(extra['path'])
+        if not archive.is_absolute() or not archive.is_file(): raise ValueError('Missing pinned provisioning archive')
+        with archive.open('rb') as stream:
+            stream.seek(257)
+            if stream.read(5) != b'ustar': raise ValueError('Provisioning archive must be a plain tar')
+        if not re.fullmatch(r'[0-9a-f]{64}', extra['sha256']): raise ValueError('Provisioning digest required')
+        psize = archive.stat().st_size
+        if not 0 < psize <= 64 * MIB: raise ValueError('Provisioning archive size out of range')
+        plan.update(provision=archive, provision_size=psize, provision_sha256=extra['sha256'])
+        end += mib_up(psize) * MIB
+    plan['reserve_mib'] = end // MIB
+    if ROOTFS_ADDR + end > ROOTFS_END: raise ValueError('RAM root does not fit under u-boot load area end 0x%x' % ROOTFS_END)
+    plan['header'] = ('FFN-ROOTFS 1 %d %s%s\n' % (size, item['sha256'],
+                      ' %d %s' % (plan['provision_size'], plan['provision_sha256']) if plan['provision'] else '')
+                      ).encode().ljust(ROOTFS_HEADER, b'\0')
+    plan['arguments'] = 'ffn_reserve=0x%x,%dM phram.phram=%s,0x%x,%dMi ffn.rootfs=%s' % (
+        ROOTFS_ADDR, plan['reserve_mib'], name, ROOTFS_ADDR, plan['reserve_mib'], name)
+    return plan
+
+
 def command(cfg):
-    return 'bootoctlinux 21000000 numcores=%d console=ttyS0,115200n8%s rw%s' % (
-        cfg['cores'], ' ffn_fdt='+cfg['fdt'] if cfg['fdt'] else '', ' '+cfg['extra'] if cfg['extra'] else '')
+    plan = rootfs_plan(cfg) if cfg.get('role') == 'dp' else None
+    return 'bootoctlinux 21000000 numcores=%d console=ttyS0,115200n8%s rw%s%s' % (
+        cfg['cores'], ' ffn_fdt='+cfg['fdt'] if cfg['fdt'] else '', ' '+cfg['extra'] if cfg['extra'] else '',
+        ' '+plan['arguments'] if plan else '')
 
 
 def transport_service(cfg):
@@ -158,6 +236,25 @@ def stop_transport(cfg):
         time.sleep(.2)
 
 
+def stage_rootfs(cfg,tool,reenable):
+    """Load the RAM root into DP DRAM. Must run while u-boot is still up and
+    before the kernel is loaded: the loader's final step talks to the
+    bootloader mailbox, so staging after Linux starts reports failure even
+    though the bytes landed, and the kernel's own staging area is separate."""
+    plan=rootfs_plan(cfg)
+    if plan is None:return None
+    # u-boot carves the named block first; the loads then fill memory nobody
+    # else owns. The bootloader reports errors only on its console, so the
+    # init's digest checks remain the authority on whether the bytes survived.
+    tool('bootcmd','namedalloc %s 0x%x 0x%x'%(plan['name'],plan['reserve_mib']*MIB,plan['address']))
+    header=Path('/run/ffn-dp-rootfs-header')
+    header.write_bytes(plan['header']);header.chmod(0o600)
+    for offset,path in ((0,header),(plan['image_offset'],plan['image']),(plan['provision_offset'],plan['provision'])):
+        if path is None:continue
+        tool('load','0x%x'%(plan['address']+offset),str(path));reenable()
+    return plan
+
+
 def boot(cfg):
     preflight(cfg)
     if cfg['role']=='dp':
@@ -173,15 +270,25 @@ def boot(cfg):
     with exclusive(lock):
         reset=False
         try:
+            # The DP's initramfs mounts its NFS root as soon as the CP answers a
+            # ping, so the export must exist before the transport comes back.
+            if cfg['role']=='dp': start_root_server(cfg)
             stop_transport(cfg)
             reenable();reset=True
             tool('reset','nowait');time.sleep(2);reenable()
             tool('boot','--loadcache',cfg['bootloader']['path']);time.sleep(20);reenable()
+            if cfg['role']=='cp' and cfg.get('fpga_step'):
+                # Any OCTEON reset leaves the CA1/CE40 socket on the a101 image; only
+                # u-boot's fpga_program can load ce40.bin, so it happens here, in the
+                # session that goes on to boot Linux. Never fatal: the step exits 0 and
+                # records the personality in /run/ffn-ce40-personality.
+                run(['/bin/bash',cfg['fpga_step']],env=env,timeout=960,hardware=True)
             if cfg['role']=='cp':
                 run(['/usr/bin/python3',cfg['tools']['stage']['path'],'--kernel',cfg['kernel']['path'],
-                     '--cores',str(cfg['cores']),'--fdt',cfg['fdt'],'--extra',cfg['extra'],'--watch','90'],env=env,hardware=True)
+                     '--cores',str(cfg['cores']),'--fdt',cfg['fdt'],'--extra',cfg['extra'],'--watch','15'],env=env,hardware=True)
                 tool('csr','SPEM0_BAR1_INDEX1','0xa43')
             else:
+                stage_rootfs(cfg,tool,reenable)
                 tool('load','0x21000000',cfg['kernel']['path']);reenable()
                 # Only window zero (boot command) and one (recovery/transport) are required.
                 for index,value in [(0,'0x1'),(1,'0x11')]: tool('csr','PEM0_BAR1_INDEX'+str(index),value)

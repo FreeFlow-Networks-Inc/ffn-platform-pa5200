@@ -1,6 +1,7 @@
 /* Host regression: session scope cannot reach DDR or unrelated CFP controls. */
 #include "ffn_fe100_flow_memory_mmio.c"
 #include <assert.h>
+#include <string.h>
 int main(void)
 {
     static uint32_t fake[0x100000/4];
@@ -46,5 +47,34 @@ int main(void)
     assert(fe100_reg_wr(0,0x98100,0)==12);
     assert(fe100_reg_wr(0,0x98324,0x10000)==12);
     fclose(trace);
+
+    /* The trace limit. A long-lived endpoint must not grow its trace without
+     * bound; after the limit exactly one marker line is written and nothing
+     * else, while register access itself keeps working. */
+    {
+        uint32_t value;
+        long before, after;
+        block_base=0x40000; diagnostic_mode=0; writable=1;
+        trace=tmpfile(); assert(trace); trace_bytes=0; trace_stopped=0;
+        ffn_fe100_allow(0x40800);
+        assert(ffn_fe100_trace_limit(100)==0);
+        for (int i = 0; i < 50; i++) assert(fe100_reg_wr(0,0x40800,(uint32_t)i)==0);
+        fflush(trace); before=ftell(trace);
+        assert(before>100 && before<100+120);           /* lines, then the marker */
+        for (int i = 0; i < 50; i++) assert(fe100_reg_rd(0,0x40800,&value)==0 && value==49);
+        fflush(trace); after=ftell(trace);
+        assert(after==before);                            /* nothing after the marker */
+        assert(trace_stopped==1);
+        {
+            char line[160]; int seen=0;
+            rewind(trace);
+            while (fgets(line,sizeof(line),trace)) if (!strncmp(line,"TRACE LIMIT",11)) seen++;
+            assert(seen==1);
+        }
+        assert(ffn_fe100_trace_limit(0)==0);             /* unlimited again: still stopped */
+        assert(fe100_reg_wr(0,0x40800,7)==0);
+        fflush(trace); assert(ftell(trace)==after);
+        fclose(trace);
+    }
     return 0;
 }

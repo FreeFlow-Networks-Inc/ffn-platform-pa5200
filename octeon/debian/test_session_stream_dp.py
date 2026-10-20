@@ -55,4 +55,36 @@ class RouteCheckTests(unittest.TestCase):
                 producer.check_routes(self.watch,self.topology,7,observe=lambda deadline:self.topology)
 
 
+class OwnershipTests(unittest.TestCase):
+    """Labels travel in dumps and in the events that changed them; a later conntrack update
+    carries none and must not read as a withdrawal (2026-10-19: every long-lived session whose
+    last handshake event lacked labels vanished from the relay while still established)."""
+    @staticmethod
+    def row(event,token,**extra):
+        return dict(event=event,id=7,zone=0,token=token,counters={},reply={},
+                    original={'source':'10.0.0.1','destination':'10.0.0.2','protocol':6,'source_port':1,'destination_port':2},**extra)
+
+    def test_update_without_labels_keeps_the_known_owner(self):
+        row=self.row('update',None)
+        self.assertEqual(producer.with_known_owner(row,'x',{'x':24577})['token'],24577)
+        self.assertIsNone(row['token'])
+
+    def test_update_without_labels_for_an_unknown_identity_stays_unowned(self):
+        row=self.row('update',None)
+        self.assertIsNone(producer.with_known_owner(row,'x',{'y':24577})['token'])
+
+    def test_end_and_labelled_events_are_untouched(self):
+        end=self.row('end',None);self.assertIs(producer.with_known_owner(end,'x',{'x':1}),end)
+        labelled=self.row('update',9);self.assertIs(producer.with_known_owner(labelled,'x',{'x':1}),labelled)
+
+    def test_replay_keeps_the_owner_across_label_less_updates(self):
+        live=producer.replay([self.row('update',24577,tcp_state=2)],[self.row('update',None,tcp_state=3)])
+        self.assertEqual([(r['token'],r['tcp_state']) for r in live],[(24577,3)])
+
+    def test_replay_drops_ended_sessions_and_ignores_unowned_updates(self):
+        self.assertEqual(producer.replay([self.row('update',24577)],[self.row('end',None)]),[])
+        self.assertEqual(producer.replay([],[self.row('update',None)]),[])
+        self.assertEqual([r['token'] for r in producer.replay([],[self.row('start',24577)])],[24577])
+
+
 if __name__=='__main__':unittest.main()

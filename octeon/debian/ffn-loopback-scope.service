@@ -1,0 +1,24 @@
+[Unit]
+Description=FFN loopback scope: 127.0.0.0/16 stays local, 127.1.0.0/16 belongs to the PCIe transports
+# Every plane addresses its PCIe transports from 127.1.0.0/16 while lo keeps
+# 127.0.0.1/8. Without policy rules the kernel resolves through the merged main
+# trie by longest prefix and the transport /24 wins. The first ip rule in the
+# namespace switches lookups to table order, where the local /8 claims the
+# transport peer: traffic to it goes to lo, its packets fail reverse-path
+# validation as local sources, and an NFS-rooted plane freezes (PA-5220,
+# 2026-10-15, CP and DP). Installing local 127.0.0.0/16 in place of the /8
+# before any rule exists keeps 127.0.x.x local (127.0.0.53, 127.0.1.1) and
+# frees 127.1/16; the marker tells the service-route units they may add rules.
+DefaultDependencies=no
+After=systemd-sysctl.service
+Before=network-pre.target ffn-dpnet.service ffn-service-routes.service ffn-service-route-forward.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -ec 'ip route replace local 127.0.0.0/16 dev lo table local; if ip route show table local | grep -q "^local 127.0.0.0/8 "; then ip route del local 127.0.0.0/8 dev lo table local; fi; printf "127.0.0.0/16\n" > /run/ffn-loopback-scope'
+ExecStop=/bin/rm -f /run/ffn-loopback-scope
+
+[Install]
+WantedBy=sysinit.target
