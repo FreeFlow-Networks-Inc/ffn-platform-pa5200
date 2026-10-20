@@ -142,6 +142,122 @@ def main():
         reply = run_cint(create_source(3, egress_qualifiers(request), int(request['destination']), int(request['priority']), request.get('dmac')))
     elif op == 'rule-delete':
         reply = run_cint(delete_source(int(request['group']), int(request['entry']), request.get('dqs') or []))
+    elif op == 'ports-inspect':
+        # Read-only: header type, force-forward and interface counters for any ports.
+        ports = [int(x) for x in request.get('ports', [3, 16, 20, 24, 32, 33])]
+        body = ''.join(""" {int hdr=-1;int dst=0;int en=0;
+ rv=bcm_switch_control_port_get(0,%d,bcmSwitchPortHeaderType,&hdr);
+ if(rv==0)rv=bcm_port_force_forward_get(0,%d,&dst,&en);
+ printf("FFN_PORT port=%d header=%%d destination=%%d enabled=%%d rv=%%d\n",hdr,dst,en,rv);}
+""" % (port, port, port) for port in ports)
+        source = '{int rv=0;' + body + ' printf("FFN_DONE\n");}'
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        rows = {}
+        for s in result.get('markers', []):
+            m = re.fullmatch(r'FFN_PORT port=(\d+) (.*)', s)
+            if m: rows[int(m.group(1))] = dict(kv.split('=') for kv in m.group(2).split())
+        reply = dict(markers=result.get('markers', [])[-2:], ports=rows)
+    elif op == 'port-stats':
+        # Read-only: SNMP-style counters and rate limits through cint's own print (uint64 safe).
+        NL = chr(92) + 'n'; SEP = chr(10)
+        ports = [int(x) for x in request.get('ports', [3, 16, 20, 24, 32, 33])]
+        names = ['snmpIfInUcastPkts', 'snmpIfOutUcastPkts', 'snmpIfInDiscards', 'snmpIfOutDiscards', 'snmpIfInErrors',
+                 'snmpIfOutErrors', 'snmpIfInOctets', 'snmpIfOutOctets', 'snmpDot3InPauseFrames', 'snmpDot3OutPauseFrames']
+        body = ''
+        for port in ports:
+            for name in names:
+                body += ' {uint64 v; int rv=bcm_stat_get(0,%d,%s,&v); printf("FFN_STAT port=%d name=%s rv=%%d value=",rv); print v;}' % (port, name, port, name) + SEP
+            body += ' {uint32 kb=0; uint32 bu=0; int rv=bcm_port_rate_egress_get(0,%d,&kb,&bu); printf("FFN_RATE port=%d egress_kbps=%%u burst=%%u rv=%%d%s",kb,bu,rv);}' % (port, port, NL) + SEP
+            body += ' {uint32 kb=0; uint32 bu=0; int rv=bcm_port_rate_ingress_get(0,%d,&kb,&bu); printf("FFN_RATE port=%d ingress_kbps=%%u burst=%%u rv=%%d%s",kb,bu,rv);}' % (port, port, NL) + SEP
+        source = '{' + body + ' printf("FFN_DONE' + NL + '");}'
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        lines = result.get('output', [])
+        reply = dict(output=[s for s in lines if 'FFN_' in s or '=' in s][:220], markers=result.get('markers', [])[-1:])
+    elif op == 'queue-stats':
+        # Read-only: VOQ drop/enqueue statistics and sizes for unicast queue groups by queue id.
+        NL = chr(92) + 'n'; SEP = chr(10)
+        queues = [int(x) for x in request.get('queues', [36, 20, 28])]
+        body = ''
+        for q in queues:
+            body += (' {bcm_gport_t g=0; uint64 v; int rv; uint32 smin=0; uint32 smax=0; BCM_GPORT_UCAST_QUEUE_GROUP_SET(g,%d);'
+                     ' rv=bcm_cosq_gport_stat_get(0,g,0,bcmCosqGportDroppedPkts,&v); printf("FFN_Q queue=%d stat=dropped_packets rv=%%d value=",rv); print v;'
+                     ' rv=bcm_cosq_gport_stat_get(0,g,0,bcmCosqGportDroppedBytes,&v); printf("FFN_Q queue=%d stat=dropped_bytes rv=%%d value=",rv); print v;'
+                     ' rv=bcm_cosq_gport_stat_get(0,g,0,bcmCosqGportEnqueuedPkts,&v); printf("FFN_Q queue=%d stat=enqueued_packets rv=%%d value=",rv); print v;'
+                     ' rv=bcm_cosq_gport_stat_get(0,g,0,bcmCosqGportDequeuedPkts,&v); printf("FFN_Q queue=%d stat=dequeued_packets rv=%%d value=",rv); print v;'
+                     ' rv=bcm_cosq_gport_size_get(0,g,0,&smin,&smax); printf("FFN_QS queue=%d size_min=%%u size_max=%%u rv=%%d%s",smin,smax,rv);}' % (q, q, q, q, q, q, NL)) + SEP
+        source = '{' + body + ' printf("FFN_DONE' + NL + '");}'
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        reply = dict(output=[s for s in result.get('output', []) if 'FFN_' in s or '=' in s][:120], markers=result.get('markers', [])[-1:])
+    elif op == 'enum-probe':
+        # Read-only: which identifiers this SDK's interpreter knows (one script per name).
+        NL = chr(92) + 'n'
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        known = {}
+        for name in request.get('names', []):
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name): continue
+            try:
+                result = execute('{int probe_value=%s; printf("FFN_ENUM %s=%%d%s",probe_value); printf("FFN_DONE%s");}' % (name, name, NL, NL), call)
+                m = [re.fullmatch(r'FFN_ENUM (\w+)=(-?\d+)', s) for s in result.get('markers', [])]
+                m = [x for x in m if x]
+                known[name] = int(m[0].group(2)) if m else None
+            except Exception as error:
+                known[name] = 'error: ' + str(error)[-300:]
+        reply = dict(known=known)
+    elif op in ('egress-rate-get', 'egress-rate-set'):
+        # The WAN port's egress scheduler bandwidth (kbit/s) on its E2E port gport: the only port-level
+        # shaper this SDK exposes on the device. Confined to BCM port 16. Callers restore the value they read.
+        NL = chr(92) + 'n'
+        port = int(request.get('port', 16))
+        if port != 16: raise ValueError('egress shaping is confined to the WAN port 16')
+        if op == 'egress-rate-set':
+            kbps = int(request['kbps'])
+            if not 1000 <= kbps <= 50000000: raise ValueError('rate outside 1000..50000000 kbps')
+            action = ' rv=bcm_cosq_gport_bandwidth_set(0,e2e,0,0,%d,0); printf("FFN_RATE_SET port=%d kbps=%d rv=%%d%s",rv);' % (kbps, port, kbps, NL)
+        else:
+            action = ''
+        source = ('{int rv=0; uint32 kmin=0; uint32 kmax=0; uint32 flags=0; bcm_gport_t e2e=0; BCM_COSQ_GPORT_E2E_PORT_SET(e2e,%d);' % port + action +
+                  ' rv=bcm_cosq_gport_bandwidth_get(0,e2e,0,&kmin,&kmax,&flags); printf("FFN_RATE port=%d e2e_min_kbps=%%u e2e_max_kbps=%%u flags=%%u rv=%%d%s",kmin,kmax,flags,rv);' % (port, NL) +
+                  ' printf("FFN_DONE' + NL + '");}')
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        reply = dict(markers=[s for s in result.get('markers', []) if s.startswith('FFN_RATE')])
+    elif op in ('return-path-status', 'return-path-enable', 'return-path-restore'):
+        # The chip's CPU-message return: BCM port 20 as RAW with force-forward to the DP trunk (24).
+        NL = chr(92) + 'n'
+        if op == 'return-path-enable':
+            action = (' if(rv==0 && en && dst!=24)rv=-8;'
+                      ' if(rv==0)rv=bcm_switch_control_port_set(0,20,bcmSwitchPortHeaderType,BCM_SWITCH_PORT_HEADER_TYPE_RAW);'
+                      ' if(rv==0)rv=bcm_port_force_forward_set(0,20,24,1);')
+        elif op == 'return-path-restore':
+            header = int(request.get('header', 11))
+            action = (' if(rv==0)rv=bcm_port_force_forward_set(0,20,24,0);'
+                      ' if(rv==0)rv=bcm_switch_control_port_set(0,20,bcmSwitchPortHeaderType,%d);' % header)
+        else:
+            action = ''
+        source = ('{int rv=0;int hdr=-1;int dst=0;int en=0;'
+                  ' rv=bcm_switch_control_port_get(0,20,bcmSwitchPortHeaderType,&hdr);'
+                  ' if(rv==0)rv=bcm_port_force_forward_get(0,20,&dst,&en);'
+                  ' printf("FFN_RETURN_BEFORE header=%d destination=%d enabled=%d rv=%d' + NL + '",hdr,dst,en,rv);' + action +
+                  ' if(rv==0)rv=bcm_switch_control_port_get(0,20,bcmSwitchPortHeaderType,&hdr);'
+                  ' if(rv==0)rv=bcm_port_force_forward_get(0,20,&dst,&en);'
+                  ' printf("FFN_RETURN header=%d destination=%d enabled=%d rv=%d' + NL + '",hdr,dst,en,rv);'
+                  ' if(rv==0)printf("FFN_DONE' + NL + '");}')
+        from ffn_faceplate import call
+        from ffn_fe100_bcm_lab import execute
+        result = execute(source, call)
+        rows = {}
+        for s in result.get('markers', []):
+            m = re.fullmatch(r'(FFN_RETURN(?:_BEFORE)?) (.*)', s)
+            if m: rows[m.group(1)] = dict(kv.split('=') for kv in m.group(2).split())
+        reply = dict(state=rows, done='FFN_DONE' in result.get('markers', []))
     elif op == 'cpu-capture-begin':
         # The lab's IL-output capture (template modes 7/8): FE100 CPU messages leave on switch port 20;
         # make it RAW and force-forward it to the MP capture port 8. Returns the previous header type.
