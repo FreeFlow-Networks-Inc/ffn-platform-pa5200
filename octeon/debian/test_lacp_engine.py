@@ -1,6 +1,12 @@
 import copy
+import os
 import unittest
-from ffn_lacp_engine import Engine,encode,ZERO,SYNC,COLLECTING,DISTRIBUTING,ACTIVITY,AGGREGATION,TIMEOUT
+# FFN_LACP_ENGINE=native runs this suite against the C engine (octeon/native/ffn_lacp.c)
+# through ffn_lacp_native.py; the Python codec still decodes what it transmits.
+if os.environ.get('FFN_LACP_ENGINE')=='native':
+    from ffn_lacp_native import Engine,encode,ZERO,SYNC,COLLECTING,DISTRIBUTING,ACTIVITY,AGGREGATION,TIMEOUT
+else:
+    from ffn_lacp_engine import Engine,encode,ZERO,SYNC,COLLECTING,DISTRIBUTING,ACTIVITY,AGGREGATION,TIMEOUT
 from ffn_lacp_packets import decode
 
 class Gates:

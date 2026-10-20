@@ -45,9 +45,12 @@ class CpuReservations:
                 row.get(k)==v for k,v in self.identity(row['pid']).items())
         except (OSError,ValueError,KeyError,IndexError,TypeError):return False
 
-    def reserve(self,allowed=None,count=2,driver=None):
+    def reserve(self,allowed=None,count=2,driver=None,pid=None):
         """`count` CPUs (two per lane), least used first, never the trunk driver's receive cores
-        while enough others remain."""
+        while enough others remain. `pid` names the owner the record is bound to (a native
+        owner reserving through the command line); the reservation lives as long as it."""
+        if pid is None:pid=os.getpid()
+        if type(pid) is not int or pid<=0:raise ValueError('Invalid reservation owner')
         allowed=sorted(set(os.sched_getaffinity(0) if allowed is None else allowed))
         if not allowed or any(type(c) is not int or c<0 for c in allowed):
             raise ValueError('No valid packet worker CPU affinity')
@@ -90,7 +93,7 @@ class CpuReservations:
                 cpu=min(candidates,key=lambda c:(usage[c],c))
                 cpus.append(cpu);usage[cpu]+=1
             token=uuid.uuid4().hex
-            record=dict(self.identity(os.getpid()),cpus=cpus)
+            record=dict(self.identity(pid),cpus=cpus)
             temporary=self.root/(token+'.tmp')
             temporary.write_text(json.dumps(record));temporary.replace(self.root/(token+'.json'))
             return token,tuple(cpus)
@@ -99,3 +102,22 @@ class CpuReservations:
         if not isinstance(token,str) or uuid.UUID(hex=token).hex!=token:
             raise ValueError('Invalid CPU reservation token')
         with self.locked():(self.root/(token+'.json')).unlink(missing_ok=True)
+
+
+def main(argv=None):
+    """`reserve --count N --pid P` prints {"token", "cpus"}; `release TOKEN` drops a record."""
+    import argparse
+    parser=argparse.ArgumentParser(description='Reserve or release native packet worker CPUs.')
+    verbs=parser.add_subparsers(dest='verb',required=True)
+    reserve=verbs.add_parser('reserve');reserve.add_argument('--count',type=int,default=2);reserve.add_argument('--pid',type=int,default=os.getpid())
+    release=verbs.add_parser('release');release.add_argument('token')
+    args=parser.parse_args(argv)
+    reservations=CpuReservations()
+    if args.verb=='reserve':
+        token,cpus=reservations.reserve(count=args.count,pid=args.pid)
+        print(json.dumps(dict(token=token,cpus=list(cpus))))
+    else:reservations.release(args.token)
+    return 0
+
+
+if __name__=='__main__':raise SystemExit(main())

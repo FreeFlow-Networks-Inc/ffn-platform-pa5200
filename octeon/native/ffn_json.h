@@ -50,5 +50,7 @@ bool ffn_json_equal(const struct ffn_json *a, const struct ffn_json *b);
 
 /* Serialise with sorted-insertion order preserved as inserted; returns a malloc'd string or NULL. */
 char *ffn_json_dump(const struct ffn_json *node);
+/* A double as Python's repr prints it (shortest round trip, fixed notation for exponents in [-4, 16)). */
+void ffn_json_number_text(double value, char *out, size_t outsz);
 
 #endif

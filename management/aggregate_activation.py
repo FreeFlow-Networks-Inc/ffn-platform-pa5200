@@ -50,7 +50,10 @@ def command(role,operation):
 
 def remote(role,operation,payload):
     result=subprocess.run(command(role,operation),input=json.dumps(payload)+'\n',text=True,capture_output=True,timeout=45)
-    if result.returncode:raise RuntimeError(role+' aggregate operation failed: '+result.stdout[-1024:])
+    if result.returncode:
+        # A refused ssh or a crashed helper says why on stderr; an empty reason helps nobody.
+        detail=result.stdout[-1024:].strip() or result.stderr[-1024:].strip() or 'exit status %d'%result.returncode
+        raise RuntimeError(role+' aggregate operation failed: '+detail)
     value=json.loads(result.stdout)
     if not isinstance(value,dict) or value.get('error'):raise RuntimeError('Invalid aggregate agent response')
     return value

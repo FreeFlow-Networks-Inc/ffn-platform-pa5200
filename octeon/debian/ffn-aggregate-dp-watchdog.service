@@ -3,5 +3,5 @@ Description=Recover stale FFN aggregate dataplane owners
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_aggregate_runtime.py sweep
+ExecStart=/usr/local/sbin/ffn-aggregated sweep
 TimeoutStartSec=60

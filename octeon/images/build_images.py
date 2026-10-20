@@ -385,6 +385,11 @@ def build_hardware(platform, tree, root, role, cross, userspace_cross, release, 
         run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-lldpd'])
         elf(native / 'ffn-lldpd')
         safe_install(native / 'ffn-lldpd', root, 'usr/local/sbin/ffn-lldpd')
+        # The aggregate owner: LACP engine, member gates, control socket and TAP workers in one
+        # process bound to the MP supervisor's pipe; ffn_aggregate_runtime.py serve execs it.
+        run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-aggregated'])
+        elf(native / 'ffn-aggregated')
+        safe_install(native / 'ffn-aggregated', root, 'usr/local/sbin/ffn-aggregated')
     if role == 'cp':
         # The CP owner of a physical port's packet redirect; the MP backend prefers it over the Python owner.
         run(['make', '-C', native, 'CC=' + userspace_cross + 'gcc', 'ffn-portctl'])
