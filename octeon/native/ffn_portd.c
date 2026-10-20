@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/* ffn-aggregated: the dataplane owner of one aggregate (aeN).
+/* ffn-portd: the dataplane owner of a faceplate port or an aggregate.
+ *
+ * `aggregate`: one process per aeN, described below. `physical`: one process
+ * per front port (ethernet1/N, copper and optical alike) owning its TAP's
+ * native workers and the carrier the CP observes for it. Both kinds share the
+ * helpers, the native library and the lifetime rules in this file.
+ *
+ * The aggregate owner (formerly ffn-aggregated):
  *
  * One process owns the LACP engine, the member gates, the trunk control
  * socket and the aggregate TAP's native packet workers, and talks to the MP
@@ -94,7 +101,7 @@ static uint64_t now_us(void)
 static void logmsg(const char *fmt, ...)
 {
     va_list ap;
-    fputs("ffn-aggregated: ", stderr);
+    fputs("ffn-portd: ", stderr);
     va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap);
     fputc('\n', stderr); fflush(stderr);
 }
@@ -585,6 +592,7 @@ struct daemon {
     struct { unsigned collect, distribute, inspect, ready; uint64_t deadline, offload_deadline; void *engine; } gates_last; bool gates_pushed;
     struct returns returns, control_returns;
     uint64_t next_fe100;
+    uint16_t fronts[MEMBERS]; unsigned front_count;   /* the front ports this owner binds returns for */
     /* network configuration */
     struct ffn_json *network;    /* the applied network (a copy of the intent's, then updates) */
     struct ffn_json *requested;  /* {revision, network, lldp} the MP asked for last */
@@ -1112,11 +1120,14 @@ static bool inspection_port(const struct inspector *in, unsigned port)
     return false;
 }
 
-static int inspection_open(struct daemon *d)
+/* status_path NULL publishes to the shared /run/ffn-inspection.json (the WAN
+ * owner's place); every other owner keeps its own file. */
+static int inspection_open(struct daemon *d, const char *status_path)
 {
     struct inspector *in = &d->insp;
     memset(in, 0, sizeof *in);
-    snprintf(in->status_path, sizeof in->status_path, "%s/ffn-inspection-%s.json", RUN, d->in.group);
+    if (status_path) snprintf(in->status_path, sizeof in->status_path, "%s", status_path);
+    else snprintf(in->status_path, sizeof in->status_path, "%s/ffn-inspection.json", RUN);
     in->cfg = inspection_default();
     in->counts = ffn_json_object();
     inspection_tick(in, now_us());
@@ -1187,34 +1198,39 @@ static void cpus_release(struct daemon *d)
     d->cpu_token[0] = 0;
 }
 
-static void tap_steer(struct daemon *d)
+static void tap_steer(const char *device)
 {
     struct helper h;
     char path[PATH], line[200];
-    char *const argv[] = { (char *)PYTHON, (char *)STEERING, d->in.group, "--namespace", (char *)NS, NULL };
+    char *const argv[] = { (char *)PYTHON, (char *)STEERING, (char *)device, "--namespace", (char *)NS, NULL };
     snprintf(path, sizeof path, "/run/netns/%s", NS);
     if (access(path, F_OK)) return;
     if (helper_run(&h, argv, NULL, 15 * SECOND) != 0) {
         last_line(&h.error, line, sizeof line);
-        logmsg("receive steering for %s not applied: %s", d->in.group, line);
+        logmsg("receive steering for %s not applied: %s", device, line);
     }
     helper_close(&h);
 }
 
-static int native_open(struct daemon *d, char *err, size_t errsz)
+/* Lanes, worker CPUs and steering for an opened owner of `device`. */
+static int native_start(struct daemon *d, const char *device, char *err, size_t errsz)
 {
     int cpus[2 * FFN_PACKET_LANES_MAX], rx[FFN_PACKET_LANES_MAX], tx[FFN_PACKET_LANES_MAX];
-    int lanes;
-    d->native = ffn_aggregate_open(TRUNK, NS, d->in.group, d->native_members, d->in.count, d->in.tid);
-    if (!d->native) { snprintf(err, errsz, "native aggregate owner: %s", strerror(errno)); return -1; }
-    lanes = ffn_packet_lanes(d->native, lanes_for(d->in.group));
+    int lanes = ffn_packet_lanes(d->native, lanes_for(device));
     if (lanes < 1) { snprintf(err, errsz, "native lanes: %s", strerror(errno)); return -1; }
     d->lanes = (unsigned)lanes;
     if (cpus_reserve(d, 2 * d->lanes, cpus, err, errsz)) return -1;
     for (unsigned i = 0; i < d->lanes; i++) { rx[i] = cpus[2 * i]; tx[i] = cpus[2 * i + 1]; }
     if (ffn_packet_start_lanes(d->native, rx, tx, d->lanes)) { snprintf(err, errsz, "native workers: %s", strerror(errno)); return -1; }
-    tap_steer(d);
+    tap_steer(device);
     return 0;
+}
+
+static int native_open(struct daemon *d, char *err, size_t errsz)
+{
+    d->native = ffn_aggregate_open(TRUNK, NS, d->in.group, d->native_members, d->in.count, d->in.tid);
+    if (!d->native) { snprintf(err, errsz, "native aggregate owner: %s", strerror(errno)); return -1; }
+    return native_start(d, d->in.group, err, errsz);
 }
 
 static void native_close(struct daemon *d)
@@ -1320,10 +1336,10 @@ static unsigned fe100_bindings(const struct daemon *d, const struct ffn_json *co
     *json = ffn_json_array();
     if (!config) return 0;
     ffn_json_get_int(config, "trunk", &trunk); ffn_json_get_int(config, "return_port", &return_port);
-    for (unsigned i = 0; i < d->in.count; i++) {
+    for (unsigned i = 0; i < d->front_count; i++) {
         char key[8]; struct ffn_json *entry, *row;
         long long in_lif = 0, zone = 0;
-        unsigned front = d->in.sorted[i];
+        unsigned front = d->fronts[i];
         snprintf(key, sizeof key, "%u", front);
         entry = ffn_json_get(ports, key);
         if (!entry) continue;
@@ -1358,7 +1374,8 @@ static void fe100_renew(struct daemon *d, uint64_t now)
         if (d->returns.active && ffn_packet_fe100(d->native, NULL, 0, 0)) fail(d, "FE100 return revocation: %s", strerror(errno));
         ffn_json_free(d->returns.rows); d->returns.rows = NULL; d->returns.active = false; ffn_json_free(json);
     }
-    if (n) {
+    if (d->control_fd < 0) { /* a physical owner has no control socket */ }
+    else if (n) {
         if (ffn_aggregate_control_fe100(d->control_fd, d->native_members, d->in.count, rows, n, deadline)) fail(d, "FE100 control attachment: %s", strerror(errno));
         memcpy(d->control_bindings, rows, n * sizeof *rows); d->control_binding_count = n; d->control_deadline_ms = deadline;
         d->control_returns.active = true;
@@ -1423,10 +1440,11 @@ resume:
 }
 
 /* ffn_native_aggregate.AggregateOwner.snapshot / PacketOwner.workers */
+static struct ffn_json *workers_json(struct daemon *d);
+
 static void native_snapshot(struct daemon *d)
 {
     uint64_t stats[8];
-    int out[8];
     if (!d->native) return;
     if (ffn_packet_counters(d->native, d->counters, FFN_PACKET_COUNTERS)) { fail(d, "native counters: %s", strerror(errno)); return; }
     for (unsigned i = 0; i < 6; i++) ffn_json_set(d->insp.counts, VERDICTS[i], ffn_json_int((long long)d->counters[8 + i]));
@@ -1451,11 +1469,17 @@ static void native_snapshot(struct daemon *d)
         ffn_json_set(row, "tx_packets", ffn_json_int((long long)values[2])); ffn_json_set(row, "tx_bytes", ffn_json_int((long long)values[3]));
         ffn_json_set(d->unit_counts, d->unit_name[tag], row);
     }
-    /* workers() */
-    ffn_json_free(d->workers); d->workers = ffn_json_object();
+    ffn_json_free(d->workers); d->workers = workers_json(d);
+}
+
+/* PacketOwner.workers(): the worker threads, their CPUs and their batch statistics. */
+static struct ffn_json *workers_json(struct daemon *d)
+{
+    int out[8];
+    struct ffn_json *w = ffn_json_object();
     if (ffn_packet_workers(d->native, out, 8) == 0) {
         uint64_t batches[3] = { 0 }, sent[3] = { 0 }, punts[3] = { 0 };
-        struct ffn_json *lanes = ffn_json_array(), *w = d->workers, *tx;
+        struct ffn_json *lanes = ffn_json_array(), *tx;
         unsigned count = ffn_packet_lane_count(d->native);
         ffn_packet_receive_stats(d->native, batches, 3);
         ffn_packet_transmit_stats(d->native, sent, 3);
@@ -1484,6 +1508,7 @@ static void native_snapshot(struct daemon *d)
         ffn_json_set(w, "fe100_return", tx);
         ffn_json_set(w, "execution", ffn_json_string("native-c"));
     }
+    return w;
 }
 
 /* ------------------------------------------------------ network helpers */
@@ -1727,7 +1752,7 @@ static void status_row(struct daemon *d, uint64_t now, bool network_current, boo
     ffn_json_set(row, "process_start", ffn_json_string(d->process_start));
     ffn_json_set(row, "updated_monotonic", ffn_json_number((double)now / 1e6));
     ffn_json_set(row, "control_age_seconds", ffn_json_number((double)(now - d->last_input) / 1e6));
-    ffn_json_set(row, "owner", ffn_json_string("ffn-aggregated"));
+    ffn_json_set(row, "owner", ffn_json_string("ffn-portd"));
     ffn_json_set(row, "packet_execution", ffn_json_string(d->native ? "native-c" : "control-only"));
     ffn_json_set(row, "workers", d->native && d->workers ? ffn_json_copy(d->workers) : ffn_json_null());
     ffn_json_set(row, "control_only", ffn_json_bool(d->in.control_only));
@@ -1954,7 +1979,9 @@ static int serve(void)
     for (unsigned i = 0; i < d.in.count; i++) {
         d.native_members[i].front = d.in.sorted[i]; d.native_members[i].source = (uint32_t)front_source(d.in.sorted[i]);
         d.native_members[i].alias = d.off.enabled ? d.off.alias[i] : 0;
+        d.fronts[i] = d.in.sorted[i];
     }
+    d.front_count = d.in.count;
     if (check_environment(err, sizeof err) || validate_intent(&d, err, sizeof err) || engine_create(&d, err, sizeof err)) { fail(&d, "%s", err); goto failed_early; }
     /* Legacy fabric owners take EX; scoped WAN/aggregate owners take SH and
      * individual port EX locks, allowing coexistence without overlapping RX. */
@@ -1974,7 +2001,11 @@ static int serve(void)
     if (!d.in.control_only) {
         if (network_setup(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
         if (native_open(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
-        if (inspection_open(&d)) goto stop;
+        {
+            char inspection_path[PATH];
+            snprintf(inspection_path, sizeof inspection_path, "%s/ffn-inspection-%s.json", RUN, d.in.group);
+            if (inspection_open(&d, inspection_path)) goto stop;
+        }
     }
     if (control_open(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
     d.started = d.last_input = now_us();
@@ -2037,6 +2068,482 @@ failed_early:
     return 1;
 }
 
+/* ------------------------------------------------------- physical ports */
+/* The owner of one faceplate port's packet path (ffn_wan_runtime.py and
+ * ffn_physical_runtime.py before it): port 1 as the WAN owner `wan1` with the
+ * fabric status file the policy provider reads, ports 2..24 as `physical-N`.
+ * Copper ports 1..4 are faceplate ports like the others; what the copper VIF
+ * driver did for them, carrier following the CP's PHY/MAC observation, is the
+ * owner's link lease now: the MP timer delivers the faceplate rows through
+ * `links`, and a port whose policy says `observed` keeps TAP carrier and
+ * delivery only while a fresh observation says the link is up. */
+
+#define LINKS_LEASE_DEFAULT 30
+#define LINKS_LEASE_MAX 120
+
+struct physical {
+    unsigned port, source;
+    char owner[16], tap[8], unit[48];
+    char intent_path[PATH], state_path[PATH], inspection_path[PATH];
+    bool observed;                 /* carrier policy: observed (lease) or always */
+    bool carrier_up;
+    char carrier_reason[160];
+    long long sequence; double age;
+    struct ffn_json *observation;  /* the port's last faceplate row */
+    int ifindex;
+    uint64_t next_status;
+    struct ffn_json *state;        /* the published status document */
+};
+
+static const char *COPPER_PROFILE = "/etc/ffn/vif-copper.json", *CARRIER_POLICY = "/etc/ffn/port-carrier.json";
+static const char *LINKS_FILE = "ffn-port-links.json";
+
+/* The commissioned copper wiring may be corrected by copper-identify; the
+ * profile then names the switch port behind a front port 1..4. */
+static int physical_source(unsigned port)
+{
+    static const int copper[5] = { 0, 28, 13, 14, 15 };
+    struct ffn_json *profile, *ports, *entry;
+    long long bcm;
+    char key[8];
+    int source = port >= 1 && port <= 4 ? copper[port] : front_source(port);
+    if (port > 4) return source;
+    profile = read_json(COPPER_PROFILE);
+    if (!profile) return source;
+    snprintf(key, sizeof key, "%u", port);
+    ports = ffn_json_get(profile, "ports");
+    entry = ports ? ffn_json_get(ports, key) : NULL;
+    if (entry && ffn_json_get_int(entry, "bcm_port", &bcm) && (bcm == 28 || bcm == 13 || bcm == 14 || bcm == 15)) source = (int)bcm;
+    ffn_json_free(profile);
+    return source;
+}
+
+static bool physical_observed_policy(unsigned port)
+{
+    struct ffn_json *policy = read_json(CARRIER_POLICY);
+    const char *value = NULL;
+    char key[8];
+    bool observed = port >= 2 && port <= 4;   /* the copper ports the VIF driver gated */
+    if (!policy) return observed;
+    snprintf(key, sizeof key, "%u", port);
+    value = ffn_json_get_string(policy, key);
+    if (!value) value = ffn_json_get_string(policy, "default");
+    if (value) observed = !strcmp(value, "observed");
+    ffn_json_free(policy);
+    return observed;
+}
+
+static int physical_select(struct physical *p, unsigned port)
+{
+    memset(p, 0, sizeof *p);
+    if (port < 1 || port > 24) return -1;
+    p->port = port;
+    p->source = (unsigned)physical_source(port);
+    snprintf(p->tap, sizeof p->tap, "p%u", port);
+    if (port == 1) {
+        snprintf(p->owner, sizeof p->owner, "wan1");
+        snprintf(p->unit, sizeof p->unit, "ffn-wan-attachment.service");
+        snprintf(p->intent_path, sizeof p->intent_path, "%s/ffn-wan-attachment.json", RUN);
+        snprintf(p->state_path, sizeof p->state_path, "%s/ffn-fabric.json", RUN);
+        p->inspection_path[0] = 0;   /* the shared /run/ffn-inspection.json */
+    } else {
+        snprintf(p->owner, sizeof p->owner, "physical-%u", port);
+        snprintf(p->unit, sizeof p->unit, "ffn-physical@%u.service", port);
+        snprintf(p->intent_path, sizeof p->intent_path, "%s/ffn-physical-%u-intent.json", RUN, port);
+        snprintf(p->state_path, sizeof p->state_path, "%s/ffn-physical-%u-status.json", RUN, port);
+        snprintf(p->inspection_path, sizeof p->inspection_path, "%s/ffn-inspection-physical-%u.json", RUN, port);
+    }
+    p->observed = physical_observed_policy(port);
+    p->sequence = -1;
+    return 0;
+}
+
+/* ffn_wan_runtime.status(): the published document is evidence only while
+ * its process is alive, unchanged and publishing. */
+static struct ffn_json *physical_status(const struct physical *p)
+{
+    struct ffn_json *result = ffn_json_object(), *value = read_json(p->state_path);
+    char current_boot[40], start[32];
+    const char *owner, *boot, *recorded;
+    long long pid = 0;
+    double updated = 0;
+    bool running = false;
+    boot_id(current_boot, sizeof current_boot);
+    if (value && value->type == FFN_JSON_OBJECT) {
+        owner = ffn_json_get_string(value, "owner"); boot = ffn_json_get_string(value, "boot_id");
+        recorded = ffn_json_get_string(value, "process_start");
+        ffn_json_get_int(value, "pid", &pid); ffn_json_get_number(value, "updated_monotonic", &updated);
+        if (owner && boot && recorded && !strcmp(owner, p->owner) && !strcmp(boot, current_boot) && pid > 0 &&
+            process_start((pid_t)pid, start, sizeof start) == 0 && !strcmp(start, recorded)) {
+            double age = (double)now_us() / 1e6 - updated;
+            char path[64], *text; size_t len;
+            bool zombie = false;
+            snprintf(path, sizeof path, "/proc/%lld/stat", pid);
+            if (read_file(path, &text, &len) == 0) { char *q = strrchr(text, ')'); zombie = q && q[2] == 'Z'; free(text); }
+            running = !zombie && age >= 0 && age <= 5;
+        }
+    }
+    ffn_json_set(result, "running", ffn_json_bool(running));
+    ffn_json_set(result, "boot_id", ffn_json_string(current_boot));
+    ffn_json_set(result, "attachment", running ? ffn_json_copy(value) : ffn_json_object());
+    ffn_json_set(result, "hardware_offload", ffn_json_bool(false));
+    ffn_json_free(value);
+    return result;
+}
+
+static bool physical_running(const struct physical *p)
+{
+    struct ffn_json *status = physical_status(p);
+    bool running = false;
+    ffn_json_get_bool(status, "running", &running);
+    ffn_json_free(status);
+    return running;
+}
+
+static int systemctl(const char *verb, const char *unit)
+{
+    struct helper h;
+    char *const argv[] = { "/usr/bin/systemctl", (char *)verb, (char *)unit, NULL };
+    int status = helper_run(&h, argv, NULL, 30 * SECOND);
+    helper_close(&h);
+    return status == 0 ? 0 : -1;
+}
+
+/* `physical start|stop --port N`, {"boot_id": ...} on stdin: the DP-side half
+ * of the MP's attach/detach, as the Python owner answered it. */
+static int physical_control(struct physical *p, const char *verb)
+{
+    struct text t = { 0 };
+    char buf[4096], perr[64], current_boot[40];
+    ssize_t n;
+    struct ffn_json *doc, *status;
+    const char *boot;
+    char *text;
+    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
+    doc = ffn_json_parse(t.s ? t.s : "{}", t.len ? t.len : 2, perr, sizeof perr);
+    free(t.s);
+    boot = doc ? ffn_json_get_string(doc, "boot_id") : NULL;
+    if (!doc || doc->type != FFN_JSON_OBJECT || doc->count != 1 || !boot || boot_id(current_boot, sizeof current_boot) || strcmp(boot, current_boot)) {
+        printf("{\"error\": \"Current DP boot identity required\"}\n"); ffn_json_free(doc); return 1;
+    }
+    ffn_json_free(doc);
+    if (!strcmp(verb, "start")) {
+        if (!physical_running(p)) {
+            /* Prove the locks are free before asking systemd, as the Python owner did. */
+            char lock_name[64];
+            struct daemon probe;
+            char err[128];
+            struct ffn_json *intent;
+            memset(&probe, 0, sizeof probe);
+            snprintf(lock_name, sizeof lock_name, "ffn-aggregate-port-%u.lock", p->port);
+            if (take_lock(&probe, "ffn-fabric.lock", LOCK_SH, err, sizeof err) || take_lock(&probe, lock_name, LOCK_EX, err, sizeof err)) {
+                release_locks(&probe); printf("{\"error\": \"%s\"}\n", err); return 1;
+            }
+            intent = ffn_json_object();
+            ffn_json_set(intent, "boot_id", ffn_json_string(current_boot));
+            {
+                struct ffn_json *front = ffn_json_object();
+                char key[8]; snprintf(key, sizeof key, "%u", p->port);
+                ffn_json_set(front, key, ffn_json_int(p->source));
+                ffn_json_set(intent, "front", front);
+            }
+            if (write_json(p->intent_path, intent)) { release_locks(&probe); ffn_json_free(intent); printf("{\"error\": \"cannot write the attachment intent\"}\n"); return 1; }
+            ffn_json_free(intent);
+            release_locks(&probe);
+            if (systemctl("start", p->unit)) { printf("{\"error\": \"systemctl start %s failed\"}\n", p->unit); return 1; }
+            {
+                uint64_t deadline = now_us() + 5 * SECOND;
+                while (now_us() < deadline && !physical_running(p)) usleep(100000);
+            }
+            if (!physical_running(p)) { printf("{\"error\": \"WAN packet attachment did not become ready\"}\n"); return 1; }
+        }
+    } else if (systemctl("stop", p->unit)) { printf("{\"error\": \"systemctl stop %s failed\"}\n", p->unit); return 1; }
+    status = physical_status(p);
+    text = ffn_json_dump(status);
+    if (text) { puts(text); free(text); }
+    ffn_json_free(status);
+    return 0;
+}
+
+/* The TAP's ifindex inside the data namespace, as the policy bindings compare it. */
+static int tap_ifindex(const char *tap)
+{
+    struct helper h;
+    char *const argv[] = { "/usr/sbin/ip", "-n", (char *)NS, "-j", "link", "show", "dev", (char *)tap, NULL };
+    struct ffn_json *doc = NULL;
+    char perr[64];
+    long long index = -1;
+    if (helper_run(&h, argv, NULL, 15 * SECOND) == 0 && h.output.len) doc = ffn_json_parse(h.output.s, h.output.len, perr, sizeof perr);
+    if (doc && doc->type == FFN_JSON_ARRAY && doc->count == 1) ffn_json_get_int(doc->items[0], "ifindex", &index);
+    ffn_json_free(doc);
+    helper_close(&h);
+    return (int)index;
+}
+
+/* The link observation the MP timer delivered, judged for this port. */
+static void physical_carrier(struct daemon *d, struct physical *p, uint64_t now)
+{
+    char path[PATH], key[8], reason[160] = "";
+    struct ffn_json *doc, *ports, *row = NULL;
+    double received = 0, age = 0, lease = LINKS_LEASE_DEFAULT;
+    long long sequence = -1;
+    bool up = false, fresh = false;
+    if (!p->observed) return;
+    snprintf(path, sizeof path, "%s/%s", RUN, LINKS_FILE);
+    doc = read_json(path);
+    ffn_json_free(p->observation); p->observation = NULL;
+    if (doc) {
+        ffn_json_get_number(doc, "received_monotonic", &received); ffn_json_get_number(doc, "age_seconds", &age);
+        ffn_json_get_number(doc, "lease_seconds", &lease); ffn_json_get_int(doc, "sequence", &sequence);
+        ports = ffn_json_get(doc, "ports");
+        snprintf(key, sizeof key, "%u", p->port);
+        row = ports ? ffn_json_get(ports, key) : NULL;
+        fresh = (double)now / 1e6 - received >= 0 && (double)now / 1e6 - received < lease - age;
+        if (row) p->observation = ffn_json_copy(row);
+        p->sequence = sequence; p->age = (double)now / 1e6 - received + age;
+    }
+    if (!doc) snprintf(reason, sizeof reason, "no link observation delivered");
+    else if (!fresh) snprintf(reason, sizeof reason, "link observation stale");
+    else if (!row) snprintf(reason, sizeof reason, "port absent from the link observation");
+    else {
+        /* ffn_copper_vif.status(): every stage of the copper path must agree. */
+        static const char *copper_required[] = { "available", "enabled", "phy_enabled", "mac_enabled", "link", "mac_link", "datapath_link" };
+        static const char *optical_required[] = { "available", "enabled", "link" };
+        const char *media = ffn_json_get_string(row, "media");
+        bool copper = (media && !strcmp(media, "copper")) || p->port <= 4;
+        const char **required = copper ? copper_required : optical_required;
+        unsigned count = copper ? 7 : 3;
+        bool pending = false, ok = true;
+        long long speed = -1, mac_speed = -1;
+        for (unsigned i = 0; i < count && ok; i++) { bool v = false; if (!ffn_json_get_bool(row, required[i], &v) || !v) { ok = false; snprintf(reason, sizeof reason, "%s is not true in the observation", required[i]); } }
+        if (ok && copper && ffn_json_get_bool(row, "phy_pending", &pending) && pending) { ok = false; snprintf(reason, sizeof reason, "PHY configuration pending or unknown"); }
+        if (ok && copper && ffn_json_get_int(row, "speed_mbps", &speed) && ffn_json_get_int(row, "mac_speed_mbps", &mac_speed) && speed != mac_speed) {
+            ok = false; snprintf(reason, sizeof reason, "PHY and MAC speeds are not synchronized");
+        }
+        if (ok) { up = true; snprintf(reason, sizeof reason, "ready"); }
+    }
+    ffn_json_free(doc);
+    if (up != p->carrier_up || strcmp(reason, p->carrier_reason)) {
+        if (up != p->carrier_up) {
+            if (ffn_packet_carrier(d->native, up)) { fail(d, "carrier %s: %s", up ? "up" : "down", strerror(errno)); return; }
+            logmsg("%s carrier %s: %s", p->tap, up ? "up" : "down", reason);
+        }
+        p->carrier_up = up;
+        snprintf(p->carrier_reason, sizeof p->carrier_reason, "%s", reason);
+    }
+}
+
+/* The parent's static addresses from the network owner's journal, for local-service classification. */
+static void physical_addresses(struct daemon *d, struct physical *p)
+{
+    struct ffn_json *doc = read_json("/etc/ffn/network.json"), *ports, *port, *addresses;
+    uint8_t v4[FFN_PACKET_LOCAL_MAX][4], v6[FFN_PACKET_LOCAL_MAX][16];
+    unsigned n4 = 0, n6 = 0;
+    bool inspect = inspection_port(&d->insp, p->port);
+    ports = doc ? ffn_json_get(doc, "ports") : NULL;
+    port = ports ? ffn_json_get(ports, p->tap) : NULL;
+    addresses = port ? ffn_json_get(port, "addresses") : NULL;
+    for (size_t i = 0; addresses && addresses->type == FFN_JSON_ARRAY && i < addresses->count; i++) {
+        const char *a = addresses->items[i]->type == FFN_JSON_STRING ? addresses->items[i]->string : NULL;
+        char host[64];
+        if (!a) continue;
+        snprintf(host, sizeof host, "%.*s", (int)strcspn(a, "/"), a);
+        if (n4 < FFN_PACKET_LOCAL_MAX && inet_pton(AF_INET, host, v4[n4]) == 1) n4++;
+        else if (n6 < FFN_PACKET_LOCAL_MAX && inet_pton(AF_INET6, host, v6[n6]) == 1) n6++;
+    }
+    ffn_json_free(doc);
+    if (ffn_packet_configure(d->native, (const uint8_t *)v4, n4, (const uint8_t *)v6, n6, inspect ? d->insp.handle : NULL,
+                             inspect ? (ffn_scan_fn)d->insp.scan : NULL))
+        fail(d, "native configure: %s", strerror(errno));
+}
+
+static void physical_publish(struct daemon *d, struct physical *p, uint64_t now)
+{
+    struct ffn_json *state = p->state, *counters = ffn_json_object(), *carrier = ffn_json_object();
+    struct timespec ts;
+    uint64_t cstats[2] = { 0, 1 };
+    char key[16];
+    if (ffn_packet_counters(d->native, d->counters, FFN_PACKET_COUNTERS)) { fail(d, "native counters: %s", strerror(errno)); return; }
+    for (unsigned i = 0; i < FFN_PACKET_COUNTERS; i++) {
+        const char *name = COUNTER_NAMES[i];
+        if (i == 0) { snprintf(key, sizeof key, "rx_%s", p->tap); name = key; }
+        if (i == 1) { snprintf(key, sizeof key, "tx_%s", p->tap); name = key; }
+        ffn_json_set(counters, name, ffn_json_int((long long)d->counters[i]));
+    }
+    ffn_packet_carrier_stats(d->native, cstats, 2);
+    ffn_json_set(counters, "carrier_drop", ffn_json_int((long long)cstats[0]));
+    for (unsigned i = 0; i < 6; i++) {
+        ffn_json_set(d->insp.counts, VERDICTS[i], ffn_json_int((long long)d->counters[8 + i]));
+        if (i) { snprintf(key, sizeof key, "port_%u_%s", p->port, VERDICTS[i]); ffn_json_set(d->insp.counts, key, ffn_json_int((long long)d->counters[8 + i])); }
+    }
+    ffn_json_set(state, "counters", counters);
+    if (d->returns.active && d->returns.rows) {
+        struct ffn_json *r = ffn_json_object();
+        ffn_json_set(r, "rows", ffn_json_copy(d->returns.rows)); ffn_json_set(r, "deadline_ms", ffn_json_int((long long)d->returns.deadline_ms));
+        ffn_json_set(state, "fe100_return", r);
+    } else ffn_json_set(state, "fe100_return", ffn_json_null());
+    ffn_json_set(state, "workers", workers_json(d));
+    ffn_json_set(carrier, "policy", ffn_json_string(p->observed ? "observed" : "always"));
+    ffn_json_set(carrier, "up", ffn_json_bool(p->observed ? p->carrier_up : true));
+    ffn_json_set(carrier, "reason", ffn_json_string(p->observed ? p->carrier_reason : "carrier follows the switch port"));
+    ffn_json_set(carrier, "sequence", ffn_json_int(p->sequence));
+    ffn_json_set(carrier, "age_seconds", ffn_json_number(p->age));
+    ffn_json_set(carrier, "observation", p->observation ? ffn_json_copy(p->observation) : ffn_json_null());
+    ffn_json_set(state, "carrier", carrier);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ffn_json_set(state, "updated_at", ffn_json_number((double)ts.tv_sec + (double)ts.tv_nsec / 1e9));
+    ffn_json_set(state, "updated_monotonic", ffn_json_number((double)now / 1e6));
+    write_json(p->state_path, state);
+}
+
+static int physical_serve(unsigned port)
+{
+    struct daemon d;
+    struct physical p;
+    struct ffn_json *intent, *front;
+    char err[512], key[8], current_boot[40], lock_name[64];
+    const char *boot;
+    long long source = -1;
+    int network_lock = -1, rc = 1;
+    memset(&d, 0, sizeof d);
+    d.control_fd = -1;
+    if (physical_select(&p, port)) { logmsg("invalid physical port %u", port); return 1; }
+    signal(SIGTERM, on_stop); signal(SIGINT, on_stop); signal(SIGHUP, on_stop); signal(SIGPIPE, SIG_IGN);
+    intent = read_json(p.intent_path);
+    boot = intent ? ffn_json_get_string(intent, "boot_id") : NULL;
+    front = intent ? ffn_json_get(intent, "front") : NULL;
+    snprintf(key, sizeof key, "%u", port);
+    if (front) ffn_json_get_int(front, key, &source);
+    if (!boot || boot_id(current_boot, sizeof current_boot) || strcmp(boot, current_boot) || !front || front->count != 1 || source != (long long)p.source) {
+        logmsg("Fresh MP-selected WAN attachment required"); ffn_json_free(intent); return 1;
+    }
+    ffn_json_free(intent);
+    if (check_environment(err, sizeof err)) { logmsg("%s", err); return 1; }
+    snprintf(lock_name, sizeof lock_name, "ffn-aggregate-port-%u.lock", port);
+    if (take_lock(&d, "ffn-fabric.lock", LOCK_SH, err, sizeof err) || take_lock(&d, lock_name, LOCK_EX, err, sizeof err)) { logmsg("%s", err); release_locks(&d); return 1; }
+    d.fronts[0] = (uint16_t)port; d.front_count = 1;
+    /* The network owner reconfigures the TAP under this lock; attach while it is quiet. */
+    {
+        char path[PATH];
+        snprintf(path, sizeof path, "%s/ffn-network.lock", RUN);
+        network_lock = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+        if (network_lock < 0 || flock(network_lock, LOCK_EX)) { logmsg("network lock: %s", strerror(errno)); release_locks(&d); return 1; }
+    }
+    d.native = ffn_packet_open(TRUNK, NS, p.tap, p.source);
+    if (!d.native) { snprintf(err, sizeof err, "native physical owner: %s", strerror(errno)); goto failed; }
+    if (native_start(&d, p.tap, err, sizeof err)) goto failed;
+    p.ifindex = tap_ifindex(p.tap);
+    if (p.ifindex < 0) { snprintf(err, sizeof err, "%s: no TAP in %s", p.tap, NS); goto failed; }
+    p.state = ffn_json_object();
+    ffn_json_set(p.state, "owner", ffn_json_string(p.owner));
+    ffn_json_set(p.state, "pid", ffn_json_int(getpid()));
+    ffn_json_set(p.state, "boot_id", ffn_json_string(current_boot));
+    process_start(getpid(), d.process_start, sizeof d.process_start);
+    ffn_json_set(p.state, "process_start", ffn_json_string(d.process_start));
+    { struct ffn_json *ports = ffn_json_array(); ffn_json_push(ports, ffn_json_int(port)); ffn_json_set(p.state, "ports", ports); }
+    ffn_json_set(p.state, "max_mtu", ffn_json_int(1500));
+    ffn_json_set(p.state, "transport", ffn_json_string("direct OCTEON physical port"));
+    ffn_json_set(p.state, "packet_execution", ffn_json_string("native-c"));
+    ffn_json_set(p.state, "hardware_offload", ffn_json_bool(false));
+    ffn_json_set(p.state, "owner_daemon", ffn_json_string("ffn-portd"));
+    { struct ffn_json *interfaces = ffn_json_object(); ffn_json_set(interfaces, p.tap, ffn_json_int(p.ifindex)); ffn_json_set(p.state, "interfaces", interfaces); }
+    write_json(p.state_path, p.state);
+    flock(network_lock, LOCK_UN); close(network_lock); network_lock = -1;
+    if (inspection_open(&d, p.inspection_path[0] ? p.inspection_path : NULL)) goto stop;
+    if (p.observed && ffn_packet_carrier(d.native, 0)) { snprintf(err, sizeof err, "carrier: %s", strerror(errno)); fail(&d, "%s", err); goto stop; }
+    snprintf(p.carrier_reason, sizeof p.carrier_reason, "no link observation delivered");
+    logmsg("%s serving %s (%s, source %u, carrier %s)", p.owner, p.tap, port == 1 ? "WAN" : "physical", p.source, p.observed ? "observed" : "always");
+    while (!d.failed) {
+        uint64_t now = now_us();
+        if (stop_signal) { logmsg("signal %d: stopping", (int)stop_signal); rc = 0; break; }
+        if (now >= p.next_status) {
+            p.next_status = now + STATUS_PERIOD;
+            /* Quiesce the workers before the inspection engine or the return
+             * bindings change under them; resume only after validated state. */
+            if (ffn_packet_pause(d.native)) { fail(&d, "native pause: %s", strerror(errno)); break; }
+            inspection_tick(&d.insp, now);
+            physical_addresses(&d, &p);
+            fe100_renew(&d, now);
+            physical_carrier(&d, &p, now);
+            if (ffn_packet_resume(d.native)) { fail(&d, "native resume: %s", strerror(errno)); break; }
+            if (d.failed) break;
+            physical_publish(&d, &p, now);
+        }
+        if (ffn_packet_poll(d.native, 100)) { fail(&d, "native owner fault: %s", strerror(errno)); break; }
+    }
+stop:
+    if (d.failed) logmsg("%s stopping: %s", p.owner, d.fatal);
+    if (d.native) native_close(&d);
+    if (d.insp.counts) inspection_close(&d.insp);
+    unlink(p.state_path);
+    release_locks(&d);
+    ffn_json_free(p.state); ffn_json_free(p.observation);
+    logmsg("%s stopped", p.owner);
+    return d.failed ? 1 : rc;
+failed:
+    logmsg("%s not started: %s", p.owner, err);
+    if (network_lock >= 0) close(network_lock);
+    if (d.native) native_close(&d);
+    release_locks(&d);
+    return 1;
+}
+
+/* `links`: the MP timer's faceplate observation for every physical owner.
+ * {"mp_boot_id", "sequence", "age_seconds", "lease_seconds"?, "ports": [rows]}
+ * becomes /run/ffn-port-links.json with the receipt time; an observation
+ * that is not newer than the recorded one is refused, so a delayed or
+ * replayed delivery cannot revive a carrier. */
+static int links_tool(void)
+{
+    struct text t = { 0 };
+    char buf[4096], perr[64], path[PATH];
+    ssize_t n;
+    struct ffn_json *doc, *ports, *previous, *out, *byport;
+    const char *mp_boot;
+    long long sequence, lease = LINKS_LEASE_DEFAULT, previous_sequence = -1;
+    double age;
+    unsigned count = 0;
+    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
+    doc = ffn_json_parse(t.s ? t.s : "", t.len, perr, sizeof perr);
+    free(t.s);
+    mp_boot = doc ? ffn_json_get_string(doc, "mp_boot_id") : NULL;
+    ports = doc ? ffn_json_get(doc, "ports") : NULL;
+    if (!doc || doc->type != FFN_JSON_OBJECT || !mp_boot || !ffn_json_get_int(doc, "sequence", &sequence) || sequence < 0 ||
+        !ffn_json_get_number(doc, "age_seconds", &age) || !(age >= 0 && age < 60) || !ports || ports->type != FFN_JSON_ARRAY || ports->count > 24 ||
+        (ffn_json_get(doc, "lease_seconds") && (!ffn_json_get_int(doc, "lease_seconds", &lease) || lease < 1 || lease > LINKS_LEASE_MAX))) {
+        printf("{\"error\": \"invalid link observation\"}\n"); ffn_json_free(doc); return 1;
+    }
+    snprintf(path, sizeof path, "%s/%s", RUN, LINKS_FILE);
+    previous = read_json(path);
+    if (previous) {
+        const char *old_boot = ffn_json_get_string(previous, "mp_boot_id");
+        if (old_boot && !strcmp(old_boot, mp_boot)) ffn_json_get_int(previous, "sequence", &previous_sequence);
+        ffn_json_free(previous);
+    }
+    if (sequence <= previous_sequence) { printf("{\"error\": \"stale link observation\"}\n"); ffn_json_free(doc); return 1; }
+    out = ffn_json_object(); byport = ffn_json_object();
+    for (size_t i = 0; i < ports->count; i++) {
+        struct ffn_json *row = ports->items[i];
+        long long port;
+        char key[8];
+        if (row->type != FFN_JSON_OBJECT || !ffn_json_get_int(row, "port", &port) || port < 1 || port > 24) continue;
+        snprintf(key, sizeof key, "%lld", port);
+        if (ffn_json_get(byport, key)) continue;
+        ffn_json_set(byport, key, ffn_json_copy(row));
+        count++;
+    }
+    ffn_json_set(out, "mp_boot_id", ffn_json_string(mp_boot));
+    ffn_json_set(out, "sequence", ffn_json_int(sequence));
+    ffn_json_set(out, "received_monotonic", ffn_json_number((double)now_us() / 1e6));
+    ffn_json_set(out, "age_seconds", ffn_json_number(age));
+    ffn_json_set(out, "lease_seconds", ffn_json_int(lease));
+    ffn_json_set(out, "ports", byport);
+    if (write_json(path, out)) { printf("{\"error\": \"cannot record the link observation\"}\n"); ffn_json_free(out); ffn_json_free(doc); return 1; }
+    printf("{\"accepted\": true, \"ports\": %u, \"lease_seconds\": %lld, \"sequence\": %lld}\n", count, lease, sequence);
+    ffn_json_free(out); ffn_json_free(doc);
+    return 0;
+}
+
 /* -------------------------------------------------------- the watchdog */
 /* `sweep` (the dataplane watchdog timer) and `recover` (the MP, with the
  * owner's identity): retire an owner that stopped reporting or admits a silent
@@ -2077,7 +2584,7 @@ static bool owner_cmdline(pid_t pid)
     char *text; size_t len;
     bool found;
     if (cmdline_read(pid, &text, &len)) return false;
-    found = args_have(text, len, "ffn-aggregated", false) || args_have(text, len, "/ffn_aggregate_runtime.py", false);
+    found = args_have(text, len, "ffn-portd", false) || args_have(text, len, "ffn-aggregated", false) || args_have(text, len, "/ffn_aggregate_runtime.py", false);
     free(text);
     return found;
 }
@@ -2245,24 +2752,45 @@ static int revision_tool(void)
 int main(int argc, char **argv)
 {
     const char *v;
-    if ((v = getenv("FFN_AGGREGATED_RUN"))) RUN = v;
-    if ((v = getenv("FFN_AGGREGATED_NS"))) NS = v;
-    if ((v = getenv("FFN_AGGREGATED_TRUNK"))) TRUNK = v;
-    if ((v = getenv("FFN_AGGREGATED_PYTHON"))) PYTHON = v;
-    if ((v = getenv("FFN_AGGREGATED_RUNTIME"))) RUNTIME = v;
-    if ((v = getenv("FFN_AGGREGATED_DHCP_HOOK"))) DHCP_HOOK = v;
-    if ((v = getenv("FFN_AGGREGATED_STEERING"))) STEERING = v;
-    if ((v = getenv("FFN_AGGREGATED_CPUS"))) CPUS = v;
-    if ((v = getenv("FFN_AGGREGATED_CPU_RESERVATIONS"))) CPU_RESERVATIONS = v;
-    if ((v = getenv("FFN_AGGREGATED_INSPECTION"))) INSPECTION_POLICY = v;
-    if ((v = getenv("FFN_AGGREGATED_INLINE"))) INLINE_LIBRARY = v;
-    if ((v = getenv("FFN_AGGREGATED_FE100_RETURN"))) FE100_RETURN = v;
-    if ((v = getenv("FFN_AGGREGATED_LANES"))) LANES_POLICY = v;
-    unchecked = (v = getenv("FFN_AGGREGATED_UNCHECKED")) && !strcmp(v, "1");
-    if (argc == 2 && !strcmp(argv[1], "serve")) return serve();
-    if (argc == 2 && !strcmp(argv[1], "sweep")) return sweep_tool();
-    if (argc == 2 && !strcmp(argv[1], "recover")) return recover_tool();
-    if (argc == 2 && !strcmp(argv[1], "revision")) return revision_tool();
-    fprintf(stderr, "usage: ffn-aggregated serve|sweep|recover|revision\n");
+    if ((v = getenv("FFN_PORTD_RUN"))) RUN = v;
+    if ((v = getenv("FFN_PORTD_NS"))) NS = v;
+    if ((v = getenv("FFN_PORTD_TRUNK"))) TRUNK = v;
+    if ((v = getenv("FFN_PORTD_PYTHON"))) PYTHON = v;
+    if ((v = getenv("FFN_PORTD_RUNTIME"))) RUNTIME = v;
+    if ((v = getenv("FFN_PORTD_DHCP_HOOK"))) DHCP_HOOK = v;
+    if ((v = getenv("FFN_PORTD_STEERING"))) STEERING = v;
+    if ((v = getenv("FFN_PORTD_CPUS"))) CPUS = v;
+    if ((v = getenv("FFN_PORTD_CPU_RESERVATIONS"))) CPU_RESERVATIONS = v;
+    if ((v = getenv("FFN_PORTD_INSPECTION"))) INSPECTION_POLICY = v;
+    if ((v = getenv("FFN_PORTD_INLINE"))) INLINE_LIBRARY = v;
+    if ((v = getenv("FFN_PORTD_FE100_RETURN"))) FE100_RETURN = v;
+    if ((v = getenv("FFN_PORTD_LANES"))) LANES_POLICY = v;
+    unchecked = (v = getenv("FFN_PORTD_UNCHECKED")) && !strcmp(v, "1");
+    if ((v = getenv("FFN_PORTD_COPPER_PROFILE"))) COPPER_PROFILE = v;
+    if ((v = getenv("FFN_PORTD_CARRIER_POLICY"))) CARRIER_POLICY = v;
+    if (argc == 3 && !strcmp(argv[1], "aggregate")) {
+        if (!strcmp(argv[2], "serve")) return serve();
+        if (!strcmp(argv[2], "sweep")) return sweep_tool();
+        if (!strcmp(argv[2], "recover")) return recover_tool();
+        if (!strcmp(argv[2], "revision")) return revision_tool();
+    }
+    if (argc == 5 && !strcmp(argv[1], "physical") && !strcmp(argv[3], "--port")) {
+        struct physical p;
+        unsigned port = (unsigned)atoi(argv[4]);
+        if (!strcmp(argv[2], "serve")) return physical_serve(port);
+        if (physical_select(&p, port)) { fprintf(stderr, "ffn-portd: port 1..24 required\n"); return 2; }
+        if (!strcmp(argv[2], "status")) {
+            struct ffn_json *status = physical_status(&p);
+            char *text = ffn_json_dump(status);
+            if (text) { puts(text); free(text); }
+            ffn_json_free(status);
+            return 0;
+        }
+        if (!strcmp(argv[2], "start") || !strcmp(argv[2], "stop")) return physical_control(&p, argv[2]);
+    }
+    if (argc == 2 && !strcmp(argv[1], "links")) return links_tool();
+    fprintf(stderr, "usage: ffn-portd aggregate serve|sweep|recover|revision\n"
+                    "       ffn-portd physical serve|status|start|stop --port N\n"
+                    "       ffn-portd links   (the MP's faceplate observation on stdin)\n");
     return 2;
 }

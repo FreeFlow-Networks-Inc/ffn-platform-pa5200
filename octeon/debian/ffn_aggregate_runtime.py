@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The aggregate owner's kernel-interface transactions and watchdog on the DP.
 
-The owner itself is ffn-aggregated (octeon/native/ffn_aggregated.c): the LACP
+The owner itself is ffn-portd (octeon/native/ffn_portd.c, kind aggregate): the LACP
 engine, the member gates, the trunk control socket and the TAP's native packet
 workers live there, bound to the MP supervisor's control pipe. `serve` hands
 that pipe straight to it. What stays here is the configuration work it
@@ -32,7 +32,7 @@ import ffn_aggregate_vlan as vlan
 from ffn_dp_packet_transport import FRONT
 
 NS='ffn-data'
-DAEMON=os.environ.get('FFN_AGGREGATED','/usr/local/sbin/ffn-aggregated')
+DAEMON=os.environ.get('FFN_PORTD','/usr/local/sbin/ffn-portd')
 
 
 def boot():return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -212,8 +212,8 @@ def main(argv):
         # The MP's pipe becomes the daemon's pipe unread: it reads the intent
         # (or the recovery identity) itself and keeps the contract from there.
         if not os.access(DAEMON,os.X_OK):
-            print(json.dumps({'error':'ffn-aggregated is not installed on this dataplane'}),flush=True);raise SystemExit(1)
-        os.execv(DAEMON,[DAEMON,verb])
+            print(json.dumps({'error':'ffn-portd is not installed on this dataplane'}),flush=True);raise SystemExit(1)
+        os.execv(DAEMON,[DAEMON,'aggregate',verb])
     else:raise ValueError('Unknown aggregate owner operation')
 
 

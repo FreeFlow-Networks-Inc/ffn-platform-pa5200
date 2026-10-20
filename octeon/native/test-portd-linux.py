@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""ffn-aggregated against the MP contract, on a Linux host with root: two disposable
+"""ffn-portd against the MP contracts, on a Linux host with root: two disposable
 network namespaces, a veth standing in for the OCTEON trunk, the real native packet
 library on a real multi-queue TAP, and the Python reference engine as the LACP peer.
 
@@ -121,10 +121,10 @@ def peer_worker(directory):
 
 
 class Owner:
-    """One ffn-aggregated process under the MP contract."""
+    """One ffn-portd aggregate owner under the MP contract."""
     def __init__(self, env, trunk_ns, token, control_only=False):
         self.token = token
-        self.process = subprocess.Popen(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-aggregated'), 'serve'],
+        self.process = subprocess.Popen(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'serve'],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(env['FAKE_LOG'] + '.stderr', 'a'),
                                         env=env, bufsize=0)
         os.set_blocking(self.process.stdout.fileno(), False)
@@ -172,24 +172,24 @@ class Owner:
 
 def test():
     if os.geteuid() != 0: raise RuntimeError('root required for isolated namespaces')
-    if not (HERE / 'ffn-aggregated').exists() or not (HERE / 'libffn-packet.so').exists():
-        raise RuntimeError('build ffn-aggregated and libffn-packet.so first')
+    if not (HERE / 'ffn-portd').exists() or not (HERE / 'libffn-packet.so').exists():
+        raise RuntimeError('build ffn-portd and libffn-packet.so first')
     # The native library bounds names at IFNAMSIZ; the namespace name is one of them.
     tag = str(os.getpid() % 10000)
     trunk_ns, data_ns = 'agt' + tag, 'agd' + tag
     made = []; peer = None; results = {}
-    with tempfile.TemporaryDirectory(prefix='ffn-aggregated-') as temp:
+    with tempfile.TemporaryDirectory(prefix='ffn-portd-') as temp:
         directory = Path(temp); rundir = directory / 'run'; rundir.mkdir()
         fake = directory / 'fake_runtime.py'; fake.write_text(FAKE_RUNTIME); fake.chmod(0o755)
         cpus = directory / 'fake_cpus.py'; cpus.write_text(FAKE_CPUS); cpus.chmod(0o755)
         steering = directory / 'fake_steering.sh'; steering.write_text(FAKE_STEERING); steering.chmod(0o755)
         log = directory / 'helpers.log'; log.touch()
-        env = dict(os.environ, FFN_AGGREGATED_UNCHECKED='1', FFN_AGGREGATED_RUN=str(rundir), FFN_AGGREGATED_NS=data_ns,
-                   FFN_AGGREGATED_PYTHON=sys.executable, FFN_AGGREGATED_RUNTIME=str(fake), FFN_AGGREGATED_CPUS=str(cpus),
-                   FFN_AGGREGATED_STEERING=str(steering), FFN_AGGREGATED_CPU_RESERVATIONS=str(directory / 'cpus'),
-                   FFN_AGGREGATED_INSPECTION=str(directory / 'absent-inspection.json'),
-                   FFN_AGGREGATED_FE100_RETURN=str(directory / 'absent-fe100.json'),
-                   FFN_AGGREGATED_LANES=str(directory / 'absent-lanes.json'),
+        env = dict(os.environ, FFN_PORTD_UNCHECKED='1', FFN_PORTD_RUN=str(rundir), FFN_PORTD_NS=data_ns,
+                   FFN_PORTD_PYTHON=sys.executable, FFN_PORTD_RUNTIME=str(fake), FFN_PORTD_CPUS=str(cpus),
+                   FFN_PORTD_STEERING=str(steering), FFN_PORTD_CPU_RESERVATIONS=str(directory / 'cpus'),
+                   FFN_PORTD_INSPECTION=str(directory / 'absent-inspection.json'),
+                   FFN_PORTD_FE100_RETURN=str(directory / 'absent-fe100.json'),
+                   FFN_PORTD_LANES=str(directory / 'absent-lanes.json'),
                    LD_LIBRARY_PATH=str(HERE), FAKE_LOG=str(log), FAKE_NS=data_ns)
         try:
             for ns in (trunk_ns, data_ns):
@@ -204,7 +204,7 @@ def test():
             first = owner.wait_row(lambda r: 'token' in r, 30)
             assert 'error' not in first, first
             assert first['token'] == token and first['boot_id'] == intent(token)['boot_id'], first
-            assert first['packet_execution'] == 'native-c' and first['owner'] == 'ffn-aggregated', first
+            assert first['packet_execution'] == 'native-c' and first['owner'] == 'ffn-portd', first
             assert first['attachment_ready'] is True and first['configuration_ready'] is True, first
             import hashlib
             expected = hashlib.sha256(json.dumps({k: intent(token)[k] for k in ('network', 'lldp')}, sort_keys=True).encode()).hexdigest()
@@ -263,16 +263,91 @@ def test():
             owner = Owner(env, trunk_ns, token)
             owner.wait_row(lambda r: r.get('distributing') == MEMBERS, 30)
             owner.process.send_signal(signal.SIGSTOP); frozen = time.monotonic()
-            subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-aggregated'), 'sweep'], env=env, check=True, timeout=30)
+            subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=env, check=True, timeout=30)
             assert (rundir / 'ffn-aggregate-ae1-intent.json').exists(), 'a fresh owner was swept'
             time.sleep(9)
-            sweep = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-aggregated'), 'sweep'], env=env,
+            sweep = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=env,
                                    capture_output=True, text=True, timeout=60)
             assert sweep.returncode == 0, sweep.stderr
             assert owner.process.poll() is not None, 'frozen owner survived the sweep'
             assert not (rundir / 'ffn-aggregate-ae1-intent.json').exists() and not (rundir / 'ffn-aggregate-ae1-status.json').exists()
             assert 'ae1' not in run('ip', '-n', data_ns, 'link'), 'TAP survived the sweep'
             results['sweep'] = dict(seconds=round(time.monotonic() - frozen, 1), stderr=sweep.stderr.strip()[-200:])
+            # 7. A physical (optical) owner: the TAP the network owner made, the intent the MP's
+            # start wrote, the status document the policy bindings read, carrier always on.
+            boot = intent(token)['boot_id']
+            def physical(port, source):
+                run('ip', '-n', data_ns, 'tuntap', 'add', 'dev', 'p%d' % port, 'mode', 'tap', 'multi_queue')
+                run('ip', '-n', data_ns, 'link', 'set', 'p%d' % port, 'up')
+                (rundir / ('ffn-physical-%d-intent.json' % port)).write_text(json.dumps(dict(boot_id=boot, front={str(port): source})))
+                process = subprocess.Popen(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'physical', 'serve', '--port', str(port)],
+                                           stdout=open(env['FAKE_LOG'] + '.physical', 'a'), stderr=subprocess.STDOUT, env=env)
+                status_path = rundir / ('ffn-physical-%d-status.json' % port)
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline and not status_path.exists():
+                    if process.poll() is not None: raise RuntimeError('physical owner exited: ' + open(env['FAKE_LOG'] + '.physical').read()[-1500:])
+                    time.sleep(0.1)
+                assert status_path.exists(), 'physical owner published nothing'
+                return process, status_path
+            def carrier(port):
+                link = json.loads(run('ip', '-n', data_ns, '-d', '-j', 'link', 'show', 'dev', 'p%d' % port))[0]
+                return 'NO-CARRIER' not in link.get('flags', [])
+            def status(port):
+                out = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'physical', 'status', '--port', str(port)], env=env,
+                                     capture_output=True, text=True, timeout=20)
+                return json.loads(out.stdout)
+            process, status_path = physical(5, 16)
+            time.sleep(1.5)
+            row = json.loads(status_path.read_text())
+            assert row['owner'] == 'physical-5' and row['ports'] == [5] and row['packet_execution'] == 'native-c', row
+            link = json.loads(run('ip', '-n', data_ns, '-j', 'link', 'show', 'dev', 'p5'))[0]
+            assert row['interfaces'] == {'p5': link['ifindex']}, (row['interfaces'], link['ifindex'])
+            assert row['carrier']['policy'] == 'always' and row['workers']['count'] == 2 and 'rx_p5' in row['counters'], row
+            assert status(5)['running'] is True and carrier(5)
+            process.send_signal(signal.SIGTERM); started = time.monotonic()
+            code = process.wait(timeout=10)
+            results['physical'] = dict(exit=code, seconds=round(time.monotonic() - started, 2), ifindex=link['ifindex'])
+            assert code == 0 and not status_path.exists() and status(5)['running'] is False
+            # 8. A copper port: carrier follows the delivered faceplate observation under its lease.
+            process, status_path = physical(3, 14)
+            time.sleep(1.5)
+            row = json.loads(status_path.read_text())
+            assert row['owner'] == 'physical-3' and row['carrier']['policy'] == 'observed' and row['carrier']['up'] is False, row['carrier']
+            assert not carrier(3), 'copper TAP had carrier before any observation'
+            sequence = 1000
+            def deliver(link_up, lease=4, seq=None, speed=1000):
+                nonlocal sequence
+                if seq is None: sequence += 1
+                use = sequence if seq is None else seq   # an explicit old sequence is a replay, not the new high mark
+                row3 = dict(port=3, media='copper', available=True, enabled=True, phy_enabled=True, mac_enabled=True,
+                            link=link_up, mac_link=link_up, datapath_link=link_up, phy_pending=False, speed_mbps=speed, mac_speed_mbps=1000)
+                payload = dict(mp_boot_id='mp-boot-test', sequence=use, age_seconds=0.2, lease_seconds=lease, ports=[row3, dict(port=5, media='sfp', available=True, enabled=True, link=True)])
+                return subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'links'], env=env, input=json.dumps(payload),
+                                      capture_output=True, text=True, timeout=20)
+            assert deliver(True).returncode == 0
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and not carrier(3): time.sleep(0.2)
+            assert carrier(3), 'carrier did not follow the link-up observation'
+            assert json.loads(status_path.read_text())['carrier']['up'] is True
+            stale = deliver(True, seq=sequence - 1)
+            assert stale.returncode != 0 and 'stale' in stale.stdout, stale.stdout
+            assert deliver(True, speed=100).returncode == 0   # PHY and MAC speeds disagree: not ready
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and carrier(3): time.sleep(0.2)
+            assert not carrier(3), 'carrier survived a speed mismatch'
+            assert 'speeds' in json.loads(status_path.read_text())['carrier']['reason']
+            assert deliver(True).returncode == 0
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and not carrier(3): time.sleep(0.2)
+            assert carrier(3)
+            # No further delivery: the four-second lease lapses and carrier drops.
+            lapsed = time.monotonic()
+            deadline = time.monotonic() + 9
+            while time.monotonic() < deadline and carrier(3): time.sleep(0.2)
+            assert not carrier(3), 'carrier outlived its lease'
+            results['copper_carrier'] = dict(lease_lapse_seconds=round(time.monotonic() - lapsed, 1), reason=json.loads(status_path.read_text())['carrier']['reason'])
+            process.send_signal(signal.SIGTERM)
+            assert process.wait(timeout=10) == 0 and not status_path.exists()
             return dict(results, physical_ports_used=False, helpers='faked', native_library='real')
         except BaseException:
             # The daemon's own words and the helpers' calls are the diagnosis; the directory is about to go.

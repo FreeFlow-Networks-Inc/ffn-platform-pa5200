@@ -1,5 +1,14 @@
 # Copper networking through the MP, CP and DP
 
+**The OCTEON Linux VIF owner described below is retired.** Copper ports 1..4
+are faceplate ports: committed `ethernet1/N` configuration attaches them
+through `wan-path` (port 1) and `physical-ports` (2..4) like the optical
+ports, their DP owner is `ffn-portd physical`, and the PHY/MAC carrier the VIF
+driver gated is the owner's link lease fed by `ffn-port-links.timer`
+(PHYSICAL-ATTACHMENTS.md). The MP `vifs` resource answers every request with
+that direction. The CP copper return owner (`ffn_copper_forwarding.py`) and
+the copper PHY control paths are unchanged.
+
 The commissioned copper 3/4 path uses BCM14/15, the BCM24 TM_SSP return
 trunk, and the OCTEON Linux VIF owner. The VM sysroot distinguishes this
 packet transport from the FE100 session engine. The latter requires its own

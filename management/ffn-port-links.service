@@ -1,0 +1,10 @@
+[Unit]
+Description=Deliver the faceplate observation to the DP port owners
+After=ffn-plane@mp.service
+Requires=ffn-plane@mp.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/ffn-platforms/pa5200-management/port-link-poll.py
+TimeoutStartSec=60
+UMask=0077

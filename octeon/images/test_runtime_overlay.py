@@ -34,8 +34,8 @@ class RuntimeOverlayTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         manifest = json.loads((root / 'octeon/images/overlay.json').read_text())
         files = {Path(dest).name: (origin, source) for origin, source, dest in manifest['common'] + manifest['dp']}
-        for name in ('ffn_network.py', 'ffn_network_init.py', 'ffn_wan_runtime.py',
-                     'ffn_wan_probe.py', 'ffn_aggregate_runtime.py', 'ffn_vif_runtime.py',
+        for name in ('ffn_network.py', 'ffn_network_init.py', 'ffn_wan_runtime.py', 'ffn_physical_runtime.py',
+                     'ffn_wan_probe.py', 'ffn_aggregate_runtime.py', 
                      'ffn_interface_addresses.py', 'ffn_controld_client.py',
                      'ffn_platform_policy_bindings.py',
                      'ffn-network.service', 'ffn-wan-attachment.service'):

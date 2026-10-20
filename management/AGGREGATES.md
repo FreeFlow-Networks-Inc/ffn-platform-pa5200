@@ -1,7 +1,7 @@
 # Aggregate LACP and subinterfaces
 
 The MP aggregate supervisor owns CP redirects and the OCTEON LACP process
-(`ffn-aggregated`, C, bound to the supervisor's control pipe).
+(`ffn-portd aggregate`, C, bound to the supervisor's control pipe).
 Negotiation uses the physical members of the parent AE, independently of its
 VLAN subinterfaces. Layer 3 units use owned 802.1Q devices on the OCTEON aggregate
 TAP. Static addresses and interface management profiles apply per child, with

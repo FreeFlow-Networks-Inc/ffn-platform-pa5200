@@ -46,7 +46,7 @@ aggregate state to determine negotiation and address readiness.
 ## Ownership and withdrawal
 
 `aggregate_activation.py` runs one MP supervisor per group. It starts the DP
-owner, `ffn-aggregated` (`octeon/native/ffn_aggregated.c`, reached through
+owner, `ffn-portd aggregate` (`octeon/native/ffn_portd.c`, reached through
 `ffn_aggregate_runtime.py serve`), with closed gates, then prepares the CP
 redirects and physical links. The owner's life is bound to the supervisor's
 pipe: when the pipe closes, when no observation arrives for eight seconds, on

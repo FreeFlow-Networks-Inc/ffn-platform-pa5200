@@ -77,6 +77,8 @@ struct ffn_packet {
     pthread_cond_t changed;
     unsigned started;
     int pause_requested, stopped, fault;
+    _Atomic int carrier;             /* physical port: deliver received frames (ffn_packet_carrier) */
+    _Atomic uint64_t carrier_drops;
     int64_t lease_end;
 };
 
@@ -141,6 +143,7 @@ static struct ffn_packet *allocate(unsigned source)
     if (p) {
         int rc;
         p->source = source;
+        atomic_store_explicit(&p->carrier, 1, memory_order_relaxed); /* delivering until an owner says otherwise */
         p->lanes[0] = lane_new();
         if (!p->lanes[0]) { free(p); return NULL; }
         p->lane_count = 1;
@@ -495,6 +498,10 @@ static int receive_burst(struct ffn_packet *p, struct ffn_lane *l)
         if (n < 18 || n > MAX_FRAME + 4 || be16(packet) != 24 || be16(packet + 2) != p->source) {
             atomic_fetch_add_explicit(&p->counters[ENVELOPE_DROP], 1, memory_order_relaxed); continue;
         }
+        /* No carrier as the owner observes it: the frame is not delivered. */
+        if (!atomic_load_explicit(&p->carrier, memory_order_acquire)) {
+            atomic_fetch_add_explicit(&p->carrier_drops, 1, memory_order_relaxed); continue;
+        }
         accepted = allow(p, packet + 4, (size_t)n - 4);
         if (accepted < 0) return -1;
         if (!accepted) continue;
@@ -617,6 +624,25 @@ int ffn_packet_receive_stats(struct ffn_packet *p, uint64_t *out, unsigned count
     out[0] = atomic_load_explicit(&p->receive_calls, memory_order_relaxed);
     out[1] = atomic_load_explicit(&p->receive_frames, memory_order_relaxed);
     out[2] = atomic_load_explicit(&p->receive_max_batch, memory_order_relaxed);
+    return 0;
+}
+
+int ffn_packet_carrier(struct ffn_packet *p, int up)
+{
+    int value = !!up;
+    if (!p) { errno = EINVAL; return -1; }
+    /* Every queue of the TAP is the same device; one ioctl sets the carrier. */
+    for (unsigned i = 0; i < p->lane_count; i++)
+        if (p->lanes[i]->tap >= 0 && ioctl(p->lanes[i]->tap, TUNSETCARRIER, &value)) return -1;
+    atomic_store_explicit(&p->carrier, value, memory_order_release);
+    return 0;
+}
+
+int ffn_packet_carrier_stats(struct ffn_packet *p, uint64_t *out, unsigned count)
+{
+    if (!p || !out || count != 2) { errno = EINVAL; return -1; }
+    out[0] = atomic_load_explicit(&p->carrier_drops, memory_order_relaxed);
+    out[1] = (uint64_t)atomic_load_explicit(&p->carrier, memory_order_relaxed);
     return 0;
 }
 
