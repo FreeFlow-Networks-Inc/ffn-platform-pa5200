@@ -916,11 +916,6 @@
     ],
     [
       "platform",
-      "octeon/debian/ffn_copper_vif.py",
-      "usr/local/sbin/ffn_copper_vif.py"
-    ],
-    [
-      "platform",
       "octeon/debian/ffn_dp_packet_transport.py",
       "usr/local/sbin/ffn_dp_packet_transport.py"
     ],
@@ -1036,16 +1031,6 @@
     ],
     [
       "platform",
-      "octeon/debian/ffn_vif.py",
-      "usr/local/sbin/ffn_vif.py"
-    ],
-    [
-      "platform",
-      "octeon/debian/ffn_vif_runtime.py",
-      "usr/local/sbin/ffn_vif_runtime.py"
-    ],
-    [
-      "platform",
       "octeon/debian/ffn_wan_probe.py",
       "usr/local/sbin/ffn_wan_probe.py"
     ],
@@ -1063,11 +1048,6 @@
       "platform",
       "octeon/debian/ffn-wan-attachment.service",
       "etc/systemd/system/ffn-wan-attachment.service"
-    ],
-    [
-      "platform",
-      "octeon/debian/ffn-vif.service",
-      "etc/systemd/system/ffn-vif.service"
     ],
     [
       "platform",

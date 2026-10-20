@@ -5,7 +5,7 @@ After=ffn-network.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /usr/local/sbin/ffn_physical_runtime.py serve %i
+ExecStart=/usr/local/sbin/ffn-portd physical serve --port %i
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=2

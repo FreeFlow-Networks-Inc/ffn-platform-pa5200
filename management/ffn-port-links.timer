@@ -1,0 +1,10 @@
+[Unit]
+Description=Keep the DP port owners' link observations fresh
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=3
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

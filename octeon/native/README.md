@@ -14,7 +14,17 @@ Implemented here:
 * `ffn_native_packet.py` is a control ABI. Two pinned native workers process
   receive and transmit independently. Python sees settings and counters only,
   never forwarded packet buffers. CPU selection uses the process affinity mask.
-* `ffn-aggregated` (`ffn_aggregated.c`) is the owner of one aggregate: the
+* `ffn-portd` (`ffn_portd.c`) is the dataplane port owner, one daemon with two
+  owner kinds. `physical` owns one faceplate port's packet path, WAN port 1
+  and ports 2..24, copper and optical alike (`ffn_wan_runtime.py` and
+  `ffn_physical_runtime.py` exec it under the units): the TAP's native
+  workers, the local addresses from the network owner's journal, the FE100
+  return bindings and, for a port whose carrier policy is `observed` (copper
+  2..4 by default, `/etc/ffn/port-carrier.json` overrides), TAP carrier and
+  delivery that follow the CP's faceplate observation under a lease. The MP's
+  `ffn-port-links.timer` delivers that observation through `ffn-portd links`;
+  what the copper VIF driver did for those ports is this lease, and the VIF
+  owner is gone. `aggregate` owns one aggregate: the
   LACP engine, the member gates, the trunk control socket and the aggregate
   TAP's native workers in one process, under the MP supervisor's JSON-line
   contract (`ffn_aggregate_runtime.py serve` execs it). Its life is bound to
@@ -101,10 +111,10 @@ the VIF runtime makes a device again when it finds one made without it.
 ```sh
 make all test
 sudo python3 test_kernel_packet.py
-sudo python3 test-aggregated-linux.py
+sudo python3 test-portd-linux.py
 ```
 
-`test-aggregated-linux.py` runs `ffn-aggregated` under the MP contract in two
+`test-portd-linux.py` runs `ffn-portd` under the MP contracts in two
 disposable namespaces: a veth as the trunk, the real native library on a real
 multi-queue TAP, the Python reference engine as the LACP peer, and the
 kernel-interface helpers faked. It proves the first status row, LACPDUs in the

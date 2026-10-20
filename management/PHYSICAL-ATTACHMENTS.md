@@ -29,6 +29,27 @@ These attachments forward through the OCTEON software policy provider. They do
 not authorize FE100 hardware NAT. The isolated FE100 rewrite checks and production
 session admission remain separate.
 
+## Native DP owner: ffn-portd physical
+
+`octeon/native/ffn_portd.c` (kind `physical`) is the C owner of a port's
+packet path on the DP, replacing `ffn_wan_runtime.py` and
+`ffn_physical_runtime.py`, which now exec it so the MP's command lines and the
+unit files' contracts do not change: `status`, `start` and `stop` with the DP
+boot identity on stdin, `serve` under `ffn-wan-attachment.service` (port 1,
+owner `wan1`, `/run/ffn-fabric.json`) and `ffn-physical@N.service` (owner
+`physical-N`, `/run/ffn-physical-N-status.json`). The status document keeps
+every field the policy bindings and the network owner read (owner, pid,
+process_start, boot_id, ports, interfaces, updated_monotonic) and adds
+`carrier`. Copper ports 1..4 are ordinary faceplate ports to this owner; the
+switch port behind a copper front port comes from the commissioned profile
+`/etc/ffn/vif-copper.json` when copper-identify corrected it. A port whose
+carrier policy is `observed` (copper 2..4 by default; `/etc/ffn/port-carrier.json`
+overrides per port or by `default`) raises TAP carrier and delivers frames only
+while the latest `ffn-portd links` delivery is within its lease and reports the
+port's PHY, MAC and data path up at one speed; the MP's `ffn-port-links.timer`
+(`management/port-link-poll.py`) makes that delivery from the `faceplate`
+resource. A port with policy `always` keeps carrier as the Python owner did.
+
 ## Native CP owner: ffn-portctl
 
 `octeon/native/ffn_portctl.c` is the C implementation of the CP side of this

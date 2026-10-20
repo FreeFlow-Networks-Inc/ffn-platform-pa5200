@@ -26,17 +26,18 @@ test-lldp: ffn_lldp.c ffn_lldp.h ffn_json.c ffn_json.h test_lldp.c
 	$(CC) $(CFLAGS) -Wno-unused-function test_lldp.c -o $@
 
 # The LACP engine and codec (own code). The shared object exists for the Python
-# conformance shim; ffn-aggregated compiles the engine in directly.
+# conformance shim; ffn-portd compiles the engine in directly.
 libffn-lacp.so: ffn_lacp.c ffn_lacp.h
 	$(CC) $(CFLAGS) -fPIC -shared -Wl,-z,relro,-z,now ffn_lacp.c -o $@
 
 test-lacp: ffn_lacp.c ffn_lacp.h test_lacp.c
 	$(CC) $(CFLAGS) ffn_lacp.c test_lacp.c -o $@
 
-# The dataplane owner of one aggregate: LACP engine, member gates, trunk control
-# socket and the TAP's native workers, under the MP supervisor's JSON-line contract.
-ffn-aggregated: ffn_aggregated.c ffn_lacp.c ffn_lacp.h ffn_json.c ffn_json.h ffn_packet.h libffn-packet.so
-	$(CC) $(CFLAGS) ffn_aggregated.c ffn_lacp.c ffn_json.c -L. -lffn-packet -ldl -o $@
+# The dataplane port owner: one daemon for every faceplate port's packet path
+# (WAN, physical, copper with its observed carrier) and every aggregate (LACP
+# engine, member gates, trunk control socket), each under its MP contract.
+ffn-portd: ffn_portd.c ffn_lacp.c ffn_lacp.h ffn_json.c ffn_json.h ffn_packet.h libffn-packet.so
+	$(CC) $(CFLAGS) ffn_portd.c ffn_lacp.c ffn_json.c -L. -lffn-packet -ldl -o $@
 
 # The CP's SFP+ cage control: expanders, SFF-8472 pages, link mode, transmit check, insertion watcher.
 ffn-sfpctl: ffn_sfpctl.c ffn_sfp.c ffn_sfp.h ffn_bcm_client.c ffn_bcm_client.h ffn_hwio.c ffn_json.c ffn_json.h

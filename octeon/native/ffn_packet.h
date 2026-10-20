@@ -41,6 +41,12 @@ int ffn_packet_counters(struct ffn_packet *, uint64_t *, unsigned);
 int ffn_packet_receive_stats(struct ffn_packet *, uint64_t *, unsigned);
 /* Physical TX only: sendmmsg calls, accepted frames, largest accepted batch. */
 int ffn_packet_transmit_stats(struct ffn_packet *, uint64_t *, unsigned);
+/* Additive: the physical port's carrier as its owner observes it. Down sets
+ * the TAP's carrier off (the kernel stops transmitting into it) and drops
+ * every received frame until up again; open starts up. Safe while running.
+ * ffn_packet_carrier_stats reports {frames dropped for carrier, carrier up}. */
+int ffn_packet_carrier(struct ffn_packet *, int up);
+int ffn_packet_carrier_stats(struct ffn_packet *, uint64_t *, unsigned);
 /* Additive, opt-in exception attachment. Configure only while paused. The
  * monotonic deadline must be renewed by the trusted attachment controller;
  * expiry rejects punts without changing the normal software packet path. */

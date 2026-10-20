@@ -3,5 +3,5 @@ Description=Recover stale FFN aggregate dataplane owners
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/ffn-aggregated sweep
+ExecStart=/usr/local/sbin/ffn-portd aggregate sweep
 TimeoutStartSec=60
