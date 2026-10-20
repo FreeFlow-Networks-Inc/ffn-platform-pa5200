@@ -131,26 +131,36 @@ static int valid_name(const char *s)
     return strspn(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") == n
            && strcmp(s, ".") && strcmp(s, "..");
 }
+/* The owner's receive filter. Ordinary frames pass by their source system port.
+ * The FE100's returns (port 20 copies on the trunk) are shared by every owner on
+ * the trunk, so they pass by the front port their packet info names: after the
+ * IPv4 (0x40, 24-byte) or IPv6 (0x80, 48-byte) key of a FLOWUNKNOWN message, or
+ * directly for exception and control messages. One message then reaches one
+ * owner, and a rejection counted by the decoder is a malformed message for a
+ * front the owner holds, never another owner's traffic. */
 static int packet_filter(int fd, const uint32_t *sources, unsigned count, int mode,
-                         const uint32_t *returns, unsigned return_count)
+                         const uint32_t *returns, unsigned return_count,
+                         const uint32_t *fronts, unsigned front_count)
 {
-    struct sock_filter instructions[64];
+    struct sock_filter instructions[96];
     struct sock_fprog program = { .filter = instructions };
-    unsigned used = 0, drop, accept;
-    if (count > 16 || !sources || !count || return_count > 8 ||
-        (return_count && !returns)) { errno = EINVAL; return -1; }
+    unsigned used = 0, drop;
+    if (count > 16 || !sources || !count || return_count > 8 || (return_count && !returns) ||
+        front_count > 8 || (return_count && (!front_count || !fronts)) ||
+        (!return_count && front_count)) { errno = EINVAL; return -1; }
 #define INS(code, jt, jf, k) instructions[used++] = (struct sock_filter){code, jt, jf, k}
+#define JUMP(from, to) ((uint8_t)((to) - (from) - 1))
     INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 0);
     INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 24);
     INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 2);
     for (unsigned i = 0; i < return_count; i++)
-        INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, returns[i]);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, returns[i]);           /* jt: the return demux */
     for (unsigned i = 0; i < count; i++) {
         if (sources[i] > 65535) { errno = EINVAL; return -1; }
-        INS(BPF_JMP | BPF_JEQ | BPF_K, count - i, 0, sources[i]);
+        INS(BPF_JMP | BPF_JEQ | BPF_K, count - i, 0, sources[i]);   /* past the drop */
     }
     drop = used; INS(BPF_RET | BPF_K, 0, 0, 0);
-    instructions[1].jf = (uint8_t)(drop - 2);
+    instructions[1].jf = JUMP(1, drop);
     if (mode == 2) { /* Slow protocol control frames only. */
         INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 16);
         INS(BPF_JMP | BPF_JEQ | BPF_K, 2, 0, 0x8809);
@@ -162,20 +172,48 @@ static int packet_filter(int fd, const uint32_t *sources, unsigned count, int mo
         INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0x88cc);
         INS(BPF_RET | BPF_K, 0, 0, 0);
     }
-    accept = used; INS(BPF_RET | BPF_K, 0, 0, 65535);
-    if(mode==2 && return_count) {
-        /* Qualified NOTFLOW/ACL control envelopes carry Ethernet at +40.
-         * Do not copy high-volume FE100 data misses into the LACP queue. */
-        accept=used;
-        INS(BPF_LD | BPF_H | BPF_ABS,0,0,52);
-        INS(BPF_JMP | BPF_JEQ | BPF_K,1,0,0x8809);
-        INS(BPF_JMP | BPF_JEQ | BPF_K,0,1,0x88cc);
-        INS(BPF_RET | BPF_K,0,0,65535);
-        INS(BPF_RET | BPF_K,0,0,0);
+    INS(BPF_RET | BPF_K, 0, 0, 65535);
+    if (return_count) {
+        unsigned demux, j_type, j_code, j_v4, j_v6, at_v4, ja_v4, at_v6, ja_v6, nokey, match, first, raccept;
+        demux = used; INS(BPF_LD | BPF_B | BPF_ABS, 0, 0, 11);      /* message type */
+        j_type = used; INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 8);
+        INS(BPF_LD | BPF_B | BPF_ABS, 0, 0, 31);                    /* exception code */
+        j_code = used; INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 0);
+        INS(BPF_LD | BPF_B | BPF_ABS, 0, 0, 32);                    /* FLOWUNKNOWN key kind */
+        j_v4 = used; INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 0x40);
+        j_v6 = used; INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 0x80);
+        at_v4 = used; INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 48);      /* packet info after the IPv4 key */
+        ja_v4 = used; INS(BPF_JMP | BPF_JA, 0, 0, 0);
+        at_v6 = used; INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 72);      /* after the IPv6 key */
+        ja_v6 = used; INS(BPF_JMP | BPF_JA, 0, 0, 0);
+        nokey = used; INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 32);      /* exceptions and control: no key */
+        match = used; INS(BPF_ALU | BPF_AND | BPF_K, 0, 0, 0xffc0); /* reserved bits clear, port bits 6..11 */
+        first = used;
+        for (unsigned i = 0; i < front_count; i++) {
+            if (!fronts[i] || fronts[i] > 63) { errno = EINVAL; return -1; }
+            INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, fronts[i] << 6);   /* jt: this owner's return */
+        }
+        INS(BPF_RET | BPF_K, 0, 0, 0);
+        raccept = used;
+        if (mode == 2) {
+            /* Qualified NOTFLOW/ACL control envelopes carry Ethernet at +40.
+             * Do not copy high-volume FE100 data misses into the LACP queue. */
+            INS(BPF_LD | BPF_H | BPF_ABS, 0, 0, 52);
+            INS(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 0x8809);
+            INS(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0x88cc);
+            INS(BPF_RET | BPF_K, 0, 0, 65535);
+            INS(BPF_RET | BPF_K, 0, 0, 0);
+        } else INS(BPF_RET | BPF_K, 0, 0, 65535);
+        instructions[j_type].jf = JUMP(j_type, nokey);
+        instructions[j_code].jf = JUMP(j_code, nokey);
+        instructions[j_v4].jt = JUMP(j_v4, at_v4);
+        instructions[j_v6].jt = JUMP(j_v6, at_v6); instructions[j_v6].jf = JUMP(j_v6, nokey);
+        instructions[ja_v4].k = JUMP(ja_v4, match); instructions[ja_v6].k = JUMP(ja_v6, match);
+        for (unsigned i = 0; i < front_count; i++) instructions[first + i].jt = JUMP(first + i, raccept);
+        for (unsigned i = 0; i < return_count; i++) instructions[3 + i].jt = JUMP(3 + i, demux);
     }
-    for (unsigned i = 0; i < return_count; i++)
-        instructions[3+i].jt = (uint8_t)(accept - (3+i) - 1);
     program.len = (unsigned short)used;
+#undef JUMP
 #undef INS
     return setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program));
 }
@@ -188,7 +226,7 @@ static int packet_socket_many(const char *name, const uint32_t *sources, unsigne
     fd = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, mode ? htons(3) : 0);
     if (fd < 0) return -1;
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr))) goto fail;
-    if (mode && (packet_filter(fd, sources, count, mode, NULL, 0) ||
+    if (mode && (packet_filter(fd, sources, count, mode, NULL, 0, NULL, 0) ||
         setsockopt(fd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &yes, sizeof(yes)) ||
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof(buffer)))) goto fail;
     return fd;

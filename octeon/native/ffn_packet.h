@@ -36,6 +36,12 @@ struct ffn_packet_fe100_binding {
 int ffn_packet_fe100(struct ffn_packet *, const struct ffn_packet_fe100_binding *,
     unsigned, uint64_t);
 int ffn_packet_fe100_stats(struct ffn_packet *, uint64_t *, unsigned);
+/* The receive filter an owner with these source system ports and return bindings
+ * attaches (mode 1 physical data, 2 aggregate control, 3 aggregate data), on any
+ * datagram socket: the chip's returns reach only the owner of the front port named
+ * in their packet info. */
+int ffn_packet_filter_attach(int, const uint32_t *, unsigned, int,
+    const struct ffn_packet_fe100_binding *, unsigned);
 void ffn_packet_close(struct ffn_packet *);
 /* Aggregate ABI 1: immutable member mapping, paused configuration updates. */
 struct ffn_aggregate_member { uint32_t front, source, alias; };

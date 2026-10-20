@@ -83,7 +83,120 @@ static const char control_lldp_sample[]=
 "0018001401000f0010000004811c00b80000000000000000000000000000002005c000610017000e0180c200000e02ff0000"
 "000188cc02070402ff000000010405076c6f6f70060200780a3b46464e2d46453130302d6f7cf22b0cc94cd583b493f21db2"
 "df2d00000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000";
+/* Real PA-5220 captures, 2026-10-19: the chip carried a NAT'd TCP download and
+ * handed the client's close to the CPU as type 2 -- flow ID, zone, original
+ * tagged frame. First the RST/ACK that aborted it, then a padded bare RST. */
+static const char session_rst_ack_sample[]=
+"00180014"
+"0100080010000002811c003809df0627000000000000600000000ffe03404046000d8a12"
+"028b77fb05f93cecef1f56c081000045080045000034506c40004006462f0a01003f97650284"
+"da460050b41f2ffcff71bb0f8014043a1dc500000101080a126b9e7a16df6f98";
+static const char session_rst_sample[]=
+"00180014"
+"0100080010000002811c003809df0627000000000000600000000ffe03404040000d8a12"
+"028b77fb05f93cecef1f56c08100004508004510002800004000400696970a01003f97650284"
+"da460050b41f2ffc00000000500400004d050000000000000000";
+/* Captured on the PA-5220 (2026-10-20, BCM port 16 steered into the FE100, front 5 zone 10):
+ * a bare TCP SYN returned as exception code 39, and a GRE packet returned as FLOWUNKNOWN
+ * with an IPv4 key whose protocol is 47 and whose port words are zero (tail synthesised). */
+static const char exception39_sample[]=
+"0018001401000a0010000004811c00b8000000000000000000000000000000270140403c00050a0e"
+"b2bd5add096afc964342879008004500002883d100003606a69ec224bef6ccfc0c49e5d40017ccfc"
+"f234000000005002ffff318000009560c31d0000";
+static const char gre_miss_sample[]=
+"001800140100040010000008812c00385f0eb931000000000000541b00000000402f000a00000000"
+"403ec591ccfc0c5e0140405600050a0eb2bd5add096afc9643428790080045000048d4310000f42f"
+"132b403ec591ccfc0c5e0000080045000030d4310000ff010871ccfc0c5e403ec59100009b435997"
+"0b250000000000000000000000000000000000000000";
+
+static void appliance_captures(void) {
+    uint8_t wire[256];size_t n;
+    struct ffn_fe100_punt_scope scope={24,20,5,5,10};
+    struct ffn_fe100_punt result;
+    n=strlen(exception39_sample)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(exception39_sample+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+    assert(n==100 && ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.frame==wire+40 && result.length==60 && result.message==4 && result.code==39);
+    assert(result.front==5 && result.in_lif==5 && result.zone==10);
+    wire[8+23]=40;assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);   /* any exception code */
+    wire[8+3]=8;wire[8+23]=0;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result)); /* but a keyless miss is not one */
+    n=strlen(gre_miss_sample)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(gre_miss_sample+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+    assert(n==142 && ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.frame==wire+56 && result.length==86 && result.message==8 && result.code==0);
+    assert(wire[56+14+9]==47 && wire[33]==47);
+    wire[33]=17;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));wire[33]=47;   /* key protocol must match */
+    wire[40]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));wire[40]^=1;   /* key source address too */
+    wire[36]=1;assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);wire[36]=0;   /* port words are not ports */
+    /* the same key form for ICMP: protocol 1 in the key and the packet, port words meaningless */
+    wire[33]=1;wire[56+14+9]=1;
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+}
+
+static void session_punts(void) {
+    uint8_t wire[256]={0},copy[256];
+    struct ffn_fe100_punt_scope scope={24,20,13,13,4094};
+    struct ffn_fe100_punt result;
+    const char *samples[]={session_rst_ack_sample,session_rst_sample};
+    const size_t lengths[]={70,64};
+    for(unsigned k=0;k<2;k++) {
+        size_t n=strlen(samples[k])/2;
+        for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(samples[k]+2*i,"%2x",&v)==1);wire[i]=(uint8_t)v;}
+        assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+        assert(result.frame==wire+40 && result.length==lengths[k] && result.flow_id==0x6000);
+        assert(result.front==13 && result.in_lif==13 && result.zone==4094 && result.message==2);
+        for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+        assert(!ffn_fe100_punt_decode(wire,n+1,&scope,&result));
+        /* the zone travels in the message, and must match the attachment */
+        scope.zone=4093;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.zone=4094;
+        scope.front=5;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));scope.front=13;
+        /* no flow ID, or zone bits above sixteen, is not a session punt */
+        memcpy(copy,wire,n);memset(copy+24,0,4);assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[28]=1;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        /* only TCP segments of an IPv4 flow; the tag metadata must agree */
+        memcpy(copy,wire,n);copy[40+18+9]=17;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[40+18+9]=1;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        memcpy(copy,wire,n);copy[38]^=0x80;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+        /* a rewritten forwarding message (type 3) with this payload is never data */
+        memcpy(copy,wire,n);copy[11]=3;assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
+    }
+}
+static size_t unhex(const char *s,uint8_t *out) {
+    size_t n=strlen(s)/2;
+    for(size_t i=0;i<n;i++){unsigned v;assert(sscanf(s+2*i,"%2x",&v)==1);out[i]=(uint8_t)v;}
+    return n;
+}
+/* The inline ingress hands back every protocol the chip cannot classify. A GRE
+ * frame arrives as NOTFLOW (zone, no key) and as a TTL exception; both are data. */
+static void other_protocols(void) {
+    uint8_t wire[256]={0};
+    struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
+    struct ffn_fe100_punt result;
+    static const uint8_t gre[60]={0x02,0xff,0,0,0,2, 0x02,0xff,0,0,0,1, 0x08,0x00,
+        0x45,0,0,0x2e,0,1,0x40,0,0x40,0x2f,0,0, 0xc6,0x12,0,1, 0xc6,0x12,0,2, 0,0,0x65,0x58};
+    /* NOTFLOW envelope from the LACP capture, carrying the GRE frame instead */
+    size_t n=unhex(control_lacp_sample,wire);
+    memcpy(wire+40,gre,sizeof(gre));n=40+sizeof(gre);
+    wire[34]=0x40;wire[35]=sizeof(gre);            /* packet type 1 (IPv4), length 60 */
+    wire[38]=0x0a;wire[39]=0x0e;                   /* L3 header 20, Ethernet 14 */
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.message==1 && result.length==sizeof(gre) && result.frame==wire+40 && result.zone==4094);
+    for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
+    /* the same GRE frame as a TTL-expired exception (type 5 code 2) */
+    n=unhex(ttl_sample,wire);
+    memcpy(wire+40,gre,sizeof(gre));n=40+sizeof(gre);
+    wire[34]=0x40;wire[35]=sizeof(gre);wire[38]=0x0a;wire[39]=0x0e;
+    assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1);
+    assert(result.message==5 && result.code==2 && result.length==sizeof(gre));
+    /* a FLOWUNKNOWN key can only describe TCP/UDP: a GRE packet under one is malformed */
+    n=unhex(sample,wire);
+    wire[56+23]=47;
+    assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+}
 int main(void) {
+    appliance_captures();
+    session_punts();
+    other_protocols();
     uint8_t wire[256]={0},copy[256];size_t n=strlen(sample)/2;
     struct ffn_fe100_punt_scope scope={24,20,23,23,4094};
     struct ffn_fe100_punt result;
@@ -93,12 +206,14 @@ int main(void) {
     assert(result.front==23 && result.in_lif==23 && result.zone==4094 && result.message==8);
     for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
     assert(!ffn_fe100_punt_decode(wire,n+1,&scope,&result));
-    const unsigned invalid_offsets[]={0,2,4,7,8,9,11,30,31,32,33,34,36,40,44,48,50,52,54,55,68,70,77,79,82,86,90};
+    const unsigned invalid_offsets[]={0,2,4,7,8,9,11,30,31,32,33,34,36,40,44,48,50,52,54,55,68,70,79,82,86,90};
     for(size_t i=0;i<sizeof(invalid_offsets)/sizeof(invalid_offsets[0]);i++) {
         memcpy(copy,wire,n);copy[invalid_offsets[i]]^=0x80;
         assert(!ffn_fe100_punt_decode(copy,n,&scope,&result));
         assert(!result.frame && !result.length);
     }
+    /* a keyed fragment is data: the chip keys first fragments, later ones carry no ports to compare */
+    memcpy(copy,wire,n);copy[77]^=0x80;assert(ffn_fe100_punt_decode(copy,n,&scope,&result)==1);
     for(unsigned type=0;type<256;type++) {
         if(type==8)continue;
         memcpy(copy,wire,n);copy[11]=(uint8_t)type;
@@ -118,7 +233,9 @@ int main(void) {
         assert(ffn_fe100_punt_decode(wire,n,&scope,&result));
         assert(result.frame==wire+40 && result.length==141 && result.message==(k?4:5));
         for(size_t i=0;i<n;i++)assert(!ffn_fe100_punt_decode(wire,i,&scope,&result));
-        wire[31]=0;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));
+        /* an exception code the decoder has not met still carries the packet; a set reserved word does not */
+        wire[31]=0;assert(ffn_fe100_punt_decode(wire,n,&scope,&result)==1 && result.code==0);
+        wire[30]=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));wire[30]=0;
     }
     const char *udp_samples[]={udp_miss_sample,udp_ttl_expired_sample,udp_fragment_sample,udp_mtu_exceeded_sample};
     for(unsigned k=0;k<4;k++) {
@@ -152,6 +269,6 @@ int main(void) {
         if(k==2) {wire[30]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
         if(k==3) {wire[45]^=1;assert(!ffn_fe100_punt_decode(wire,n,&scope,&result));}
     }
-    puts("FE100 native punt decoder: real wire fixture, truncation, scope and type rejection passed");
+    puts("FE100 native punt decoder: real wire fixtures (miss, exceptions, control, session close), truncation, scope and type rejection passed");
     return 0;
 }

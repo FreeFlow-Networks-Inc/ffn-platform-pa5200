@@ -6,7 +6,7 @@
 int ffn_packet_fe100(struct ffn_packet *p, const struct ffn_packet_fe100_binding *bindings,
                      unsigned count, uint64_t deadline)
 {
-    uint32_t sources[16], returns[8]; unsigned used = 0;
+    uint32_t sources[16], returns[8], fronts[8]; unsigned used = 0;
     struct sockaddr_storage address; socklen_t size = sizeof(address);
     int64_t now = milliseconds();
     if (!p || count > 8 || (count && (!bindings || now < 0 || deadline <= (uint64_t)now ||
@@ -36,7 +36,7 @@ int ffn_packet_fe100(struct ffn_packet *p, const struct ffn_packet_fe100_binding
             if (bindings[j].scope.return_port == b->scope.return_port &&
                 bindings[j].scope.front == b->scope.front && bindings[j].scope.in_lif == b->scope.in_lif)
                 { errno = EINVAL; return -1; }
-        returns[i] = b->scope.return_port;
+        returns[i] = b->scope.return_port; fronts[i] = b->scope.front;
     }
     pthread_mutex_lock(&p->control);
     if (p->stopped || (p->started && (!p->pause_requested || !p->paused[0] || !p->paused[1]))) {
@@ -44,7 +44,7 @@ int ffn_packet_fe100(struct ffn_packet *p, const struct ffn_packet_fe100_binding
     }
     if (getsockname(p->rx, (struct sockaddr *)&address, &size) ||
         (address.ss_family == AF_PACKET && packet_filter(p->rx, sources, used,
-            p->aggregate ? 3 : 1, returns, count))) {
+            p->aggregate ? 3 : 1, returns, count, fronts, count))) {
         int error = errno; pthread_mutex_unlock(&p->control); errno = error; return -1;
     }
     if (count) memcpy(p->fe100, bindings, count * sizeof(*bindings));
@@ -116,7 +116,7 @@ static int control_bindings(const struct ffn_aggregate_member *m,unsigned nm,
 int ffn_aggregate_control_fe100(int fd,const struct ffn_aggregate_member *m,unsigned nm,
     const struct ffn_packet_fe100_binding *b,unsigned nb,uint64_t deadline)
 {
-    uint32_t sources[16],returns[8];unsigned count=0;
+    uint32_t sources[16],returns[8],fronts[8];unsigned count=0;
     struct sockaddr_storage address;socklen_t length=sizeof(address);
     int64_t now=milliseconds();
     if(!control_bindings(m,nm,b,nb) || (nb && (now<0 || deadline<=(uint64_t)now ||
@@ -125,9 +125,21 @@ int ffn_aggregate_control_fe100(int fd,const struct ffn_aggregate_member *m,unsi
         sources[count++]=m[i].source;
         if(m[i].alias)sources[count++]=m[i].alias;
     }
-    for(unsigned i=0;i<nb;i++)returns[i]=b[i].scope.return_port;
+    for(unsigned i=0;i<nb;i++){returns[i]=b[i].scope.return_port;fronts[i]=b[i].scope.front;}
     if(getsockname(fd,(struct sockaddr *)&address,&length))return -1;
-    return address.ss_family==AF_PACKET?packet_filter(fd,sources,count,2,returns,nb):0;
+    return address.ss_family==AF_PACKET?packet_filter(fd,sources,count,2,returns,nb,fronts,nb):0;
+}
+int ffn_packet_filter_attach(int fd,const uint32_t *sources,unsigned count,int mode,
+    const struct ffn_packet_fe100_binding *b,unsigned nb)
+{
+    uint32_t returns[8],fronts[8];
+    if(mode<1 || mode>3 || nb>8 || (nb && !b)) {errno=EINVAL;return -1;}
+    for(unsigned i=0;i<nb;i++) {
+        if(b[i].scope.trunk!=24 || !b[i].scope.return_port || b[i].scope.return_port==24 ||
+           !b[i].scope.front || b[i].scope.front>63) {errno=EINVAL;return -1;}
+        returns[i]=b[i].scope.return_port;fronts[i]=b[i].scope.front;
+    }
+    return packet_filter(fd,sources,count,mode,returns,nb,fronts,nb);
 }
 int ffn_aggregate_control_receive(int fd,const struct ffn_aggregate_member *m,unsigned nm,
     const struct ffn_packet_fe100_binding *b,unsigned nb,uint64_t deadline,uint8_t *out,size_t capacity)
