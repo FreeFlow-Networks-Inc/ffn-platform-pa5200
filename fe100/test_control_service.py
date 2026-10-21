@@ -58,6 +58,31 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(admission['available']);self.assertEqual(admission['evaluated'],0)
         self.assertFalse(status['admission_enabled']);self.assertEqual(status['observations']['mode'],'supervised-observation-only')
         self.assertFalse(status['qualification']['front_port']);self.assertFalse(status['capabilities']['nat_packet_qualification'])
+        loop=status['admission_loop']
+        self.assertEqual((loop['mode'],loop['hardware_admission'],loop['leases']),('observe',False,0))
+        self.assertGreaterEqual(loop['counters'].get('passes',0),1,'a status call is one bounded pass of the admission loop')
+        self.assertEqual(loop['last_pass']['reasons'],{'inventory not ready':1})
+
+    def test_admission_mode_comes_from_the_operator_file_and_admit_needs_a_path_owner(self):
+        config=self.root/'fe100-admission.json';logged=[]
+        self.assertEqual(control.admission_mode(config,logged.append),'observe','an absent file observes')
+        config.write_text('{"mode": "off"}');self.assertEqual(control.admission_mode(config,logged.append),'off')
+        config.write_text('{"mode": "sideways"}');self.assertEqual(control.admission_mode(config,logged.append),'observe')
+        config.write_text('not json');self.assertEqual(control.admission_mode(config,logged.append),'observe')
+        self.assertEqual(len(logged),2)
+        config.write_text('{"mode": "admit"}')
+        with patch.object(control,'ROOT',self.root),patch.object(control,'ADMISSION_CONFIG',config),patch('builtins.print') as printed:
+            owner=control.PolicyController()
+            try:
+                self.assertEqual(owner.admission_loop.mode,'observe','admit falls back while no directional path owner is commissioned')
+                self.assertIsNone(owner.owner.paths)
+            finally:owner.close()
+        self.assertTrue(any('no directional path owner' in str(call) for call in printed.call_args_list))
+        config.write_text('{"mode": "off"}')
+        with patch.object(control,'ROOT',self.root),patch.object(control,'ADMISSION_CONFIG',config):
+            owner=control.PolicyController()
+            try:self.assertEqual(owner.execute('status',{})['admission_loop']['mode'],'off')
+            finally:owner.close()
 
     def test_requested_termination_exits_cleanly_after_the_guardian_cleanup(self):
         with patch.object(controld,'ROOT',self.root),patch.object(controld.sys,'argv',['ffn_fe100_controld.py']),              patch.object(controld,'supervise',side_effect=InterruptedError('guardian termination requested')) as guard:
