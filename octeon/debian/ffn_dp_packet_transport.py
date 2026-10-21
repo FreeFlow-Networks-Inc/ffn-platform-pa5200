@@ -20,7 +20,8 @@ import time
 
 from ffn_fabric import tap, run, MAX_FRAME
 
-# Copper wiring is commissioned per appliance by ffn_copper_vif. Do not
+# Copper wiring is commissioned per appliance by copper-identify
+# (/etc/ffn/vif-copper.json, read by ffn-portd and validate_trunk_io). Do not
 # install the old sequential PHY/MAC guess into a packet classifier.
 FRONT = dict(enumerate((16,1,18,19,6,21,22,23,7,11,36,27,10,29,30,31,32,33,34,35), 5))
 

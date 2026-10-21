@@ -86,7 +86,12 @@ test-scan.so: test_scan.c
 test-hwio: ffn_hwio.c test_hwio.c
 	$(CC) $(CFLAGS) ffn_hwio.c test_hwio.c -Wl,--wrap=open,--wrap=close,--wrap=ioctl -o $@
 
-test: libffn-packet.so libffn-inline.so libffn-lacp.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp test-sfp test-lacp
+# Hardware-free: `ffn-portd links` records the carrier lease and the route
+# tracker's link observation from one delivery, with its files redirected.
+test-portd-links: ffn-portd
+	python3 test_portd_links.py
+
+test: libffn-packet.so libffn-inline.so libffn-lacp.so test-scan.so test-hwio test-fe100-punt test-fe100-stats test-fe100-stats-health test-fe100-resources test-protect-tunnel test-portctl test-lldp test-sfp test-lacp ffn-portd
 	./test-protect-tunnel
 	./test-fe100-resources
 	./test-hwio
@@ -102,5 +107,6 @@ test: libffn-packet.so libffn-inline.so libffn-lacp.so test-scan.so test-hwio te
 	FFN_PACKET_LIB=$(CURDIR)/libffn-packet.so python3 test_fe100_packet.py
 	python3 test_aggregate.py
 	cd ../debian && python3 -m unittest test_packet_cpus
+	python3 test_portd_links.py
 
-.PHONY: all test
+.PHONY: all test test-portd-links

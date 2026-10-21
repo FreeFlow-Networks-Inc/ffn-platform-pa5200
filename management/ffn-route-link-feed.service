@@ -3,6 +3,7 @@ Description=FFN MP hardware link observations for static routes
 Requires=ffn-controld.service
 After=ffn-controld.service
 PartOf=ffn-controld.service
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/bin/python3 /opt/ffn-platforms/pa5200-management/route_link_feed.py
@@ -11,4 +12,11 @@ RestartSec=5
 UMask=0077
 
 [Install]
-WantedBy=multi-user.target
+# PartOf propagates the control daemon's stop (the core patch installer stops
+# and starts it); being wanted by the daemon brings this unit back when the
+# daemon (re)starts. Restart= does not apply to an explicit stop: on 2026-10-20
+# this unit stayed down after a patch install, the dataplane's link observation
+# went stale and the route tracker withdrew both default routes for fifteen
+# minutes. install-control-channel.py turns every target named here into the
+# wants link systemd needs for the declaration to mean anything.
+WantedBy=multi-user.target ffn-controld.service

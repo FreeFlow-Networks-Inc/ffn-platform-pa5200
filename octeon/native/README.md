@@ -14,30 +14,49 @@ Implemented here:
 * `ffn_native_packet.py` is a control ABI. Two pinned native workers process
   receive and transmit independently. Python sees settings and counters only,
   never forwarded packet buffers. CPU selection uses the process affinity mask.
-* `ffn-portd` (`ffn_portd.c`) is the dataplane port owner, one daemon with two
-  owner kinds. `physical` owns one faceplate port's packet path, WAN port 1
-  and ports 2..24, copper and optical alike (`ffn_wan_runtime.py` and
-  `ffn_physical_runtime.py` exec it under the units): the TAP's native
-  workers, the local addresses from the network owner's journal, the FE100
-  return bindings and, for a port whose carrier policy is `observed` (copper
-  2..4 by default, `/etc/ffn/port-carrier.json` overrides), TAP carrier and
-  delivery that follow the CP's faceplate observation under a lease. The MP's
-  `ffn-port-links.timer` delivers that observation through `ffn-portd links`;
-  what the copper VIF driver did for those ports is this lease, and the VIF
-  owner is gone. `aggregate` owns one aggregate: the
-  LACP engine, the member gates, the trunk control socket and the aggregate
-  TAP's native workers in one process, under the MP supervisor's JSON-line
-  contract (`ffn_aggregate_runtime.py serve` execs it). Its life is bound to
-  that pipe: EOF, a controller silent for eight seconds, SIGTERM or the death
-  of its parent all withdraw the gates, release every lock and remove the TAP
-  within seconds, and a cleanup that hangs is cut off after a minute for the
-  watchdog to finish. The kernel interface transactions (TAP, nftables guard,
-  addresses, VLAN units, DHCP hooks) stay with the Python helpers in
-  `ffn_aggregate_runtime.py`, run as bounded one-shot processes (`validate`,
-  `network-setup`, `network-update`, `network-teardown`); so does the shared
-  worker-CPU allocator (`ffn_packet_cpus.py reserve --pid`), which records the
-  daemon as the owner. `ffn_native_aggregate.py` remains the control ABI the
-  tests exercise; no production owner imports it.
+* `ffn-portd` (`ffn_portd.c`) is the dataplane port owner: one daemon,
+  `ffn-portd serve` under `ffn-portd.service`, owning ports 1..24 from the
+  moment the dataplane boots (`management/PORT-TABLE.md`). The MP pushes the
+  table of what every port should be (`ffn-portd table apply`, one request per
+  commit) and the daemon reconciles it against what it holds, every tick,
+  retrying a failed attach every two seconds with its reason in the table
+  status (`/run/ffn-portd.json`, `ffn-portd table status`); the last accepted
+  table lives in `/run/ffn-portd-table.json`, so a daemon restarted inside the
+  same boot re-attaches every port by itself. An `l3` row is the port's packet
+  path, the WAN owner `wan1` on port 1 and `physical-N` otherwise, copper and
+  optical alike: the TAP's native workers, the local addresses from the
+  network owner's journal, the FE100 return bindings and, for a port whose
+  carrier policy is `observed` (copper 2..4 by default,
+  `/etc/ffn/port-carrier.json` overrides), TAP carrier and delivery that
+  follow the CP's faceplate observation under a lease. The MP's
+  `ffn-port-links.timer` delivers that observation through `ffn-portd links`
+  (to the daemon's socket, or straight to the files when the daemon is away);
+  the same delivery is written as the route tracker's link observation,
+  `/run/ffn-route-links.json`, so the tracked default routes do not depend on
+  the MP's separate `ffn-route-link-feed` (2026-10-20: that feed stayed
+  stopped after a patch install and the routes were withdrawn for fifteen
+  minutes). An `aggregate` row reserves the port for its group; the aggregate
+  itself arrives as a lease on the control socket `/run/ffn-portd.sock`: the
+  MP supervisor still speaks its JSON-line contract over ssh to
+  `ffn_aggregate_runtime.py serve`, which execs `ffn-portd aggregate serve`,
+  now a relay between that pipe and the lease. The hosted aggregate owner is
+  what the per-group process was: the LACP engine, the member gates, the
+  trunk control socket and the aggregate TAP's native workers, bound to the
+  lease: EOF, a controller silent for eight seconds or the relay's death
+  withdraw the gates, release every lock and remove the TAP within seconds.
+  Its two long helpers (`validate`, `network-setup`) run asynchronously, so a
+  group with many VLAN units never stalls the other owners' status. The kernel
+  interface transactions (TAP, nftables guard, addresses, VLAN units, DHCP
+  hooks) stay with the Python helpers in `ffn_aggregate_runtime.py`, run as
+  bounded one-shot processes; so does the shared worker-CPU allocator
+  (`ffn_packet_cpus.py reserve --pid`). `ffn-portd physical start|stop|status
+  --port N` (through `ffn_wan_runtime.py` / `ffn_physical_runtime.py`) are
+  clients of the socket: `attach` and `detach` change one row of the table.
+  The watchdog timer's `aggregate sweep` remains the backstop for a daemon
+  that stops publishing; `test_portd_links.py` proves the link record without
+  hardware and `test-portd-linux.py` the whole daemon against real owners.
+  `ffn_native_aggregate.py` remains the control ABI the tests exercise; no
+  production owner imports it.
 * `ffn_lacp.c` is the LACP engine and LACPDU codec, transport independent and
   state for state the C form of `ffn_lacp_engine.py` / `ffn_lacp_packets.py`.
   The Python suites are its conformance tests: `make test` runs
@@ -114,13 +133,18 @@ sudo python3 test_kernel_packet.py
 sudo python3 test-portd-linux.py
 ```
 
-`test-portd-linux.py` runs `ffn-portd` under the MP contracts in two
-disposable namespaces: a veth as the trunk, the real native library on a real
-multi-queue TAP, the Python reference engine as the LACP peer, and the
-kernel-interface helpers faked. It proves the first status row, LACPDUs in the
-trunk envelopes both ways, both members distributing against the reference
-engine, and that a closed control pipe, a silent controller and SIGTERM each
-end the owner within seconds with its TAP and run files gone.
+`test-portd-linux.py` runs `ffn-portd serve` under the MP contracts in two
+disposable namespaces: a veth as the trunk, the real native library on real
+TAPs, the Python reference engine as the LACP peer, and the kernel-interface
+helpers faked. It proves the daemon starting with every port disabled, a pushed
+table attaching a port within seconds (and retrying one without a TAP with its
+reason), `physical start|stop` through the socket, the copper carrier lease
+through the daemon, an aggregate lease through the relay negotiating both
+members against the reference engine, a table refusing to take a live member
+and a lease refusing a layer-3 port, the owner withdrawn within seconds when
+the pipe closes, the controller falls silent or the relay dies, a daemon killed
+outright re-attaching its ports from the saved table, the watchdog sweep
+retiring a frozen daemon, and SIGTERM stopping everything cleanly.
 
 Fourteen physical packet tests, ten aggregate tests, six CPU allocation tests, a C hardware-transaction
 test, and private network/mount

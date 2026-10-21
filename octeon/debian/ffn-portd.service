@@ -1,0 +1,16 @@
+[Unit]
+Description=FFN dataplane port owner: every faceplate port from boot, the MP's port table, the aggregate leases
+Requires=ffn-network.service
+After=ffn-network.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/ffn-portd serve
+TimeoutStopSec=130
+Restart=always
+RestartSec=2
+# The MP pushes the table after the lifecycle replay; until then every port is disabled.
+# A restart inside the same boot re-attaches every port from the saved table on its own.
+
+[Install]
+WantedBy=multi-user.target

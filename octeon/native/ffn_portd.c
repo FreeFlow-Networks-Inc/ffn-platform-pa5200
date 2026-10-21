@@ -47,7 +47,9 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -57,6 +59,11 @@
 #define MEMBERS 8
 #define UNITS 65
 #define PATH 256
+#define PORTS 24          /* faceplate ports the daemon owns from boot */
+#define GROUPS 12         /* ae1..ae12 */
+#define CLIENTS 64        /* control socket connections at once */
+#define RETRY_ATTACH (2 * SECOND)
+#define PUBLISH_PERIOD SECOND
 #define LEASE_BEFORE_FIRST (60 * SECOND)
 #define LEASE_AFTER_FIRST (8 * SECOND)
 #define OBSERVATION_LEASE (6 * SECOND)
@@ -83,6 +90,9 @@ static const char *DHCP_HOOK = "/usr/local/sbin/ffn_aggregate_dhcp.py", *STEERIN
 static const char *CPUS = "/usr/local/sbin/ffn_packet_cpus.py", *CPU_RESERVATIONS = "/run/ffn-packet-cpus";
 static const char *INSPECTION_POLICY = "/etc/ffn/inspection.json", *INLINE_LIBRARY = "/usr/local/lib/libffn-inline.so";
 static const char *FE100_RETURN = "/etc/ffn/fe100-return.json", *LANES_POLICY = "/etc/ffn/packet-lanes.json";
+static const char *NETWORK_JOURNAL = "/etc/ffn/network.json";   /* the network owner's applied intent: revision, ports, routes */
+static const char *ROUTE_LINKS = "/run/ffn-route-links.json";    /* the route tracker's hardware link observation (see links_tool) */
+static const char *SOCKET_NAME = "ffn-portd.sock", *TABLE_NAME = "ffn-portd-table.json", *DAEMON_STATUS = "ffn-portd.json";
 static bool unchecked;
 
 static volatile sig_atomic_t stop_signal;
@@ -506,6 +516,23 @@ static void last_line(const struct text *t, char *out, size_t outsz)
     snprintf(out, outsz, "%.*s", (int)(end - start), t->s ? t->s + start : "");
 }
 
+/* A finished helper's reply: the parsed JSON object, or NULL with err from its
+ * error line, its exit status, or its timeout (status -1). */
+static struct ffn_json *helper_reply(struct helper *h, int status, const char *verb, char *err, size_t errsz)
+{
+    struct ffn_json *reply = NULL;
+    char perr[64], line[256];
+    if (status == 0 && h->output.len) reply = ffn_json_parse(h->output.s, h->output.len, perr, sizeof perr);
+    if (!reply || reply->type != FFN_JSON_OBJECT || ffn_json_get(reply, "error")) {
+        const char *message = reply ? ffn_json_get_string(reply, "error") : NULL;
+        last_line(&h->error, line, sizeof line);
+        if (status < 0) snprintf(err, errsz, "%s helper timed out", verb);
+        else snprintf(err, errsz, "%s", message && message[0] ? message : line[0] ? line : status ? "helper failed" : "helper reply unreadable");
+        ffn_json_free(reply); reply = NULL;
+    }
+    return reply;
+}
+
 /* A runtime verb: {PYTHON} {RUNTIME} verb, JSON in, JSON out. Returns the parsed
  * reply, or NULL with err set from the helper's stderr tail / exit status. */
 static struct ffn_json *runtime_verb(const char *verb, const struct ffn_json *request, uint64_t timeout_us, char *err, size_t errsz)
@@ -513,22 +540,26 @@ static struct ffn_json *runtime_verb(const char *verb, const struct ffn_json *re
     struct helper h;
     char *input = ffn_json_dump(request);
     char *const argv[] = { (char *)PYTHON, (char *)RUNTIME, (char *)verb, NULL };
-    struct ffn_json *reply = NULL;
-    char perr[64], line[256];
+    struct ffn_json *reply;
     int status;
     if (!input) { snprintf(err, errsz, "out of memory"); return NULL; }
     status = helper_run(&h, argv, input, timeout_us);
     free(input);
-    if (status == 0 && h.output.len) reply = ffn_json_parse(h.output.s, h.output.len, perr, sizeof perr);
-    if (!reply || reply->type != FFN_JSON_OBJECT || ffn_json_get(reply, "error")) {
-        const char *message = reply ? ffn_json_get_string(reply, "error") : NULL;
-        last_line(&h.error, line, sizeof line);
-        if (status < 0) snprintf(err, errsz, "%s helper timed out", verb);
-        else snprintf(err, errsz, "%s", message && message[0] ? message : line[0] ? line : status ? "helper failed" : "helper reply unreadable");
-        ffn_json_free(reply); reply = NULL;
-    }
+    reply = helper_reply(&h, status, verb, err, errsz);
     helper_close(&h);
     return reply;
+}
+
+/* Start a runtime verb without waiting for it; the caller services the helper. */
+static int runtime_begin(struct helper *h, const char *verb, const struct ffn_json *request)
+{
+    char *input = ffn_json_dump(request);
+    char *const argv[] = { (char *)PYTHON, (char *)RUNTIME, (char *)verb, NULL };
+    int rc;
+    if (!input) return -1;
+    rc = helper_start(h, argv, input, NULL);
+    free(input);
+    return rc;
 }
 
 /* --------------------------------------------------------------- the owner */
@@ -792,12 +823,6 @@ static int check_environment(char *err, size_t errsz)
     if (read_file(path, &text, &len)) { snprintf(err, errsz, "trunk unavailable"); return -1; }
     value = strtol(text, NULL, 16); free(text);
     if (!(value & 1)) { snprintf(err, errsz, "trunk must be Ethernet, enabled, with MTU >= 1550"); return -1; }
-    {
-        struct helper h;
-        char *const argv[] = { "/usr/bin/systemctl", "is-active", "--quiet", "ffn-aggregate-dp-watchdog.timer", NULL };
-        if (helper_run(&h, argv, NULL, 10 * SECOND) != 0) { helper_close(&h); snprintf(err, errsz, "ffn-aggregate-dp-watchdog.timer is not active"); return -1; }
-        helper_close(&h);
-    }
     return 0;
 }
 
@@ -1513,20 +1538,6 @@ static struct ffn_json *workers_json(struct daemon *d)
 
 /* ------------------------------------------------------ network helpers */
 
-static int network_setup(struct daemon *d, char *err, size_t errsz)
-{
-    struct ffn_json *request = ffn_json_object(), *reply;
-    ffn_json_set(request, "intent", ffn_json_copy(d->in.doc));
-    reply = runtime_verb("network-setup", request, 300 * SECOND, err, errsz);
-    ffn_json_free(request);
-    if (!reply) return -1;
-    d->created = true;
-    ffn_json_free(d->unit_status);
-    d->unit_status = ffn_json_get(reply, "subinterfaces") ? ffn_json_copy(ffn_json_get(reply, "subinterfaces")) : ffn_json_array();
-    ffn_json_free(reply);
-    return 0;
-}
-
 static void network_teardown(struct daemon *d)
 {
     struct ffn_json *request = ffn_json_object(), *reply;
@@ -1540,16 +1551,6 @@ static void network_teardown(struct daemon *d)
     ffn_json_free(reply);
     d->created = false;
     unlink(d->intent_path);
-}
-
-/* The validate verb: the full Python validation of the intent (management
- * profiles, VLAN units, addresses) before any lock or interface is touched. */
-static int validate_intent(struct daemon *d, char *err, size_t errsz)
-{
-    struct ffn_json *reply = runtime_verb("validate", d->in.doc, 120 * SECOND, err, errsz);
-    if (!reply) return -1;
-    ffn_json_free(reply);
-    return 0;
 }
 
 static void dhcp_signal(pid_t pid, int sig) { if (pid > 0) kill(-pid, sig); }
@@ -1740,7 +1741,9 @@ static struct ffn_json *engine_status(struct daemon *d, uint64_t now)
     return row;
 }
 
-static void status_row(struct daemon *d, uint64_t now, bool network_current, bool network_ready, bool print)
+/* The status row: the file the MP's `status` reads, and the same line to `out`
+ * (the lease connection) when one is given. */
+static void status_row(struct daemon *d, uint64_t now, bool network_current, bool network_ready, struct text *out)
 {
     struct ffn_json *row = engine_status(d, now), *counters = ffn_json_object(), *rx = ffn_json_object(), *tx = ffn_json_object();
     struct ffn_json *subinterfaces = ffn_json_array();
@@ -1751,7 +1754,7 @@ static void status_row(struct daemon *d, uint64_t now, bool network_current, boo
     ffn_json_set(row, "boot_id", ffn_json_string(d->in.boot_id)); ffn_json_set(row, "pid", ffn_json_int(getpid()));
     ffn_json_set(row, "process_start", ffn_json_string(d->process_start));
     ffn_json_set(row, "updated_monotonic", ffn_json_number((double)now / 1e6));
-    ffn_json_set(row, "control_age_seconds", ffn_json_number((double)(now - d->last_input) / 1e6));
+    ffn_json_set(row, "control_age_seconds", ffn_json_number(now > d->last_input ? (double)(now - d->last_input) / 1e6 : 0.0));
     ffn_json_set(row, "owner", ffn_json_string("ffn-portd"));
     ffn_json_set(row, "packet_execution", ffn_json_string(d->native ? "native-c" : "control-only"));
     ffn_json_set(row, "workers", d->native && d->workers ? ffn_json_copy(d->workers) : ffn_json_null());
@@ -1808,13 +1811,14 @@ static void status_row(struct daemon *d, uint64_t now, bool network_current, boo
     text = ffn_json_dump(row);
     if (text) {
         write_atomic(d->status_path, text);
-        if (print) { fputs(text, stdout); fputc('\n', stdout); fflush(stdout); }
+        if (out) { text_str(out, text); text_put(out, "\n", 1); }
     }
     free(text);
     ffn_json_free(row);
 }
 
-static void error_row(struct daemon *d)
+/* The final row of a lease that ends on a fault, to `out`. */
+static void error_row(struct daemon *d, struct text *out)
 {
     struct ffn_json *row = ffn_json_object();
     char *text;
@@ -1823,7 +1827,7 @@ static void error_row(struct daemon *d)
     ffn_json_set(row, "boot_id", ffn_json_string(d->in.boot_id));
     ffn_json_set(row, "group", ffn_json_string(d->in.group));
     text = ffn_json_dump(row);
-    if (text) { fputs(text, stdout); fputc('\n', stdout); fflush(stdout); }
+    if (text && out) { text_str(out, text); text_put(out, "\n", 1); }
     free(text); ffn_json_free(row);
 }
 
@@ -1885,33 +1889,30 @@ static void control_line(struct daemon *d, const char *line, size_t len, uint64_
     ffn_json_free(msg);
 }
 
-static void stdin_service(struct daemon *d, uint64_t now)
+/* Every complete line the lease connection has delivered so far. */
+static void lease_lines(struct daemon *d, struct text *buffer, uint64_t now)
 {
-    char buf[65536];
-    ssize_t n = read(0, buf, sizeof buf);
-    if (n == 0) { d->stdin_closed = true; fail(d, "MP control pipe closed"); return; }
-    if (n < 0) { if (errno != EAGAIN && errno != EINTR) { d->stdin_closed = true; fail(d, "MP control pipe closed"); } return; }
-    text_put(&d->stdin_buffer, buf, (size_t)n);
-    if (d->stdin_buffer.len > 262144) { fail(d, "Control input exceeds limit"); return; }
+    if (buffer->len > 262144) { fail(d, "Control input exceeds limit"); return; }
     for (;;) {
-        char *nl = d->stdin_buffer.s ? memchr(d->stdin_buffer.s, '\n', d->stdin_buffer.len) : NULL;
+        char *nl = buffer->s ? memchr(buffer->s, '\n', buffer->len) : NULL;
         size_t len;
         if (!nl) break;
-        len = (size_t)(nl - d->stdin_buffer.s);
-        if (len) control_line(d, d->stdin_buffer.s, len, now);
-        memmove(d->stdin_buffer.s, nl + 1, d->stdin_buffer.len - len - 1);
-        d->stdin_buffer.len -= len + 1; d->stdin_buffer.s[d->stdin_buffer.len] = 0;
+        len = (size_t)(nl - buffer->s);
+        if (len) control_line(d, buffer->s, len, now);
+        memmove(buffer->s, nl + 1, buffer->len - len - 1);
+        buffer->len -= len + 1; buffer->s[buffer->len] = 0;
         if (d->failed) break;
     }
 }
 
 /* -------------------------------------------------------------- shutdown */
 
+/* Withdraw an aggregate owner: gates, workers, helpers, DHCP, network, run
+ * files, locks. The daemon's own shutdown bounds the whole of it with one
+ * alarm; a single lease ending must not arm one for the other owners. */
 static void shutdown_owner(struct daemon *d)
 {
     uint64_t now = now_us();
-    shutting_down = true;
-    alarm(SHUTDOWN_BUDGET); /* a cleanup that hangs still ends: the watchdog finishes it */
     if (d->engine) ffn_lacp_stop(d->engine, now);
     if (d->native) { datapath_sync(d, now, false); native_close(d); }
     if (d->worker_running) { helper_kill(&d->worker); helper_close(&d->worker); d->worker_running = false; }
@@ -1936,136 +1937,212 @@ static void shutdown_owner(struct daemon *d)
     release_locks(d);
 }
 
-/* ------------------------------------------------------------------ serve */
+/* ------------------------------------------------------ hosted aggregate */
+/* An aggregate owner inside the daemon: what `aggregate serve` did for one
+ * group in one process, as a state machine the daemon's loop drives. Its
+ * lease is a control-socket connection (the relay `aggregate serve` bridges
+ * the MP supervisor's ssh pipe to it): the intent is the first line, then the
+ * observation lines, and the status rows go back on it. Starting is
+ * asynchronous through the two long helpers (validate, network-setup), so a
+ * group with many VLAN units does not stall every other owner's status for
+ * its setup; the rest of the start (native owner, control socket) is fast. */
 
-static int read_intent_line(struct text *t)
+struct aggregate;
+
+struct client {
+    int fd;
+    struct text in, out;
+    bool eof;                   /* the peer closed its side */
+    bool closing;               /* close once the output drained */
+    struct aggregate *agg;      /* the lease this connection holds, if any */
+};
+
+enum aggregate_stage { AGG_FREE, AGG_VALIDATING, AGG_SETTING_UP, AGG_RUNNING, AGG_STOPPED };
+
+struct aggregate {
+    enum aggregate_stage stage;
+    struct daemon d;
+    struct helper start;        /* the validate or network-setup helper in flight */
+    uint64_t start_deadline;
+    struct client *client;
+};
+
+static const char *aggregate_stage_name(enum aggregate_stage s)
 {
-    char c;
-    for (;;) {
-        ssize_t n = read(0, &c, 1);
-        if (n <= 0) return -1;
-        if (c == '\n') return 0;
-        text_put(t, &c, 1);
-        if (t->len > 65536) return -1;
-    }
+    static const char *names[] = { "free", "validating", "setting-up", "running", "stopped" };
+    return names[s];
 }
 
-static int serve(void)
+/* Parse the intent, create the engine, take the locks, journal the intent and
+ * start validation. -1 with err before anything is held. */
+static int aggregate_begin(struct aggregate *a, const char *text, size_t len, struct client *client, uint64_t now, char *err, size_t errsz)
 {
-    struct daemon d;
-    struct text first = { 0 };
-    char err[512];
-    uint64_t now;
-    int rc = 1;
-    memset(&d, 0, sizeof d);
-    d.control_fd = -1; d.sequence = -1;
-    signal(SIGTERM, on_stop); signal(SIGINT, on_stop); signal(SIGHUP, on_stop); signal(SIGPIPE, SIG_IGN);
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
-    if (read_intent_line(&first)) { logmsg("Invalid initial intent"); return 1; }
-    if (parse_intent(&d, first.s ? first.s : "", first.len, err, sizeof err)) {
-        logmsg("%s", err); printf("{\"error\": \"%s\"}\n", err); fflush(stdout); free(first.s); return 1;
+    struct daemon *d = &a->d;
+    char name[64];
+    memset(a, 0, sizeof *a);
+    d->control_fd = -1; d->sequence = -1;
+    a->start.in = a->start.out = a->start.err = -1;
+    a->client = client;
+    if (parse_intent(d, text, len, err, errsz)) return -1;
+    snprintf(d->status_path, sizeof d->status_path, "%s/ffn-aggregate-%s-status.json", RUN, d->in.group);
+    snprintf(d->intent_path, sizeof d->intent_path, "%s/ffn-aggregate-%s-intent.json", RUN, d->in.group);
+    snprintf(d->lease_path, sizeof d->lease_path, "%s/ffn-aggregate-%s-lease.json", RUN, d->in.group);
+    snprintf(d->pending_path, sizeof d->pending_path, "%s/ffn-aggregate-%s-network-pending.json", RUN, d->in.group);
+    snprintf(d->dhcp_pid_path, sizeof d->dhcp_pid_path, "%s/ffn-aggregate-%s-dhcp.pid", RUN, d->in.group);
+    process_start(getpid(), d->process_start, sizeof d->process_start);
+    network_revision(d->network, d->in.lldp, d->applied_revision);
+    snprintf(d->attempted_revision, sizeof d->attempted_revision, "%s", d->applied_revision);
+    snprintf(d->lease_generation, sizeof d->lease_generation, "%s", d->applied_revision);
+    offload_init(d);
+    for (unsigned i = 0; i < d->in.count; i++) {
+        d->native_members[i].front = d->in.sorted[i]; d->native_members[i].source = (uint32_t)front_source(d->in.sorted[i]);
+        d->native_members[i].alias = d->off.enabled ? d->off.alias[i] : 0;
+        d->fronts[i] = d->in.sorted[i];
     }
-    free(first.s);
-    snprintf(d.status_path, sizeof d.status_path, "%s/ffn-aggregate-%s-status.json", RUN, d.in.group);
-    snprintf(d.intent_path, sizeof d.intent_path, "%s/ffn-aggregate-%s-intent.json", RUN, d.in.group);
-    snprintf(d.lease_path, sizeof d.lease_path, "%s/ffn-aggregate-%s-lease.json", RUN, d.in.group);
-    snprintf(d.pending_path, sizeof d.pending_path, "%s/ffn-aggregate-%s-network-pending.json", RUN, d.in.group);
-    snprintf(d.dhcp_pid_path, sizeof d.dhcp_pid_path, "%s/ffn-aggregate-%s-dhcp.pid", RUN, d.in.group);
-    process_start(getpid(), d.process_start, sizeof d.process_start);
-    network_revision(d.network, d.in.lldp, d.applied_revision);
-    snprintf(d.attempted_revision, sizeof d.attempted_revision, "%s", d.applied_revision);
-    snprintf(d.lease_generation, sizeof d.lease_generation, "%s", d.applied_revision);
-    offload_init(&d);
-    for (unsigned i = 0; i < d.in.count; i++) {
-        d.native_members[i].front = d.in.sorted[i]; d.native_members[i].source = (uint32_t)front_source(d.in.sorted[i]);
-        d.native_members[i].alias = d.off.enabled ? d.off.alias[i] : 0;
-        d.fronts[i] = d.in.sorted[i];
-    }
-    d.front_count = d.in.count;
-    if (check_environment(err, sizeof err) || validate_intent(&d, err, sizeof err) || engine_create(&d, err, sizeof err)) { fail(&d, "%s", err); goto failed_early; }
+    d->front_count = d->in.count;
+    if (engine_create(d, err, errsz)) goto failed;
     /* Legacy fabric owners take EX; scoped WAN/aggregate owners take SH and
      * individual port EX locks, allowing coexistence without overlapping RX. */
-    if (take_lock(&d, "ffn-fabric.lock", LOCK_SH, err, sizeof err)) { fail(&d, "%s", err); goto failed_early; }
-    {
-        char name[64];
-        snprintf(name, sizeof name, "ffn-aggregate-%s.lock", d.in.group);
-        if (take_lock(&d, name, LOCK_EX, err, sizeof err)) { fail(&d, "%s", err); goto failed_early; }
-        for (unsigned i = 0; i < d.in.count; i++) {
-            snprintf(name, sizeof name, "ffn-aggregate-port-%u.lock", d.in.sorted[i]);
-            if (take_lock(&d, name, LOCK_EX, err, sizeof err)) { fail(&d, "%s", err); goto failed_early; }
-        }
+    if (take_lock(d, "ffn-fabric.lock", LOCK_SH, err, errsz)) goto failed;
+    snprintf(name, sizeof name, "ffn-aggregate-%s.lock", d->in.group);
+    if (take_lock(d, name, LOCK_EX, err, errsz)) goto failed;
+    for (unsigned i = 0; i < d->in.count; i++) {
+        snprintf(name, sizeof name, "ffn-aggregate-port-%u.lock", d->in.sorted[i]);
+        if (take_lock(d, name, LOCK_EX, err, errsz)) goto failed;
     }
     /* Persist ownership before any netdevice mutation so the watchdog can
      * recover a crash during initialization as well as normal work. */
-    if (write_intent_file(&d, d.network, d.in.lldp, d.applied_revision)) { fail(&d, "cannot write %s", d.intent_path); goto failed_early; }
-    if (!d.in.control_only) {
-        if (network_setup(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
-        if (native_open(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
-        {
-            char inspection_path[PATH];
-            snprintf(inspection_path, sizeof inspection_path, "%s/ffn-inspection-%s.json", RUN, d.in.group);
-            if (inspection_open(&d, inspection_path)) goto stop;
-        }
+    if (write_intent_file(d, d->network, d->in.lldp, d->applied_revision)) { snprintf(err, errsz, "cannot write %s", d->intent_path); goto failed; }
+    if (runtime_begin(&a->start, "validate", d->in.doc)) { snprintf(err, errsz, "validate helper: %s", strerror(errno)); unlink(d->intent_path); goto failed; }
+    a->start_deadline = now + 120 * SECOND;
+    a->stage = AGG_VALIDATING;
+    d->started = d->last_input = now;
+    d->next_status = d->next_lldp = d->next_fe100 = now;
+    return 0;
+failed:
+    release_locks(d);
+    if (d->engine) { ffn_lacp_destroy(d->engine); d->engine = NULL; }
+    ffn_json_free(d->in.doc); d->in.doc = NULL;
+    ffn_json_free(d->network); d->network = NULL;
+    return -1;
+}
+
+/* The owner once set up: native owner, inspection, control socket. */
+static int aggregate_open(struct aggregate *a, uint64_t now, char *err, size_t errsz)
+{
+    struct daemon *d = &a->d;
+    if (!d->in.control_only) {
+        char inspection_path[PATH];
+        if (native_open(d, err, errsz)) return -1;
+        snprintf(inspection_path, sizeof inspection_path, "%s/ffn-inspection-%s.json", RUN, d->in.group);
+        if (inspection_open(d, inspection_path)) { snprintf(err, errsz, "%s", d->fatal); return -1; }
     }
-    if (control_open(&d, err, sizeof err)) { fail(&d, "%s", err); goto stop; }
-    d.started = d.last_input = now_us();
-    d.next_status = d.started; d.next_lldp = d.started; d.next_fe100 = d.started;
-    fcntl(0, F_SETFL, O_NONBLOCK);
-    logmsg("%s serving: %u members, %s, %s", d.in.group, d.in.count, d.in.control_only ? "control only" : "native-c packet path",
-           d.in.active ? "active" : "passive");
-    while (!d.failed) {
-        struct pollfd fds[3]; unsigned nfds = 0;
-        bool network_current, network_ready, lease_ok;
-        int ready;
-        if (stop_signal) { logmsg("signal %d: stopping", (int)stop_signal); rc = 0; break; }
-        now = now_us();
-        if (now - d.last_input > (d.sequence < 0 ? LEASE_BEFORE_FIRST : LEASE_AFTER_FIRST)) { fail(&d, "MP/CP observation lease expired"); break; }
-        ffn_lacp_tick(d.engine, now);
-        lacp_service(&d, now);
-        if (ffn_lacp_fault(d.engine)) { fail(&d, "%s", ffn_lacp_fault(d.engine)); break; }
-        if (d.worker_running) worker_finish(&d);
-        configuration_service(&d, now);
-        children_service(&d, now);
-        if (d.native) inspection_tick(&d.insp, now);
-        if (now >= d.next_lldp && d.in.lldp) { lldp_announce(&d); d.next_lldp = now + LLDP_PERIOD; }
-        network_current = !d.worker_running && !d.has_network_error && !strcmp(d.applied_revision, d.requested ? ffn_json_get_string(d.requested, "revision") : d.applied_revision);
-        if (network_current && !d.in.control_only && network_dhcp(d.network) && ffn_lacp_distributing(d.engine, NULL, 0) && d.dhcp <= 0) dhcp_start(&d);
-        if (d.dhcp > 0 && d.dhcp_exited) { snprintf(d.network_error, sizeof d.network_error, "Aggregate DHCP client exited"); d.has_network_error = true; }
-        network_current = network_current && !d.has_network_error;
-        if (now >= d.next_status) { ffn_json_free(d.lease); d.lease = read_json(d.lease_path); }
-        local_addresses(&d);
-        if (d.native) { native_snapshot(&d); datapath_sync(&d, now, network_current); }
-        if (d.failed) break;
-        lease_ok = !network_dhcp(d.network) || (d.local_count && !(d.lease && ffn_json_get(d.lease, "error") && ffn_json_get(d.lease, "error")->type != FFN_JSON_NULL));
-        network_ready = network_current && lease_ok;
-        if (now >= d.next_status) { d.next_status = now + STATUS_PERIOD; status_row(&d, now, network_current, network_ready, true); }
-        if (!d.stdin_closed) fds[nfds++] = (struct pollfd){ 0, POLLIN, 0 };
-        fds[nfds++] = (struct pollfd){ d.control_fd, POLLIN, 0 };
-        if (d.worker_running && d.worker.out >= 0) fds[nfds++] = (struct pollfd){ d.worker.out, POLLIN, 0 };
-        ready = poll(fds, nfds, POLL_MS);
-        if (ready < 0 && errno != EINTR) { fail(&d, "poll: %s", strerror(errno)); break; }
-        now = now_us();
-        /* Drain control before packets so a withdrawal closes gates first. */
-        for (unsigned i = 0; i < nfds; i++) {
-            if (fds[i].fd == 0 && (fds[i].revents & (POLLIN | POLLHUP | POLLERR))) stdin_service(&d, now);
+    if (control_open(d, err, errsz)) return -1;
+    d->last_input = now;   /* the lease clock starts when the owner serves */
+    d->next_status = d->next_lldp = d->next_fe100 = now;
+    a->stage = AGG_RUNNING;
+    logmsg("%s serving: %u members, %s, %s", d->in.group, d->in.count, d->in.control_only ? "control only" : "native-c packet path",
+           d->in.active ? "active" : "passive");
+    return 0;
+}
+
+/* Drive the start helpers; the lease's first status row follows the open. */
+static void aggregate_start_service(struct aggregate *a, uint64_t now)
+{
+    struct daemon *d = &a->d;
+    struct ffn_json *reply, *request;
+    char err[512];
+    const char *verb = a->stage == AGG_VALIDATING ? "validate" : "network-setup";
+    int status;
+    bool closed = helper_service(&a->start);
+    status = helper_status(&a->start);
+    if (status < 0 || !closed) {
+        if (now > a->start_deadline || (stop_signal && !shutting_down)) {
+            helper_kill(&a->start); helper_service(&a->start); helper_close(&a->start);
+            fail(d, "%s helper timed out", verb);
         }
-        if (d.failed) break;
-        for (unsigned i = 0; i < nfds; i++) {
-            if (fds[i].fd == d.control_fd && (fds[i].revents & POLLIN)) control_receive(&d, now);
-            if (fds[i].fd == d.control_fd && (fds[i].revents & (POLLHUP | POLLERR | POLLNVAL))) fail(&d, "control socket closed");
-        }
+        return;
     }
-stop:
-    if (d.failed && !d.stdin_closed) error_row(&d);
-    shutdown_owner(&d);
-    logmsg("%s stopped%s%s", d.in.group, d.failed ? ": " : "", d.failed ? d.fatal : "");
-    return d.failed ? 1 : rc;
-failed_early:
-    error_row(&d);
-    release_locks(&d);
-    unlink(d.intent_path);
-    logmsg("%s not started: %s", d.in.group, d.fatal);
-    return 1;
+    reply = helper_reply(&a->start, status, verb, err, sizeof err);
+    helper_close(&a->start);
+    if (!reply) { fail(d, "%s", err); return; }
+    if (a->stage == AGG_VALIDATING) {
+        ffn_json_free(reply);
+        if (d->in.control_only) { if (aggregate_open(a, now, err, sizeof err)) fail(d, "%s", err); return; }
+        request = ffn_json_object();
+        ffn_json_set(request, "intent", ffn_json_copy(d->in.doc));
+        if (runtime_begin(&a->start, "network-setup", request)) { ffn_json_free(request); fail(d, "network-setup helper: %s", strerror(errno)); return; }
+        ffn_json_free(request);
+        a->start_deadline = now + 300 * SECOND;
+        a->stage = AGG_SETTING_UP;
+        return;
+    }
+    d->created = true;
+    ffn_json_free(d->unit_status);
+    d->unit_status = ffn_json_get(reply, "subinterfaces") ? ffn_json_copy(ffn_json_get(reply, "subinterfaces")) : ffn_json_array();
+    ffn_json_free(reply);
+    if (aggregate_open(a, now, err, sizeof err)) fail(d, "%s", err);
+}
+
+/* One pass of what the serve loop did between its polls. */
+static void aggregate_tick(struct aggregate *a, uint64_t now)
+{
+    struct daemon *d = &a->d;
+    bool network_current, network_ready, lease_ok;
+    if (d->failed) return;
+    if (a->stage != AGG_RUNNING) { aggregate_start_service(a, now); return; }   /* the helpers' deadlines bound the start */
+    if (a->client) lease_lines(d, &a->client->in, now);
+    if (d->failed) return;
+    /* An observation consumed this very tick stamps last_input later than `now`. */
+    if (now > d->last_input && now - d->last_input > (d->sequence < 0 ? LEASE_BEFORE_FIRST : LEASE_AFTER_FIRST)) { fail(d, "MP/CP observation lease expired"); return; }
+    ffn_lacp_tick(d->engine, now);
+    lacp_service(d, now);
+    if (ffn_lacp_fault(d->engine)) { fail(d, "%s", ffn_lacp_fault(d->engine)); return; }
+    if (d->worker_running) worker_finish(d);
+    configuration_service(d, now);
+    children_service(d, now);
+    if (d->native) inspection_tick(&d->insp, now);
+    if (now >= d->next_lldp && d->in.lldp) { lldp_announce(d); d->next_lldp = now + LLDP_PERIOD; }
+    network_current = !d->worker_running && !d->has_network_error && !strcmp(d->applied_revision, d->requested ? ffn_json_get_string(d->requested, "revision") : d->applied_revision);
+    if (network_current && !d->in.control_only && network_dhcp(d->network) && ffn_lacp_distributing(d->engine, NULL, 0) && d->dhcp <= 0) dhcp_start(d);
+    if (d->dhcp > 0 && d->dhcp_exited) { snprintf(d->network_error, sizeof d->network_error, "Aggregate DHCP client exited"); d->has_network_error = true; }
+    network_current = network_current && !d->has_network_error;
+    if (now >= d->next_status) { ffn_json_free(d->lease); d->lease = read_json(d->lease_path); }
+    local_addresses(d);
+    if (d->native) {
+        int fault = ffn_packet_fault(d->native);
+        if (fault > 0) { fail(d, "native owner fault: %s", strerror(fault)); return; }
+        native_snapshot(d); datapath_sync(d, now, network_current);
+    }
+    if (d->failed) return;
+    lease_ok = !network_dhcp(d->network) || (d->local_count && !(d->lease && ffn_json_get(d->lease, "error") && ffn_json_get(d->lease, "error")->type != FFN_JSON_NULL));
+    network_ready = network_current && lease_ok;
+    if (now >= d->next_status) { d->next_status = now + STATUS_PERIOD; status_row(d, now, network_current, network_ready, a->client ? &a->client->out : NULL); }
+}
+
+/* The trunk control socket's events from the daemon's poll. */
+static void aggregate_control_events(struct aggregate *a, short revents, uint64_t now)
+{
+    if (a->stage != AGG_RUNNING || a->d.failed) return;
+    if (revents & POLLIN) control_receive(&a->d, now);
+    if (revents & (POLLHUP | POLLERR | POLLNVAL)) fail(&a->d, "control socket closed");
+}
+
+/* Withdraw everything; the error row reaches the lease when it is still open. */
+static void aggregate_stop(struct aggregate *a)
+{
+    struct daemon *d = &a->d;
+    if (d->failed && !d->stdin_closed && a->client) error_row(d, &a->client->out);
+    if (a->start.running) { helper_kill(&a->start); helper_service(&a->start); }
+    helper_close(&a->start);
+    shutdown_owner(d);
+    if (d->engine) { ffn_lacp_destroy(d->engine); d->engine = NULL; }
+    ffn_json_free(d->in.doc); ffn_json_free(d->network); ffn_json_free(d->requested); ffn_json_free(d->worker_intent);
+    ffn_json_free(d->unit_status); ffn_json_free(d->lease); ffn_json_free(d->unit_counts); ffn_json_free(d->workers);
+    ffn_json_free(d->returns.rows); ffn_json_free(d->off.key_program);
+    free(d->stdin_buffer.s);
+    logmsg("%s stopped%s%s", d->in.group, d->failed ? ": " : "", d->failed ? d->fatal : "");
+    a->stage = AGG_STOPPED;
 }
 
 /* ------------------------------------------------------- physical ports */
@@ -2191,80 +2268,6 @@ static struct ffn_json *physical_status(const struct physical *p)
     return result;
 }
 
-static bool physical_running(const struct physical *p)
-{
-    struct ffn_json *status = physical_status(p);
-    bool running = false;
-    ffn_json_get_bool(status, "running", &running);
-    ffn_json_free(status);
-    return running;
-}
-
-static int systemctl(const char *verb, const char *unit)
-{
-    struct helper h;
-    char *const argv[] = { "/usr/bin/systemctl", (char *)verb, (char *)unit, NULL };
-    int status = helper_run(&h, argv, NULL, 30 * SECOND);
-    helper_close(&h);
-    return status == 0 ? 0 : -1;
-}
-
-/* `physical start|stop --port N`, {"boot_id": ...} on stdin: the DP-side half
- * of the MP's attach/detach, as the Python owner answered it. */
-static int physical_control(struct physical *p, const char *verb)
-{
-    struct text t = { 0 };
-    char buf[4096], perr[64], current_boot[40];
-    ssize_t n;
-    struct ffn_json *doc, *status;
-    const char *boot;
-    char *text;
-    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
-    doc = ffn_json_parse(t.s ? t.s : "{}", t.len ? t.len : 2, perr, sizeof perr);
-    free(t.s);
-    boot = doc ? ffn_json_get_string(doc, "boot_id") : NULL;
-    if (!doc || doc->type != FFN_JSON_OBJECT || doc->count != 1 || !boot || boot_id(current_boot, sizeof current_boot) || strcmp(boot, current_boot)) {
-        printf("{\"error\": \"Current DP boot identity required\"}\n"); ffn_json_free(doc); return 1;
-    }
-    ffn_json_free(doc);
-    if (!strcmp(verb, "start")) {
-        if (!physical_running(p)) {
-            /* Prove the locks are free before asking systemd, as the Python owner did. */
-            char lock_name[64];
-            struct daemon probe;
-            char err[128];
-            struct ffn_json *intent;
-            memset(&probe, 0, sizeof probe);
-            snprintf(lock_name, sizeof lock_name, "ffn-aggregate-port-%u.lock", p->port);
-            if (take_lock(&probe, "ffn-fabric.lock", LOCK_SH, err, sizeof err) || take_lock(&probe, lock_name, LOCK_EX, err, sizeof err)) {
-                release_locks(&probe); printf("{\"error\": \"%s\"}\n", err); return 1;
-            }
-            intent = ffn_json_object();
-            ffn_json_set(intent, "boot_id", ffn_json_string(current_boot));
-            {
-                struct ffn_json *front = ffn_json_object();
-                char key[8]; snprintf(key, sizeof key, "%u", p->port);
-                ffn_json_set(front, key, ffn_json_int(p->source));
-                ffn_json_set(intent, "front", front);
-            }
-            if (write_json(p->intent_path, intent)) { release_locks(&probe); ffn_json_free(intent); printf("{\"error\": \"cannot write the attachment intent\"}\n"); return 1; }
-            ffn_json_free(intent);
-            release_locks(&probe);
-            if (systemctl("start", p->unit)) { printf("{\"error\": \"systemctl start %s failed\"}\n", p->unit); return 1; }
-            {
-                uint64_t deadline = now_us() + 5 * SECOND;
-                while (now_us() < deadline && !physical_running(p)) usleep(100000);
-            }
-            if (!physical_running(p)) { printf("{\"error\": \"WAN packet attachment did not become ready\"}\n"); return 1; }
-        }
-    } else if (systemctl("stop", p->unit)) { printf("{\"error\": \"systemctl stop %s failed\"}\n", p->unit); return 1; }
-    status = physical_status(p);
-    text = ffn_json_dump(status);
-    if (text) { puts(text); free(text); }
-    ffn_json_free(status);
-    return 0;
-}
-
 /* The TAP's ifindex inside the data namespace, as the policy bindings compare it. */
 static int tap_ifindex(const char *tap)
 {
@@ -2336,7 +2339,7 @@ static void physical_carrier(struct daemon *d, struct physical *p, uint64_t now)
 /* The parent's static addresses from the network owner's journal, for local-service classification. */
 static void physical_addresses(struct daemon *d, struct physical *p)
 {
-    struct ffn_json *doc = read_json("/etc/ffn/network.json"), *ports, *port, *addresses;
+    struct ffn_json *doc = read_json(NETWORK_JOURNAL), *ports, *port, *addresses;
     uint8_t v4[FFN_PACKET_LOCAL_MAX][4], v6[FFN_PACKET_LOCAL_MAX][16];
     unsigned n4 = 0, n6 = 0;
     bool inspect = inspection_port(&d->insp, p->port);
@@ -2396,122 +2399,249 @@ static void physical_publish(struct daemon *d, struct physical *p, uint64_t now)
     write_json(p->state_path, state);
 }
 
-static int physical_serve(unsigned port)
-{
+/* A faceplate port in the daemon's table: what the MP wants it to be, what
+ * the daemon holds for it, and why not when the two differ. */
+enum port_mode { MODE_DISABLED, MODE_L3, MODE_AGGREGATE };
+
+struct port {
+    unsigned number;
+    enum port_mode desired;
+    char group[8];              /* MODE_AGGREGATE: the group the row names */
+    bool attached;              /* an l3 owner runs on the TAP */
     struct daemon d;
     struct physical p;
-    struct ffn_json *intent, *front;
-    char err[512], key[8], current_boot[40], lock_name[64];
-    const char *boot;
-    long long source = -1;
-    int network_lock = -1, rc = 1;
-    memset(&d, 0, sizeof d);
-    d.control_fd = -1;
-    if (physical_select(&p, port)) { logmsg("invalid physical port %u", port); return 1; }
-    signal(SIGTERM, on_stop); signal(SIGINT, on_stop); signal(SIGHUP, on_stop); signal(SIGPIPE, SIG_IGN);
-    intent = read_json(p.intent_path);
-    boot = intent ? ffn_json_get_string(intent, "boot_id") : NULL;
-    front = intent ? ffn_json_get(intent, "front") : NULL;
-    snprintf(key, sizeof key, "%u", port);
-    if (front) ffn_json_get_int(front, key, &source);
-    if (!boot || boot_id(current_boot, sizeof current_boot) || strcmp(boot, current_boot) || !front || front->count != 1 || source != (long long)p.source) {
-        logmsg("Fresh MP-selected WAN attachment required"); ffn_json_free(intent); return 1;
-    }
-    ffn_json_free(intent);
-    if (check_environment(err, sizeof err)) { logmsg("%s", err); return 1; }
-    snprintf(lock_name, sizeof lock_name, "ffn-aggregate-port-%u.lock", port);
-    if (take_lock(&d, "ffn-fabric.lock", LOCK_SH, err, sizeof err) || take_lock(&d, lock_name, LOCK_EX, err, sizeof err)) { logmsg("%s", err); release_locks(&d); return 1; }
-    d.fronts[0] = (uint16_t)port; d.front_count = 1;
-    /* The network owner reconfigures the TAP under this lock; attach while it is quiet. */
-    {
-        char path[PATH];
-        snprintf(path, sizeof path, "%s/ffn-network.lock", RUN);
-        network_lock = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-        if (network_lock < 0 || flock(network_lock, LOCK_EX)) { logmsg("network lock: %s", strerror(errno)); release_locks(&d); return 1; }
-    }
-    d.native = ffn_packet_open(TRUNK, NS, p.tap, p.source);
-    if (!d.native) { snprintf(err, sizeof err, "native physical owner: %s", strerror(errno)); goto failed; }
-    if (native_start(&d, p.tap, err, sizeof err)) goto failed;
-    p.ifindex = tap_ifindex(p.tap);
-    if (p.ifindex < 0) { snprintf(err, sizeof err, "%s: no TAP in %s", p.tap, NS); goto failed; }
-    p.state = ffn_json_object();
-    ffn_json_set(p.state, "owner", ffn_json_string(p.owner));
-    ffn_json_set(p.state, "pid", ffn_json_int(getpid()));
-    ffn_json_set(p.state, "boot_id", ffn_json_string(current_boot));
-    process_start(getpid(), d.process_start, sizeof d.process_start);
-    ffn_json_set(p.state, "process_start", ffn_json_string(d.process_start));
-    { struct ffn_json *ports = ffn_json_array(); ffn_json_push(ports, ffn_json_int(port)); ffn_json_set(p.state, "ports", ports); }
-    ffn_json_set(p.state, "max_mtu", ffn_json_int(1500));
-    ffn_json_set(p.state, "transport", ffn_json_string("direct OCTEON physical port"));
-    ffn_json_set(p.state, "packet_execution", ffn_json_string("native-c"));
-    ffn_json_set(p.state, "hardware_offload", ffn_json_bool(false));
-    ffn_json_set(p.state, "owner_daemon", ffn_json_string("ffn-portd"));
-    { struct ffn_json *interfaces = ffn_json_object(); ffn_json_set(interfaces, p.tap, ffn_json_int(p.ifindex)); ffn_json_set(p.state, "interfaces", interfaces); }
-    write_json(p.state_path, p.state);
-    flock(network_lock, LOCK_UN); close(network_lock); network_lock = -1;
-    if (inspection_open(&d, p.inspection_path[0] ? p.inspection_path : NULL)) goto stop;
-    if (p.observed && ffn_packet_carrier(d.native, 0)) { snprintf(err, sizeof err, "carrier: %s", strerror(errno)); fail(&d, "%s", err); goto stop; }
-    snprintf(p.carrier_reason, sizeof p.carrier_reason, "no link observation delivered");
-    logmsg("%s serving %s (%s, source %u, carrier %s)", p.owner, p.tap, port == 1 ? "WAN" : "physical", p.source, p.observed ? "observed" : "always");
-    while (!d.failed) {
-        uint64_t now = now_us();
-        if (stop_signal) { logmsg("signal %d: stopping", (int)stop_signal); rc = 0; break; }
-        if (now >= p.next_status) {
-            p.next_status = now + STATUS_PERIOD;
-            /* Quiesce the workers before the inspection engine or the return
-             * bindings change under them; resume only after validated state. */
-            if (ffn_packet_pause(d.native)) { fail(&d, "native pause: %s", strerror(errno)); break; }
-            inspection_tick(&d.insp, now);
-            physical_addresses(&d, &p);
-            fe100_renew(&d, now);
-            physical_carrier(&d, &p, now);
-            if (ffn_packet_resume(d.native)) { fail(&d, "native resume: %s", strerror(errno)); break; }
-            if (d.failed) break;
-            physical_publish(&d, &p, now);
-        }
-        if (ffn_packet_poll(d.native, 100)) { fail(&d, "native owner fault: %s", strerror(errno)); break; }
-    }
-stop:
-    if (d.failed) logmsg("%s stopping: %s", p.owner, d.fatal);
-    if (d.native) native_close(&d);
-    if (d.insp.counts) inspection_close(&d.insp);
-    unlink(p.state_path);
-    release_locks(&d);
-    ffn_json_free(p.state); ffn_json_free(p.observation);
-    logmsg("%s stopped", p.owner);
-    return d.failed ? 1 : rc;
-failed:
-    logmsg("%s not started: %s", p.owner, err);
-    if (network_lock >= 0) close(network_lock);
-    if (d.native) native_close(&d);
-    release_locks(&d);
-    return 1;
+    char reason[160];           /* why the port is not as desired, or "running" */
+    uint64_t next_try, next_tick;
+    unsigned failures;
+    struct aggregate *member_of;  /* the live aggregate lease holding this port */
+};
+
+static const char *port_mode_name(enum port_mode m)
+{
+    static const char *names[] = { "disabled", "l3", "aggregate" };
+    return names[m];
 }
 
-/* `links`: the MP timer's faceplate observation for every physical owner.
+/* Attach the port's packet owner: what `physical serve` did before its loop.
+ * -1 with err and nothing held on failure; the table retries it. */
+static int port_attach(struct port *port, char *err, size_t errsz)
+{
+    struct daemon *d = &port->d;
+    struct physical *p = &port->p;
+    char current_boot[40], lock_name[64], path[PATH];
+    int network_lock = -1;
+    memset(d, 0, sizeof *d);
+    d->control_fd = -1;
+    if (physical_select(p, port->number)) { snprintf(err, errsz, "invalid physical port %u", port->number); return -1; }
+    if (boot_id(current_boot, sizeof current_boot)) { snprintf(err, errsz, "boot identity unreadable"); return -1; }
+    snprintf(lock_name, sizeof lock_name, "ffn-aggregate-port-%u.lock", port->number);
+    if (take_lock(d, "ffn-fabric.lock", LOCK_SH, err, errsz) || take_lock(d, lock_name, LOCK_EX, err, errsz)) { release_locks(d); return -1; }
+    d->fronts[0] = (uint16_t)port->number; d->front_count = 1;
+    /* The network owner reconfigures the TAP under this lock; attach while it is quiet. */
+    snprintf(path, sizeof path, "%s/ffn-network.lock", RUN);
+    network_lock = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (network_lock < 0 || flock(network_lock, LOCK_EX)) { snprintf(err, errsz, "network lock: %s", strerror(errno)); goto failed; }
+    d->native = ffn_packet_open(TRUNK, NS, p->tap, p->source);
+    if (!d->native) { snprintf(err, errsz, "native physical owner: %s", strerror(errno)); goto failed; }
+    if (native_start(d, p->tap, err, errsz)) goto failed;
+    p->ifindex = tap_ifindex(p->tap);
+    if (p->ifindex < 0) { snprintf(err, errsz, "%s: no TAP in %s", p->tap, NS); goto failed; }
+    p->state = ffn_json_object();
+    ffn_json_set(p->state, "owner", ffn_json_string(p->owner));
+    ffn_json_set(p->state, "pid", ffn_json_int(getpid()));
+    ffn_json_set(p->state, "boot_id", ffn_json_string(current_boot));
+    process_start(getpid(), d->process_start, sizeof d->process_start);
+    ffn_json_set(p->state, "process_start", ffn_json_string(d->process_start));
+    { struct ffn_json *ports = ffn_json_array(); ffn_json_push(ports, ffn_json_int(port->number)); ffn_json_set(p->state, "ports", ports); }
+    ffn_json_set(p->state, "max_mtu", ffn_json_int(1500));
+    ffn_json_set(p->state, "transport", ffn_json_string("direct OCTEON physical port"));
+    ffn_json_set(p->state, "packet_execution", ffn_json_string("native-c"));
+    ffn_json_set(p->state, "hardware_offload", ffn_json_bool(false));
+    ffn_json_set(p->state, "owner_daemon", ffn_json_string("ffn-portd"));
+    { struct ffn_json *interfaces = ffn_json_object(); ffn_json_set(interfaces, p->tap, ffn_json_int(p->ifindex)); ffn_json_set(p->state, "interfaces", interfaces); }
+    write_json(p->state_path, p->state);
+    flock(network_lock, LOCK_UN); close(network_lock); network_lock = -1;
+    if (inspection_open(d, p->inspection_path[0] ? p->inspection_path : NULL)) { snprintf(err, errsz, "%.200s", d->fatal); goto failed; }
+    if (p->observed && ffn_packet_carrier(d->native, 0)) { snprintf(err, errsz, "carrier: %s", strerror(errno)); goto failed; }
+    snprintf(p->carrier_reason, sizeof p->carrier_reason, "no link observation delivered");
+    port->attached = true;
+    port->next_tick = now_us();
+    logmsg("%s serving %s (%s, source %u, carrier %s)", p->owner, p->tap, port->number == 1 ? "WAN" : "physical", p->source, p->observed ? "observed" : "always");
+    return 0;
+failed:
+    if (network_lock >= 0) close(network_lock);
+    if (d->insp.counts) inspection_close(&d->insp);
+    if (d->native) native_close(d);
+    unlink(p->state_path);
+    release_locks(d);
+    ffn_json_free(p->state); p->state = NULL;
+    ffn_json_free(p->observation); p->observation = NULL;
+    return -1;
+}
+
+/* Release the port's packet owner: what `physical serve` did when it stopped. */
+static void port_detach(struct port *port)
+{
+    struct daemon *d = &port->d;
+    struct physical *p = &port->p;
+    if (!port->attached) return;
+    if (d->failed) logmsg("%s stopping: %s", p->owner, d->fatal);
+    if (d->native) native_close(d);
+    if (d->insp.counts) inspection_close(&d->insp);
+    unlink(p->state_path);
+    release_locks(d);
+    ffn_json_free(p->state); p->state = NULL;
+    ffn_json_free(p->observation); p->observation = NULL;
+    ffn_json_free(d->returns.rows); d->returns.rows = NULL;
+    ffn_json_free(d->workers); d->workers = NULL;
+    port->attached = false;
+    logmsg("%s stopped", p->owner);
+}
+
+/* One second of an attached port: what `physical serve` did per loop. A
+ * worker fault or a failed native call marks the owner failed; the table
+ * detaches and re-attaches it. */
+static void port_tick(struct port *port, uint64_t now)
+{
+    struct daemon *d = &port->d;
+    struct physical *p = &port->p;
+    int fault;
+    if (!port->attached || d->failed) return;
+    fault = ffn_packet_fault(d->native);
+    if (fault > 0) { fail(d, "native owner fault: %s", strerror(fault)); return; }
+    if (now < port->next_tick) return;
+    port->next_tick = now + STATUS_PERIOD;
+    /* Quiesce the workers before the inspection engine or the return
+     * bindings change under them; resume only after validated state. */
+    if (ffn_packet_pause(d->native)) { fail(d, "native pause: %s", strerror(errno)); return; }
+    inspection_tick(&d->insp, now);
+    physical_addresses(d, p);
+    fe100_renew(d, now);
+    physical_carrier(d, p, now);
+    if (ffn_packet_resume(d->native)) { fail(d, "native resume: %s", strerror(errno)); return; }
+    if (d->failed) return;
+    physical_publish(d, p, now);
+}
+
+/* The same delivery in the form the route tracker reads: {"boot_id": this DP
+ * boot, "revision": the network journal's, "links": {"pN": up}, "observed":
+ * CLOCK_MONOTONIC seconds}. octeon/debian/ffn_network.py route_link judges a
+ * link-tracked route by it and the core tracker (ffn_static_routes.py)
+ * withdraws the route once it is older than 60 s or from another DP boot. A
+ * port is up for a route when its row says available, enabled and link: the
+ * rule the MP feed applies (management/daemon_backend.py, route-links
+ * refresh, through the network owner's `health`). That feed alone wrote this
+ * file until 2026-10-20, when a core patch install stopped it with the control
+ * daemon, nothing started it again, and the tracker withdrew both default
+ * routes for fifteen minutes. The observation the owners receive every three
+ * seconds anyway now carries it, so the tracker no longer depends on the MP
+ * feed; the feed remains a second writer of the same record. */
+static int route_links_record(const struct ffn_json *byport)
+{
+    struct ffn_json *out, *links, *network;
+    char boot[40];
+    long long revision;
+    int rc;
+    if (boot_id(boot, sizeof boot)) return -1;
+    out = ffn_json_object(); links = ffn_json_object();
+    for (size_t i = 0; i < byport->count; i++) {
+        const struct ffn_json *row = byport->items[i];
+        bool available = false, enabled = false, link = false;
+        char key[12];
+        ffn_json_get_bool(row, "available", &available); ffn_json_get_bool(row, "enabled", &enabled); ffn_json_get_bool(row, "link", &link);
+        snprintf(key, sizeof key, "p%s", byport->keys[i]);
+        ffn_json_set(links, key, ffn_json_bool(available && enabled && link));
+    }
+    network = read_json(NETWORK_JOURNAL);
+    ffn_json_set(out, "boot_id", ffn_json_string(boot));
+    ffn_json_set(out, "revision", network && ffn_json_get_int(network, "revision", &revision) ? ffn_json_int(revision) : ffn_json_null());
+    ffn_json_set(out, "links", links);
+    ffn_json_set(out, "observed", ffn_json_number((double)now_us() / 1e6));
+    rc = write_json(ROUTE_LINKS, out);
+    ffn_json_free(network); ffn_json_free(out);
+    return rc;
+}
+
+/* ------------------------------------------------------ socket clients */
+/* The daemon's control socket, as its command lines reach it. */
+
+static int daemon_connect(void)
+{
+    struct sockaddr_un addr;
+    int fd;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    if (snprintf(addr.sun_path, sizeof addr.sun_path, "%s/%s", RUN, SOCKET_NAME) >= (int)sizeof addr.sun_path) { errno = ENAMETOOLONG; return -1; }
+    fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr)) { int e = errno; close(fd); errno = e; return -1; }
+    return fd;
+}
+
+/* 1 when a reply line is an error row: its top-level object carries "error"
+ * (a nested counter named so, as the workers' is, is not one). */
+static int reply_is_error(const char *line)
+{
+    char perr[64];
+    struct ffn_json *doc = ffn_json_parse(line, strlen(line), perr, sizeof perr);
+    int rc = !doc || doc->type != FFN_JSON_OBJECT || ffn_json_get(doc, "error") != NULL;
+    ffn_json_free(doc);
+    return rc;
+}
+
+/* Send one request line, read one reply line (bounded) within timeout_ms. */
+static int daemon_request(int fd, const char *line, size_t len, struct text *reply, int timeout_ms)
+{
+    uint64_t deadline = now_us() + (uint64_t)timeout_ms * 1000;
+    char buf[4096];
+    for (size_t off = 0; off < len;) {
+        ssize_t w = write(fd, line + off, len - off);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return -1;
+        off += (size_t)w;
+    }
+    if (line[len - 1] != '\n' && write(fd, "\n", 1) != 1) return -1;
+    for (;;) {
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        uint64_t now = now_us();
+        ssize_t n;
+        if (reply->s && memchr(reply->s, '\n', reply->len)) return 0;
+        if (now >= deadline) { errno = ETIMEDOUT; return -1; }
+        if (poll(&pfd, 1, (int)((deadline - now) / 1000)) < 0 && errno != EINTR) return -1;
+        n = read(fd, buf, sizeof buf);
+        if (n == 0) { errno = ECONNRESET; return -1; }
+        if (n < 0) { if (errno == EINTR || errno == EAGAIN) continue; return -1; }
+        text_put(reply, buf, (size_t)n);
+        if (reply->len > 1 << 20) { errno = EMSGSIZE; return -1; }
+    }
+}
+
+/* ------------------------------------------------------------- links */
+/* The MP timer's faceplate observation for every physical owner.
  * {"mp_boot_id", "sequence", "age_seconds", "lease_seconds"?, "ports": [rows]}
  * becomes /run/ffn-port-links.json with the receipt time; an observation
  * that is not newer than the recorded one is refused, so a delayed or
- * replayed delivery cannot revive a carrier. */
-static int links_tool(void)
+ * replayed delivery cannot revive a carrier. The accepted rows are also
+ * recorded for the route tracker (route_links_record); the reply says
+ * whether that record was written, so the MP's journal shows it. The daemon
+ * records a delivery that reaches its socket; the command line records one
+ * itself when the daemon does not answer, so the tracker's observation never
+ * waits for the daemon. */
+static int links_record_doc(const struct ffn_json *doc, char *reply, size_t replysz)
 {
-    struct text t = { 0 };
-    char buf[4096], perr[64], path[PATH];
-    ssize_t n;
-    struct ffn_json *doc, *ports, *previous, *out, *byport;
+    char path[PATH];
+    struct ffn_json *ports, *previous, *out, *byport;
     const char *mp_boot;
     long long sequence, lease = LINKS_LEASE_DEFAULT, previous_sequence = -1;
     double age;
     unsigned count = 0;
-    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
-    doc = ffn_json_parse(t.s ? t.s : "", t.len, perr, sizeof perr);
-    free(t.s);
+    bool route_links;
     mp_boot = doc ? ffn_json_get_string(doc, "mp_boot_id") : NULL;
     ports = doc ? ffn_json_get(doc, "ports") : NULL;
     if (!doc || doc->type != FFN_JSON_OBJECT || !mp_boot || !ffn_json_get_int(doc, "sequence", &sequence) || sequence < 0 ||
         !ffn_json_get_number(doc, "age_seconds", &age) || !(age >= 0 && age < 60) || !ports || ports->type != FFN_JSON_ARRAY || ports->count > 24 ||
         (ffn_json_get(doc, "lease_seconds") && (!ffn_json_get_int(doc, "lease_seconds", &lease) || lease < 1 || lease > LINKS_LEASE_MAX))) {
-        printf("{\"error\": \"invalid link observation\"}\n"); ffn_json_free(doc); return 1;
+        snprintf(reply, replysz, "{\"error\": \"invalid link observation\"}"); return 1;
     }
     snprintf(path, sizeof path, "%s/%s", RUN, LINKS_FILE);
     previous = read_json(path);
@@ -2520,7 +2650,7 @@ static int links_tool(void)
         if (old_boot && !strcmp(old_boot, mp_boot)) ffn_json_get_int(previous, "sequence", &previous_sequence);
         ffn_json_free(previous);
     }
-    if (sequence <= previous_sequence) { printf("{\"error\": \"stale link observation\"}\n"); ffn_json_free(doc); return 1; }
+    if (sequence <= previous_sequence) { snprintf(reply, replysz, "{\"error\": \"stale link observation\"}"); return 1; }
     out = ffn_json_object(); byport = ffn_json_object();
     for (size_t i = 0; i < ports->count; i++) {
         struct ffn_json *row = ports->items[i];
@@ -2538,10 +2668,46 @@ static int links_tool(void)
     ffn_json_set(out, "age_seconds", ffn_json_number(age));
     ffn_json_set(out, "lease_seconds", ffn_json_int(lease));
     ffn_json_set(out, "ports", byport);
-    if (write_json(path, out)) { printf("{\"error\": \"cannot record the link observation\"}\n"); ffn_json_free(out); ffn_json_free(doc); return 1; }
-    printf("{\"accepted\": true, \"ports\": %u, \"lease_seconds\": %lld, \"sequence\": %lld}\n", count, lease, sequence);
-    ffn_json_free(out); ffn_json_free(doc);
+    if (write_json(path, out)) { snprintf(reply, replysz, "{\"error\": \"cannot record the link observation\"}"); ffn_json_free(out); return 1; }
+    route_links = route_links_record(byport) == 0;
+    snprintf(reply, replysz, "{\"accepted\": true, \"ports\": %u, \"lease_seconds\": %lld, \"sequence\": %lld, \"route_links\": %s}",
+             count, lease, sequence, route_links ? "true" : "false");
+    ffn_json_free(out);
     return 0;
+}
+
+/* `links`: stdin to the daemon's socket, or recorded here when it is away. */
+static int links_tool(void)
+{
+    struct text t = { 0 }, reply = { 0 };
+    char buf[4096], perr[64], line[256];
+    ssize_t n;
+    struct ffn_json *doc;
+    int fd, rc;
+    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
+    doc = ffn_json_parse(t.s ? t.s : "", t.len, perr, sizeof perr);
+    if (!doc || doc->type != FFN_JSON_OBJECT) { printf("{\"error\": \"invalid link observation\"}\n"); ffn_json_free(doc); free(t.s); return 1; }
+    ffn_json_set(doc, "op", ffn_json_string("links"));
+    fd = daemon_connect();
+    if (fd >= 0) {
+        char *text = ffn_json_dump(doc);
+        rc = text ? daemon_request(fd, text, strlen(text), &reply, 10000) : -1;
+        free(text); close(fd);
+        if (rc == 0) {
+            char *nl = memchr(reply.s, '\n', reply.len);
+            if (nl) *nl = 0;
+            puts(reply.s);
+            rc = reply_is_error(reply.s);
+            free(reply.s); free(t.s); ffn_json_free(doc);
+            return rc;
+        }
+        free(reply.s);
+    }
+    ffn_json_remove(doc, "op");
+    rc = links_record_doc(doc, line, sizeof line);
+    puts(line);
+    ffn_json_free(doc); free(t.s);
+    return rc;
 }
 
 /* -------------------------------------------------------- the watchdog */
@@ -2727,6 +2893,712 @@ static int recover_tool(void)
     return 0;
 }
 
+/* ---------------------------------------------------------- the daemon */
+/* `ffn-portd serve`: one process owning ports 1..24 from boot. The MP pushes
+ * the table of what every port should be (management/PORT-TABLE.md); the
+ * daemon reconciles it against what it holds, every tick, until they agree,
+ * and keeps the last accepted table in /run so a restart inside the same
+ * boot re-attaches every port on its own. Aggregate leases, per-port attach
+ * and detach, the faceplate observation and the status all arrive on one
+ * control socket; the command lines below are its clients. */
+
+struct server {
+    int listen_fd;
+    struct client clients[CLIENTS];
+    struct port ports[PORTS];
+    struct aggregate groups[GROUPS];
+    long long revision;
+    char generation[72];
+    char boot[40], process_start[32];
+    uint64_t next_publish;
+};
+
+static struct port *server_port(struct server *s, long long number)
+{
+    return number >= 1 && number <= PORTS ? &s->ports[number - 1] : NULL;
+}
+
+/* ---- the table on disk: {boot_id, revision, generation, ports: {"N": {mode, group?}}} */
+
+static int table_save(struct server *s)
+{
+    struct ffn_json *doc = ffn_json_object(), *ports = ffn_json_object();
+    char path[PATH];
+    int rc;
+    for (unsigned i = 0; i < PORTS; i++) {
+        struct ffn_json *row = ffn_json_object();
+        char key[8];
+        snprintf(key, sizeof key, "%u", i + 1);
+        ffn_json_set(row, "mode", ffn_json_string(port_mode_name(s->ports[i].desired)));
+        if (s->ports[i].desired == MODE_AGGREGATE) ffn_json_set(row, "group", ffn_json_string(s->ports[i].group));
+        ffn_json_set(ports, key, row);
+    }
+    ffn_json_set(doc, "boot_id", ffn_json_string(s->boot));
+    ffn_json_set(doc, "revision", ffn_json_int(s->revision));
+    ffn_json_set(doc, "generation", ffn_json_string(s->generation));
+    ffn_json_set(doc, "ports", ports);
+    snprintf(path, sizeof path, "%s/%s", RUN, TABLE_NAME);
+    rc = write_json(path, doc);
+    ffn_json_free(doc);
+    return rc;
+}
+
+/* One row of a table request into a port's desired state; err names what is wrong. */
+static int row_parse(const struct ffn_json *row, enum port_mode *mode, char *group, size_t groupsz, char *err, size_t errsz)
+{
+    const char *text, *name;
+    if (!row || row->type != FFN_JSON_OBJECT) { snprintf(err, errsz, "row must be an object"); return -1; }
+    text = ffn_json_get_string(row, "mode");
+    if (!text) { snprintf(err, errsz, "mode required"); return -1; }
+    group[0] = 0;
+    if (!strcmp(text, "disabled")) *mode = MODE_DISABLED;
+    else if (!strcmp(text, "l3")) *mode = MODE_L3;
+    else if (!strcmp(text, "aggregate")) {
+        unsigned n;
+        name = ffn_json_get_string(row, "group");
+        if (!name || strlen(name) < 3 || strlen(name) > 4 || strncmp(name, "ae", 2) || name[2] == '0' || strspn(name + 2, "0123456789") != strlen(name + 2)) {
+            snprintf(err, errsz, "aggregate row needs group ae1..ae12"); return -1;
+        }
+        n = (unsigned)atoi(name + 2);
+        if (n < 1 || n > GROUPS) { snprintf(err, errsz, "aggregate row needs group ae1..ae12"); return -1; }
+        *mode = MODE_AGGREGATE;
+        snprintf(group, groupsz, "%.7s", name);
+    } else { snprintf(err, errsz, "mode must be disabled, l3 or aggregate"); return -1; }
+    for (size_t i = 0; i < row->count; i++)
+        if (strcmp(row->keys[i], "mode") && strcmp(row->keys[i], "group")) { snprintf(err, errsz, "unknown row field %s", row->keys[i]); return -1; }
+    return 0;
+}
+
+static int table_load(struct server *s)
+{
+    char path[PATH];
+    struct ffn_json *doc, *ports;
+    const char *boot, *generation;
+    long long revision = 0;
+    unsigned rows = 0;
+    snprintf(path, sizeof path, "%s/%s", RUN, TABLE_NAME);
+    doc = read_json(path);
+    if (!doc) return -1;
+    boot = ffn_json_get_string(doc, "boot_id");
+    ports = ffn_json_get(doc, "ports");
+    if (!boot || strcmp(boot, s->boot) || !ports || ports->type != FFN_JSON_OBJECT) { ffn_json_free(doc); return -1; }
+    ffn_json_get_int(doc, "revision", &revision);
+    generation = ffn_json_get_string(doc, "generation");
+    for (size_t i = 0; i < ports->count; i++) {
+        struct port *port = server_port(s, strspn(ports->keys[i], "0123456789") == strlen(ports->keys[i]) ? atoll(ports->keys[i]) : 0);
+        enum port_mode mode;
+        char group[8], err[96];
+        if (!port || row_parse(ports->items[i], &mode, group, sizeof group, err, sizeof err)) continue;
+        port->desired = mode;
+        snprintf(port->group, sizeof port->group, "%s", group);
+        rows++;
+    }
+    s->revision = revision;
+    snprintf(s->generation, sizeof s->generation, "%s", generation ? generation : "");
+    ffn_json_free(doc);
+    logmsg("table restored: revision %lld, %u rows", revision, rows);
+    return 0;
+}
+
+/* A full table from the MP. The rows that would take a port from a live
+ * aggregate lease are refused and the rest replace the table. */
+static struct ffn_json *table_apply(struct server *s, const struct ffn_json *req)
+{
+    struct ffn_json *reply = ffn_json_object(), *rejected = ffn_json_object(), *ports;
+    const char *boot = ffn_json_get_string(req, "boot_id"), *generation = ffn_json_get_string(req, "generation");
+    enum port_mode wanted[PORTS];
+    char groups[PORTS][8], err[96];
+    ports = ffn_json_get(req, "ports");
+    if (!boot || strcmp(boot, s->boot)) { ffn_json_set(reply, "error", ffn_json_string("Current DP boot identity required")); ffn_json_free(rejected); return reply; }
+    if (!ports || ports->type != FFN_JSON_OBJECT) { ffn_json_set(reply, "error", ffn_json_string("ports object required")); ffn_json_free(rejected); return reply; }
+    if (generation && strlen(generation) > 64) { ffn_json_set(reply, "error", ffn_json_string("generation too long")); ffn_json_free(rejected); return reply; }
+    for (unsigned i = 0; i < PORTS; i++) { wanted[i] = MODE_DISABLED; groups[i][0] = 0; }
+    for (size_t i = 0; i < ports->count; i++) {
+        long long number = strspn(ports->keys[i], "0123456789") == strlen(ports->keys[i]) ? atoll(ports->keys[i]) : 0;
+        if (!server_port(s, number)) { snprintf(err, sizeof err, "port %s: not a faceplate port", ports->keys[i]); ffn_json_set(reply, "error", ffn_json_string(err)); ffn_json_free(rejected); return reply; }
+        if (row_parse(ports->items[i], &wanted[number - 1], groups[number - 1], 8, err, sizeof err)) {
+            char full[128]; snprintf(full, sizeof full, "port %lld: %s", number, err);
+            ffn_json_set(reply, "error", ffn_json_string(full)); ffn_json_free(rejected); return reply;
+        }
+    }
+    for (unsigned i = 0; i < PORTS; i++) {
+        struct port *port = &s->ports[i];
+        char key[8];
+        snprintf(key, sizeof key, "%u", i + 1);
+        if (port->member_of && (wanted[i] != MODE_AGGREGATE || strcmp(groups[i], port->member_of->d.in.group))) {
+            snprintf(err, sizeof err, "member of live aggregate %s; deactivate it first", port->member_of->d.in.group);
+            ffn_json_set(rejected, key, ffn_json_string(err));
+            continue;
+        }
+        if (port->desired != wanted[i] || strcmp(port->group, groups[i])) { port->next_try = 0; port->failures = 0; }
+        port->desired = wanted[i];
+        snprintf(port->group, sizeof port->group, "%.7s", groups[i]);
+    }
+    s->revision++;
+    snprintf(s->generation, sizeof s->generation, "%s", generation ? generation : "");
+    if (table_save(s)) logmsg("table not saved: %s", strerror(errno));
+    ffn_json_set(reply, "ok", ffn_json_bool(true));
+    ffn_json_set(reply, "revision", ffn_json_int(s->revision));
+    ffn_json_set(reply, "rejected", rejected);
+    return reply;
+}
+
+/* ---- the status: /run/ffn-portd.json and the `status` reply */
+
+static struct ffn_json *server_status(struct server *s, uint64_t now)
+{
+    struct ffn_json *doc = ffn_json_object(), *ports = ffn_json_object(), *groups = ffn_json_object();
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ffn_json_set(doc, "owner", ffn_json_string("ffn-portd"));
+    ffn_json_set(doc, "pid", ffn_json_int(getpid()));
+    ffn_json_set(doc, "process_start", ffn_json_string(s->process_start));
+    ffn_json_set(doc, "boot_id", ffn_json_string(s->boot));
+    ffn_json_set(doc, "revision", ffn_json_int(s->revision));
+    ffn_json_set(doc, "generation", ffn_json_string(s->generation));
+    ffn_json_set(doc, "updated_monotonic", ffn_json_number((double)now / 1e6));
+    ffn_json_set(doc, "updated_at", ffn_json_number((double)ts.tv_sec + (double)ts.tv_nsec / 1e9));
+    for (unsigned i = 0; i < PORTS; i++) {
+        struct port *port = &s->ports[i];
+        struct ffn_json *row = ffn_json_object();
+        char key[8];
+        snprintf(key, sizeof key, "%u", i + 1);
+        ffn_json_set(row, "desired", ffn_json_string(port_mode_name(port->desired)));
+        ffn_json_set(row, "group", port->desired == MODE_AGGREGATE ? ffn_json_string(port->group) : ffn_json_null());
+        ffn_json_set(row, "attached", ffn_json_bool(port->attached));
+        ffn_json_set(row, "member_of", port->member_of ? ffn_json_string(port->member_of->d.in.group) : ffn_json_null());
+        ffn_json_set(row, "reason", ffn_json_string(port->reason[0] ? port->reason : port_mode_name(port->desired)));
+        ffn_json_set(row, "failures", ffn_json_int(port->failures));
+        if (port->attached) {
+            struct ffn_json *carrier = ffn_json_object();
+            ffn_json_set(row, "owner", ffn_json_string(port->p.owner));
+            ffn_json_set(row, "status", ffn_json_string(port->p.state_path));
+            ffn_json_set(row, "ifindex", ffn_json_int(port->p.ifindex));
+            ffn_json_set(row, "source", ffn_json_int(port->p.source));
+            ffn_json_set(carrier, "policy", ffn_json_string(port->p.observed ? "observed" : "always"));
+            ffn_json_set(carrier, "up", ffn_json_bool(port->p.observed ? port->p.carrier_up : true));
+            ffn_json_set(row, "carrier", carrier);
+        }
+        ffn_json_set(ports, key, row);
+    }
+    for (unsigned i = 0; i < GROUPS; i++) {
+        struct aggregate *a = &s->groups[i];
+        struct ffn_json *row, *members, *distributing;
+        uint16_t live[MEMBERS];
+        unsigned n;
+        if (a->stage == AGG_FREE || a->stage == AGG_STOPPED) continue;
+        row = ffn_json_object(); members = ffn_json_array(); distributing = ffn_json_array();
+        ffn_json_set(row, "stage", ffn_json_string(aggregate_stage_name(a->stage)));
+        ffn_json_set(row, "token", ffn_json_string(a->d.in.token));
+        for (unsigned m = 0; m < a->d.in.count; m++) ffn_json_push(members, ffn_json_int(a->d.in.members[m]));
+        ffn_json_set(row, "members", members);
+        n = a->d.engine ? ffn_lacp_distributing(a->d.engine, live, MEMBERS) : 0;
+        for (unsigned m = 0; m < n; m++) ffn_json_push(distributing, ffn_json_int(live[m]));
+        ffn_json_set(row, "distributing", distributing);
+        ffn_json_set(row, "status", ffn_json_string(a->d.status_path));
+        ffn_json_set(row, "lease_age_seconds", ffn_json_number(now > a->d.last_input ? (double)(now - a->d.last_input) / 1e6 : 0.0));
+        ffn_json_set(row, "fault", a->d.failed ? ffn_json_string(a->d.fatal) : ffn_json_null());
+        ffn_json_set(groups, a->d.in.group, row);
+    }
+    ffn_json_set(doc, "ports", ports);
+    ffn_json_set(doc, "aggregates", groups);
+    return doc;
+}
+
+static void publish(struct server *s, uint64_t now)
+{
+    struct ffn_json *doc;
+    char path[PATH];
+    if (now < s->next_publish) return;
+    s->next_publish = now + PUBLISH_PERIOD;
+    doc = server_status(s, now);
+    snprintf(path, sizeof path, "%s/%s", RUN, DAEMON_STATUS);
+    write_json(path, doc);
+    ffn_json_free(doc);
+}
+
+/* ---- reconcile: the table against what is held, one attach per tick */
+
+static void port_reason(struct port *port, const char *reason) { snprintf(port->reason, sizeof port->reason, "%.159s", reason); }
+
+static void reconcile(struct server *s, uint64_t now)
+{
+    bool attached_one = false;
+    for (unsigned i = 0; i < PORTS; i++) {
+        struct port *port = &s->ports[i];
+        char err[256];
+        if (port->attached && port->d.failed) {
+            snprintf(err, sizeof err, "owner fault, re-attaching: %.200s", port->d.fatal);
+            port_detach(port); port_reason(port, err); port->failures++; port->next_try = now + RETRY_ATTACH;
+        }
+        if (port->attached && port->desired != MODE_L3) { port_detach(port); port_reason(port, port_mode_name(port->desired)); }
+        if (port->desired == MODE_L3) {
+            if (port->attached) continue;
+            if (port->member_of) { snprintf(err, sizeof err, "held by live aggregate %s", port->member_of->d.in.group); port_reason(port, err); continue; }
+            if (attached_one || now < port->next_try) continue;
+            attached_one = true;
+            if (port_attach(port, err, sizeof err) == 0) { port_reason(port, "running"); port->failures = 0; }
+            else {
+                char full[256];
+                snprintf(full, sizeof full, "attach failed: %.200s", err);
+                port_reason(port, full); port->failures++; port->next_try = now + RETRY_ATTACH;
+                if (port->failures == 1 || port->failures % 30 == 0) logmsg("p%u: %s (attempt %u)", port->number, full, port->failures);
+            }
+        } else if (port->desired == MODE_AGGREGATE) {
+            if (port->member_of) snprintf(err, sizeof err, "member of %s", port->member_of->d.in.group);
+            else snprintf(err, sizeof err, "reserved for %s; no lease", port->group);
+            port_reason(port, err);
+        } else port_reason(port, port->member_of ? "held by a live aggregate" : "disabled");
+    }
+}
+
+/* ---- clients */
+
+static void client_close(struct client *c)
+{
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+    free(c->in.s); free(c->out.s);
+    memset(c, 0, sizeof *c);
+    c->fd = -1;
+}
+
+static void client_reply(struct client *c, struct ffn_json *doc)
+{
+    char *text = ffn_json_dump(doc);
+    if (text) { text_str(&c->out, text); text_put(&c->out, "\n", 1); }
+    free(text);
+    ffn_json_free(doc);
+}
+
+static struct ffn_json *error_doc(const char *message)
+{
+    struct ffn_json *doc = ffn_json_object();
+    ffn_json_set(doc, "error", ffn_json_string(message));
+    return doc;
+}
+
+/* A lease: the aggregate intent on a connection that then carries the observations. */
+static void lease_begin(struct server *s, struct client *c, const struct ffn_json *req, uint64_t now)
+{
+    struct ffn_json *intent = ffn_json_get(req, "intent"), *members;
+    struct aggregate *a = NULL;
+    char *text, err[512];
+    size_t len;
+    if (!intent || intent->type != FFN_JSON_OBJECT) { client_reply(c, error_doc("Invalid aggregate owner intent")); c->closing = true; return; }
+    for (unsigned i = 0; i < GROUPS && !a; i++) if (s->groups[i].stage == AGG_FREE) a = &s->groups[i];
+    if (!a) { client_reply(c, error_doc("no free aggregate slot")); c->closing = true; return; }
+    members = ffn_json_get(intent, "members");
+    for (size_t i = 0; members && members->type == FFN_JSON_ARRAY && i < members->count; i++) {
+        struct port *port = members->items[i]->type == FFN_JSON_INT ? server_port(s, members->items[i]->integer) : NULL;
+        const char *group = ffn_json_get_string(intent, "group");
+        if (!port) continue;   /* parse_intent reports an invalid member */
+        if (port->attached || port->desired == MODE_L3) snprintf(err, sizeof err, "member %u is a layer-3 port; the table must make it an aggregate member first", port->number);
+        else if (port->member_of) snprintf(err, sizeof err, "member %u belongs to live aggregate %s", port->number, port->member_of->d.in.group);
+        else if (port->desired == MODE_AGGREGATE && group && strcmp(port->group, group)) snprintf(err, sizeof err, "member %u is reserved for %s in the table", port->number, port->group);
+        else continue;
+        client_reply(c, error_doc(err)); c->closing = true; return;
+    }
+    text = ffn_json_dump(intent);
+    if (!text) { client_reply(c, error_doc("out of memory")); c->closing = true; return; }
+    len = strlen(text);
+    if (aggregate_begin(a, text, len, c, now, err, sizeof err)) {
+        struct ffn_json *row = error_doc(err);
+        ffn_json_set(row, "token", ffn_json_string(a->d.in.token)); ffn_json_set(row, "boot_id", ffn_json_string(a->d.in.boot_id));
+        ffn_json_set(row, "group", ffn_json_string(a->d.in.group));
+        client_reply(c, row); c->closing = true;
+        logmsg("%s not started: %s", a->d.in.group[0] ? a->d.in.group : "aggregate", err);
+        memset(a, 0, sizeof *a);
+        free(text);
+        return;
+    }
+    free(text);
+    for (unsigned i = 0; i < a->d.in.count; i++) { struct port *port = server_port(s, a->d.in.members[i]); if (port) port->member_of = a; }
+    c->agg = a;
+}
+
+static void aggregate_release(struct server *s, struct aggregate *a)
+{
+    aggregate_stop(a);
+    for (unsigned i = 0; i < PORTS; i++) if (s->ports[i].member_of == a) s->ports[i].member_of = NULL;
+    if (a->client) { a->client->agg = NULL; a->client->closing = true; }
+    memset(a, 0, sizeof *a);
+}
+
+/* One request line from a connection that holds no lease. */
+static void dispatch(struct server *s, struct client *c, const char *line, size_t len, uint64_t now)
+{
+    char perr[64], reply_text[256];
+    struct ffn_json *req = ffn_json_parse(line, len, perr, sizeof perr);
+    const char *op = req && req->type == FFN_JSON_OBJECT ? ffn_json_get_string(req, "op") : NULL;
+    if (!op) { client_reply(c, error_doc("request must be an object with op")); ffn_json_free(req); return; }
+    if (!strcmp(op, "status")) client_reply(c, server_status(s, now));
+    else if (!strcmp(op, "table")) client_reply(c, table_apply(s, req));
+    else if (!strcmp(op, "links")) {
+        struct ffn_json *doc;
+        ffn_json_remove(req, "op");
+        links_record_doc(req, reply_text, sizeof reply_text);
+        doc = ffn_json_parse(reply_text, strlen(reply_text), perr, sizeof perr);
+        client_reply(c, doc ? doc : error_doc("cannot record the link observation"));
+    } else if (!strcmp(op, "attach") || !strcmp(op, "detach")) {
+        long long number = 0;
+        const char *boot = ffn_json_get_string(req, "boot_id");
+        struct port *port = ffn_json_get_int(req, "port", &number) ? server_port(s, number) : NULL;
+        char err[256];
+        if (!boot || strcmp(boot, s->boot)) client_reply(c, error_doc("Current DP boot identity required"));
+        else if (!port) client_reply(c, error_doc("port 1..24 required"));
+        else if (!strcmp(op, "attach")) {
+            if (port->member_of) { snprintf(err, sizeof err, "port %u belongs to live aggregate %s", port->number, port->member_of->d.in.group); client_reply(c, error_doc(err)); }
+            else {
+                if (port->desired != MODE_L3) { port->desired = MODE_L3; port->group[0] = 0; s->revision++; table_save(s); }
+                if (!port->attached) {
+                    if (port_attach(port, err, sizeof err) == 0) { port_reason(port, "running"); port->failures = 0; port_tick(port, now_us()); }
+                    else { char full[256]; snprintf(full, sizeof full, "attach failed: %.200s", err); port_reason(port, full); port->failures++; port->next_try = now + RETRY_ATTACH; }
+                }
+                if (port->attached) client_reply(c, physical_status(&port->p));
+                else client_reply(c, error_doc(port->reason));
+            }
+        } else {
+            struct physical probe;
+            if (port->desired != MODE_DISABLED && port->desired != MODE_AGGREGATE) { port->desired = MODE_DISABLED; port->group[0] = 0; s->revision++; table_save(s); }
+            if (port->attached) { port_detach(port); port_reason(port, "disabled"); }
+            physical_select(&probe, port->number);
+            client_reply(c, physical_status(&probe));
+            ffn_json_free(probe.observation);
+        }
+    } else if (!strcmp(op, "lease")) lease_begin(s, c, req, now);
+    else client_reply(c, error_doc("unknown op"));
+    ffn_json_free(req);
+}
+
+static void client_read(struct server *s, struct client *c, uint64_t now)
+{
+    char buf[65536];
+    ssize_t n = read(c->fd, buf, sizeof buf);
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR)) {
+        c->eof = true;
+        if (c->agg) { c->agg->d.stdin_closed = true; fail(&c->agg->d, "MP control pipe closed"); }
+        else c->closing = true;
+        return;
+    }
+    if (n < 0) return;
+    text_put(&c->in, buf, (size_t)n);
+    if (c->agg) return;   /* the aggregate's tick consumes its lines */
+    for (;;) {
+        char *nl = c->in.s ? memchr(c->in.s, '\n', c->in.len) : NULL;
+        size_t len;
+        if (!nl) { if (c->in.len > 1 << 20) { client_reply(c, error_doc("request too long")); c->closing = true; } break; }
+        len = (size_t)(nl - c->in.s);
+        if (len) dispatch(s, c, c->in.s, len, now);
+        memmove(c->in.s, nl + 1, c->in.len - len - 1);
+        c->in.len -= len + 1; c->in.s[c->in.len] = 0;
+        if (c->agg || c->closing || c->fd < 0) break;
+    }
+}
+
+static void client_flush(struct client *c)
+{
+    while (c->fd >= 0 && c->out.len) {
+        ssize_t w = write(c->fd, c->out.s, c->out.len);
+        if (w < 0 && errno == EINTR) continue;
+        if (w < 0 && errno == EAGAIN) break;
+        if (w <= 0) { c->closing = true; c->out.len = 0; break; }
+        memmove(c->out.s, c->out.s + w, c->out.len - (size_t)w);
+        c->out.len -= (size_t)w; c->out.s[c->out.len] = 0;
+    }
+    if (c->out.len > 4 << 20) { c->closing = true; c->out.len = 0; }   /* a reader that stopped reading */
+}
+
+static int server_listen(struct server *s, char *err, size_t errsz)
+{
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    if (snprintf(addr.sun_path, sizeof addr.sun_path, "%s/%s", RUN, SOCKET_NAME) >= (int)sizeof addr.sun_path) { snprintf(err, errsz, "socket path too long"); return -1; }
+    unlink(addr.sun_path);
+    s->listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (s->listen_fd < 0 || bind(s->listen_fd, (struct sockaddr *)&addr, sizeof addr) || chmod(addr.sun_path, 0600) || listen(s->listen_fd, 16)) {
+        snprintf(err, errsz, "control socket %s: %s", addr.sun_path, strerror(errno)); return -1;
+    }
+    return 0;
+}
+
+/* What a previous instance left in /run: aggregate owners without a process
+ * are torn down (the watchdog's own rule), stale port documents removed. */
+static void recover_leftovers(struct server *s)
+{
+    char pattern[PATH], err[256];
+    glob_t found;
+    snprintf(pattern, sizeof pattern, "%s/ffn-aggregate-ae*-intent.json", RUN);
+    if (glob(pattern, 0, NULL, &found) == 0) {
+        for (size_t i = 0; i < found.gl_pathc; i++) {
+            struct ffn_json *intent = read_json(found.gl_pathv[i]);
+            const char *group = intent ? ffn_json_get_string(intent, "group") : NULL;
+            if (group && strlen(group) <= 4 && !strncmp(group, "ae", 2)) {
+                if (recover_group(group, ffn_json_get_string(intent, "token"), err, sizeof err)) logmsg("leftover %s: %s", group, err);
+                else logmsg("leftover %s recovered", group);
+            }
+            ffn_json_free(intent);
+        }
+        globfree(&found);
+    }
+    for (unsigned i = 0; i < PORTS; i++) {
+        struct physical probe;
+        struct ffn_json *doc;
+        long long pid = 0;
+        physical_select(&probe, i + 1);
+        doc = read_json(probe.state_path);
+        if (doc && ffn_json_get_int(doc, "pid", &pid) && pid != (long long)getpid()) { unlink(probe.state_path); logmsg("stale %s removed (pid %lld)", probe.state_path, pid); }
+        ffn_json_free(doc); ffn_json_free(probe.observation);
+    }
+    (void)s;
+}
+
+static int watchdog_active(void)
+{
+    struct helper h;
+    char *const argv[] = { "/usr/bin/systemctl", "is-active", "--quiet", "ffn-aggregate-dp-watchdog.timer", NULL };
+    int status = helper_run(&h, argv, NULL, 10 * SECOND);
+    helper_close(&h);
+    return status == 0;
+}
+
+static int serve_daemon(void)
+{
+    static struct server s;
+    char err[512], path[PATH];
+    uint64_t now;
+    memset(&s, 0, sizeof s);
+    s.listen_fd = -1;
+    for (unsigned i = 0; i < CLIENTS; i++) s.clients[i].fd = -1;
+    for (unsigned i = 0; i < PORTS; i++) { s.ports[i].number = i + 1; s.ports[i].d.control_fd = -1; }
+    signal(SIGTERM, on_stop); signal(SIGINT, on_stop); signal(SIGHUP, on_stop); signal(SIGPIPE, SIG_IGN);
+    if (boot_id(s.boot, sizeof s.boot)) { logmsg("boot identity unreadable"); return 1; }
+    process_start(getpid(), s.process_start, sizeof s.process_start);
+    if (check_environment(err, sizeof err)) { logmsg("not started: %s", err); return 1; }
+    if (!unchecked && !watchdog_active()) logmsg("warning: ffn-aggregate-dp-watchdog.timer is not active; a stalled daemon is not swept");
+    recover_leftovers(&s);
+    if (table_load(&s)) logmsg("no table for this boot yet: every port disabled until the MP pushes one");
+    if (server_listen(&s, err, sizeof err)) { logmsg("%s", err); return 1; }
+    logmsg("serving ports 1..%u (table revision %lld)", PORTS, s.revision);
+    while (!stop_signal) {
+        struct pollfd fds[1 + CLIENTS + 2 * GROUPS];
+        unsigned n = 0, first_client, first_group;
+        int ready;
+        now = now_us();
+        for (unsigned i = 0; i < GROUPS; i++) if (s.groups[i].stage != AGG_FREE) aggregate_tick(&s.groups[i], now);
+        for (unsigned i = 0; i < GROUPS; i++) if (s.groups[i].stage != AGG_FREE && (s.groups[i].d.failed || s.groups[i].stage == AGG_STOPPED)) aggregate_release(&s, &s.groups[i]);
+        reconcile(&s, now);
+        for (unsigned i = 0; i < PORTS; i++) if (s.ports[i].attached) port_tick(&s.ports[i], now);
+        publish(&s, now);
+        for (unsigned i = 0; i < CLIENTS; i++) if (s.clients[i].fd >= 0) { client_flush(&s.clients[i]); if (s.clients[i].closing && !s.clients[i].out.len) client_close(&s.clients[i]); }
+        fds[n++] = (struct pollfd){ s.listen_fd, POLLIN, 0 };
+        first_client = n;
+        for (unsigned i = 0; i < CLIENTS; i++) fds[n++] = (struct pollfd){ s.clients[i].fd, (short)(POLLIN | (s.clients[i].out.len ? POLLOUT : 0)), 0 };
+        first_group = n;
+        for (unsigned i = 0; i < GROUPS; i++) {
+            struct aggregate *a = &s.groups[i];
+            bool live = a->stage == AGG_RUNNING && !a->d.failed;
+            fds[n++] = (struct pollfd){ live ? a->d.control_fd : -1, POLLIN, 0 };
+            fds[n++] = (struct pollfd){ live && a->d.worker_running ? a->d.worker.out : -1, POLLIN, 0 };
+        }
+        ready = poll(fds, n, POLL_MS);
+        if (ready < 0 && errno != EINTR) { logmsg("poll: %s", strerror(errno)); break; }
+        now = now_us();
+        if (fds[0].revents & POLLIN) {
+            int fd;
+            while ((fd = accept4(s.listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC)) >= 0) {
+                struct client *c = NULL;
+                for (unsigned i = 0; i < CLIENTS && !c; i++) if (s.clients[i].fd < 0) c = &s.clients[i];
+                if (!c) { close(fd); logmsg("control socket: too many clients"); continue; }
+                memset(c, 0, sizeof *c); c->fd = fd;
+            }
+        }
+        /* Drain control before packets so a withdrawal closes gates first. */
+        for (unsigned i = 0; i < CLIENTS; i++) {
+            struct client *c = &s.clients[i];
+            if (c->fd < 0) continue;
+            if (fds[first_client + i].revents & (POLLIN | POLLHUP | POLLERR)) client_read(&s, c, now);
+            if (c->fd >= 0 && (fds[first_client + i].revents & POLLOUT)) client_flush(c);
+        }
+        for (unsigned i = 0; i < GROUPS; i++) aggregate_control_events(&s.groups[i], fds[first_group + 2 * i].revents, now);
+    }
+    logmsg("signal %d: stopping every owner", (int)stop_signal);
+    shutting_down = true;
+    alarm(SHUTDOWN_BUDGET * 2); /* a cleanup that hangs still ends: systemd restarts the daemon */
+    for (unsigned i = 0; i < GROUPS; i++) if (s.groups[i].stage != AGG_FREE) { if (!s.groups[i].d.failed) fail(&s.groups[i].d, "daemon stopping"); aggregate_release(&s, &s.groups[i]); }
+    for (unsigned i = 0; i < PORTS; i++) if (s.ports[i].attached) port_detach(&s.ports[i]);
+    for (unsigned i = 0; i < CLIENTS; i++) if (s.clients[i].fd >= 0) { client_flush(&s.clients[i]); client_close(&s.clients[i]); }
+    snprintf(path, sizeof path, "%s/%s", RUN, DAEMON_STATUS); unlink(path);
+    snprintf(path, sizeof path, "%s/%s", RUN, SOCKET_NAME); unlink(path);
+    if (s.listen_fd >= 0) close(s.listen_fd);
+    logmsg("stopped");
+    return 0;
+}
+
+/* ------------------------------------------------------- command lines */
+
+static int read_intent_line(struct text *t)
+{
+    char c;
+    for (;;) {
+        ssize_t n = read(0, &c, 1);
+        if (n <= 0) return -1;
+        if (c == '\n') return 0;
+        text_put(t, &c, 1);
+        if (t->len > 65536) return -1;
+    }
+}
+
+/* `aggregate serve`: the MP supervisor's pipe, relayed to a lease on the
+ * socket. The first stdin line is the intent; every further line goes to the
+ * daemon, every status row comes back, and the owner lives as long as both
+ * sides do, exactly as the stdin contract read. */
+static int relay_serve(void)
+{
+    struct text first = { 0 };
+    char request_head[] = "{\"op\": \"lease\", \"intent\": ";
+    char buf[65536];
+    int fd, rc = 1;
+    bool stdin_open = true, saw_error = false;
+    if (read_intent_line(&first)) { logmsg("Invalid initial intent"); return 1; }
+    fd = daemon_connect();
+    if (fd < 0) { printf("{\"error\": \"ffn-portd is not running: %s\"}\n", strerror(errno)); free(first.s); return 1; }
+    {
+        struct text request = { 0 };
+        text_str(&request, request_head); text_put(&request, first.s ? first.s : "{}", first.len ? first.len : 2); text_str(&request, "}\n");
+        for (size_t off = 0; off < request.len;) {
+            ssize_t w = write(fd, request.s + off, request.len - off);
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { printf("{\"error\": \"ffn-portd rejected the lease\"}\n"); free(request.s); free(first.s); close(fd); return 1; }
+            off += (size_t)w;
+        }
+        free(request.s);
+    }
+    free(first.s);
+    signal(SIGPIPE, SIG_IGN);
+    for (;;) {
+        struct pollfd fds[2] = { { stdin_open ? 0 : -1, POLLIN, 0 }, { fd, POLLIN, 0 } };
+        ssize_t n;
+        if (poll(fds, 2, 1000) < 0 && errno != EINTR) break;
+        if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            n = read(0, buf, sizeof buf);
+            if (n <= 0) { stdin_open = false; shutdown(fd, SHUT_WR); }
+            else for (ssize_t off = 0; off < n;) {
+                ssize_t w = write(fd, buf + off, (size_t)(n - off));
+                if (w < 0 && errno == EINTR) continue;
+                if (w <= 0) { n = -1; break; }
+                off += w;
+            }
+            if (n < 0) break;
+        }
+        if (fds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            n = read(fd, buf, sizeof buf);
+            if (n == 0) { rc = saw_error ? 1 : 0; break; }
+            if (n < 0) { if (errno == EINTR || errno == EAGAIN) continue; break; }
+            if (!strncmp(buf, "{\"error\"", 8) || memmem(buf, (size_t)n, "\n{\"error\"", 9)) saw_error = true;
+            for (ssize_t off = 0; off < n;) {
+                ssize_t w = write(1, buf + off, (size_t)(n - off));
+                if (w < 0 && errno == EINTR) continue;
+                if (w <= 0) { n = -1; break; }
+                off += w;
+            }
+            if (n < 0) break;
+        }
+    }
+    close(fd);
+    return rc;
+}
+
+/* One request to the daemon, its reply printed; 1 when the daemon is away or answered an error. */
+static int daemon_cli(struct ffn_json *req, int timeout_ms, bool print)
+{
+    struct text reply = { 0 };
+    char *text = ffn_json_dump(req);
+    int fd, rc = 1;
+    if (!text) return 1;
+    fd = daemon_connect();
+    if (fd < 0) { if (print) printf("{\"error\": \"ffn-portd is not running: %s\"}\n", strerror(errno)); free(text); return 1; }
+    if (daemon_request(fd, text, strlen(text), &reply, timeout_ms) == 0) {
+        char *nl = memchr(reply.s, '\n', reply.len);
+        if (nl) *nl = 0;
+        if (print) puts(reply.s);
+        rc = reply_is_error(reply.s);
+    } else if (print) printf("{\"error\": \"ffn-portd did not answer: %s\"}\n", strerror(errno));
+    close(fd); free(text); free(reply.s);
+    return rc;
+}
+
+/* `physical start|stop --port N`, {"boot_id": ...} on stdin: the DP-side half
+ * of the MP's attach/detach, answered by the daemon's table. */
+static int physical_cli(const char *verb, unsigned port)
+{
+    struct text t = { 0 };
+    char buf[4096], perr[64], current_boot[40];
+    ssize_t n;
+    struct ffn_json *doc, *req;
+    const char *boot;
+    int rc;
+    while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
+    doc = ffn_json_parse(t.s ? t.s : "{}", t.len ? t.len : 2, perr, sizeof perr);
+    free(t.s);
+    boot = doc ? ffn_json_get_string(doc, "boot_id") : NULL;
+    if (!doc || doc->type != FFN_JSON_OBJECT || doc->count != 1 || !boot || boot_id(current_boot, sizeof current_boot) || strcmp(boot, current_boot)) {
+        printf("{\"error\": \"Current DP boot identity required\"}\n"); ffn_json_free(doc); return 1;
+    }
+    ffn_json_free(doc);
+    req = ffn_json_object();
+    ffn_json_set(req, "op", ffn_json_string(!strcmp(verb, "start") ? "attach" : "detach"));
+    ffn_json_set(req, "port", ffn_json_int(port));
+    ffn_json_set(req, "boot_id", ffn_json_string(current_boot));
+    rc = daemon_cli(req, 30000, true);
+    ffn_json_free(req);
+    return rc;
+}
+
+/* `table apply` (the table on stdin) and `table status`. */
+static int table_cli(const char *verb)
+{
+    struct ffn_json *req;
+    int rc;
+    if (!strcmp(verb, "status")) {
+        int fd = daemon_connect();
+        if (fd < 0) {
+            /* The last published status, marked as such, when the daemon is away. */
+            char path[PATH], *text;
+            struct ffn_json *doc;
+            snprintf(path, sizeof path, "%s/%s", RUN, DAEMON_STATUS);
+            doc = read_json(path);
+            if (!doc) doc = ffn_json_object();
+            ffn_json_set(doc, "daemon", ffn_json_bool(false));
+            text = ffn_json_dump(doc);
+            if (text) { puts(text); free(text); }
+            ffn_json_free(doc);
+            return 1;
+        }
+        close(fd);
+        req = ffn_json_object();
+        ffn_json_set(req, "op", ffn_json_string("status"));
+        rc = daemon_cli(req, 10000, true);
+        ffn_json_free(req);
+        return rc;
+    }
+    if (!strcmp(verb, "apply")) {
+        struct text t = { 0 };
+        char buf[65536], perr[64];
+        ssize_t n;
+        while ((n = read(0, buf, sizeof buf)) > 0) text_put(&t, buf, (size_t)n);
+        req = ffn_json_parse(t.s ? t.s : "", t.len, perr, sizeof perr);
+        free(t.s);
+        if (!req || req->type != FFN_JSON_OBJECT) { printf("{\"error\": \"table must be a JSON object\"}\n"); ffn_json_free(req); return 1; }
+        ffn_json_set(req, "op", ffn_json_string("table"));
+        rc = daemon_cli(req, 30000, true);
+        ffn_json_free(req);
+        return rc;
+    }
+    return 2;
+}
+
 /* ---------------------------------------------------------------- main */
 
 static int revision_tool(void)
@@ -2765,20 +3637,24 @@ int main(int argc, char **argv)
     if ((v = getenv("FFN_PORTD_INLINE"))) INLINE_LIBRARY = v;
     if ((v = getenv("FFN_PORTD_FE100_RETURN"))) FE100_RETURN = v;
     if ((v = getenv("FFN_PORTD_LANES"))) LANES_POLICY = v;
+    if ((v = getenv("FFN_PORTD_NETWORK"))) NETWORK_JOURNAL = v;
+    if ((v = getenv("FFN_PORTD_ROUTE_LINKS"))) ROUTE_LINKS = v;
     unchecked = (v = getenv("FFN_PORTD_UNCHECKED")) && !strcmp(v, "1");
     if ((v = getenv("FFN_PORTD_COPPER_PROFILE"))) COPPER_PROFILE = v;
     if ((v = getenv("FFN_PORTD_CARRIER_POLICY"))) CARRIER_POLICY = v;
+    if (argc == 2 && !strcmp(argv[1], "serve")) return serve_daemon();
     if (argc == 3 && !strcmp(argv[1], "aggregate")) {
-        if (!strcmp(argv[2], "serve")) return serve();
+        if (!strcmp(argv[2], "serve")) return relay_serve();
         if (!strcmp(argv[2], "sweep")) return sweep_tool();
         if (!strcmp(argv[2], "recover")) return recover_tool();
         if (!strcmp(argv[2], "revision")) return revision_tool();
     }
+    if (argc == 3 && !strcmp(argv[1], "table")) return table_cli(argv[2]);
     if (argc == 5 && !strcmp(argv[1], "physical") && !strcmp(argv[3], "--port")) {
         struct physical p;
         unsigned port = (unsigned)atoi(argv[4]);
-        if (!strcmp(argv[2], "serve")) return physical_serve(port);
         if (physical_select(&p, port)) { fprintf(stderr, "ffn-portd: port 1..24 required\n"); return 2; }
+        ffn_json_free(p.observation);
         if (!strcmp(argv[2], "status")) {
             struct ffn_json *status = physical_status(&p);
             char *text = ffn_json_dump(status);
@@ -2786,11 +3662,13 @@ int main(int argc, char **argv)
             ffn_json_free(status);
             return 0;
         }
-        if (!strcmp(argv[2], "start") || !strcmp(argv[2], "stop")) return physical_control(&p, argv[2]);
+        if (!strcmp(argv[2], "start") || !strcmp(argv[2], "stop")) return physical_cli(argv[2], port);
     }
     if (argc == 2 && !strcmp(argv[1], "links")) return links_tool();
-    fprintf(stderr, "usage: ffn-portd aggregate serve|sweep|recover|revision\n"
-                    "       ffn-portd physical serve|status|start|stop --port N\n"
-                    "       ffn-portd links   (the MP's faceplate observation on stdin)\n");
+    fprintf(stderr, "usage: ffn-portd serve                      (the daemon: ports 1..24 from boot, the table, the leases)\n"
+                    "       ffn-portd table apply|status          (the MP's port table on stdin / the table status)\n"
+                    "       ffn-portd aggregate serve|sweep|recover|revision\n"
+                    "       ffn-portd physical start|stop|status --port N\n"
+                    "       ffn-portd links                       (the MP's faceplate observation on stdin)\n");
     return 2;
 }

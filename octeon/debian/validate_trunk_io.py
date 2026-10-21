@@ -15,12 +15,30 @@ import uuid
 from ffn_dp_packet_transport import FRONT, RX_FORMATS, encode, validate_trunk
 
 
+def validate_copper_profile(value):
+    """The commissioned copper wiring (/etc/ffn/vif-copper.json): front port 1..4 -> PHY and switch port.
+
+    The same rules copper-identify applies when it writes the profile
+    (management/copper_identify_backend.py); the copper VIF driver that once
+    owned this file is gone. Returns the validated ports map."""
+    if not isinstance(value,dict) or set(value)!={'version','ports'} or value['version']!=1:raise ValueError('invalid copper profile')
+    ports=value['ports']
+    if not isinstance(ports,dict) or set(ports)-{'1','2','3','4'}:raise ValueError('invalid copper ports')
+    phys,macs=set(),set()
+    for entry in ports.values():
+        if not isinstance(entry,dict) or set(entry)!={'phy','bcm_port','packet_path_verified'}:raise ValueError('invalid copper mapping')
+        phy,mac=entry['phy'],entry['bcm_port']
+        if type(phy) is not int or phy not in range(16,20) or phy in phys or type(mac) is not int or mac not in (28,13,14,15) or mac in macs or type(entry['packet_path_verified']) is not bool:
+            raise ValueError('duplicate or invalid copper PHY/MAC mapping')
+        phys.add(phy);macs.add(mac)
+    return ports
+
+
 def probe_mapping(ports,profile=None):
     """Use explicit board wiring while commissioning; never certify it here."""
     mapping=dict(FRONT)
     if profile is not None:
-        from ffn_copper_vif import validate_profile
-        validated=validate_profile(profile)
+        validated=validate_copper_profile(profile)
         for port in ports:
             if port in range(1,5):
                 row=validated.get(str(port))

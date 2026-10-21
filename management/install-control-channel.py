@@ -28,6 +28,38 @@ def configuration():
         for role,argv in (('cp',cp),('dp',dp))}}
 
 
+def wanted_by(unit_text):
+    """The targets a unit's [Install] section names in WantedBy=, in order, once each."""
+    section=None;targets=[]
+    for raw in unit_text.splitlines():
+        line=raw.strip()
+        if not line or line[0] in '#;':continue
+        if line.startswith('['):section=line.strip('[]').strip();continue
+        if section=='Install' and '=' in line:
+            key,value=(part.strip() for part in line.split('=',1))
+            if key=='WantedBy':
+                for target in value.split():
+                    if target not in targets:targets.append(target)
+    return targets
+
+
+def enable_unit(name,unit_text,system=Path('/etc/systemd/system')):
+    """Create the <target>.wants/<unit> links `systemctl enable` would, one per WantedBy= target.
+
+    This installer writes unit files by hand, so it has to make these links by hand too: a
+    WantedBy= that is only declared is inert. The feeds that are PartOf= the control daemon
+    declared themselves wanted by it, but only the multi-user link was ever made, so the core
+    patch installer's `systemctl stop ffn-controld` took them down and its `start` brought
+    nothing back (2026-10-20: fifteen minutes without default routes). Returns the links made."""
+    made=[]
+    for target in wanted_by(unit_text):
+        wants=system/(target+'.wants')/name
+        wants.parent.mkdir(parents=True,exist_ok=True)
+        if not wants.exists() and not wants.is_symlink():
+            wants.symlink_to('../'+name);made.append(str(wants))
+    return made
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--identity',required=True)
@@ -52,6 +84,10 @@ def main():
                                    for a in ('status','validate','apply')}
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
+    # One resource for every faceplate port (PORT-TABLE.md): the commit's sync is one request that
+    # starts the CP owners, pushes the table to ffn-portd and waits for the rows to attach.
+    worker['commands']['ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'ports_backend.py'),a] for a in ('status','lookup','validate','apply')}
+    worker.setdefault('timeouts',{})['ports']={a:(150 if a=='apply' else 60) for a in ('status','lookup','validate','apply')}
     worker['commands']['front-traffic']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'front-traffic','status']}
     worker['commands']['lldp']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'lldp',a] for a in ('status','validate','apply')}
     # Device > Setup > Interfaces reads and applies the MP's own ports through the controller
@@ -62,6 +98,10 @@ def main():
     # too tight under replay load. Declared here, checked by the daemon's timeouts() ladder.
     worker.setdefault('timeouts',{})['physical-ports']={a:(100 if a=='apply' else 60) for a in ('status','lookup','validate','apply')}
     worker['commands']['route-links']={'refresh':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'route-links','refresh']}
+    # The convergence check for the dataplane's link-tracked routes (core ffn_convergence.py asks
+    # for it as the `tracked-routes` subsystem): one ssh round trip to the DP, read-only.
+    worker['commands']['tracked-routes']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'tracked-routes','status']}
+    worker.setdefault('timeouts',{})['tracked-routes']={'status':40}
     worker['commands']['plane-images']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_images.py'),a]
                                        for a in ('status','validate','apply')}
     worker['commands']['plane-lifecycle']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'plane_lifecycle.py'),a]
@@ -86,16 +126,13 @@ def main():
           Path(__file__).with_name('ffn-fe100-session-feed.service').read_text())
     write('/etc/systemd/system/ffn-fe100-session-feed.service.d/30-control-channel.conf',
           '[Service]\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
-    wants=Path('/etc/systemd/system/multi-user.target.wants/ffn-fe100-session-feed.service')
-    wants.parent.mkdir(parents=True,exist_ok=True)
-    if not wants.exists() and not wants.is_symlink():wants.symlink_to('../ffn-fe100-session-feed.service')
+    enable_unit('ffn-fe100-session-feed.service',Path(__file__).with_name('ffn-fe100-session-feed.service').read_text())
     write('/etc/ffn/controld.json',json.dumps(configuration(),indent=2)+'\n',0o600)
     write('/etc/systemd/system/ffn-interface-service-tunnel.service',
           (extension/'ffn-interface-service-tunnel.service').read_text())
     write('/etc/systemd/system/ffn-interface-service-tunnel.service.d/30-control-channel.conf',
           '[Service]\nLoadCredential=plane-agent-key:'+str(identity)+'\n')
-    wanted=Path('/etc/systemd/system/multi-user.target.wants/ffn-interface-service-tunnel.service')
-    if not wanted.exists(): wanted.symlink_to('../ffn-interface-service-tunnel.service')
+    enable_unit('ffn-interface-service-tunnel.service',(extension/'ffn-interface-service-tunnel.service').read_text())
     # systemd exposes only this credential to the service. ProtectHome remains
     # enabled and private SSH keys never enter the source or telemetry stream.
     write('/etc/systemd/system/ffn-controld.service.d/30-control-channel.conf',
@@ -110,8 +147,7 @@ def main():
     wanted=Path('/etc/systemd/system/timers.target.wants/ffn-log-ship.timer')
     wanted.parent.mkdir(parents=True,exist_ok=True)
     if not wanted.exists() and not wanted.is_symlink(): wanted.symlink_to('../ffn-log-ship.timer')
-    wanted=Path('/etc/systemd/system/multi-user.target.wants/ffn-route-link-feed.service')
-    if not wanted.exists(): wanted.symlink_to('../ffn-route-link-feed.service')
+    enable_unit('ffn-route-link-feed.service',(extension/'ffn-route-link-feed.service').read_text())
     print(json.dumps({'configured':True,'backup':str(backup),'restart_required':
                       ['ffn-plane@mp','ffn-controld','ffn-manager-v2','ffn-fe100-session-feed',
                        'ffn-route-link-feed','ffn-interface-service-tunnel'],'reboot_required':False}))
