@@ -32,15 +32,21 @@ case "$role" in
 esac
 root=
 image=
+gateway=
 set -f
 for arg in $($BB cat /proc/cmdline); do
     case "$arg" in
         ffn.nfsroot=*) [ -z "$root" ] || fallback 'duplicate NFS root'; root=${arg#ffn.nfsroot=} ;;
         ffn.rootfs=*) [ -z "$image" ] || fallback 'duplicate RAM root'; image=${arg#ffn.rootfs=} ;;
+        # A root server beyond the plane's own link (the DP rooting on the MP
+        # through the CP): the gateway on that link. The route is installed with
+        # the link's address as source; see ffn_nfsmount.c for why that matters.
+        ffn.nfsgw=*) [ -z "$gateway" ] || fallback 'duplicate NFS gateway'; gateway=${arg#ffn.nfsgw=} ;;
     esac
 done
 set +f
 [ -z "$root" ] || [ -z "$image" ] || fallback 'both an NFS root and a RAM root were supplied'
+[ -z "$gateway" ] || [ -n "$root" ] || fallback 'an NFS gateway needs an NFS root'
 $BB mkdir -p /newroot
 sha() { $BB sha256sum | $BB cut -d' ' -f1; }
 if [ -n "$image" ]; then
@@ -96,6 +102,17 @@ else
     echo "$root" | $BB grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/[A-Za-z0-9_./-]+$' || fallback 'MP must supply a valid NFS or RAM root'
     server=${root%%:*}; export_path=${root#*:}
     case "$export_path/" in */../*|*/./*|*//*) fallback 'unsafe export path' ;; esac
+    if [ -n "$gateway" ]; then
+        echo "$gateway" | $BB grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || fallback 'invalid NFS gateway'
+        [ "$role" = dp ] || fallback 'an NFS gateway is a DP boot'
+        # The link gets its address from the transport the lines above started;
+        # the route cannot exist before that, so this waits the same ten minutes.
+        i=0
+        until /sbin/ffn_nfsmount route "$server" via "$gateway" dev ffndp0; do
+            i=$((i+1)); [ "$i" -lt 600 ] || fallback 'route to the root server not installed'
+            $BB sleep 1
+        done
+    fi
     # The MP starts its side of the PCIe transport only after it has dispatched
     # the boot command and waited for the acknowledgement, and a small kernel
     # reaches this loop within seconds: a one-minute budget lost the 2026.10.14.2

@@ -110,7 +110,10 @@ cp_run "echo 1 > /proc/sys/net/ipv4/ip_forward; echo 1 > /proc/sys/net/ipv4/conf
 # hold no IP on eth0/eth1 at all. Seen in the wild, hence the explicit removal.
 cp_run "ip addr del ${CP_ADDR}/24 dev eth0 2>/dev/null; ip route get $DP_ADDR"
 
-dp_run "ip route add 127.1.1.0/24 via $CP_ADDR dev ffndp0 2>/dev/null; ip route show | grep 127.1.1"
+# With the DP's own address as the source: 127/8 is host scope to the kernel,
+# and a route through the gateway without this hint sends packets from 0.0.0.0
+# (the DP could not reach the MP's NFS server until 2026-10-21 for that reason).
+dp_run "ip route replace 127.1.1.0/24 via $CP_ADDR dev ffndp0 src $DP_ADDR 2>/dev/null; ip route show | grep 127.1.1"
 
 sysctl -qw net.ipv4.conf.ffnnet0.route_localnet=1 2>/dev/null
 ip route replace 127.1.2.0/24 via "$CP_PCNET" dev ffnnet0 src "$MP_ADDR" \
