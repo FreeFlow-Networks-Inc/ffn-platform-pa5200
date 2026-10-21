@@ -26,6 +26,14 @@ from session_stream import BATCH,CAPACITY,Lines,canonical_uuid,send
 SNAPSHOT_BUDGET=60
 # Rows per snapshot chunk: each chunk is one relay round trip through the CP.
 CHUNK=64
+# Seconds between counter refreshes. Conntrack reports a session's packet and
+# byte counts in dumps and in the events that create or destroy it, not while
+# an established flow forwards, so without a refresh a download's row keeps the
+# counts from its handshake for its whole life: the offload policy cannot see
+# which flows are fat and a hardware lease cannot see that its flow still moves.
+# A dump every ten seconds, with counter-only upserts for the candidate rows
+# whose counts moved, is the cheapest honest signal.
+REFRESH_SECONDS=10
 CONNTRACK_MAX=Path('/proc/sys/net/netfilter/nf_conntrack_max')
 
 
@@ -66,6 +74,39 @@ def with_known_owner(row,ident,known):
     """
     if row['event']=='end' or row['token'] is not None or ident not in known:return row
     return dict(row,token=known[ident])
+
+
+def counters_known(row):
+    """Whether a decoded conntrack row carries packet and byte counts for both directions."""
+    counters=row.get('counters')
+    return (isinstance(counters,dict) and
+            all(isinstance(counters.get(d),dict) and {'packets','bytes'}<=set(counters[d]) for d in ('original','reply')))
+
+
+def identity_of(row,boot):
+    """The stream identity of a decoded row: the same digest ffn_session_feed.assess emits."""
+    import hashlib
+    return hashlib.sha256(json.dumps([boot,row.get('zone',0),row['id'],row['original']],sort_keys=True).encode()).hexdigest()
+
+
+def refreshed(dumped,emitted,boot):
+    """Counter-only upserts for the emitted candidate rows whose dump counters moved.
+
+    `emitted` maps identity to the row last sent for it. A dump row for an unknown
+    identity, a non-candidate, or one whose owner or TCP state differs from the
+    emitted row is left alone: those arrive through the event path with a full
+    assessment and next-hop plan, which this refresh deliberately does not redo.
+    """
+    updates=[]
+    for row in dumped:
+        if row.get('event')=='end' or not counters_known(row):continue
+        previous=emitted.get(identity_of(row,boot))
+        if (previous is None or previous.get('software_candidate') is not True or
+                previous.get('token')!=row.get('token') or previous.get('tcp_state')!=row.get('tcp_state') or
+                previous.get('counters')==row['counters']):
+            continue
+        updates.append(dict(previous,counters=row['counters'],remaining_seconds=row.get('timeout')))
+    return updates
 
 
 def replay(rows,changes):
@@ -127,7 +168,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
     state,collector,rules=feed.context()
     producer=dict(boot_id=collector['boot_id'],pid=os.getpid(),
         process_start=Path('/proc/self/stat').read_text().rsplit(')',1)[1].split()[19],stream_id=str(uuid.uuid4()))
-    sequence=0;known={};topology=None
+    sequence=0;known={};emitted={};topology=None
     def recheck():
         # Do not publish a row/heartbeat computed across a topology change,
         # including changes arriving during a conntrack burst. Notifications
@@ -157,16 +198,48 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
         chunk=[]
         for row in rows:
             if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
-            assessed=assess(row);known[assessed['identity']]=assessed['token'];chunk.append(assessed)
+            assessed=assess(row);known[assessed['identity']]=assessed['token'];emitted[assessed['identity']]=assessed;chunk.append(assessed)
             if len(chunk)==CHUNK:event('snapshot',chunk);chunk=[]
         if chunk:event('snapshot',chunk)
         if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
         check_context();recheck();event('synchronized',{})
-        heartbeat=clock()
+        def handle(batch,changes):
+            for row in batch:
+                # Closed/unowned sessions need only their identity; do
+                # not resolve next hops on the withdrawal path.
+                assessed=feed.assess(row,rules,producer['boot_id']);ident=assessed['identity']
+                if row['event']!='end' and row['token'] is None and ident in known:
+                    row=with_known_owner(row,ident,known);assessed=feed.assess(row,rules,producer['boot_id'])
+                if row['event']=='end' or row['token'] is None:
+                    if ident in known:changes.append({'op':'close','identity':ident});known.pop(ident);emitted.pop(ident,None)
+                else:
+                    assessed['l3']=feed.l3.plan(assessed,state['bindings'],topology)
+                    # An event without counters is silence about traffic, not a reset: the counts
+                    # last emitted stand until the next event or refresh moves them.
+                    if not counters_known(row) and (emitted.get(ident) or {}).get('counters'):
+                        assessed['counters']=emitted[ident]['counters']
+                    known[ident]=assessed['token'];emitted[ident]=assessed
+                    if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
+                    changes.append({'op':'upsert','row':assessed})
+        heartbeat=refresh=clock()
         while not stop():
             now=clock()
             if now-heartbeat>=1:
                 check_context();event('heartbeat',{});heartbeat=clock()
+            if now-refresh>=REFRESH_SECONDS:
+                # The counters of the candidate rows, from a dump on the same subscribed socket;
+                # events that arrive during the dump are ordinary events and follow it in order.
+                check_context()
+                dumped,pending=snapshot(source,timeout=3,capacity=CAPACITY)
+                recheck()
+                updates=refreshed(dumped,emitted,producer['boot_id'])
+                for row in updates:emitted[row['identity']]=row
+                for start in range(0,len(updates),BATCH):
+                    event('changes',[{'op':'upsert','row':row} for row in updates[start:start+BATCH]])
+                if pending:
+                    changes=[];handle(pending,changes)
+                    if changes:event('changes',coalesce(changes))
+                refresh=clock()
             readable=select.select([source,routes],[],[],.1)[0]
             if routes in readable:recheck()
             if source not in readable:continue
@@ -182,20 +255,8 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                 try:batch=receive(source)
                 except BlockingIOError:break
                 count+=len(batch)
-                for row in batch:
-                    # Closed/unowned sessions need only their identity; do
-                    # not resolve next hops on the withdrawal path.
-                    assessed=feed.assess(row,rules,producer['boot_id']);ident=assessed['identity']
-                    if row['event']!='end' and row['token'] is None and ident in known:
-                        row=with_known_owner(row,ident,known);assessed=feed.assess(row,rules,producer['boot_id'])
-                    if row['event']=='end' or row['token'] is None:
-                        if ident in known:changes.append({'op':'close','identity':ident});known.pop(ident)
-                    else:
-                        assessed['l3']=feed.l3.plan(assessed,state['bindings'],topology)
-                        known[ident]=assessed['token']
-                        if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
-                        changes.append({'op':'upsert','row':assessed})
-                    if len(changes)>=BATCH:flush()
+                handle(batch,changes)
+                if len(changes)>=BATCH:flush()
             flush()
 
 

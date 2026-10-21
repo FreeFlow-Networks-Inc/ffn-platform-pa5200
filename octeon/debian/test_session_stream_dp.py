@@ -87,4 +87,48 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual([r['token'] for r in producer.replay([],[self.row('start',24577)])],[24577])
 
 
+class RefreshTests(unittest.TestCase):
+    """Conntrack reports counters in dumps and in create/destroy events, not while an established flow
+    forwards (2026-10-21: 98 of 101 established rows showed identical counts 25 s apart and three regressed
+    to nothing on a later event). A periodic dump refreshes the candidate rows' counts; nothing else."""
+    BOOT='1b1582dd-a310-4cc1-85cd-0be7e600ae62'
+    @staticmethod
+    def dumped(ident,token=24577,state=3,packets=(10,20),**extra):
+        return dict(event='update',id=ident,zone=0,token=token,tcp_state=state,timeout=431999,reply={},
+                    original={'source':'10.0.0.1','destination':'10.0.0.2','protocol':6,'source_port':ident,'destination_port':443},
+                    counters=dict(original=dict(packets=packets[0],bytes=packets[0]*1000),reply=dict(packets=packets[1],bytes=packets[1]*1400)),**extra)
+
+    def emitted(self,row,candidate=True):
+        return dict(identity=producer.identity_of(row,self.BOOT),token=row['token'],tcp_state=row['tcp_state'],
+                    counters=row['counters'],software_candidate=candidate,remaining_seconds=1,l3={'available':True})
+
+    def test_counters_known_needs_both_directions_with_packets_and_bytes(self):
+        self.assertTrue(producer.counters_known(self.dumped(1)))
+        for counters in ({},None,{'original':{'packets':1,'bytes':2}},{'original':{'packets':1},'reply':{'packets':1}}):
+            self.assertFalse(producer.counters_known(dict(self.dumped(1),counters=counters)),counters)
+
+    def test_identity_is_stable_and_follows_boot_zone_id_and_tuple(self):
+        a=self.dumped(1);self.assertEqual(producer.identity_of(a,self.BOOT),producer.identity_of(dict(a,counters={}),self.BOOT))
+        self.assertNotEqual(producer.identity_of(a,self.BOOT),producer.identity_of(self.dumped(2),self.BOOT))
+        self.assertNotEqual(producer.identity_of(a,self.BOOT),producer.identity_of(a,'0'*36))
+
+    def test_moved_candidate_rows_get_counter_only_upserts(self):
+        before=self.dumped(1);emitted={e['identity']:e for e in [self.emitted(before)]}
+        after=self.dumped(1,packets=(300,900))
+        updates=producer.refreshed([after],emitted,self.BOOT)
+        self.assertEqual(len(updates),1);row=updates[0]
+        self.assertEqual((row['counters'],row['remaining_seconds'],row['identity']),(after['counters'],431999,producer.identity_of(after,self.BOOT)))
+        self.assertEqual(row['l3'],{'available':True},'the plan is carried, not recomputed')
+
+    def test_unchanged_unknown_non_candidate_and_changed_state_rows_are_left_to_the_event_path(self):
+        base=self.dumped(1);emitted={e['identity']:e for e in [self.emitted(base),self.emitted(self.dumped(2),candidate=False)]}
+        self.assertEqual(producer.refreshed([base],emitted,self.BOOT),[],'unchanged counters')
+        self.assertEqual(producer.refreshed([self.dumped(9,packets=(5,5))],emitted,self.BOOT),[],'unknown identity')
+        self.assertEqual(producer.refreshed([self.dumped(2,packets=(99,99))],emitted,self.BOOT),[],'not a candidate')
+        self.assertEqual(producer.refreshed([self.dumped(1,packets=(99,99),state=4)],emitted,self.BOOT),[],'state changed: an event follows')
+        self.assertEqual(producer.refreshed([self.dumped(1,packets=(99,99),token=5)],emitted,self.BOOT),[],'owner changed: an event follows')
+        self.assertEqual(producer.refreshed([dict(self.dumped(1,packets=(99,99)),event='end')],emitted,self.BOOT),[],'an ended row')
+        self.assertEqual(producer.refreshed([dict(self.dumped(1,packets=(99,99)),counters={})],emitted,self.BOOT),[],'no counters in the dump')
+
+
 if __name__=='__main__':unittest.main()
