@@ -74,6 +74,9 @@
 #define POLL_MS 50
 #define SHUTDOWN_BUDGET 60
 #define LOCK_WAIT (15 * SECOND)
+/* Seconds without a status before the hosting daemon counts as hung rather than
+ * busy (FFN_PORTD_DAEMON_STALE overrides it; the harness shortens it). */
+static double DAEMON_STALE = 60.0;
 
 /* Every packet path this process hosts has a lease of a few seconds that its
  * owner renews from the control loop; the workers stop when it lapses, so a
@@ -2004,6 +2007,8 @@ struct aggregate {
     struct helper start;        /* the validate or network-setup helper in flight */
     uint64_t start_deadline;
     struct client *client;
+    uint64_t last_tick;         /* when the loop last served this group (stall accounting) */
+    bool current, ready;        /* the network flags of the last status row, for the keepalive */
 };
 
 static const char *aggregate_stage_name(enum aggregate_stage s)
@@ -2132,6 +2137,11 @@ static void aggregate_tick(struct aggregate *a, uint64_t now)
     if (a->stage != AGG_RUNNING) { aggregate_start_service(a, now); return; }   /* the helpers' deadlines bound the start */
     if (a->client) lease_lines(d, &a->client->in, now);
     if (d->failed) return;
+    /* A stalled loop (a port attach waiting for the network lock, a close) could
+     * not read the MP's observations meanwhile; the stall does not count against
+     * their lease, which measures the MP's silence, not this process's. */
+    if (a->last_tick && now > a->last_tick + SECOND) d->last_input += now - a->last_tick - SECOND;
+    a->last_tick = now;
     /* An observation consumed this very tick stamps last_input later than `now`. */
     if (now > d->last_input && now - d->last_input > (d->sequence < 0 ? LEASE_BEFORE_FIRST : LEASE_AFTER_FIRST)) { fail(d, "MP/CP observation lease expired"); return; }
     ffn_lacp_tick(d->engine, now);
@@ -2156,6 +2166,7 @@ static void aggregate_tick(struct aggregate *a, uint64_t now)
     if (d->failed) return;
     lease_ok = !network_dhcp(d->network) || (d->local_count && !(d->lease && ffn_json_get(d->lease, "error") && ffn_json_get(d->lease, "error")->type != FFN_JSON_NULL));
     network_ready = network_current && lease_ok;
+    a->current = network_current; a->ready = network_ready;
     if (now >= d->next_status) { d->next_status = now + STATUS_PERIOD; status_row(d, now, network_current, network_ready, a->client ? &a->client->out : NULL); }
 }
 
@@ -2794,6 +2805,17 @@ static bool owner_cmdline(pid_t pid)
     return found;
 }
 
+/* `ffn-portd serve`: the daemon hosting every port and every group. */
+static bool serve_cmdline(pid_t pid)
+{
+    char *text; size_t len;
+    bool found;
+    if (cmdline_read(pid, &text, &len)) return false;
+    found = args_have(text, len, "ffn-portd", false) && args_have(text, len, "serve", true);
+    free(text);
+    return found;
+}
+
 /* 0 when the group is recovered or there is nothing to do; -1 with err when
  * the owner is alive and healthy (left alone), its identity is not what the
  * journal says, or the cleanup failed. */
@@ -2835,6 +2857,12 @@ static int recover_group(const char *group, const char *token, char *err, size_t
             !row_start || strcmp(row_start, start) || !owner_cmdline((pid_t)pid)) {
             snprintf(err, errsz, "Stale owner process identity changed"); ffn_json_free(status); ffn_json_free(intent); return -1;
         }
+        /* The hosting daemon's one loop stalls for seconds while it attaches a
+         * port, and its status and its reading of the controller stall with it;
+         * killing it drops every port (three times on 2026-10-21). It is left
+         * alone until its status has not moved for a minute: a hang, not a
+         * busy stretch. A fresh lease adopts the group once the loop returns. */
+        if (serve_cmdline((pid_t)pid) && (double)now_us() / 1e6 - updated < DAEMON_STALE) { ffn_json_free(status); ffn_json_free(intent); return 0; }
         logmsg("%s: retiring owner %lld (status %.1fs old, controller silent %.1fs)", group, pid, (double)now_us() / 1e6 - updated, age);
         kill((pid_t)pid, SIGTERM); usleep(500000);
         lock = try_lock(lock_path);
@@ -3406,11 +3434,25 @@ static struct server *live_server;
 
 static void leases_renew(void)
 {
+    static uint64_t next_touch;
     struct server *s = live_server;
+    uint64_t now;
     if (!s) return;
     /* A path not started, paused or already faulted refuses; its own tick reports that. */
     for (unsigned i = 0; i < PORTS; i++) if (s->ports[i].d.native) (void)ffn_packet_renew(s->ports[i].d.native);
     for (unsigned i = 0; i < GROUPS; i++) if (s->groups[i].d.native) (void)ffn_packet_renew(s->groups[i].d.native);
+    /* The status files are heartbeats too: the DP sweep retires a group whose
+     * status is eight seconds old and the MP's owner gives up on a stale
+     * observation. Once a second while the loop waits, every running group's
+     * row and the daemon's own status are written again. */
+    now = now_us();
+    if (now < next_touch) return;
+    next_touch = now + STATUS_PERIOD;
+    for (unsigned i = 0; i < GROUPS; i++) {
+        struct aggregate *a = &s->groups[i];
+        if (a->stage == AGG_RUNNING && !a->d.failed) status_row(&a->d, now, a->current, a->ready, NULL);
+    }
+    publish(s, now);
 }
 
 static int serve_daemon(void)
@@ -3688,6 +3730,7 @@ int main(int argc, char **argv)
     if ((v = getenv("FFN_PORTD_INSPECTION"))) INSPECTION_POLICY = v;
     if ((v = getenv("FFN_PORTD_INLINE"))) INLINE_LIBRARY = v;
     if ((v = getenv("FFN_PORTD_FE100_RETURN"))) FE100_RETURN = v;
+    if ((v = getenv("FFN_PORTD_DAEMON_STALE")) && atof(v) >= 1.0) DAEMON_STALE = atof(v);
     if ((v = getenv("FFN_PORTD_LANES"))) LANES_POLICY = v;
     if ((v = getenv("FFN_PORTD_NETWORK"))) NETWORK_JOURNAL = v;
     if ((v = getenv("FFN_PORTD_ROUTE_LINKS"))) ROUTE_LINKS = v;
