@@ -14,8 +14,9 @@ row within the startup budget, and ends with its gates withdrawn, its TAP torn
 down and its run files gone when the pipe closes, when the controller falls
 silent, and when the relay is terminated; the table refuses to take a live
 member and a lease refuses an l3 port; a daemon killed outright comes back on
-its saved table with the port re-attached; the watchdog sweep retires a frozen
-daemon; SIGTERM stops everything cleanly.
+its saved table with the port re-attached; the watchdog sweep leaves a daemon
+whose status is seconds old alone (its loop may be busy attaching a port) and
+retires one frozen past the daemon threshold; SIGTERM stops everything cleanly.
 
 The kernel-interface helpers are a fake runtime script in a temporary directory:
 the real ones need the appliance's namespaces, nftables tables and management
@@ -368,9 +369,14 @@ def test():
             assert 'ae1' not in run('ip', '-n', data_ns, 'link'), 'TAP survived'
             verbs = [json.loads(l)['verb'] for l in log.read_text().splitlines()]
             assert verbs[-1] == 'network-teardown' and 'network-setup' in verbs and verbs[0] == 'validate', verbs
+            def peer_distributing(last=[None]):
+                # The peer rewrites its file in place; a read that lands mid-write keeps the last value.
+                try: last[0] = json.loads((directory / 'peer.json').read_text())['distributing']
+                except (ValueError, KeyError): pass
+                return last[0]
             deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and json.loads((directory / 'peer.json').read_text())['distributing']: time.sleep(0.2)
-            assert json.loads((directory / 'peer.json').read_text())['distributing'] == [], 'peer still distributing'
+            while time.monotonic() < deadline and peer_distributing() != []: time.sleep(0.2)
+            assert peer_distributing() == [], 'peer still distributing'
             assert daemon.status()['aggregates'] == {} and daemon.status()['ports']['5']['member_of'] is None
             # A lease for an l3 port is refused before anything is held.
             rc, reply = daemon.table({3: {'mode': 'l3'}, 5: {'mode': 'l3'}, 6: {'mode': 'aggregate', 'group': 'ae1'}})
@@ -420,23 +426,32 @@ def test():
             status = daemon.status()
             assert status['revision'] >= 1 and status['ports']['3']['desired'] == 'l3' and status['ports']['5']['desired'] == 'aggregate', status['ports']['3']
             results['restart'] = dict(old_pid=old_pid, new_pid=daemon.process.pid)
-            # 13. The watchdog: a daemon that stops publishing (here: frozen) is retired by `sweep` after
-            # eight seconds, the aggregate's lock, TAP and run files reclaimed.
+            # 13. The watchdog: a stand-alone owner that stops publishing is retired by `sweep` after eight
+            # seconds, but the hosting daemon's loop may be busy for that long attaching a port, so the
+            # sweep leaves `ffn-portd serve` alone until its status is DAEMON_STALE old (60 s on the box,
+            # 12 s here) and only then reclaims the aggregate's lock, TAP and run files.
             token = str(uuid.uuid4())
             owner = Owner(env, trunk_ns, token)
             owner.wait_row(lambda r: r.get('distributing') == MEMBERS, 30)
+            sweep_env = dict(env, FFN_PORTD_DAEMON_STALE='12')
             daemon.process.send_signal(signal.SIGSTOP); frozen = time.monotonic()
-            subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=env, check=True, timeout=30)
+            subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=sweep_env, check=True, timeout=30)
             assert (rundir / 'ffn-aggregate-ae1-intent.json').exists(), 'a fresh owner was swept'
             time.sleep(9)
-            sweep = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=env,
+            early = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=sweep_env,
+                                   capture_output=True, text=True, timeout=60)
+            assert early.returncode == 0, early.stderr
+            assert daemon.process.poll() is None, 'the sweep retired a hosting daemon whose status was only seconds old'
+            assert (rundir / 'ffn-aggregate-ae1-intent.json').exists(), 'the sweep reclaimed a busy daemon\'s group'
+            time.sleep(4)
+            sweep = subprocess.run(['ip', 'netns', 'exec', trunk_ns, str(HERE / 'ffn-portd'), 'aggregate', 'sweep'], env=sweep_env,
                                    capture_output=True, text=True, timeout=60)
             assert sweep.returncode == 0, sweep.stderr
-            assert daemon.process.poll() is not None, 'frozen daemon survived the sweep'
+            assert daemon.process.poll() is not None, 'frozen daemon survived the sweep past the daemon threshold'
             assert not (rundir / 'ffn-aggregate-ae1-intent.json').exists() and not (rundir / 'ffn-aggregate-ae1-status.json').exists()
             assert 'ae1' not in run('ip', '-n', data_ns, 'link'), 'TAP survived the sweep'
             owner.wait_exit(10)
-            results['sweep'] = dict(seconds=round(time.monotonic() - frozen, 1), stderr=sweep.stderr.strip()[-200:])
+            results['sweep'] = dict(seconds=round(time.monotonic() - frozen, 1), spared_at_9s=True, stderr=sweep.stderr.strip()[-200:])
             # 14. SIGTERM: every owner withdrawn, status and socket gone, exit 0.
             daemon = Daemon(env, trunk_ns, rundir, directory / 'daemon.log')
             daemon.wait(lambda: physical_status(3)['running'] is True, 15, 'port 3 attached after the sweep')
