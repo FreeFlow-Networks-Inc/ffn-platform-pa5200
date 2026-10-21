@@ -118,12 +118,30 @@ descriptors. `ffn_packet_start_lanes` pins lane i to `rx_cpus[i]` and
 return filter is applied to every lane's socket. With a trunk driver that records
 no queue, every frame reaches lane 0 alone, which is merely the old behaviour.
 
-The Python owner takes its lane count from `/etc/ffn/packet-lanes.json`, for
+The owners take their lane count from `/etc/ffn/packet-lanes.json`, for
 example `{"default": 2, "p5": 4, "ae1": 4}`; no file means one lane. Two CPUs
 are reserved per lane, never the trunk driver's receive cores (its status names
 them) while enough others remain, and the receive steering of the forwarding
-path keeps off those cores too. The runtimes make their TAPs with `multi_queue`;
-the VIF runtime makes a device again when it finds one made without it.
+path keeps off those cores too.
+
+Whoever makes a TAP makes it with `multi_queue`: the aggregate runtime for
+`aeN`, the core network owner (`ffn_linux_network.py`, behind the platform
+adapter `ffn_network.py`) for the physical ports `pN` at boot. A physical TAP
+made without it (an older engine, a device made by hand) is remade by the
+network owner, exactly once, under the network lock: `ffn_network.py reconcile
+--port pN` deletes the device and makes it again with multi_queue, applies the
+port's remembered MAC, MTU, mode, addresses and management profile as at boot,
+and puts back the routes and global addresses other owners had on the old
+device. `ffn-portd` asks for that itself the first time it attaches to a plain
+TAP whose policy wants more than one lane, then notices the new device
+(`ffn_packet_tap_check`: the queues belong to the interface index opened; a
+port without traffic learns nothing from its workers) and attaches again with
+a queue per lane. A refusal is recorded in the port's table row and asked no
+more for that attachment; the port keeps serving on its one lane. The Security
+runtime sees the interface index change in its bindings and replays its policy,
+as it does for a remade aggregate. The daemon does not make or configure TAPs
+itself: the network owner stays the one owner of the device and of what is on
+it.
 
 ## Validation
 

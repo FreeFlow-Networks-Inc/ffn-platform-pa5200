@@ -33,6 +33,13 @@ int ffn_packet_start(struct ffn_packet *, int, int);
 int ffn_packet_lanes(struct ffn_packet *, unsigned);
 int ffn_packet_adopt_lane(struct ffn_packet *, int, int, int);
 unsigned ffn_packet_lane_count(const struct ffn_packet *);
+/* Additive: 1 when the opened TAP was made with multi_queue (lanes beyond the
+ * first are possible), 0 otherwise. */
+int ffn_packet_multiqueue(const struct ffn_packet *);
+/* Additive: 0 while the device named at open is the one the owner's queues
+ * belong to; -1 with ENODEV (gone) or ESTALE (another device has the name).
+ * An owner polls this once a tick: a remade TAP is noticed without traffic. */
+int ffn_packet_tap_check(struct ffn_packet *);
 int ffn_packet_start_lanes(struct ffn_packet *, const int *, const int *, unsigned);
 int ffn_packet_lane_workers(struct ffn_packet *, unsigned, int *, unsigned);
 int ffn_packet_pause(struct ffn_packet *);

@@ -107,6 +107,7 @@ static const char *CPUS = "/usr/local/sbin/ffn_packet_cpus.py", *CPU_RESERVATION
 static const char *INSPECTION_POLICY = "/etc/ffn/inspection.json", *INLINE_LIBRARY = "/usr/local/lib/libffn-inline.so";
 static const char *FE100_RETURN = "/etc/ffn/fe100-return.json", *LANES_POLICY = "/etc/ffn/packet-lanes.json";
 static const char *NETWORK_JOURNAL = "/etc/ffn/network.json";   /* the network owner's applied intent: revision, ports, routes */
+static const char *NETWORK_OWNER = "/usr/local/sbin/ffn_network.py";   /* the network owner itself: `reconcile --port pN` remakes a plain TAP */
 static const char *ROUTE_LINKS = "/run/ffn-route-links.json";    /* the route tracker's hardware link observation (see links_tool) */
 static const char *SOCKET_NAME = "ffn-portd.sock", *TABLE_NAME = "ffn-portd-table.json", *DAEMON_STATUS = "ffn-portd.json";
 static bool unchecked;
@@ -633,7 +634,7 @@ struct daemon {
     struct ffn_packet_fe100_binding control_bindings[MEMBERS]; unsigned control_binding_count; uint64_t control_deadline_ms;
     /* native data path */
     struct ffn_packet *native;
-    unsigned lanes;
+    unsigned lanes, lanes_wanted;   /* lanes running, and what the policy asked for this device */
     char cpu_token[40];
     struct ffn_aggregate_unit rows[UNITS]; unsigned row_count; bool rows_applied;
     char unit_name[4097][24];
@@ -1274,7 +1275,9 @@ static void tap_steer(const char *device)
 static int native_start(struct daemon *d, const char *device, char *err, size_t errsz)
 {
     int cpus[2 * FFN_PACKET_LANES_MAX], rx[FFN_PACKET_LANES_MAX], tx[FFN_PACKET_LANES_MAX];
-    int lanes = ffn_packet_lanes(d->native, lanes_for(device));
+    int lanes;
+    d->lanes_wanted = lanes_for(device);
+    lanes = ffn_packet_lanes(d->native, d->lanes_wanted);
     if (lanes < 1) { snprintf(err, errsz, "native lanes: %s", strerror(errno)); return -1; }
     d->lanes = (unsigned)lanes;
     if (cpus_reserve(d, 2 * d->lanes, cpus, err, errsz)) return -1;
@@ -2464,6 +2467,7 @@ struct port {
     uint64_t next_try, next_tick;
     unsigned failures;
     struct aggregate *member_of;  /* the live aggregate lease holding this port */
+    bool remake_asked;          /* this attachment asked the network owner once to remake a plain TAP */
 };
 
 static const char *port_mode_name(enum port_mode m)
@@ -2515,8 +2519,10 @@ static int port_attach(struct port *port, char *err, size_t errsz)
     if (p->observed && ffn_packet_carrier(d->native, 0)) { snprintf(err, errsz, "carrier: %s", strerror(errno)); goto failed; }
     snprintf(p->carrier_reason, sizeof p->carrier_reason, "no link observation delivered");
     port->attached = true;
+    port->remake_asked = false;
     port->next_tick = now_us();
-    logmsg("%s serving %s (%s, source %u, carrier %s)", p->owner, p->tap, port->number == 1 ? "WAN" : "physical", p->source, p->observed ? "observed" : "always");
+    logmsg("%s serving %s (%s, source %u, carrier %s, %u of %u lanes%s)", p->owner, p->tap, port->number == 1 ? "WAN" : "physical", p->source,
+           p->observed ? "observed" : "always", d->lanes, d->lanes_wanted, ffn_packet_multiqueue(d->native) ? "" : ", TAP without multi_queue");
     return 0;
 failed:
     if (network_lock >= 0) close(network_lock);
@@ -2548,6 +2554,44 @@ static void port_detach(struct port *port)
     logmsg("%s stopped", p->owner);
 }
 
+/* The TAP this owner attached to was made without multi_queue, so the library
+ * could open one queue of it while the lane policy asks for more. The network
+ * owner (core ffn_linux_network.py, behind the platform adapter) is the one
+ * that makes and remakes physical TAPs: `reconcile --port pN` deletes the
+ * device and makes it again with multi_queue under the network lock, keeping
+ * its MAC, addresses and routes. This owner's queues then belong to a device
+ * that is gone; port_tick notices, the table re-attaches the port, and the
+ * new device takes a queue per lane. Asked once per attachment: a refusal is
+ * recorded in the port's reason and the port keeps serving on its one lane. */
+static void tap_remake_request(struct port *port)
+{
+    struct daemon *d = &port->d;
+    struct physical *p = &port->p;
+    struct helper h;
+    char line[200];
+    char *const argv[] = { (char *)PYTHON, (char *)NETWORK_OWNER, "reconcile", "--port", p->tap, NULL };
+    int status;
+    port->remake_asked = true;
+    logmsg("%s: %s was made without multi_queue and the policy wants %u lanes; asking the network owner to remake it", p->owner, p->tap, d->lanes_wanted);
+    status = helper_run(&h, argv, NULL, 60 * SECOND);
+    if (status == 0) {
+        /* {"reconciled": true, "ports": {"pN": {"remade": ..., "routes_restored": n, "addresses_restored": n}}} */
+        struct ffn_json *reply = h.output.len ? ffn_json_parse(h.output.s, h.output.len, line, sizeof line) : NULL, *ports, *report;
+        char *text = NULL;
+        ports = reply ? ffn_json_get(reply, "ports") : NULL;
+        report = ports ? ffn_json_get(ports, p->tap) : NULL;
+        if (report) text = ffn_json_dump(report);
+        logmsg("%s: network owner reconciled %s: %.160s", p->owner, p->tap, text ? text : "no report in the reply");
+        free(text); ffn_json_free(reply);
+    } else {
+        last_line(&h.error, line, sizeof line);
+        if (!line[0]) last_line(&h.output, line, sizeof line);
+        logmsg("%s: network owner did not remake %s: %s", p->owner, p->tap, line[0] ? line : status < 0 ? "timed out" : "failed");
+        snprintf(port->reason, sizeof port->reason, "running with %u of %u lanes; the network owner did not remake %s: %.80s", d->lanes, d->lanes_wanted, p->tap, line[0] ? line : "failed");
+    }
+    helper_close(&h);
+}
+
 /* One second of an attached port: what `physical serve` did per loop. A
  * worker fault or a failed native call marks the owner failed; the table
  * detaches and re-attaches it. */
@@ -2561,6 +2605,13 @@ static void port_tick(struct port *port, uint64_t now)
     if (fault > 0) { fail(d, "native owner fault: %s", strerror(fault)); return; }
     if (now < port->next_tick) return;
     port->next_tick = now + STATUS_PERIOD;
+    /* The queues belong to the device opened; a port without traffic would
+     * never learn from its workers that the network owner remade it. */
+    if (ffn_packet_tap_check(d->native)) { fail(d, "TAP %s %s", p->tap, errno == ENODEV ? "is gone" : "was replaced"); return; }
+    if (!port->remake_asked && d->lanes < d->lanes_wanted && !ffn_packet_multiqueue(d->native)) {
+        tap_remake_request(port);
+        if (ffn_packet_tap_check(d->native)) { fail(d, "TAP %s %s", p->tap, errno == ENODEV ? "is gone" : "was replaced"); return; }
+    }
     /* Quiesce the workers before the inspection engine or the return
      * bindings change under them; resume only after validated state. */
     if (ffn_packet_pause(d->native)) { fail(d, "native pause: %s", strerror(errno)); return; }
@@ -3142,6 +3193,9 @@ static struct ffn_json *server_status(struct server *s, uint64_t now)
             ffn_json_set(row, "status", ffn_json_string(port->p.state_path));
             ffn_json_set(row, "ifindex", ffn_json_int(port->p.ifindex));
             ffn_json_set(row, "source", ffn_json_int(port->p.source));
+            ffn_json_set(row, "lanes", ffn_json_int(port->d.lanes));
+            ffn_json_set(row, "lanes_wanted", ffn_json_int(port->d.lanes_wanted));
+            ffn_json_set(row, "multi_queue", ffn_json_bool(ffn_packet_multiqueue(port->d.native)));
             ffn_json_set(carrier, "policy", ffn_json_string(port->p.observed ? "observed" : "always"));
             ffn_json_set(carrier, "up", ffn_json_bool(port->p.observed ? port->p.carrier_up : true));
             ffn_json_set(row, "carrier", carrier);
@@ -3733,6 +3787,7 @@ int main(int argc, char **argv)
     if ((v = getenv("FFN_PORTD_DAEMON_STALE")) && atof(v) >= 1.0) DAEMON_STALE = atof(v);
     if ((v = getenv("FFN_PORTD_LANES"))) LANES_POLICY = v;
     if ((v = getenv("FFN_PORTD_NETWORK"))) NETWORK_JOURNAL = v;
+    if ((v = getenv("FFN_PORTD_NETWORK_OWNER"))) NETWORK_OWNER = v;
     if ((v = getenv("FFN_PORTD_ROUTE_LINKS"))) ROUTE_LINKS = v;
     unchecked = (v = getenv("FFN_PORTD_UNCHECKED")) && !strcmp(v, "1");
     if ((v = getenv("FFN_PORTD_COPPER_PROFILE"))) COPPER_PROFILE = v;
