@@ -56,7 +56,15 @@ the exact input hashes. The DP starts its recovery mailbox before dpnet; both
 roles retain their transports in RAM through systemd handoff. The boot owner must supply
 one root on the kernel command line: `ffn.nfsroot=SERVER_IPV4:/PROVISIONED_EXPORT`,
 or for the DP `ffn.rootfs=NAME` naming the phram device over the image the CP
-staged into DP DRAM. The DP bundle carries that image as `rootfs.squashfs`
+staged into DP DRAM. A DP whose NFS root server is beyond its own link (the MP,
+reached through the CP) adds `ffn.nfsgw=GATEWAY_IPV4`: before pinging the server
+the initramfs installs a host route to it through that gateway with the link's
+own address as the source (`ffn_nfsmount route SERVER via GATEWAY dev ffndp0`).
+The planes number their PCIe links in 127/8, which the kernel treats as host
+scope: without the explicit source a routed packet leaves with source 0.0.0.0
+and no server answers it. The initramfs busybox carries no `ip` applet, so the
+mount helper is the route installer; it retries until the transport has given
+the link its address. The DP bundle carries that image as `rootfs.squashfs`
 (xz, seed ownership preserved, digest in `image.json` under `root_image`); its
 kernel must build in squashfs, overlayfs, loop and phram, which the builder
 checks. There is
