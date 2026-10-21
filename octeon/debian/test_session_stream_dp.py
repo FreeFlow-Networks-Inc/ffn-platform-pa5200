@@ -1,8 +1,14 @@
+import contextlib
+import io
 import socket
 import unittest
 from unittest.mock import patch
+import uuid
 import ffn_session_stream_dp as producer
 from ffn_session_events import EventGap
+
+NONCE=str(uuid.uuid4())
+BOOT='1b1582dd-a310-4cc1-85cd-0be7e600ae62'
 
 
 class Watch:
@@ -53,6 +59,81 @@ class RouteCheckTests(unittest.TestCase):
         with patch.object(self.watch,'recv',side_effect=OSError(105,'No buffer space available')):
             with self.assertRaisesRegex(EventGap,'overflowed'):
                 producer.check_routes(self.watch,self.topology,7,observe=lambda deadline:self.topology)
+
+    def test_only_unused_neighbors_changing_defers_the_end_and_names_them(self):
+        used={('p7','203.0.113.1')}
+        added=dict(self.topology,neighbors=self.topology['neighbors']+[dict(dst='203.0.113.9',dev='p7',lladdr='02:00:00:00:00:09',valid=True)])
+        self.watch.notify()
+        self.assertEqual(producer.check_routes(self.watch,self.topology,7,observe=lambda d:added,used=used),frozenset({('p7','203.0.113.9')}))
+        # A removed unused neighbour is a change of the same kind; `used` may be a callable.
+        self.watch.notify()
+        self.assertEqual(producer.check_routes(self.watch,added,7,observe=lambda d:self.topology,used=lambda:used),frozenset({('p7','203.0.113.9')}))
+        # The neighbour a plan forwards through changing ends the generation at once.
+        self.watch.notify()
+        changed=dict(self.topology,neighbors=[dict(self.topology['neighbors'][0],lladdr='02:00:00:00:00:08')])
+        with self.assertRaisesRegex(EventGap,'Next-hop neighbor changed'):
+            producer.check_routes(self.watch,self.topology,7,observe=lambda d:changed,used=used)
+        # So does anything that is not a neighbour.
+        self.watch.notify()
+        routed=dict(self.topology,routes=[dict(dst='default',dev='p7')])
+        with self.assertRaisesRegex(EventGap,'new session snapshot required'):
+            producer.check_routes(self.watch,self.topology,7,observe=lambda d:routed,used=used)
+
+    def test_withheld_blocks_only_plans_through_changed_neighbors(self):
+        plan=dict(available=True,hardware_admission=False,blockers=[],snapshot_digest='d'*64,pair=['lan','wan'],
+                  directions=[dict(device='p7',next_hop='203.0.113.1'),dict(device='p5',next_hop='10.0.0.2')])
+        self.assertIs(producer.withheld(plan,frozenset()),plan)
+        self.assertIs(producer.withheld(plan,frozenset({('p7','203.0.113.9')})),plan)
+        held=producer.withheld(plan,frozenset({('p5','10.0.0.2')}))
+        self.assertEqual((held['available'],held['directions'],held['blockers']),
+                         (False,[],['Next-hop neighbor changed after the topology snapshot']))
+        self.assertEqual((held['snapshot_digest'],held['hardware_admission']),('d'*64,False))
+        blocked=dict(plan,available=False,directions=[],blockers=['x'])
+        self.assertIs(producer.withheld(blocked,frozenset({('p7','203.0.113.1')})),blocked)
+        self.assertEqual(producer.planned_neighbors({'a':dict(l3=plan),'b':dict(l3=blocked),'c':{}}),
+                         {('p7','203.0.113.1'),('p5','10.0.0.2')})
+
+
+class DeferralTests(unittest.TestCase):
+    """A neighbour no emitted plan forwards through appearing or going (LAN hosts, every few tens of
+    seconds on a busy box) no longer ends the generation: it ends DEFERRED_SECONDS later, and a plan
+    through that neighbour is withheld meanwhile. 2026-10-21: the feed spent most of the day re-snapshotting."""
+    def test_unused_neighbor_change_defers_the_generation_end(self):
+        watch=Watch();self.addCleanup(watch.close)
+        quiet=socket.socketpair();self.addCleanup(lambda:[s.close() for s in quiet])
+        base=dict(links=[],addresses=[],routes=[],rules=[],neighbors=[dict(dst='203.0.113.1',dev='p7',lladdr='02:00:00:00:00:07',valid=True)])
+        added=dict(base,neighbors=base['neighbors']+[dict(dst='203.0.113.9',dev='p7',lladdr='02:00:00:00:00:09',valid=True)])
+        topologies=iter([base]+[added]*8)
+        row=dict(id=42,token=9,event='update',status=14,timeout=60,zone=0,tcp_state=3,
+                 original=dict(source='192.0.2.1',destination='198.51.100.1',source_port=1234,destination_port=443,protocol=6),
+                 reply=dict(source='198.51.100.1',destination='203.0.113.1',source_port=443,destination_port=5000,protocol=6),counters={})
+        state=dict(revision=3,digest='a'*64,nat={'digest':'b'*64},bindings={})
+        collector=dict(boot_id=BOOT,pid=3,process_start='3',reconciliations=1)
+        rules={9:dict(interface_pairs=[['lan','wan']],inspection_required=False)}
+        plan=dict(available=True,hardware_admission=False,blockers=[],snapshot_digest='d'*64,pair=['lan','wan'],
+                  directions=[dict(device='p7',next_hop='203.0.113.1'),dict(device='p7',next_hop='203.0.113.1')])
+        now=[100.0];out=[];errors=io.StringIO();ticks=[0]
+        def stop():
+            ticks[0]+=1
+            if ticks[0]==1:watch.notify();now[0]+=2                  # the heartbeat's recheck sees the added neighbour
+            elif ticks[0]==2:now[0]+=producer.DEFERRED_SECONDS       # the deferred end is due
+            return False
+        with patch.object(producer.feed,'context',return_value=(state,collector,rules)), \
+             patch.object(producer.feed.runtime,'saved',return_value=state), \
+             patch.object(producer.feed.runtime,'status',return_value={}), \
+             patch.object(producer.feed,'acknowledgement',return_value=collector), \
+             patch.object(producer,'route_watch',return_value=contextlib.nullcontext(watch)), \
+             patch.object(producer,'subscribe',return_value=contextlib.nullcontext(quiet[1])), \
+             patch.object(producer.feed.l3,'snapshot',side_effect=lambda deadline:next(topologies)), \
+             patch.object(producer.feed.l3,'plan',return_value=plan), \
+             patch.object(producer,'snapshot',side_effect=[([row],[]),([],[]),([],[])]), \
+             patch('sys.stderr',errors),self.assertRaisesRegex(EventGap,'Deferred route, neighbor or interface change'):
+            producer.stream(NONCE,out.append,clock=lambda:now[0],stop=stop)
+        ops=[m['operation'] for m in out]
+        self.assertEqual(ops[:3],['begin','snapshot','synchronized'],'the first message leaves before the conntrack dump')
+        self.assertIn('heartbeat',ops[3:],'the generation outlived the unused neighbour change')
+        self.assertIn('ends in %d s'%producer.DEFERRED_SECONDS,errors.getvalue())
+        self.assertEqual(out[1]['payload'][0]['l3'],plan,'the emitted plan through the unchanged neighbour stands')
 
 
 class OwnershipTests(unittest.TestCase):
