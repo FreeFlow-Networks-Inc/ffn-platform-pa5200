@@ -37,6 +37,11 @@ int ffn_packet_start_lanes(struct ffn_packet *, const int *, const int *, unsign
 int ffn_packet_lane_workers(struct ffn_packet *, unsigned, int *, unsigned);
 int ffn_packet_pause(struct ffn_packet *);
 int ffn_packet_resume(struct ffn_packet *);
+/* Additive: extend the lease of a running owner without pausing it. The workers
+ * stop themselves (fault ETIMEDOUT) when the owner has neither resumed nor
+ * renewed within the lease, so a control thread that is busy but alive, waiting
+ * for a lock or closing another owner, renews while it waits. */
+int ffn_packet_renew(struct ffn_packet *);
 int ffn_packet_workers(struct ffn_packet *, int *, unsigned);
 int ffn_packet_counters(struct ffn_packet *, uint64_t *, unsigned);
 /* Additive ABI: receive syscalls, frames returned, largest batch. */

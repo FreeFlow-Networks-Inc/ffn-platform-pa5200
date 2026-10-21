@@ -82,6 +82,9 @@ struct ffn_packet {
     int64_t lease_end;
 };
 
+/* How long the workers run without the owner resuming or renewing them. */
+#define LEASE_MS 3000
+
 unsigned ffn_packet_abi(void) { return FFN_PACKET_ABI; }
 static uint16_t be16(const uint8_t *p) { return (uint16_t)p[0] << 8 | p[1]; }
 static int64_t milliseconds(void)
@@ -749,8 +752,19 @@ int ffn_packet_resume(struct ffn_packet *p)
         int error = p->fault ? p->fault : EINVAL;
         pthread_mutex_unlock(&p->control); errno = error; return -1;
     }
-    p->lease_end = milliseconds() + 3000;
+    p->lease_end = milliseconds() + LEASE_MS;
     p->pause_requested = 0; pthread_cond_broadcast(&p->changed);
+    pthread_mutex_unlock(&p->control); return 0;
+}
+int ffn_packet_renew(struct ffn_packet *p)
+{
+    if (!p) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&p->control);
+    if (p->started != 2 * p->lane_count || p->stopped) {
+        int error = p->fault ? p->fault : EINVAL;
+        pthread_mutex_unlock(&p->control); errno = error; return -1;
+    }
+    p->lease_end = milliseconds() + LEASE_MS;
     pthread_mutex_unlock(&p->control); return 0;
 }
 /* Start both workers of every lane, each pinned to the CPU given for it:
