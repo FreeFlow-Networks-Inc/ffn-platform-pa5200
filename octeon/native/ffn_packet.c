@@ -61,6 +61,7 @@ struct ffn_packet {
     uint32_t sources[16];
     unsigned source_count;
     int mode, multiqueue, opened;
+    unsigned tap_index;              /* the TAP's interface index at open: a remade device has another */
     struct ffn_packet_fe100_binding fe100[8];
     unsigned fe100_count;
     uint64_t fe100_deadline;
@@ -337,7 +338,13 @@ static int tap_queue_open(struct ffn_packet *p)
     target = open(path, O_RDONLY | O_CLOEXEC);
     if (original < 0 || target < 0 || setns(target, CLONE_NEWNET)) goto fail;
     switched = 1;
-    if (!if_nametoindex(p->tapname)) { errno = ENODEV; goto fail; }
+    {
+        unsigned index = if_nametoindex(p->tapname);
+        if (!index) { errno = ENODEV; goto fail; }
+        /* Every queue is of the device lane 0 opened; another device of the same name is not it. */
+        if (p->opened && index != p->tap_index) { errno = ESTALE; goto fail; }
+        p->tap_index = index;
+    }
     fd = open("/dev/net/tun", O_RDWR | O_NONBLOCK | O_CLOEXEC);
     if (fd < 0) goto fail;
     memcpy(request.ifr_name, p->tapname, strlen(p->tapname) + 1);
@@ -418,6 +425,34 @@ int ffn_packet_lanes(struct ffn_packet *p, unsigned count)
     return (int)p->lane_count;
 }
 unsigned ffn_packet_lane_count(const struct ffn_packet *p) { return p ? p->lane_count : 0; }
+int ffn_packet_multiqueue(const struct ffn_packet *p) { return p && p->opened ? p->multiqueue : 0; }
+/* Is the TAP lane 0 opened still the device of that name? The network owner
+ * remakes a TAP (plain to multi_queue) by deleting it and making it again; the
+ * queues this owner holds then belong to a device that is gone, and a port
+ * without traffic would never learn it from its workers. 0 while it is the
+ * same device; -1 with ENODEV when no device has the name, ESTALE when another
+ * does, EINVAL for an owner that was adopted rather than opened. */
+int ffn_packet_tap_check(struct ffn_packet *p)
+{
+    char path[128];
+    int original = -1, target = -1, switched = 0, error = 0;
+    unsigned index = 0;
+    if (!p || !p->opened) { errno = EINVAL; return -1; }
+    original = open("/proc/self/ns/net", O_RDONLY | O_CLOEXEC);
+    snprintf(path, sizeof(path), "/run/netns/%s", p->netns);
+    target = open(path, O_RDONLY | O_CLOEXEC);
+    if (original < 0 || target < 0 || setns(target, CLONE_NEWNET)) { error = errno; goto out; }
+    switched = 1;
+    index = if_nametoindex(p->tapname);
+    if (!index) error = ENODEV;
+    else if (index != p->tap_index) error = ESTALE;
+out:
+    if (switched && setns(original, CLONE_NEWNET) && !error) error = errno;
+    if (original >= 0) close(original);
+    if (target >= 0) close(target);
+    if (error) { errno = error; return -1; }
+    return 0;
+}
 int ffn_packet_configure(struct ffn_packet *p, const uint8_t *v4, unsigned n4,
                          const uint8_t *v6, unsigned n6, void *inspection, ffn_scan_fn scan)
 {

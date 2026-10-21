@@ -76,6 +76,23 @@ print(json.dumps({'token': '0123456789abcdef0123456789abcdef', 'cpus': [cpus[i %
 
 FAKE_STEERING = '#!/usr/bin/env python3\nimport json, sys\nprint(json.dumps({"device": sys.argv[1], "cpus": [], "mask": "0"}))\n'
 
+# The network owner's `reconcile --port pN`: the core engine deletes a plain TAP and makes it again with
+# multi_queue under the network lock, keeping its MAC, addresses and routes. Here: the same device change,
+# logged, refused while a marker file exists.
+FAKE_NETWORK_OWNER = '''#!/usr/bin/env python3
+import json, os, subprocess, sys
+log = open(os.environ['FAKE_OWNER_LOG'], 'a')
+log.write(json.dumps({'argv': sys.argv[1:]}) + '\\n'); log.flush()
+ns = os.environ['FAKE_NS']
+name = sys.argv[sys.argv.index('--port') + 1]
+if os.path.exists(os.environ['FAKE_REFUSE']):
+    print(json.dumps({'error': 'refused for the test'})); sys.exit(2)
+subprocess.run(['ip', '-n', ns, 'link', 'delete', 'dev', name], check=True)
+subprocess.run(['ip', '-n', ns, 'tuntap', 'add', 'dev', name, 'mode', 'tap', 'multi_queue'], check=True)
+subprocess.run(['ip', '-n', ns, 'link', 'set', name, 'up'], check=True)
+print(json.dumps({'reconciled': True, 'ports': {name: {'remade': True, 'routes_restored': 0, 'addresses_restored': 0}}}))
+'''
+
 
 def run(*args, **kw):
     return subprocess.run(list(args), check=True, capture_output=True, text=True, timeout=20, **kw).stdout
@@ -233,15 +250,20 @@ def test():
         fake = directory / 'fake_runtime.py'; fake.write_text(FAKE_RUNTIME); fake.chmod(0o755)
         cpus = directory / 'fake_cpus.py'; cpus.write_text(FAKE_CPUS); cpus.chmod(0o755)
         steering = directory / 'fake_steering.sh'; steering.write_text(FAKE_STEERING); steering.chmod(0o755)
+        network_owner = directory / 'fake_network_owner.py'; network_owner.write_text(FAKE_NETWORK_OWNER); network_owner.chmod(0o755)
         log = directory / 'helpers.log'; log.touch()
+        owner_log = directory / 'network-owner.log'; owner_log.touch()
+        refuse = directory / 'refuse-remake'
+        # The lane policy: port 7 wants two lanes, every other port the one lane of no entry.
+        (directory / 'lanes.json').write_text(json.dumps({'p7': 2}))
         env = dict(os.environ, FFN_PORTD_UNCHECKED='1', FFN_PORTD_RUN=str(rundir), FFN_PORTD_NS=data_ns,
                    FFN_PORTD_PYTHON=sys.executable, FFN_PORTD_RUNTIME=str(fake), FFN_PORTD_CPUS=str(cpus),
                    FFN_PORTD_STEERING=str(steering), FFN_PORTD_CPU_RESERVATIONS=str(directory / 'cpus'),
                    FFN_PORTD_INSPECTION=str(directory / 'absent-inspection.json'),
                    FFN_PORTD_FE100_RETURN=str(directory / 'absent-fe100.json'),
-                   FFN_PORTD_LANES=str(directory / 'absent-lanes.json'),
+                   FFN_PORTD_LANES=str(directory / 'lanes.json'), FFN_PORTD_NETWORK_OWNER=str(network_owner),
                    FFN_PORTD_NETWORK=str(directory / 'network.json'), FFN_PORTD_ROUTE_LINKS=str(directory / 'route-links.json'),
-                   LD_LIBRARY_PATH=str(HERE), FAKE_LOG=str(log), FAKE_NS=data_ns)
+                   LD_LIBRARY_PATH=str(HERE), FAKE_LOG=str(log), FAKE_NS=data_ns, FAKE_OWNER_LOG=str(owner_log), FAKE_REFUSE=str(refuse))
         (directory / 'network.json').write_text(json.dumps(dict(revision=7, ports={}, routes=[])))
         try:
             for ns in (trunk_ns, data_ns):
@@ -301,6 +323,46 @@ def test():
             rc, reply = daemon.cli('physical', 'start', '--port', '5', stdin={'boot_id': 'not-this-boot'})
             assert rc == 1 and 'boot identity' in reply['error'], reply
             results['physical_verbs'] = True
+            # 4b. A plain TAP whose lane policy wants two lanes: the daemon attaches with one, asks the network owner
+            # once to remake it with multi_queue, notices the new device and attaches again with two lanes.
+            def tap7(flags=()):
+                run('ip', '-n', data_ns, 'tuntap', 'add', 'dev', 'p7', 'mode', 'tap', *flags)
+                run('ip', '-n', data_ns, 'link', 'set', 'p7', 'up')
+                return json.loads(run('ip', '-n', data_ns, '-d', '-j', 'link', 'show', 'dev', 'p7'))[0]
+            def row7(): return daemon.status()['ports']['7']
+            def asks(): return [json.loads(l)['argv'] for l in owner_log.read_text().splitlines()]
+            plain = tap7()
+            assert plain['linkinfo']['info_data']['multi_queue'] is False
+            rc, reply = daemon.table({5: {'mode': 'l3'}, 7: {'mode': 'l3'}})
+            assert rc == 0 and reply['ok'] and reply['rejected'] == {}, reply
+            daemon.wait(lambda: row7()['attached'] and row7().get('lanes') == 2, 30, 'port 7 re-attached with two lanes')
+            row = row7()
+            link7 = json.loads(run('ip', '-n', data_ns, '-d', '-j', 'link', 'show', 'dev', 'p7'))[0]
+            assert row['multi_queue'] is True and row['lanes_wanted'] == 2 and row['reason'] == 'running', row
+            assert row['ifindex'] == link7['ifindex'] != plain['ifindex'] and link7['linkinfo']['info_data']['multi_queue'] is True, (row, link7)
+            assert asks() == [['reconcile', '--port', 'p7']], asks()
+            assert len(json.loads((rundir / 'ffn-physical-7-status.json').read_text())['workers']['lanes']) == 2
+            row5 = daemon.status()['ports']['5']
+            assert row5['lanes'] == 1 and row5['lanes_wanted'] == 1 and row5['multi_queue'] is True, row5   # no entry: one lane, nothing to remake
+            results['remake'] = dict(old_ifindex=plain['ifindex'], new_ifindex=link7['ifindex'], lanes=row['lanes'])
+            # 4c. The device deleted under a running owner that sees no traffic: noticed within a tick,
+            # attached again when a device of the name returns, without another remake request.
+            run('ip', '-n', data_ns, 'link', 'delete', 'dev', 'p7')
+            daemon.wait(lambda: not row7()['attached'], 10, 'port 7 noticed its TAP gone')
+            results['tap_gone'] = row7()['reason'][:100]
+            tap7(('multi_queue',))
+            daemon.wait(lambda: row7()['attached'] and row7()['lanes'] == 2, 15, 'port 7 back on the new device')
+            assert len(asks()) == 1, 'a device that takes queues was sent for a remake: %s' % asks()
+            # 4d. A remake the network owner refuses is asked for once; the port keeps serving on its one lane.
+            run('ip', '-n', data_ns, 'link', 'delete', 'dev', 'p7'); refuse.touch(); tap7()
+            daemon.wait(lambda: row7()['attached'] and 'did not remake' in row7()['reason'] and row7()['lanes'] == 1, 20, 'refused remake recorded')
+            time.sleep(2.5)
+            assert len(asks()) == 2 and row7()['attached'] and row7()['multi_queue'] is False, (asks(), row7())
+            results['remake_refused'] = row7()['reason'][:120]
+            refuse.unlink()
+            rc, reply = daemon.table({5: {'mode': 'l3'}})
+            daemon.wait(lambda: not row7()['attached'], 10, 'port 7 detached')
+            run('ip', '-n', data_ns, 'link', 'delete', 'dev', 'p7')
             # 5. A copper port: carrier follows the delivered faceplate observation under its lease, through the daemon.
             rc, reply = daemon.table({5: {'mode': 'l3'}, 3: {'mode': 'l3'}})
             assert rc == 0 and reply['ok'], reply

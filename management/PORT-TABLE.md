@@ -53,7 +53,13 @@ aggregate's trunk control socket and every running helper, then once a tick:
   (the TAP not yet there, a lock held by another owner) is recorded with its
   reason in the table status and retried every two seconds;
 * serves each attached port exactly as `physical serve` did (inspection
-  policy, local addresses, FE100 return bindings, carrier lease, status);
+  policy, local addresses, FE100 return bindings, carrier lease, status), and
+  checks that its TAP is still the device it opened: the network owner remakes
+  a TAP made without `multi_queue` (`ffn_network.py reconcile --port pN`,
+  asked by the daemon once when the lane policy wants more than one lane on a
+  plain device), and the port is then detached and attached again on the new
+  device with a queue per lane. An attached row carries `lanes`,
+  `lanes_wanted` and `multi_queue`; a refused remake is the row's `reason`;
 * runs each aggregate exactly as `aggregate serve` did (LACP engine, member
   gates, trunk control frames, network helpers, DHCP client, status rows);
 * checks every native owner for a worker fault without sleeping
