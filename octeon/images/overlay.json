@@ -564,6 +564,16 @@
     ],
     [
       "platform",
+      "fe100/ffn_fe100_admission_loop.py",
+      "usr/local/sbin/ffn_fe100_admission_loop.py"
+    ],
+    [
+      "platform",
+      "fe100/ffn_fe100_offload_policy.py",
+      "usr/local/sbin/ffn_fe100_offload_policy.py"
+    ],
+    [
+      "platform",
       "fe100/ffn_fe100_flow_namespace.py",
       "usr/local/sbin/ffn_fe100_flow_namespace.py"
     ],

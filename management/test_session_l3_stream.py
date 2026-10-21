@@ -97,7 +97,7 @@ class L3ProducerTests(unittest.TestCase):
             nonlocal changed
             changed=True
             return dict(available=False,hardware_admission=False,blockers=['no route'],directions=[],snapshot_digest='d'*64)
-        def check(source,*_):
+        def check(source,*_,**__):
             if changed:raise dp.EventGap('neighbor changed while planning')
         with patch.object(dp.feed,'context',return_value=(base.state,base.collector,base.rules)), \
              patch.object(dp.feed.runtime,'saved',return_value=base.state), \

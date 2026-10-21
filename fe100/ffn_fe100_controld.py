@@ -26,6 +26,22 @@ def drained(state):
             state.get('recovery_required') is False and state.get('admission_enabled') is False)
 
 
+def settled(state):
+    """No half-finished generation: drained, or cleanly active with the owner acknowledging admission.
+
+    The service's periodic and per-request reconcile demanded `drained` for as long
+    as hardware admission was a dry run; an activated generation would have failed
+    it and stopped the worker. Between commits an active generation with leased
+    sessions is the working state the admission loop keeps; `drained` stays the
+    bar at startup, after `replace` (the commit barrier) and in recovery, where a
+    restarted owner never resumes a generation it did not activate itself.
+    """
+    if drained(state):return True
+    return (isinstance(state,dict) and state.get('phase')=='active' and
+            type(state.get('sessions')) is int and state['sessions']>=0 and
+            state.get('recovery_required') is False and state.get('admission_enabled') is True)
+
+
 def dispatch(owner,message):
     if (set(message)!={'schema','id','operation','payload'} or
             type(message['schema']) is not int or message['schema']!=1 or
@@ -50,7 +66,7 @@ def serve(path=SOCKET):
         tick=time.monotonic()+2
         while True:
             if time.monotonic()>=tick:
-                if not drained(owner.execute('reconcile',{})):raise RuntimeError('periodic drain incomplete')
+                if not settled(owner.execute('reconcile',{})):raise RuntimeError('periodic reconcile left a half-finished generation')
                 tick=time.monotonic()+2
             lease.pulse()
             if not select.select([listener],[],[],min(1,max(0,tick-time.monotonic())))[0]:continue
@@ -72,7 +88,7 @@ def serve(path=SOCKET):
                 except ValueError as error:
                     # Invalid revisions/requests are harmless only after the
                     # same owner verifies no partial operation remains.
-                    if not drained(owner.execute('reconcile',{})):raise RuntimeError('request recovery incomplete')
+                    if not settled(owner.execute('reconcile',{})):raise RuntimeError('request recovery incomplete')
                     response=dict(schema=1,id=identity,ok=False,error=str(error)[:512])
                 try:send(connection,response)
                 except (BrokenPipeError,ConnectionResetError,socket.timeout):

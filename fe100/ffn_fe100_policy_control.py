@@ -10,6 +10,41 @@ from ffn_fe100_policy import PolicyOwner
 from ffn_fe100_sessions import SessionManager
 
 ROOT=Path('/var/lib/ffn/fe100')
+ADMISSION_CONFIG=Path('/etc/ffn/fe100-admission.json')
+
+
+def admission_mode(path=None,log=lambda line:None):
+    """The operator's admission loop mode: {"mode": "off"|"observe"|"admit"}; absent or unreadable means observe."""
+    from ffn_fe100_admission_loop import MODES
+    path=ADMISSION_CONFIG if path is None else path
+    try:
+        value=json.loads(path.read_text())
+        mode=value.get('mode') if isinstance(value,dict) else None
+        if mode in MODES:return mode
+        log('admission configuration %s names no valid mode; observing'%path)
+    except FileNotFoundError:pass
+    except (OSError,ValueError) as error:log('admission configuration unreadable (%s); observing'%str(error)[:120])
+    return 'observe'
+
+
+def paired_request(row,receiver,owner):
+    """The paired admission request for one inventory row, as the dry-run evaluator builds it:
+    the pair the DP's routes selected among the rule's, the applied bindings' indices, the owner's barrier."""
+    from ffn_fe100_admission import request_for
+    policy=receiver.policy if isinstance(receiver.policy,dict) else {}
+    rule=row.get('rule') if isinstance(row.get('rule'),dict) else {}
+    pairs=[list(p) for p in rule.get('interface_pairs') or () if isinstance(p,list) and len(p)==2]
+    selected=(row.get('l3') or {}).get('pair') if isinstance(row.get('l3'),dict) else None
+    if isinstance(selected,list) and list(selected) in pairs:names=tuple(selected)
+    elif len(pairs)==1:names=tuple(pairs[0])
+    else:raise ValueError('interface pair unresolved by the routes among %d authorised'%len(pairs))
+    bindings=policy.get('bindings') or {};indices={}
+    for name in names:
+        binding=bindings.get(name)
+        if not isinstance(binding,dict) or type(binding.get('index')) is not int:
+            raise ValueError('interface owner is absent from applied bindings: '+name)
+        indices[name]=binding['index']
+    return request_for(row,policy,owner,indices,names)
 
 
 class PolicyController:
@@ -57,6 +92,24 @@ class PolicyController:
                 self.owner.activated=False
                 self.owner.reconcile()
             self.observations=Observations(withdraw,configuration_digest=lambda:self.owner.state['digest'])
+            # The admission loop drives the owners above from the held inventory
+            # (fe100/ADMISSION-LOOP.md). `admit` needs a commissioned directional
+            # path owner behind admit_pair; without one it observes, and says so.
+            from ffn_fe100_admission_loop import AdmissionLoop
+            log=lambda line:print(line,flush=True)
+            mode=admission_mode(log=log);lifecycle=None;request=None
+            if mode=='admit':
+                if self.owner.paths is None:
+                    log('admission mode admit requested but no directional path owner is commissioned; observing');mode='observe'
+                else:
+                    from ffn_fe100_lifecycle import SessionLifecycle
+                    from ffn_fe100_policy import digest as generation_digest
+                    def generation():
+                        receiver=self.observations.receiver;policy=getattr(receiver,'policy',None) or {}
+                        return generation_digest([self.owner.state['digest'],self.owner.state['attachment'],
+                                                  policy.get('nat_digest'),(policy.get('l3') or {}).get('snapshot_digest')])
+                    lifecycle=SessionLifecycle(self.owner,generation=generation);request=paired_request
+            self.admission_loop=AdmissionLoop(mode,lifecycle=lifecycle,request=request,log=log)
         except BaseException:
             journal.close();raise
 
@@ -79,6 +132,10 @@ class PolicyController:
         self.observations.tick()
         try:self.owner.flow_ids=self.namespace.ensure(self.owner.flow_ids)
         except Exception as error:self.namespace.reason='flow-ID namespace: '+str(error)[:200]
+        if operation in ('status','reconcile'):
+            # One bounded pass per tick over the inventory the service holds.
+            try:self.admission_loop.run(self.observations.receiver,self.owner.status())
+            except Exception as error:print('admission loop pass failed: '+str(error)[:200],flush=True)
         if operation=='replace':
             result=self.owner.replace(payload['revision'],payload['digest'])
             self.observations.fence('configuration replacement requires fresh DP snapshot')
@@ -108,6 +165,7 @@ class PolicyController:
         except Exception as error:
             admission=dict(mode=MODE,hardware_admission=False,installed=0,available=False,reason=str(error)[:256])
         return dict(result,capabilities=capability,attachments=attachments,admission=admission,
+                    admission_loop=self.admission_loop.status(),
                     flow_ids=self.namespace.status(self.owner.flow_ids),qualification=self.qualification.current())
 
     def close(self):self.journal.close()

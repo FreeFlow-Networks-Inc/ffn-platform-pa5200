@@ -1,8 +1,14 @@
+import contextlib
+import io
 import socket
 import unittest
 from unittest.mock import patch
+import uuid
 import ffn_session_stream_dp as producer
 from ffn_session_events import EventGap
+
+NONCE=str(uuid.uuid4())
+BOOT='1b1582dd-a310-4cc1-85cd-0be7e600ae62'
 
 
 class Watch:
@@ -54,6 +60,81 @@ class RouteCheckTests(unittest.TestCase):
             with self.assertRaisesRegex(EventGap,'overflowed'):
                 producer.check_routes(self.watch,self.topology,7,observe=lambda deadline:self.topology)
 
+    def test_only_unused_neighbors_changing_defers_the_end_and_names_them(self):
+        used={('p7','203.0.113.1')}
+        added=dict(self.topology,neighbors=self.topology['neighbors']+[dict(dst='203.0.113.9',dev='p7',lladdr='02:00:00:00:00:09',valid=True)])
+        self.watch.notify()
+        self.assertEqual(producer.check_routes(self.watch,self.topology,7,observe=lambda d:added,used=used),frozenset({('p7','203.0.113.9')}))
+        # A removed unused neighbour is a change of the same kind; `used` may be a callable.
+        self.watch.notify()
+        self.assertEqual(producer.check_routes(self.watch,added,7,observe=lambda d:self.topology,used=lambda:used),frozenset({('p7','203.0.113.9')}))
+        # The neighbour a plan forwards through changing ends the generation at once.
+        self.watch.notify()
+        changed=dict(self.topology,neighbors=[dict(self.topology['neighbors'][0],lladdr='02:00:00:00:00:08')])
+        with self.assertRaisesRegex(EventGap,'Next-hop neighbor changed'):
+            producer.check_routes(self.watch,self.topology,7,observe=lambda d:changed,used=used)
+        # So does anything that is not a neighbour.
+        self.watch.notify()
+        routed=dict(self.topology,routes=[dict(dst='default',dev='p7')])
+        with self.assertRaisesRegex(EventGap,'new session snapshot required'):
+            producer.check_routes(self.watch,self.topology,7,observe=lambda d:routed,used=used)
+
+    def test_withheld_blocks_only_plans_through_changed_neighbors(self):
+        plan=dict(available=True,hardware_admission=False,blockers=[],snapshot_digest='d'*64,pair=['lan','wan'],
+                  directions=[dict(device='p7',next_hop='203.0.113.1'),dict(device='p5',next_hop='10.0.0.2')])
+        self.assertIs(producer.withheld(plan,frozenset()),plan)
+        self.assertIs(producer.withheld(plan,frozenset({('p7','203.0.113.9')})),plan)
+        held=producer.withheld(plan,frozenset({('p5','10.0.0.2')}))
+        self.assertEqual((held['available'],held['directions'],held['blockers']),
+                         (False,[],['Next-hop neighbor changed after the topology snapshot']))
+        self.assertEqual((held['snapshot_digest'],held['hardware_admission']),('d'*64,False))
+        blocked=dict(plan,available=False,directions=[],blockers=['x'])
+        self.assertIs(producer.withheld(blocked,frozenset({('p7','203.0.113.1')})),blocked)
+        self.assertEqual(producer.planned_neighbors({'a':dict(l3=plan),'b':dict(l3=blocked),'c':{}}),
+                         {('p7','203.0.113.1'),('p5','10.0.0.2')})
+
+
+class DeferralTests(unittest.TestCase):
+    """A neighbour no emitted plan forwards through appearing or going (LAN hosts, every few tens of
+    seconds on a busy box) no longer ends the generation: it ends DEFERRED_SECONDS later, and a plan
+    through that neighbour is withheld meanwhile. 2026-10-21: the feed spent most of the day re-snapshotting."""
+    def test_unused_neighbor_change_defers_the_generation_end(self):
+        watch=Watch();self.addCleanup(watch.close)
+        quiet=socket.socketpair();self.addCleanup(lambda:[s.close() for s in quiet])
+        base=dict(links=[],addresses=[],routes=[],rules=[],neighbors=[dict(dst='203.0.113.1',dev='p7',lladdr='02:00:00:00:00:07',valid=True)])
+        added=dict(base,neighbors=base['neighbors']+[dict(dst='203.0.113.9',dev='p7',lladdr='02:00:00:00:00:09',valid=True)])
+        topologies=iter([base]+[added]*8)
+        row=dict(id=42,token=9,event='update',status=14,timeout=60,zone=0,tcp_state=3,
+                 original=dict(source='192.0.2.1',destination='198.51.100.1',source_port=1234,destination_port=443,protocol=6),
+                 reply=dict(source='198.51.100.1',destination='203.0.113.1',source_port=443,destination_port=5000,protocol=6),counters={})
+        state=dict(revision=3,digest='a'*64,nat={'digest':'b'*64},bindings={})
+        collector=dict(boot_id=BOOT,pid=3,process_start='3',reconciliations=1)
+        rules={9:dict(interface_pairs=[['lan','wan']],inspection_required=False)}
+        plan=dict(available=True,hardware_admission=False,blockers=[],snapshot_digest='d'*64,pair=['lan','wan'],
+                  directions=[dict(device='p7',next_hop='203.0.113.1'),dict(device='p7',next_hop='203.0.113.1')])
+        now=[100.0];out=[];errors=io.StringIO();ticks=[0]
+        def stop():
+            ticks[0]+=1
+            if ticks[0]==1:watch.notify();now[0]+=2                  # the heartbeat's recheck sees the added neighbour
+            elif ticks[0]==2:now[0]+=producer.DEFERRED_SECONDS       # the deferred end is due
+            return False
+        with patch.object(producer.feed,'context',return_value=(state,collector,rules)), \
+             patch.object(producer.feed.runtime,'saved',return_value=state), \
+             patch.object(producer.feed.runtime,'status',return_value={}), \
+             patch.object(producer.feed,'acknowledgement',return_value=collector), \
+             patch.object(producer,'route_watch',return_value=contextlib.nullcontext(watch)), \
+             patch.object(producer,'subscribe',return_value=contextlib.nullcontext(quiet[1])), \
+             patch.object(producer.feed.l3,'snapshot',side_effect=lambda deadline:next(topologies)), \
+             patch.object(producer.feed.l3,'plan',return_value=plan), \
+             patch.object(producer,'snapshot',side_effect=[([row],[]),([],[]),([],[])]), \
+             patch('sys.stderr',errors),self.assertRaisesRegex(EventGap,'Deferred route, neighbor or interface change'):
+            producer.stream(NONCE,out.append,clock=lambda:now[0],stop=stop)
+        ops=[m['operation'] for m in out]
+        self.assertEqual(ops[:3],['begin','snapshot','synchronized'],'the first message leaves before the conntrack dump')
+        self.assertIn('heartbeat',ops[3:],'the generation outlived the unused neighbour change')
+        self.assertIn('ends in %d s'%producer.DEFERRED_SECONDS,errors.getvalue())
+        self.assertEqual(out[1]['payload'][0]['l3'],plan,'the emitted plan through the unchanged neighbour stands')
+
 
 class OwnershipTests(unittest.TestCase):
     """Labels travel in dumps and in the events that changed them; a later conntrack update
@@ -85,6 +166,59 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(producer.replay([self.row('update',24577)],[self.row('end',None)]),[])
         self.assertEqual(producer.replay([],[self.row('update',None)]),[])
         self.assertEqual([r['token'] for r in producer.replay([],[self.row('start',24577)])],[24577])
+
+
+class RefreshTests(unittest.TestCase):
+    """Conntrack reports counters in dumps and in create/destroy events, not while an established flow
+    forwards (2026-10-21: 98 of 101 established rows showed identical counts 25 s apart and three regressed
+    to nothing on a later event). A periodic dump refreshes the candidate rows' counts; nothing else."""
+    BOOT='1b1582dd-a310-4cc1-85cd-0be7e600ae62'
+    @staticmethod
+    def dumped(ident,token=24577,state=3,packets=(10,20),**extra):
+        return dict(event='update',id=ident,zone=0,token=token,tcp_state=state,timeout=431999,reply={},
+                    original={'source':'10.0.0.1','destination':'10.0.0.2','protocol':6,'source_port':ident,'destination_port':443},
+                    counters=dict(original=dict(packets=packets[0],bytes=packets[0]*1000),reply=dict(packets=packets[1],bytes=packets[1]*1400)),**extra)
+
+    def emitted(self,row,candidate=True):
+        return dict(identity=producer.identity_of(row,self.BOOT),token=row['token'],tcp_state=row['tcp_state'],
+                    counters=row['counters'],software_candidate=candidate,remaining_seconds=1,l3={'available':True})
+
+    def test_changes_leave_in_batches_the_receivers_accept(self):
+        from session_stream import BATCH
+        changes=[{'op':'close','identity':'i%d'%n} for n in range(BATCH*2+5)]
+        out=producer.batches(changes)
+        self.assertEqual([len(b) for b in out],[BATCH,BATCH,5])
+        self.assertEqual(producer.batches([]),[])
+        same=[{'op':'close','identity':'x'}]*(BATCH+9)
+        self.assertEqual([len(b) for b in producer.batches(same)],[1],'coalesced first')
+
+    def test_counters_known_needs_both_directions_with_packets_and_bytes(self):
+        self.assertTrue(producer.counters_known(self.dumped(1)))
+        for counters in ({},None,{'original':{'packets':1,'bytes':2}},{'original':{'packets':1},'reply':{'packets':1}}):
+            self.assertFalse(producer.counters_known(dict(self.dumped(1),counters=counters)),counters)
+
+    def test_identity_is_stable_and_follows_boot_zone_id_and_tuple(self):
+        a=self.dumped(1);self.assertEqual(producer.identity_of(a,self.BOOT),producer.identity_of(dict(a,counters={}),self.BOOT))
+        self.assertNotEqual(producer.identity_of(a,self.BOOT),producer.identity_of(self.dumped(2),self.BOOT))
+        self.assertNotEqual(producer.identity_of(a,self.BOOT),producer.identity_of(a,'0'*36))
+
+    def test_moved_candidate_rows_get_counter_only_upserts(self):
+        before=self.dumped(1);emitted={e['identity']:e for e in [self.emitted(before)]}
+        after=self.dumped(1,packets=(300,900))
+        updates=producer.refreshed([after],emitted,self.BOOT)
+        self.assertEqual(len(updates),1);row=updates[0]
+        self.assertEqual((row['counters'],row['remaining_seconds'],row['identity']),(after['counters'],431999,producer.identity_of(after,self.BOOT)))
+        self.assertEqual(row['l3'],{'available':True},'the plan is carried, not recomputed')
+
+    def test_unchanged_unknown_non_candidate_and_changed_state_rows_are_left_to_the_event_path(self):
+        base=self.dumped(1);emitted={e['identity']:e for e in [self.emitted(base),self.emitted(self.dumped(2),candidate=False)]}
+        self.assertEqual(producer.refreshed([base],emitted,self.BOOT),[],'unchanged counters')
+        self.assertEqual(producer.refreshed([self.dumped(9,packets=(5,5))],emitted,self.BOOT),[],'unknown identity')
+        self.assertEqual(producer.refreshed([self.dumped(2,packets=(99,99))],emitted,self.BOOT),[],'not a candidate')
+        self.assertEqual(producer.refreshed([self.dumped(1,packets=(99,99),state=4)],emitted,self.BOOT),[],'state changed: an event follows')
+        self.assertEqual(producer.refreshed([self.dumped(1,packets=(99,99),token=5)],emitted,self.BOOT),[],'owner changed: an event follows')
+        self.assertEqual(producer.refreshed([dict(self.dumped(1,packets=(99,99)),event='end')],emitted,self.BOOT),[],'an ended row')
+        self.assertEqual(producer.refreshed([dict(self.dumped(1,packets=(99,99)),counters={})],emitted,self.BOOT),[],'no counters in the dump')
 
 
 if __name__=='__main__':unittest.main()
