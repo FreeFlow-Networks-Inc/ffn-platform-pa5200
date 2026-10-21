@@ -73,6 +73,19 @@
 #define LLDP_PERIOD (30 * SECOND)
 #define POLL_MS 50
 #define SHUTDOWN_BUDGET 60
+#define LOCK_WAIT (15 * SECOND)
+
+/* Every packet path this process hosts has a lease of a few seconds that its
+ * owner renews from the control loop; the workers stop when it lapses, so a
+ * dead owner forwards nothing. The loop is single-threaded and some of its
+ * steps wait: an attach waits for the network lock that the network owner and
+ * its helpers hold for seconds at a time, a close waits for the kernel to
+ * retire the packet sockets, a helper runs for seconds. Each of those waits
+ * renews every hosted path, or the ports already serving would fault
+ * ("native owner fault: Connection timed out") while a new one attaches, as
+ * they did on 2026-10-21 when the DP first rooted over NFS and every helper
+ * took longer. */
+static void leases_renew(void);
 
 /* Commissioned optical wiring: front port 5..24 -> BCM source system port
  * (ffn_dp_packet_transport.FRONT). */
@@ -503,6 +516,7 @@ static int helper_run(struct helper *h, char *const argv[], const char *input, u
         if (h->in >= 0 && h->written < h->input.len) fds[n++] = (struct pollfd){ h->in, POLLOUT, 0 };
         if (h->out >= 0) fds[n++] = (struct pollfd){ h->out, POLLIN, 0 };
         if (h->err >= 0) fds[n++] = (struct pollfd){ h->err, POLLIN, 0 };
+        leases_renew();
         poll(fds, n, 100);
     }
 }
@@ -795,6 +809,22 @@ static void release_locks(struct daemon *d)
 {
     for (unsigned i = 0; i < d->lock_count; i++) close(d->locks[i]);
     d->lock_count = 0;
+}
+
+/* flock on a lock other processes hold for seconds at a time, with the loop
+ * alive: the hosted paths are renewed while this waits, and the wait is
+ * bounded, so a stuck holder costs this one step (EBUSY), not the ports already
+ * serving. */
+static int lock_wait(int fd, int operation, uint64_t budget)
+{
+    uint64_t start = now_us();
+    for (;;) {
+        if (!flock(fd, operation | LOCK_NB)) return 0;
+        if (errno != EWOULDBLOCK && errno != EINTR) return -1;
+        if (now_us() - start >= budget) { errno = EBUSY; return -1; }
+        leases_renew();
+        usleep(20000);
+    }
 }
 
 /* ----------------------------------------------------------- environment */
@@ -1216,7 +1246,7 @@ static void cpus_release(struct daemon *d)
     if (!d->cpu_token[0]) return;
     snprintf(path, sizeof path, "%s/lock", CPU_RESERVATIONS);
     fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-    if (fd >= 0) flock(fd, LOCK_EX);
+    if (fd >= 0 && lock_wait(fd, LOCK_EX, LOCK_WAIT)) logmsg("cpu reservations lock: %s; releasing %s without it", strerror(errno), d->cpu_token);
     snprintf(path, sizeof path, "%s/%s.json", CPU_RESERVATIONS, d->cpu_token);
     unlink(path);
     if (fd >= 0) close(fd);
@@ -1260,7 +1290,11 @@ static int native_open(struct daemon *d, char *err, size_t errsz)
 
 static void native_close(struct daemon *d)
 {
+    /* Closing the packet sockets waits for an RCU grace period, long on a
+     * loaded 40-core box; the other paths stay leased across it. */
+    leases_renew();
     if (d->native) { ffn_packet_close(d->native); d->native = NULL; }
+    leases_renew();
     cpus_release(d);
 }
 
@@ -1391,7 +1425,12 @@ static void fe100_renew(struct daemon *d, uint64_t now)
     long long lease = 3000;
     uint64_t deadline;
     if (config) ffn_json_get_int(config, "lease_ms", &lease);
-    deadline = now / 1000 + (uint64_t)lease;
+    /* From the clock now, not the loop's `now`: the library refuses a deadline
+     * already past, and a loop iteration that waited for a lock or a helper
+     * started more than a lease ago ("FE100 return attachment: Invalid
+     * argument" on every attach, 2026-10-21). */
+    (void)now;
+    deadline = now_us() / 1000 + (uint64_t)lease;
     if (n) {
         if (ffn_packet_fe100(d->native, rows, n, deadline)) fail(d, "FE100 return attachment: %s", strerror(errno));
         ffn_json_free(d->returns.rows); d->returns.rows = json; d->returns.deadline_ms = deadline; d->returns.active = true;
@@ -2440,7 +2479,7 @@ static int port_attach(struct port *port, char *err, size_t errsz)
     /* The network owner reconfigures the TAP under this lock; attach while it is quiet. */
     snprintf(path, sizeof path, "%s/ffn-network.lock", RUN);
     network_lock = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
-    if (network_lock < 0 || flock(network_lock, LOCK_EX)) { snprintf(err, errsz, "network lock: %s", strerror(errno)); goto failed; }
+    if (network_lock < 0 || lock_wait(network_lock, LOCK_EX, LOCK_WAIT)) { snprintf(err, errsz, "network lock: %s", strerror(errno)); goto failed; }
     d->native = ffn_packet_open(TRUNK, NS, p->tap, p->source);
     if (!d->native) { snprintf(err, errsz, "native physical owner: %s", strerror(errno)); goto failed; }
     if (native_start(d, p->tap, err, errsz)) goto failed;
@@ -3363,12 +3402,24 @@ static int watchdog_active(void)
     return status == 0;
 }
 
+static struct server *live_server;
+
+static void leases_renew(void)
+{
+    struct server *s = live_server;
+    if (!s) return;
+    /* A path not started, paused or already faulted refuses; its own tick reports that. */
+    for (unsigned i = 0; i < PORTS; i++) if (s->ports[i].d.native) (void)ffn_packet_renew(s->ports[i].d.native);
+    for (unsigned i = 0; i < GROUPS; i++) if (s->groups[i].d.native) (void)ffn_packet_renew(s->groups[i].d.native);
+}
+
 static int serve_daemon(void)
 {
     static struct server s;
     char err[512], path[PATH];
     uint64_t now;
     memset(&s, 0, sizeof s);
+    live_server = &s;
     s.listen_fd = -1;
     for (unsigned i = 0; i < CLIENTS; i++) s.clients[i].fd = -1;
     for (unsigned i = 0; i < PORTS; i++) { s.ports[i].number = i + 1; s.ports[i].d.control_fd = -1; }
@@ -3386,6 +3437,7 @@ static int serve_daemon(void)
         unsigned n = 0, first_client, first_group;
         int ready;
         now = now_us();
+        leases_renew();
         for (unsigned i = 0; i < GROUPS; i++) if (s.groups[i].stage != AGG_FREE) aggregate_tick(&s.groups[i], now);
         for (unsigned i = 0; i < GROUPS; i++) if (s.groups[i].stage != AGG_FREE && (s.groups[i].d.failed || s.groups[i].stage == AGG_STOPPED)) aggregate_release(&s, &s.groups[i]);
         reconcile(&s, now);
