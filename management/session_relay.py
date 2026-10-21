@@ -26,11 +26,31 @@ CONFIG=Path('/var/lib/ffn-ngfw/config/running-config.xml')
 # Seconds the DP's emission timeline may run ahead of relay receipt: a snapshot is buffered by the ssh
 # channel in one burst and acknowledged per message through the CP, so the lag scales with session count.
 STREAM_BACKLOG=90
+# Seconds allowed before the DP's first message: two ssh hops, the producer's imports, its policy context
+# read and its topology snapshot precede it, about 7 s on the PA-5220 under daytime load (2026-10-21),
+# against the 8 s silence budget that applies between messages once the stream speaks. Every start that
+# ran past it restarted the whole relay, 40 times in three hours.
+FIRST_MESSAGE_SECONDS=30
+SILENCE_SECONDS=8
 
 
 def verify_configuration(path,digest):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
         raise RuntimeError('Committed configuration changed; resynchronization required')
+
+
+def dp_reader(lines,verify=lambda:None,log=lambda text:print(text,file=sys.stderr,flush=True)):
+    """The relay's DP read: the committed configuration verified around each read, the first message of
+    the connection given its start-up allowance, and each generation boundary logged once."""
+    state={'first':True}
+    def read():
+        verify();message=lines.read(FIRST_MESSAGE_SECONDS if state['first'] else SILENCE_SECONDS);verify()
+        state['first']=False
+        if isinstance(message,dict):
+            if 'unavailable' in message:log('DP generation ended: '+str(message['unavailable'])[:256])
+            elif message.get('operation')=='begin':log('DP generation started')
+        return message
+    return read
 
 
 PLANE_SOCKET='/run/ffn-plane-mp/control.sock'
@@ -180,10 +200,8 @@ def main():
             send(dp.stdin.fileno(),{'nonce':nonce})
             def current():
                 verify_configuration(CONFIG,configuration['config_digest'])
-            def read():
-                current();message=dp_lines.read(8);current();return message
             def save(state):publish(dict(state,configuration_digest=configuration['config_digest']))
-            relay(nonce,read,lambda value:send(cp.stdin.fileno(),value,8),lambda:cp_lines.read(8),save)
+            relay(nonce,dp_reader(dp_lines,current),lambda value:send(cp.stdin.fileno(),value,8),lambda:cp_lines.read(8),save)
         finally:
             for process in processes:
                 process.stdin.close();process.terminate()
