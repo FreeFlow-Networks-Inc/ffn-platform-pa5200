@@ -45,14 +45,20 @@ aggregate state to determine negotiation and address readiness.
 
 ## Ownership and withdrawal
 
-`aggregate_activation.py` runs one MP supervisor per group. It starts the DP
-owner, `ffn-portd aggregate` (`octeon/native/ffn_portd.c`, reached through
-`ffn_aggregate_runtime.py serve`), with closed gates, then prepares the CP
-redirects and physical links. The owner's life is bound to the supervisor's
-pipe: when the pipe closes, when no observation arrives for eight seconds, on
-SIGTERM or when its parent dies, it withdraws its gates, releases the CP-facing
-locks and removes its TAP within seconds, and reports the reason as a final
-`error` row. A DP owner that outlives its controller, as seen on 2026-10-20
+`aggregate_activation.py` runs one MP supervisor per group. It opens a lease
+on the DP owner, `ffn-portd serve` (`octeon/native/ffn_portd.c`, the daemon
+owning every faceplate port; `ffn_aggregate_runtime.py serve` execs
+`ffn-portd aggregate serve`, the relay between the supervisor's ssh pipe and
+the daemon's control socket), with closed gates, then prepares the CP
+redirects and physical links. The hosted owner's life is bound to that lease:
+when the pipe closes, when no observation arrives for eight seconds, on
+SIGTERM to the relay or when it dies, the daemon withdraws the group's gates,
+releases the CP-facing locks and removes its TAP within seconds, and reports
+the reason as a final `error` row; the daemon itself and every other port it
+holds carry on. The group's member ports are rows of the MP's port table
+(`PORT-TABLE.md`): a lease is accepted while they are `aggregate` rows for
+that group or `disabled`, and a table cannot turn a live member into a
+layer-3 port. A DP owner that outlives its controller, as seen on 2026-10-20
 (platform issue #86), is therefore no longer possible by construction; the DP
 watchdog additionally retires an owner whose status admits a controller silent
 for ten seconds.

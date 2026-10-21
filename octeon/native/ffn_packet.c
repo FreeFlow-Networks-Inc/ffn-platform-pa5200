@@ -611,6 +611,19 @@ int ffn_packet_poll(struct ffn_packet *p, unsigned budget_ms)
     } while (now < end);
     return 0;
 }
+/* Additive: the worker fault, if any, without waiting. A caller that drives
+ * many owners from one loop polls its own descriptors and asks each owner this
+ * once a tick; ffn_packet_poll sleeps for its budget, which one owner may do
+ * and twenty-four may not. 0 while the workers run (or before they start),
+ * else the errno the owner's poll would have reported. */
+int ffn_packet_fault(struct ffn_packet *p)
+{
+    int fault;
+    if (!p) { errno = EINVAL; return -1; }
+    if (!p->started) return 0;
+    pthread_mutex_lock(&p->control); fault = p->fault; pthread_mutex_unlock(&p->control);
+    return fault;
+}
 int ffn_packet_counters(struct ffn_packet *p, uint64_t *out, unsigned count)
 {
     if (!p || !out || count != FFN_PACKET_COUNTERS) { errno = EINVAL; return -1; }

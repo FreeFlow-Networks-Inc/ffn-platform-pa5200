@@ -303,7 +303,7 @@ class BuildInputTests(unittest.TestCase):
         overlay = dict(common=[], cp=[['platform', 'agent.py', 'usr/local/sbin/cp.py']],
                        dp=[['platform', 'agent.py', 'usr/local/sbin/dp.py']])
         for role, units in [('cp', ['ffn-loopback-scope.service', 'ffn-copper-link.timer', 'ffn-aggregate-watchdog.timer', 'ffn-fe100-recovery.timer', 'ffn-fe100-control.service', 'ffn-sfp-watch.service', 'ffn-port-led-enable.service', 'ffn-port-events.service', 'ffn-service-route-forward.service']),
-                            ('dp', ['ffn-loopback-scope.service', 'ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service', 'ffn-service-routes.service', 'ffn-aggregate-dp-watchdog.timer'])]:
+                            ('dp', ['ffn-loopback-scope.service', 'ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service', 'ffn-portd.service', 'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service', 'ffn-service-routes.service', 'ffn-aggregate-dp-watchdog.timer'])]:
             for unit in units:
                 (platform / unit).write_text('[Unit]\n')
                 overlay[role].append(['platform', unit, 'etc/systemd/system/' + unit])

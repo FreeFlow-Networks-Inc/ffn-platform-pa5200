@@ -59,7 +59,11 @@ def validate_physical_options(entry):
 
 
 def converge_aggregates(groups, config, observed, timeout=60):
-    """Start new committed owners; existing supervisors retain their LACP lease."""
+    """Start new committed owners; existing supervisors retain their LACP lease.
+
+    `observed` is the `ports` resource's status: it carries the aggregate report
+    (`aggregates`, `activation`, `running_revision`, `revision`) the aggregates
+    resource returned, and the lifecycle operations are applied through `ports`."""
     expected=hashlib.sha256(Path(config).read_bytes()).hexdigest()
     errors={};started=False
     if not observed.get('activation',{}).get('activation_supported'):
@@ -77,10 +81,10 @@ def converge_aggregates(groups, config, observed, timeout=60):
         try:
             if hashlib.sha256(Path(config).read_bytes()).hexdigest()!=expected:
                 raise ValueError('Running configuration changed during aggregate reconciliation')
-            rpc('aggregates','apply',dict(group=name,operation='activate',
+            rpc('ports','apply',dict(group=name,operation='activate',
                 running_revision=expected,revision=observed['revision']))
             started=True
-            observed=rpc('aggregates')
+            observed=rpc('ports')
         except Exception as error:errors[name]=str(error)
     deadline=time.monotonic()+timeout
     wanted={g['ae_name'] for g in groups if not g['errors'] and g['enabled'] and g['ae_name'] not in errors}
@@ -91,7 +95,7 @@ def converge_aggregates(groups, config, observed, timeout=60):
         if not started and not any(owners.get(n,{}).get('fresh') or owners.get(n,{}).get('recovery_stage') for n in wanted):break
         if observed.get('running_revision')!=expected:break
         time.sleep(2)
-        observed=rpc('aggregates')
+        observed=rpc('ports')
     return observed,errors
 
 
@@ -141,23 +145,18 @@ class PlatformApplier:
         faceplate=rpc('faceplate')
         network=rpc('network')
         configuration_revision=hashlib.sha256(Path(self.config).read_bytes()).hexdigest()
-        configured_physical={e.get('name'):e for e in device.findall('./network/interface/ethernet/entry')}
-        for port in network.get('backend',{}).get('ports',[]):
-            if port==1:continue
-            entry=configured_physical.get('ethernet1/'+str(port))
-            if entry is None or entry.find('layer3') is None or entry.find('aggregate-group') is not None:
-                try:
-                    owner=rpc('physical-ports','lookup',{'port':port})
-                    rpc('physical-ports','apply',dict(port=port,operation='detach',running_revision=configuration_revision,revision=owner['config']['revision']))
-                except (ValueError,RuntimeError) as error:
-                    status.fail('ethernet1/'+str(port)+'/attachment','pa5200',str(error))
-        if status.errors:return
+        # Every faceplate port belongs to one owner from boot (PORT-TABLE.md): the commit's
+        # attachments and detachments, port 1 included, are one table sync further down.
+        # Nothing is detached here; a port that leaves layer3 leaves the table as disabled.
+        try:ports_state=rpc('ports')
+        except (ValueError,RuntimeError) as error:
+            ports_state=None;ports_error=str(error)
         from aggregate_config import compile_device,readiness
         groups,orphans=compile_device(device)
         aggregate_errors={g['ae_name']:'; '.join(b['message'] for b in readiness(g,faceplate,network,{})['blockers']) for g in groups}
         aggregate_applied={};aggregate_units={}
         if groups:
-            observed_aggregates=rpc('aggregates')
+            observed_aggregates=ports_state if ports_state is not None else {}
             observed_aggregates,start_errors=converge_aggregates(groups,self.config,observed_aggregates)
             for row in observed_aggregates.get('aggregates',[]):
                 aggregate_units.update({u['name']:u for u in row.get('subinterfaces',[])})
@@ -240,31 +239,28 @@ class PlatformApplier:
                 message='Aggregate LACP active; parent has no network attachment' if not aggregate_applied[name]['network'].get('enabled',True) else 'Aggregate packet attachment active; transit requires acknowledged Security policy'
                 status.ok(name,None,{'distributing':aggregate_applied[name]['distributing']},'pa5200',message)
             else:status.fail(name,'pa5200',aggregate_errors.get(name,'Invalid aggregate definition'))
-        if (patches.get('p1',{}).get('addresses') and 1 not in network.get('backend',{}).get('ports',[])):
-            try:
-                wan=rpc('wan-path')
-                rpc('wan-path','apply',{'operation':'attach','revision':wan['revision'],
-                                      'expected_boot_id':wan['dp']['boot_id']})
-                network=rpc('network')
-            except (ValueError,RuntimeError) as error:
-                status.fail('ethernet1/1/attachment','pa5200',str(error))
-        unavailable={key for key,value in patches.items() if value['mode']!='disabled'
-                     and int(key[1:]) not in network.get('backend',{}).get('ports',[])}
-        # A live DP process alone does not prove its CP redirect survived a
-        # switch restart. Reconcile both owners for every requested L3 port.
-        physical={key for key,value in patches.items() if key!='p1' and value['mode']!='disabled'}
-        for key in sorted(physical):
-            port=int(key[1:])
+        # The table sync: the CP owner of every layer-3 port (port 1's WAN redirect included),
+        # one table push to the DP owner, one readback. A port that did not come up keeps
+        # its reason from the daemon; its address and profile are not applied below.
+        wanted={key for key,value in patches.items() if value['mode']!='disabled'}
+        attached=set()
+        if ports_state is None:
+            for key in sorted(wanted):status.fail('ethernet1/'+key[1:]+'/attachment','pa5200','Port owner unavailable: '+ports_error)
+        else:
             try:
                 if hashlib.sha256(Path(self.config).read_bytes()).hexdigest()!=configuration_revision:
-                    raise ValueError('Running configuration changed before physical attachment')
-                owner=rpc('physical-ports','lookup',{'port':port})
-                rpc('physical-ports','apply',dict(port=port,operation='attach',running_revision=configuration_revision,revision=owner['config']['revision']))
+                    raise ValueError('Running configuration changed before the port sync')
+                synced=rpc('ports','apply',dict(operation='sync',running_revision=configuration_revision,revision=ports_state['config']['revision']))
+                attached={'p%d'%port for port in synced.get('attached',[])}
+                for name,reason in sorted((synced.get('errors') or {}).items()):
+                    if name.replace('ethernet1/','p') in wanted:status.fail(name+'/attachment','pa5200',reason)
                 network=rpc('network')
-                if port in network.get('backend',{}).get('ports',[]):unavailable.discard(key)
-            except (ValueError,RuntimeError) as error:status.fail('ethernet1/'+str(port)+'/attachment','pa5200',str(error))
-        for key in unavailable:
-            status.fail('ethernet1/'+key[1:],'pa5200','Physical forwarding attachment is inactive; interface address and management profile were not applied')
+            except (ValueError,RuntimeError) as error:
+                for key in sorted(wanted):status.fail('ethernet1/'+key[1:]+'/attachment','pa5200',str(error))
+        unavailable={key for key in wanted if key not in attached}
+        for key in sorted(unavailable):
+            if not any(e[0]=='ethernet1/'+key[1:]+'/attachment' for e in status.errors):
+                status.fail('ethernet1/'+key[1:],'pa5200','Physical forwarding attachment is inactive; interface address and management profile were not applied')
         changed={key:value for key,value in patches.items() if key not in unavailable and network['config']['ports'].get(key)!=value}
         if changed:
             rpc('network','apply',{'revision':network['config']['revision'],'ports':changed})
@@ -275,7 +271,7 @@ class PlatformApplier:
             if network['config']['ports'].get(key)!=desired:
                 status.fail(name,'pa5200','Dataplane configuration readback mismatch');continue
             status.ok(name+'/dataplane',None,desired,'pa5200','Dataplane settings read back through MP daemon')
-            if desired['mode']!='disabled' and int(key[1:]) not in network.get('backend',{}).get('ports',[]):
+            if desired['mode']!='disabled' and key not in attached:
                 status.fail(name,'pa5200','Configuration stored on DP, but physical forwarding attachment is inactive')
         if not status.errors:
             try:

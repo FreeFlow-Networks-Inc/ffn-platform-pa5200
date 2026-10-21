@@ -84,6 +84,10 @@ def main():
                                    for a in ('status','validate','apply')}
     worker['commands']['fe100-sessions']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'session_backend.py'),'status']}
     worker['commands']['physical-ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'physical_backend.py'),a] for a in ('status','lookup','validate','apply')}
+    # One resource for every faceplate port (PORT-TABLE.md): the commit's sync is one request that
+    # starts the CP owners, pushes the table to ffn-portd and waits for the rows to attach.
+    worker['commands']['ports']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'ports_backend.py'),a] for a in ('status','lookup','validate','apply')}
+    worker.setdefault('timeouts',{})['ports']={a:(150 if a=='apply' else 60) for a in ('status','lookup','validate','apply')}
     worker['commands']['front-traffic']={'status':['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'front-traffic','status']}
     worker['commands']['lldp']={a:['/opt/ffn-ngfw-v2/venv/bin/python',str(extension/'daemon_backend.py'),'lldp',a] for a in ('status','validate','apply')}
     # Device > Setup > Interfaces reads and applies the MP's own ports through the controller

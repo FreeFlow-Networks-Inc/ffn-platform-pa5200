@@ -207,6 +207,23 @@
         "apply"
       ]
     },
+    "ports": {
+      "status": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/ports_backend.py",
+        "status"
+      ],
+      "validate": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/ports_backend.py",
+        "validate"
+      ],
+      "apply": [
+        "/opt/ffn-ngfw-v2/venv/bin/python",
+        "/opt/ffn-platforms/pa5200-management/ports_backend.py",
+        "apply"
+      ]
+    },
     "aggregates": {
       "status": [
         "/opt/ffn-ngfw-v2/venv/bin/python",

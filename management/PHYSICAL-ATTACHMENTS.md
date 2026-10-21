@@ -1,10 +1,13 @@
 # Physical Layer 3 attachments
 
-The MP config adapter creates an independent packet owner for each committed
-physical Layer 3 interface. Port 1 retains its existing WAN controller; ports
-2–24 use `physical-ports` through controld and the journaled MP worker. The board
-module supplies the BCM port mapping. Addresses, profiles and routing remain
-customer configuration.
+Every faceplate port has one owner from the moment the dataplane boots:
+`ffn-portd serve` (PORT-TABLE.md). On every commit the MP config adapter
+derives what each of the 24 ports should be, keeps the CP owner of every
+layer-3 port in step (port 1's WAN forwarding owner included) and pushes the
+whole table to the daemon in one `ports` request; the daemon attaches and
+detaches to match and keeps retrying what it could not do, with the reason in
+its table status. The board module supplies the BCM port mapping. Addresses,
+profiles and routing remain customer configuration.
 
 The CP verifies its boot/BCM lifetime, queue allocation and redirect readback.
 It withdraws the selected port before allocating queues and journals redirect
@@ -29,19 +32,23 @@ These attachments forward through the OCTEON software policy provider. They do
 not authorize FE100 hardware NAT. The isolated FE100 rewrite checks and production
 session admission remain separate.
 
-## Native DP owner: ffn-portd physical
+## Native DP owner: ffn-portd
 
-`octeon/native/ffn_portd.c` (kind `physical`) is the C owner of a port's
-packet path on the DP, replacing `ffn_wan_runtime.py` and
-`ffn_physical_runtime.py`, which now exec it so the MP's command lines and the
-unit files' contracts do not change: `status`, `start` and `stop` with the DP
-boot identity on stdin, `serve` under `ffn-wan-attachment.service` (port 1,
-owner `wan1`, `/run/ffn-fabric.json`) and `ffn-physical@N.service` (owner
-`physical-N`, `/run/ffn-physical-N-status.json`). The status document keeps
-every field the policy bindings and the network owner read (owner, pid,
-process_start, boot_id, ports, interfaces, updated_monotonic) and adds
-`carrier`. Copper ports 1..4 are ordinary faceplate ports to this owner; the
-switch port behind a copper front port comes from the commissioned profile
+`octeon/native/ffn_portd.c` is the C owner of every port's packet path on the
+DP, one daemon under `ffn-portd.service` with the table the MP pushes
+(`ffn-portd table apply|status`, PORT-TABLE.md). An `l3` row runs what
+`ffn_wan_runtime.py serve` and `ffn_physical_runtime.py serve` ran as their
+own processes, under the same owner names and documents (port 1: owner `wan1`,
+`/run/ffn-fabric.json`; port N: owner `physical-N`,
+`/run/ffn-physical-N-status.json`), so the policy bindings and the network
+owner read what they read before (owner, pid, process_start, boot_id, ports,
+interfaces, updated_monotonic, `carrier`); `pid` and `process_start` are the
+daemon's. The MP's per-port command lines `status`, `start` and `stop` with
+the DP boot identity on stdin still exist (`ffn_wan_runtime.py`,
+`ffn_physical_runtime.py` exec `ffn-portd physical ... --port N`); `start` and
+`stop` change one row of the table through the daemon's socket. Copper ports
+1..4 are ordinary faceplate ports to this owner; the switch port behind a
+copper front port comes from the commissioned profile
 `/etc/ffn/vif-copper.json` when copper-identify corrected it. A port whose
 carrier policy is `observed` (copper 2..4 by default; `/etc/ffn/port-carrier.json`
 overrides per port or by `default`) raises TAP carrier and delivers frames only
@@ -49,6 +56,26 @@ while the latest `ffn-portd links` delivery is within its lease and reports the
 port's PHY, MAC and data path up at one speed; the MP's `ffn-port-links.timer`
 (`management/port-link-poll.py`) makes that delivery from the `faceplate`
 resource. A port with policy `always` keeps carrier as the Python owner did.
+
+## The MP resource: ports
+
+`management/ports_backend.py` serves `ports`: `status` (the DP table status,
+the CP owner of every layer-3 row, the aggregate report) and `apply`
+`{operation: sync, running_revision, revision}`, the commit's one request. The
+sync derives the table (`desired_table`: `aggregate-group` rows reserve a port
+for its group; a `layer3` with an address or a management profile, not
+`link-state down`, is `l3`; everything else is `disabled`), starts the CP owner
+of every port that becomes `l3` (`ffn-portctl start` for ports 2..24; for port
+1 the WAN forwarding owner with its fabric readback and a `recover` when the
+redirect belongs to another lifetime, after the policy-barrier drain), pushes
+the table, waits for the `l3` rows to attach, and withdraws the CP owner of a
+port that did not come up or is no longer `l3`. Per-port `attach`/`detach`,
+the WAN qualification `probe` and the aggregate `activate`/`deactivate`/
+`recover` are served by the same resource through the modules that always
+served them (`physical_backend.py`, `wan_backend.py`,
+`aggregate_activation.py`), and the `physical-ports`, `wan-path` and
+`aggregates` resource names remain for the WebUI and the CLI.
+`configd_applier.py` uses `ports` alone; port 1 is a row like any other.
 
 ## Link-tracked routes: the observation, its two writers, the check
 

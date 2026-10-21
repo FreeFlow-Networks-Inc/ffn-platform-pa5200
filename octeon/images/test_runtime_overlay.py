@@ -13,6 +13,7 @@ class RuntimeOverlayTests(unittest.TestCase):
             directory = root / 'etc/systemd/system'
             directory.mkdir(parents=True)
             units = ('ffn-loopback-scope.service', 'ffn-network.service', 'ffn-interface-services.service', 'ffn-static-routes.service',
+                     'ffn-portd.service',
                      'ffn-security-runtime.service', 'ffn-dhcp-server.service', 'ffn-protect-gateway.service', 'ffn-lldpd.service',
                      'ffn-service-routes.service', 'ffn-aggregate-dp-watchdog.timer')
             for name in units:
@@ -38,7 +39,7 @@ class RuntimeOverlayTests(unittest.TestCase):
                      'ffn_wan_probe.py', 'ffn_aggregate_runtime.py', 
                      'ffn_interface_addresses.py', 'ffn_controld_client.py',
                      'ffn_platform_policy_bindings.py',
-                     'ffn-network.service', 'ffn-wan-attachment.service'):
+                     'ffn-network.service', 'ffn-portd.service'):
             self.assertIn(name, files)
         for name, (origin, source) in files.items():
             if origin != 'platform' or not name.endswith('.py'):

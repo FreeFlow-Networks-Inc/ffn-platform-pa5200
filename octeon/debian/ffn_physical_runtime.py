@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """One physical port's packet owner is ffn-portd; this keeps the MP's command line.
 
-`status|start|stop <port>` with the DP boot identity on stdin, `serve <port>`
-for the ffn-physical@ unit: each execs `ffn-portd physical <verb> --port N`.
+`status|start|stop <port>` with the DP boot identity on stdin: each execs
+`ffn-portd physical <verb> --port N`, a client of the daemon that owns every
+port from boot (`ffn-portd serve`, management/PORT-TABLE.md).
 Port 1 keeps its WAN owner (ffn_wan_runtime.py); copper ports 2..4 are
 faceplate ports like the optical ones, their carrier following the CP's
 observation through the owner's link lease.

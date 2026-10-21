@@ -53,7 +53,7 @@ class ApplyTests(unittest.TestCase):
             with patch('configd_applier.rpc',side_effect=[{'accepted':True},ready]) as rpc:
                 observed,errors=configd_applier.converge_aggregates(groups,path,initial,timeout=0)
             self.assertFalse(errors);self.assertEqual(observed,ready)
-            self.assertEqual(rpc.call_args_list[0].args,('aggregates','apply',dict(
+            self.assertEqual(rpc.call_args_list[0].args,('ports','apply',dict(
                 group='ae1',operation='activate',running_revision=digest,revision=7)))
 
     def test_existing_owner_is_never_restarted_for_config_reconciliation(self):
@@ -154,6 +154,10 @@ class ApplyTests(unittest.TestCase):
         calls=[]
         def rpc(resource,action='status',payload=None):
             calls.append((resource,action,payload))
+            if resource=='ports':
+                if action=='status':return dict(config=dict(revision=3),boot_id='b',dp={},cp={},aggregates=[],activation=dict(activation_supported=True,groups={}))
+                self.assertEqual(payload['operation'],'sync');self.assertEqual(payload['revision'],3)
+                return dict(applied=True,attached=[1],errors={},table={})
             if action=='status':return copy.deepcopy(face if resource=='faceplate' else net)
             if resource=='faceplate':
                 self.assertFalse(payload['enabled'])
@@ -166,13 +170,16 @@ class ApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'running.xml';path.write_text(xml)
             status=Status()
-            with patch('configd_applier.rpc',side_effect=rpc):PlatformApplier(path).reconcile(status)
+            with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.reconcile_dhcp'),patch('configd_applier.reconcile_protect'),patch('configd_applier.reconcile_lldp'),patch('configd_applier.reconcile_service_routes'):PlatformApplier(path).reconcile(status)
         self.assertEqual(status.errors,[])
         self.assertEqual(net['config']['ports']['p1']['addresses'],['192.0.2.1/24'])
         self.assertEqual(net['config']['ports']['p2'],{'mode':'disabled'})
         self.assertEqual(net['config']['ports']['p3'],{'mode':'disabled'})
         self.assertEqual({p['port'] for r,a,p in calls if (r,a)==('faceplate','apply')},{2,3,24})
         self.assertTrue(face['ports'][0]['enabled'])
+        # one sync for the whole faceplate, port 1 included; no per-port attach, detach or wan-path request
+        self.assertEqual([(r,a) for r,a,p in calls if r=='ports'],[('ports','status'),('ports','apply')])
+        self.assertFalse([r for r,a,p in calls if r in ('physical-ports','wan-path','aggregates')])
 
     def test_faceplate_apply_retries_only_a_revision_conflict_against_a_refreshed_view(self):
         """Another owner moves the faceplate revision between the applier's read and
@@ -189,6 +196,8 @@ class ApplyTests(unittest.TestCase):
                 calls=[];reads=[]
                 def rpc(resource,action='status',payload=None):
                     calls.append((resource,action,payload))
+                    if resource=='ports':
+                        return dict(config=dict(revision=1),dp={},cp={},aggregates=[],activation={}) if action=='status' else dict(applied=True,attached=[1],errors={})
                     if action=='status' and resource=='faceplate':
                         view=copy.deepcopy(face);reads.append(view['revision'])
                         if len(reads)==1:face['revision']=2   # moved by another owner right after the first read
@@ -204,7 +213,7 @@ class ApplyTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temp:
                     path=Path(temp)/'running.xml';path.write_text(xml)
                     status=Status()
-                    with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.time.sleep') as sleep:
+                    with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.time.sleep') as sleep,patch('configd_applier.reconcile_dhcp'),patch('configd_applier.reconcile_protect'),patch('configd_applier.reconcile_lldp'),patch('configd_applier.reconcile_service_routes'):
                         if 'conflict' in reason or 'changed' in reason:
                             with self.assertLogs('ffn-configd','WARNING') as logged:PlatformApplier(path).reconcile(status)
                             self.assertIn('re-reading and retrying',logged.output[0])
@@ -270,6 +279,8 @@ class ApplyTests(unittest.TestCase):
         calls=[]
         def rpc(resource,action='status',payload=None):
             calls.append((resource,action,payload))
+            if resource=='ports':
+                return dict(config=dict(revision=1),dp={},cp={},aggregates=[],activation={}) if action=='status' else dict(applied=True,attached=[],errors={})
             if action=='status': return copy.deepcopy(face if resource=='faceplate' else net)
             if resource=='faceplate':
                 next(p for p in face['ports'] if p['port']==payload['port'])['enabled']=payload['enabled']
@@ -279,7 +290,7 @@ class ApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'running.xml';path.write_text(xml)
             status=Status()
-            with patch('configd_applier.rpc',side_effect=rpc): PlatformApplier(path).reconcile(status)
+            with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.reconcile_dhcp'),patch('configd_applier.reconcile_protect'),patch('configd_applier.reconcile_lldp'),patch('configd_applier.reconcile_service_routes'):PlatformApplier(path).reconcile(status)
         self.assertEqual(net['config']['ports']['p1'],{'mode':'disabled'})
         self.assertEqual(net['config']['ports']['p5'],{'mode':'disabled'})
         self.assertFalse(face['ports'][1]['enabled'])
@@ -308,3 +319,46 @@ class LinkSpeedDecisionTests(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+
+class PortSyncTests(unittest.TestCase):
+    """The commit reconciles every attachment through one `ports` sync; its per-port reasons reach the commit."""
+    XML='<config><devices><entry name="localhost.localdomain"><network><interface><ethernet>'         '<entry name="ethernet1/1"><layer3><ip><entry name="192.0.2.1/24"/></ip></layer3></entry>'         '<entry name="ethernet1/5"><layer3><ip><entry name="203.0.113.1/29"/></ip></layer3></entry>'         '</ethernet></interface></network></entry></devices></config>'
+
+    def reconcile(self,sync):
+        face={'revision':1,'ports':[{'port':p,'enabled':True,'available':True} for p in (1,5)]}
+        net={'config':{'revision':1,'ports':{}},'backend':{'ports':[]}}
+        calls=[]
+        def rpc(resource,action='status',payload=None):
+            calls.append((resource,action,payload))
+            if resource=='ports':
+                if action=='status':return dict(config=dict(revision=9),dp={},cp={},aggregates=[],activation={})
+                return sync(payload)
+            if action=='status':return copy.deepcopy(face if resource=='faceplate' else net)
+            if resource=='faceplate':return {'data':copy.deepcopy(face)}
+            net['config']['ports'].update(payload['ports']);net['config']['revision']+=1
+            return {}
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'running.xml';path.write_text(self.XML)
+            status=Status()
+            # The DHCP, FFN Protect, LLDP and service-route steps have their own tests; here they must not reach the fake.
+            with patch('configd_applier.rpc',side_effect=rpc),patch('configd_applier.reconcile_dhcp'),patch('configd_applier.reconcile_protect'), \
+                    patch('configd_applier.reconcile_lldp'),patch('configd_applier.reconcile_service_routes'):
+                PlatformApplier(path).reconcile(status)
+        return status,net,calls
+
+    def test_the_daemon_reason_for_a_port_that_did_not_attach_fails_that_port_only(self):
+        def sync(payload):
+            self.assertEqual(payload['revision'],9)
+            return dict(applied=False,attached=[1],errors={'ethernet1/5':'DP owner: attach failed: native physical owner: No such device'})
+        status,net,calls=self.reconcile(sync)
+        self.assertEqual([e[0] for e in status.errors],['ethernet1/5/attachment'])
+        self.assertIn('No such device',status.errors[0][2])
+        self.assertEqual(net['config']['ports']['p1']['addresses'],['192.0.2.1/24'])   # the attached port is configured
+        self.assertNotIn('p5',net['config']['ports'])                                   # the other one is not
+
+    def test_a_failed_sync_fails_every_wanted_port_and_the_rest_of_the_commit_goes_on(self):
+        def sync(payload):raise ValueError('MP ports/apply request x: rejected (DP port owner (ffn-portd) is not serving)')
+        status,net,calls=self.reconcile(sync)
+        self.assertEqual(sorted(e[0] for e in status.errors),['ethernet1/1/attachment','ethernet1/5/attachment'])
+        self.assertTrue(all('not serving' in e[2] for e in status.errors))

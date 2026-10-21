@@ -17,6 +17,8 @@ struct ffn_packet *ffn_packet_adopt(int, int, int, unsigned);
 int ffn_packet_configure(struct ffn_packet *, const uint8_t *, unsigned,
                          const uint8_t *, unsigned, void *, ffn_scan_fn);
 int ffn_packet_poll(struct ffn_packet *, unsigned);
+/* Additive: the worker fault (an errno) without waiting, 0 while healthy. */
+int ffn_packet_fault(struct ffn_packet *);
 /* RX and TX keep ordered, independent workers. Start returns paused. */
 int ffn_packet_start(struct ffn_packet *, int, int);
 /* Additive: lanes. Each lane is one receive socket in the trunk's fanout group
