@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
 import hashlib
@@ -30,6 +31,56 @@ STREAM_BACKLOG=90
 def verify_configuration(path,digest):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
         raise RuntimeError('Committed configuration changed; resynchronization required')
+
+
+PLANE_SOCKET='/run/ffn-plane-mp/control.sock'
+
+
+def plane_request(resource,action,payload,timeout,path=PLANE_SOCKET):
+    """One request to the MP plane daemon on its root-only socket. The decoded reply,
+    or None when the daemon is away or answers nothing usable (logged, never raised)."""
+    import socket
+    request={'v':1,'id':str(uuid.uuid4()),'resource':resource,'action':action,'payload':payload}
+    try:
+        with socket.socket(socket.AF_UNIX) as link:
+            link.settimeout(timeout);link.connect(path);link.sendall(json.dumps(request).encode()+b'\n')
+            data=bytearray()
+            while not data.endswith(b'\n'):
+                chunk=link.recv(65536)
+                if not chunk:break
+                data+=chunk
+                if len(data)>1<<20:raise ValueError('reply exceeds 1 MiB')
+        return json.loads(data) if data else None
+    except (OSError,ValueError) as error:
+        print('plane request %s/%s failed: %s'%(resource,action,str(error)[:200]),file=sys.stderr);return None
+
+
+def barrier_resync(configuration,request=plane_request,log=lambda text:print(text,file=sys.stderr)):
+    """Move the CP's FE100 policy barrier to the committed configuration when it lags behind it.
+
+    The CP refuses this relay's interface intent unless its barrier digest equals the
+    committed running configuration's; only the commit hook moved that digest, so a
+    commit whose apply failed, or a replay that never ran the hook, left every relay
+    start refused and the unit restarting every few seconds (2,275 restarts on
+    2026-10-21). The MP is the authority on what is committed: when the barrier is
+    behind and no hardware session depends on it, this pushes the same `apply` the
+    commit hook would. With sessions in hardware the drain is the commit hook's job.
+    Returns 'matched', 'resynced', 'deferred' or 'unavailable'; never raises."""
+    digest=configuration['config_digest']
+    status=request('fe100-policy','status',{},30)
+    state=status.get('result') if isinstance(status,dict) and status.get('ok') else None
+    if not isinstance(state,dict) or 'revision' not in state:return 'unavailable'
+    if state.get('digest')==digest:return 'matched'
+    sessions=state.get('sessions');held=sessions if isinstance(sessions,int) else len(sessions or ())
+    if state.get('recovery_required') or held:
+        log('FE100 policy barrier is behind the committed configuration (revision %s, %d hardware session(s)); left to the commit hook'%(state.get('revision'),held))
+        return 'deferred'
+    reply=request('fe100-policy','apply',{'revision':state['revision'],'digest':digest},130)
+    if isinstance(reply,dict) and reply.get('ok'):
+        log('FE100 policy barrier moved to the committed configuration: revision %s -> %s, digest %s'%(state.get('revision'),(reply.get('result') or {}).get('revision'),digest[:16]))
+        return 'resynced'
+    log('FE100 policy barrier resync refused: %s'%(str((reply or {}).get('error') if isinstance(reply,dict) else reply)[:200]))
+    return 'deferred'
 
 
 def commands():
@@ -118,6 +169,7 @@ def main():
         try:
             from fe100_attachment_config import compile_config,checksum
             raw=CONFIG.read_bytes();configuration=compile_config(raw)
+            barrier_resync(configuration)
             for command in commands():
                 processes.append(subprocess.Popen(command,stdin=subprocess.PIPE,stdout=subprocess.PIPE,bufsize=0))
             dp,cp=processes
