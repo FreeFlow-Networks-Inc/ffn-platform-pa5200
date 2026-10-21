@@ -102,6 +102,15 @@ class RefreshTests(unittest.TestCase):
         return dict(identity=producer.identity_of(row,self.BOOT),token=row['token'],tcp_state=row['tcp_state'],
                     counters=row['counters'],software_candidate=candidate,remaining_seconds=1,l3={'available':True})
 
+    def test_changes_leave_in_batches_the_receivers_accept(self):
+        from session_stream import BATCH
+        changes=[{'op':'close','identity':'i%d'%n} for n in range(BATCH*2+5)]
+        out=producer.batches(changes)
+        self.assertEqual([len(b) for b in out],[BATCH,BATCH,5])
+        self.assertEqual(producer.batches([]),[])
+        same=[{'op':'close','identity':'x'}]*(BATCH+9)
+        self.assertEqual([len(b) for b in producer.batches(same)],[1],'coalesced first')
+
     def test_counters_known_needs_both_directions_with_packets_and_bytes(self):
         self.assertTrue(producer.counters_known(self.dumped(1)))
         for counters in ({},None,{'original':{'packets':1,'bytes':2}},{'original':{'packets':1},'reply':{'packets':1}}):

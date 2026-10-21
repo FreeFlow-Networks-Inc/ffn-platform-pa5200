@@ -64,6 +64,12 @@ def coalesce(changes):
     return list(ordered.values())
 
 
+def batches(changes):
+    """The coalesced changes in events of at most BATCH entries: the receivers refuse a larger batch."""
+    merged=coalesce(changes)
+    return [merged[start:start+BATCH] for start in range(0,len(merged),BATCH)]
+
+
 def with_known_owner(row,ident,known):
     """The owner an event speaks for.
 
@@ -203,6 +209,9 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
         if chunk:event('snapshot',chunk)
         if clock()>=deadline:raise EventGap('Session/L3 snapshot exceeded freshness budget')
         check_context();recheck();event('synchronized',{})
+        def flush(changes):
+            for batch in batches(changes):event('changes',batch)
+            changes.clear()
         def handle(batch,changes):
             for row in batch:
                 # Closed/unowned sessions need only their identity; do
@@ -221,6 +230,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                     known[ident]=assessed['token'];emitted[ident]=assessed
                     if len(known)>CAPACITY:raise EventGap('Session stream capacity exceeded')
                     changes.append({'op':'upsert','row':assessed})
+                if len(changes)>=BATCH:flush(changes)
         heartbeat=refresh=clock()
         while not stop():
             now=clock()
@@ -237,8 +247,7 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
                 for start in range(0,len(updates),BATCH):
                     event('changes',[{'op':'upsert','row':row} for row in updates[start:start+BATCH]])
                 if pending:
-                    changes=[];handle(pending,changes)
-                    if changes:event('changes',coalesce(changes))
+                    changes=[];handle(pending,changes);flush(changes)
                 refresh=clock()
             readable=select.select([source,routes],[],[],.1)[0]
             if routes in readable:recheck()
@@ -248,16 +257,12 @@ def stream(nonce,emit,*,clock=time.monotonic,stop=lambda:False):
             # CP in a single round trip, which is what keeps receipt within the
             # backlog budget under hundreds of conntrack events per second.
             deadline=clock()+.05;count=0;changes=[]
-            def flush():
-                nonlocal changes
-                if changes:event('changes',coalesce(changes));changes=[]
             while count<2048 and clock()<deadline:
                 try:batch=receive(source)
                 except BlockingIOError:break
                 count+=len(batch)
                 handle(batch,changes)
-                if len(changes)>=BATCH:flush()
-            flush()
+            flush(changes)
 
 
 if __name__=='__main__':

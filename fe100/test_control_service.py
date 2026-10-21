@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 import ffn_fe100_policy_control as control
 import ffn_fe100_controld as controld
-from ffn_fe100_controld import dispatch,drained
+from ffn_fe100_controld import dispatch,drained,settled
 
 
 class ControlTests(unittest.TestCase):
@@ -39,6 +39,12 @@ class ControlTests(unittest.TestCase):
         for key,value in [('sessions',False),('sessions',1),('phase','active'),
                           ('admission_enabled',True),('recovery_required',True)]:
             self.assertFalse(drained(dict(good,**{key:value})))
+        # settled: drained, or cleanly active; never a half-finished generation.
+        active=dict(phase='active',sessions=3,recovery_required=False,admission_enabled=True)
+        self.assertTrue(settled(good));self.assertTrue(settled(active));self.assertTrue(settled(dict(active,sessions=0)))
+        for broken in (dict(active,recovery_required=True),dict(active,admission_enabled=False),dict(active,phase='draining'),
+                       dict(good,sessions=2),dict(good,phase='draining'),dict(active,sessions=-1),dict(active,sessions=None),None,'blocked'):
+            self.assertFalse(settled(broken),broken)
         with patch.object(control,'ROOT',self.root):
             owner=control.PolicyController()
             try:
