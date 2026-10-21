@@ -139,3 +139,21 @@ all avoided here:
    published. Here the pointer is published last and retracted under the same
    mutex every ioctl holds, and the BAR maps are `pcim_*`-managed so there is
    no hand-written unwind to get wrong.
+
+## The DP trunk driver (`ffn_dp_packet_init.ko`)
+
+`ffn_dp_packet_init.c` with `ffn_dp_dma.h`, `ffn_dp_port.h` and
+`ffn_dp_trunk.h` is the CN78XX dataplane's packet engine owner: PKI, SSO and
+PKO, staged by `prepare` and reported by `status` under
+`/sys/kernel/debug/ffn_dp_packet_init/`. `octeon/PORT-NETDEVS.md` is the
+design: kernel SSO groups with a runtime steering switch for an application's
+groups, the punt contract, the kernel's PKO descriptor queues, and the
+per-port netdevs (`port_netdevs=1`: `ffnp1..24`, `ffnae<n>`, `ffnret0`)
+beside the raw `ffnpkt0`, configured through `control` and listed by `ports`.
+
+Module parameters: `rx_groups` (kernel SSO groups and receive threads, 8),
+`tx_queues` (PKO descriptor queues and netdev transmit queues, 1), `port_netdevs`
+(0), `tx_gather` (0), `tag_mask_msb` (0). `make test-host` builds and runs the
+pure helpers' unit test with the host compiler; CI also runs it big-endian
+under qemu-mips64. The image builder and `octeon/debian/build-dp-packet-init.sh`
+build the module against the exact DP kernel with `-Werror`.

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* PA-5220 CN78XX staged packet initialization.
- * Explicit commands prepare microcode, Linux DMA pools and queue memory.
+/* PA-5220 CN78XX staged packet initialization and the shared trunk driver.
+ * Explicit commands prepare microcode, Linux DMA pools and queue memory
+ * (`prepare`); `control` steers data traffic between the kernel's and an
+ * application's SSO groups and configures the per-port netdevs; `ports`
+ * reports them (octeon/PORT-NETDEVS.md).
  * The operator-supplied kernel tree carries Cavium's BSD-licensed microcode.
  */
 #define CVMX_ENABLE_CSR_ADDRESS_CHECKING 0
@@ -160,6 +163,41 @@ static const struct file_operations prepare_fops = {
     .owner = THIS_MODULE, .write = prepare_write,
 };
 
+/* One command per write, the grammar of ffn_ctl_parse (ffn_dp_port.h). Lock
+ * order as prepare-trunk: rtnl first (netdev registration, MAC changes), then
+ * the initializer's lock. */
+static ssize_t control_write(struct file *file, const char __user *buffer,
+                             size_t length, loff_t *pos)
+{
+    char line[128];
+    int rc;
+    if (!capable(CAP_SYS_RAWIO))
+        return -EPERM;
+    if (!length || length >= sizeof(line))
+        return -EINVAL;
+    if (copy_from_user(line, buffer, length))
+        return -EFAULT;
+    line[length] = 0;
+    rtnl_lock();
+    mutex_lock(&init_lock);
+    rc = control_line(line);
+    mutex_unlock(&init_lock);
+    rtnl_unlock();
+    return rc ? rc : length;
+}
+static const struct file_operations control_fops = {
+    .owner = THIS_MODULE, .write = control_write,
+};
+
+static int ports_show(struct seq_file *m, void *unused)
+{
+    mutex_lock(&init_lock);
+    ports_status(m);
+    mutex_unlock(&init_lock);
+    return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(ports);
+
 static int __init packet_init(void)
 {
     if (!OCTEON_IS_MODEL(OCTEON_CN78XX))
@@ -178,6 +216,8 @@ static int __init packet_init(void)
     }
     debugfs_create_file("status", 0400, directory, NULL, &status_fops);
     debugfs_create_file("prepare", 0200, directory, NULL, &prepare_fops);
+    debugfs_create_file("control", 0200, directory, NULL, &control_fops);
+    debugfs_create_file("ports", 0400, directory, NULL, &ports_fops);
     return 0;
 }
 static void __exit packet_exit(void)

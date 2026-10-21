@@ -54,8 +54,20 @@ ffn_bcmctl: ffn_bcmctl.c ffn_bcm_abi.h
 strict: check-kernel
 	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) KCFLAGS="-Werror" modules
 
+# The DP trunk driver's pure helpers (ffn_dp_port.h: system header both ways,
+# group and queue selection, the control grammar) have a host-side unit test
+# that needs no kernel and runs on any CPU. CI runs it on x86 and, cross-built
+# static, under qemu-mips64 for the big-endian byte order of the target.
+HOSTCC ?= cc
+HOST_TEST_CFLAGS ?= -O2 -g -std=gnu11 -Wall -Wextra -Werror
+test-dp-port: test_dp_port.c ffn_dp_port.h
+	$(HOSTCC) $(HOST_TEST_CFLAGS) -o $@ test_dp_port.c
+
+test-host: test-dp-port
+	./test-dp-port
+
 clean:
 	$(MAKE) -C $(KDIR) M=$(CURDIR) $(KBUILD_ARGS) clean
-	rm -f ffn_bcmctl
+	rm -f ffn_bcmctl test-dp-port
 
-.PHONY: all strict clean check-kernel
+.PHONY: all strict clean check-kernel test-host

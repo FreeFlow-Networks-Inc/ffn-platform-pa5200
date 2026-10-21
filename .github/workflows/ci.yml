@@ -248,6 +248,17 @@ jobs:
           make -s oct-test
           make -s oct3-test
 
+      # The DP trunk driver's pure helpers (system header both ways, group and
+      # queue selection, the control grammar) have no kernel dependency: run
+      # them natively and, cross-built static, under qemu in the target's byte
+      # order, since the header fields are big-endian on the wire.
+      - name: trunk driver pure helpers, x86 and big-endian MIPS64
+        working-directory: octeon/kctl
+        run: |
+          make -s test-host
+          mips64-linux-gnuabi64-gcc -O2 -std=gnu11 -Wall -Wextra -Werror -static test_dp_port.c -o /tmp/ffn-dp-port-test-mips
+          qemu-mips64-static -L /usr/mips64-linux-gnuabi64 /tmp/ffn-dp-port-test-mips
+
       - name: FE100 diagnostic register scope (no hardware)
         working-directory: fe100
         run: |
