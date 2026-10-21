@@ -11,9 +11,16 @@
 #include <asm/octeon/ffn-cvmx-compat.h>
 #include <asm/octeon/cvmx-address.h>
 #include <asm/octeon/cvmx-fpa3.h>
+#include "ffn_dp_port.h"
 
 #define FFN_DMA_BLOCK 4096
 #define FFN_SSO_GROUPS 256
+/* The kernel's PKO descriptor queues, DQ 0..tx_queues-1 under L5 SQ0, one per
+ * transmit queue of every netdev. Read once, at prepare-pko-queues. */
+static unsigned tx_queues = 1;
+module_param(tx_queues, uint, 0444);
+MODULE_PARM_DESC(tx_queues, "kernel PKO descriptor queues and netdev transmit queues, 1..8");
+static unsigned pko_queues; /* configured count, after prepare-pko-queues */
 struct ffn_dma_buffer { void *cpu; dma_addr_t dma; };
 struct ffn_dma_pool {
     unsigned id, aura, count;
@@ -310,16 +317,25 @@ static int prepare_pko_queues(void)
     union cvmx_pko_l1_sqx_topology l1={.u64=0};
     union cvmx_pko_l1_sqx_shape shape={.u64=0};
     union cvmx_pko_l1_sqx_link link={.u64=0};
+    union cvmx_pko_l5_sqx_topology l5={.u64=0};
+    union cvmx_pko_l5_sqx_schedule l5s={.u64=0};
     union cvmx_pko_dqx_topology dq={.u64=0};
     union cvmx_pko_dqx_schedule sched={.u64=0};
     union cvmx_pko_dqx_wm_ctl wm={.u64=0};
+    unsigned n = tx_queues>=1 && tx_queues<=FFN_TXQ_MAX ? tx_queues : 1, q;
     int rc;
     if(pko_queues_prepared) return 0;
     if(!pko_memory_ready || dma_error) return -EAGAIN;
     if(quiescent()) return -EBUSY;
     /* CN78XX BGX2/LMAC0 uses MAC 4+4*2=12. Dedicated single-child
-     * L1->L2->L3->L4->L5->DQ path at index zero, as in SDK queue.c.
-     * DQ remains CLOSED: no command DMA or packet output enabled here. */
+     * L1->L2->L3->L4->L5 path at index zero, as in SDK queue.c, then the
+     * kernel's descriptor queues 0..n-1 under L5 SQ0: one child at strict
+     * priority 0 as before, or n children all at priority 0 == the parent's
+     * RR_PRIO 0, which the SDK's cvmx_pko3_sq_config_children calls Fair-RR.
+     * L1 SQ0 keeps RR_PRIO 15 with the kernel's L2 SQ0 at strict priority
+     * 0, so an application's own L2 queue can join below it (priority 1..8,
+     * or 15 for round robin) without starving the kernel's control frames.
+     * DQs remain CLOSED: no command DMA or packet output enabled here. */
     l1.s.link=12; l1.s.rr_prio=15;
     shape.s.link=12; link.s.link=12;
     SET_CSR(CVMX_PKO_L1_SQX_TOPOLOGY(0),l1.u64);
@@ -332,13 +348,21 @@ static int prepare_pko_queues(void)
     SET_CSR(CVMX_PKO_L##n##_SQX_TOPOLOGY(0),t.u64); \
     SET_CSR(CVMX_PKO_L##n##_SQX_SCHEDULE(0),s.u64); \
 } while(0)
-    CONFIG_LEVEL(2); CONFIG_LEVEL(3); CONFIG_LEVEL(4); CONFIG_LEVEL(5);
+    CONFIG_LEVEL(2); CONFIG_LEVEL(3); CONFIG_LEVEL(4);
 #undef CONFIG_LEVEL
+    l5.s.parent=0; l5.s.prio_anchor=0; l5.s.rr_prio = n>1 ? 0 : 15;
+    l5s.s.rr_quantum=0x10;
+    SET_CSR(CVMX_PKO_L5_SQX_TOPOLOGY(0),l5.u64);
+    SET_CSR(CVMX_PKO_L5_SQX_SCHEDULE(0),l5s.u64);
     sched.s.rr_quantum=0x10;
     wm.s.kind=1;
-    SET_CSR(CVMX_PKO_DQX_TOPOLOGY(0),dq.u64);
-    SET_CSR(CVMX_PKO_DQX_SCHEDULE(0),sched.u64);
-    SET_CSR(CVMX_PKO_DQX_WM_CTL(0),wm.u64);
+    for (q=0;q<n;q++) {
+        dq.s.parent=0;
+        SET_CSR(CVMX_PKO_DQX_TOPOLOGY(q),dq.u64);
+        SET_CSR(CVMX_PKO_DQX_SCHEDULE(q),sched.u64);
+        SET_CSR(CVMX_PKO_DQX_WM_CTL(q),wm.u64);
+    }
+    pko_queues=n;
     pko_queues_prepared=true;
     return 0;
 }
@@ -370,10 +394,11 @@ static void dma_status(struct seq_file *m)
 {
     unsigned p;
     seq_printf(m,"\"dma_published\":%s,\"dma_ready\":%s,\"dma_error\":%d,"
-        "\"sso_xaq_prepared\":%s,\"pko_memory_ready\":%s,\"pko_queues_prepared\":%s,\"dma_pools\":[",
+        "\"sso_xaq_prepared\":%s,\"pko_memory_ready\":%s,\"pko_queues_prepared\":%s,"
+        "\"pko_queues\":%u,\"dma_pools\":[",
         dma_published?"true":"false",dma_ready?"true":"false",dma_error,
         sso_prepared?"true":"false",pko_memory_ready?"true":"false",
-        pko_queues_prepared?"true":"false");
+        pko_queues_prepared?"true":"false",pko_queues);
     for(p=0;p<ARRAY_SIZE(dma_pools);p++) {
         struct ffn_dma_pool *pool=&dma_pools[p];
         seq_printf(m,"%s{\"pool\":%u,\"aura\":%u,\"block_size\":4096,"

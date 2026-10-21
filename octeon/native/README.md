@@ -125,6 +125,13 @@ them) while enough others remain, and the receive steering of the forwarding
 path keeps off those cores too. The runtimes make their TAPs with `multi_queue`;
 the VIF runtime makes a device again when it finds one made without it.
 
+Lanes, the TAP hop and the steering are the path that `octeon/PORT-NETDEVS.md`
+retires: the trunk driver's per-port netdevs (`port_netdevs=1`) deliver each
+port's frames into the kernel on the receive thread with no copy to userspace,
+and in phase 2 ffn-portd keeps only control (LACP on the member netdevs, the
+LAG gates and carrier through the driver's control file, FE100 returns from
+`ffnret0`, which carries the same raw envelope this library decodes today).
+
 ## Validation
 
 ```sh
